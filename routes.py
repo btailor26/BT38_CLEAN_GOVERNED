@@ -5365,32 +5365,26 @@ def push_stock_individual(item_id):
 
 @bp.route('/push_stock_bulk', methods=['POST'])
 def push_stock_bulk():
-    """Push stock for selected items using job queue - only pushes to stores with existing listings"""
+    """Queue stock push jobs for selected items, gated by Settings."""
     try:
-        from queue_manager import enqueue_sync_job, JOB_PUSH_ITEM, PRIORITY_HIGH
-        
-        # Get selected item IDs from request
         data = request.get_json()
         if not data or 'item_ids' not in data:
             return jsonify({'success': False, 'error': 'No items selected'})
-        
+
         item_ids = data['item_ids']
         if not item_ids:
             return jsonify({'success': False, 'error': 'No items selected'})
-        
+
         logging.info(f"Enqueueing bulk stock push for {len(item_ids)} items")
-        
-        # Get the inventory items
+
         items = db.session.query(InventoryItem).filter(InventoryItem.id.in_(item_ids)).all()
         if not items:
             return jsonify({'success': False, 'error': 'No valid items found'})
-        
-        # Track results for each item
+
         results = []
         total_jobs_enqueued = 0
-        
+
         for item in items:
-            # Get warehouse stock for this SKU
             warehouse_stock = db.session.query(WarehouseStock).filter_by(sku=item.sku).first()
             if not warehouse_stock:
                 logging.warning(f"No warehouse stock for SKU {item.sku} - skipping")
@@ -5404,15 +5398,14 @@ def push_stock_bulk():
                     'error': f'No warehouse stock found for SKU {item.sku}'
                 })
                 continue
-            
-            # Find active stores that have listings for this specific SKU
+
             stores_with_listings = db.session.query(Store).join(
                 MarketplaceListing, Store.id == MarketplaceListing.store_id
             ).filter(
                 Store.is_active == True,
                 MarketplaceListing.warehouse_stock_id == warehouse_stock.id
             ).distinct().all()
-            
+
             if not stores_with_listings:
                 logging.info(f"SKU {item.sku} has no marketplace listings - skipping")
                 results.append({
@@ -5425,46 +5418,70 @@ def push_stock_bulk():
                     'error': f'No marketplace listings for {item.sku}. Import it to a store first.'
                 })
                 continue
-            
-            # Enqueue high-priority push jobs for each store with listings
+
             jobs_enqueued_for_item = []
+            blocked_stores = []
+
             for store in stores_with_listings:
                 try:
-                    # Skip stores without proper credentials
+                    allowed, reason = is_runtime_action_allowed(
+                        store=store,
+                        action_type="push",
+                        manual=True
+                    )
+
+                    if not allowed:
+                        blocked_stores.append({
+                            'store': store.name,
+                            'platform': store.platform,
+                            'reason': reason
+                        })
+                        continue
+
                     if not store.api_key:
                         logging.warning(f"Skipping store {store.name}: No API credentials")
+                        blocked_stores.append({
+                            'store': store.name,
+                            'platform': store.platform,
+                            'reason': 'No API credentials configured'
+                        })
                         continue
-                    
-                    # Enqueue high-priority job
+
                     job = enqueue_sync_job(
                         store_id=store.id,
                         job_type=JOB_PUSH_ITEM,
                         payload={'item_id': item.id},
                         priority=PRIORITY_HIGH
                     )
+
                     jobs_enqueued_for_item.append({
                         'store': store.name,
                         'platform': store.platform,
                         'job_id': job.id
                     })
                     total_jobs_enqueued += 1
-                    
+
                 except Exception as store_error:
                     logging.error(f"Error enqueueing job for {item.sku} to store {store.name}: {str(store_error)}")
-            
+                    blocked_stores.append({
+                        'store': store.name,
+                        'platform': store.platform,
+                        'reason': str(store_error)
+                    })
+
             results.append({
                 'item_id': item.id,
                 'item_sku': item.sku,
                 'item_name': item.name,
                 'success': len(jobs_enqueued_for_item) > 0,
                 'jobs_enqueued': len(jobs_enqueued_for_item),
-                'stores': [j['store'] for j in jobs_enqueued_for_item]
+                'stores': [j['store'] for j in jobs_enqueued_for_item],
+                'blocked_stores': blocked_stores
             })
-        
-        # Count successes
+
         successful_items = [r for r in results if r['success']]
         failed_items = [r for r in results if not r['success']]
-        
+
         return jsonify({
             'success': len(successful_items) > 0,
             'total_items': len(items),
@@ -5474,13 +5491,14 @@ def push_stock_bulk():
             'results': results,
             'message': f'Queued {total_jobs_enqueued} push jobs for {len(successful_items)} items. Processing now...'
         })
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         logging.error(f"Error in bulk stock push: {str(e)}")
         logging.error(f"Full traceback: {error_details}")
         return jsonify({'success': False, 'error': str(e)})
+
 
 @bp.route('/push_stock_all', methods=['POST'])
 def push_stock_all():
