@@ -285,9 +285,83 @@ document.addEventListener("DOMContentLoaded", function () {
 
       const data = await res.json();
 
-      output.innerText = JSON.stringify(data, null, 2);
+      const recognized =
+        data.recognized ?? data.success ?? false;
 
-      if (!res.ok || data.success === false) {
+      const risk =
+        data.risk_level ?? "Unknown";
+
+      const systems =
+        Array.isArray(data.affected_systems)
+          ? data.affected_systems.join(", ")
+          : (data.affected_systems || "None");
+
+      const executionPlan =
+        data.execution_plan || data.plan || "No execution plan returned.";
+
+      const requiresConfirmation =
+        data.requires_confirmation ?? true;
+
+      const safetyMessage =
+        data.message ||
+        data.safety_message ||
+        "Preview only. No execution performed.";
+
+      const failed =
+        (!res.ok || data.success === false);
+
+      output.innerHTML = `
+<div style="display:grid;gap:12px;font-family:Arial,sans-serif;">
+
+  <div style="padding:12px;border-radius:8px;background:${failed ? "#3a1010" : "#102a12"};color:${failed ? "#ffb3b3" : "#b9ffbe"};">
+    <strong>Status:</strong>
+    ${failed ? "Preview failed" : "Preview generated successfully"}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Command entered</strong><br>
+    ${command}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Recognized</strong><br>
+    ${recognized ? "Yes" : "No"}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Risk level</strong><br>
+    ${risk}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Affected systems</strong><br>
+    ${systems}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Execution plan</strong><br>
+    ${executionPlan}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Requires confirmation</strong><br>
+    ${requiresConfirmation ? "Yes" : "No"}
+  </div>
+
+  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <strong>Safety message</strong><br>
+    ${safetyMessage}
+  </div>
+
+  <details style="padding:12px;border:1px solid #333;border-radius:8px;">
+    <summary><strong>Raw JSON (debug)</strong></summary>
+    <pre style="margin-top:10px;white-space:pre-wrap;">${JSON.stringify(data, null, 2)}</pre>
+  </details>
+
+</div>
+`;
+
+      if (failed) {
         status.innerText =
           "Preview failed. No execution performed.";
         return;
