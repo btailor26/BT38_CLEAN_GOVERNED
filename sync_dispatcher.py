@@ -366,10 +366,22 @@ class SyncDispatcher:
         log_data['decision'] = 'ALLOWED'
         log_data['reason'] = 'Job qty matches current item qty'
         logging.info(f"[PUSH_AUTHORITY_ALLOWED] {log_data}")
-        
+
+        from routes import is_runtime_action_allowed
+
+        allowed, reason = is_runtime_action_allowed(
+            store=store,
+            action_type="push",
+            manual=False
+        )
+
+        if not allowed:
+            logging.warning(f"[RUNTIME_GATE_BLOCKED] Push blocked for item {item.sku} to store {store.id} ({store.name}): {reason}")
+            raise ValueError(reason)
+
         logging.info(f"Executing push for item {item.sku} to store {store.id} ({store.name})")
         success, message = sync_item_to_store(store, item)
-        
+
         if not success:
             raise Exception(message)
     

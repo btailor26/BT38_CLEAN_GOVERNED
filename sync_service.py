@@ -1119,6 +1119,25 @@ def automatic_push_to_stores(item, operation="update"):
                     })
                     continue
                 
+                from routes import is_runtime_action_allowed
+
+                allowed, reason = is_runtime_action_allowed(
+                    store=store,
+                    action_type="push",
+                    manual=False
+                )
+
+                if not allowed:
+                    logging.warning(f"[RUNTIME_GATE_BLOCKED] Auto push blocked for item {item.sku} to store {store.id} ({store.name}): {reason}")
+                    results.append({
+                        'store': store.name,
+                        'platform': store.platform,
+                        'success': False,
+                        'message': reason,
+                        'skipped': True
+                    })
+                    continue
+
                 # Attempt to push to this store
                 start_time = datetime.utcnow()
                 success, message = sync_item_to_store(store, item)
