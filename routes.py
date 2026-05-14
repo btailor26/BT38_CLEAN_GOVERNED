@@ -4733,15 +4733,25 @@ def sync_status():
 
 @bp.route('/stores/sync/<int:store_id>', methods=['POST'])
 def manual_sync_store(store_id):
-    print(" ROUTE HIT: /stores/sync/", store_id)
-    """Manually run real sync for a specific store. No fake route. No background thread."""
+    """Manually run real sync for a specific store, gated by Settings."""
     try:
         store = db.session.get(Store, store_id)
         if not store:
             return jsonify({'success': False, 'message': 'Store not found'}), 404
 
-        if not store.is_active:
-            return jsonify({'success': False, 'message': 'Store is inactive'}), 400
+        allowed, reason = is_runtime_action_allowed(
+            store=store,
+            action_type="sync",
+            manual=True
+        )
+
+        if not allowed:
+            return jsonify({
+                'success': False,
+                'message': reason,
+                'store_id': store.id,
+                'store_name': store.name
+            }), 400
 
         from sync_service import immediate_sync_store
 
@@ -4758,8 +4768,8 @@ def manual_sync_store(store_id):
         })
 
     except Exception as e:
-        logging.error(f'Error running manual sync: {str(e)}', exc_info=True)
-        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+        logging.error(f"Error in manual store sync for {store_id}: {str(e)}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @bp.route('/api/stores')
