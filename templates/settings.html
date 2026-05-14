@@ -287,6 +287,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
       output.innerText = JSON.stringify(data, null, 2);
 
+      if (!res.ok || data.success === false) {
+        status.innerText =
+          "Preview failed. No execution performed.";
+        return;
+      }
+
       status.innerText =
         "Preview generated successfully. No execution performed.";
 
