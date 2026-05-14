@@ -225,7 +225,11 @@ function updateStoreControl(storeId, field, value) {
   <div style="padding:14px;">
     <label><strong>Enter command</strong></label><br>
     <input type="text" id="bt38CommandInput" placeholder="Example: Freeze all sync" style="width:70%;max-width:720px;padding:10px;border:1px solid #ccc;border-radius:8px;">
-    <button type="button" class="btn" disabled>Preview Command</button>
+    <button type="button" class="btn" id="bt38PreviewBtn">Preview Command</button>
+
+      <div id="bt38PreviewStatus" style="margin-top:10px;color:#666;"></div>
+
+      <pre id="bt38PreviewOutput" style="margin-top:10px;background:#111;color:#0f0;padding:12px;border-radius:8px;min-height:120px;overflow:auto;">No preview yet.</pre>
     <button type="button" class="btn danger" disabled>Run Approved Command</button>
     <p class="small" style="color:#666;margin-top:8px;">
       Commands are visual only at this stage. Execution will be wired later through one approved command engine.
@@ -243,5 +247,67 @@ function updateStoreControl(storeId, field, value) {
 </div>
 
 </form>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+  const btn = document.getElementById("bt38PreviewBtn");
+
+  if (!btn) return;
+
+  btn.addEventListener("click", async function () {
+
+    const input = document.getElementById("bt38CommandInput");
+    const status = document.getElementById("bt38PreviewStatus");
+    const output = document.getElementById("bt38PreviewOutput");
+
+    const command = (input.value || "").trim();
+
+    if (!command) {
+      status.innerText = "Enter a command first.";
+      return;
+    }
+
+    status.innerText = "Generating preview...";
+    output.innerText = "";
+
+    try {
+
+      const res = await fetch("/api/command-center/preview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          command: command
+        })
+      });
+
+      const data = await res.json();
+
+      output.innerText = JSON.stringify(data, null, 2);
+
+      if (!res.ok || data.success === false) {
+        status.innerText =
+          "Preview failed. No execution performed.";
+        return;
+      }
+
+      status.innerText =
+        "Preview generated successfully. No execution performed.";
+
+    } catch (err) {
+
+      output.innerText = String(err);
+
+      status.innerText = "Preview failed.";
+
+    }
+
+  });
+
+});
+</script>
+
 </body>
 </html>
