@@ -2913,39 +2913,36 @@ def edit_group(group_id):
 
 @bp.route('/groups/<int:group_id>/push', methods=['POST'])
 def push_group_stock(group_id):
-    """Push stock for all items in a product group to all marketplaces"""
+    """Push stock for all items in a product group to all marketplaces, gated by Settings."""
     from sync_service import sync_item_to_store
-    
+
     try:
         group = db.session.get(ProductGroup, group_id)
         if not group:
             return jsonify({'success': False, 'message': 'Group not found'}), 404
-        
+
         if not group.items:
             return jsonify({'success': False, 'message': 'Group has no items'}), 400
-        
-        # Get all active stores (excluding those with auth errors)
+
         stores = Store.query.filter_by(is_active=True).all()
         if not stores:
             return jsonify({'success': False, 'message': 'No active stores configured'}), 400
-        
-        # Filter out stores with authentication errors
+
         valid_stores = [s for s in stores if s.sync_status != 'error']
         auth_error_stores = [s for s in stores if s.sync_status == 'error']
-        
+
         if not valid_stores and auth_error_stores:
             auth_store_names = ', '.join([s.name for s in auth_error_stores])
             return jsonify({
-                'success': False, 
+                'success': False,
                 'message': f'Cannot push: All stores have authentication errors ({auth_store_names}). Please reconnect your stores first.'
             }), 400
-        
+
         successful_pushes = 0
         failed_pushes = 0
         skipped_pushes = 0
         results = []
-        
-        # Skip stores with auth errors
+
         for store in auth_error_stores:
             for item in group.items:
                 skipped_pushes += 1
@@ -2956,11 +2953,27 @@ def push_group_stock(group_id):
                     'status': 'skipped',
                     'message': f'Store has authentication error - please reconnect {store.name}'
                 })
-        
-        # Push each item in the group to valid stores only
+
         for item in group.items:
             for store in valid_stores:
                 try:
+                    allowed, reason = is_runtime_action_allowed(
+                        store=store,
+                        action_type="push",
+                        manual=True
+                    )
+
+                    if not allowed:
+                        skipped_pushes += 1
+                        results.append({
+                            'sku': item.sku,
+                            'store': store.name,
+                            'platform': store.platform,
+                            'status': 'skipped',
+                            'message': reason
+                        })
+                        continue
+
                     success, message = sync_item_to_store(store, item)
                     if success:
                         successful_pushes += 1
@@ -2989,8 +3002,7 @@ def push_group_stock(group_id):
                         'status': 'error',
                         'message': str(e)
                     })
-        
-        # Log the push operation
+
         sync_log = SyncLog(
             store_id=None,
             operation='group_push',
@@ -3000,11 +3012,11 @@ def push_group_stock(group_id):
         )
         db.session.add(sync_log)
         db.session.commit()
-        
-        message = f'Stock pushed to marketplaces'
+
+        message = 'Stock pushed to marketplaces'
         if auth_error_stores:
             message += f' (skipped {len(auth_error_stores)} stores with auth errors)'
-        
+
         return jsonify({
             'success': True,
             'message': message,
@@ -3015,11 +3027,12 @@ def push_group_stock(group_id):
                 'details': results
             }
         })
-    
+
     except Exception as e:
         db.session.rollback()
-        logging.error(f'Error pushing group stock: {str(e)}', exc_info=True)
-        return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
+        logging.error(f"Error pushing group stock: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error pushing group stock: {str(e)}'}), 500
+
 
 @bp.route('/groups/<int:group_id>/update-stock', methods=['POST'])
 def update_group_stock(group_id):
@@ -5352,32 +5365,26 @@ def push_stock_individual(item_id):
 
 @bp.route('/push_stock_bulk', methods=['POST'])
 def push_stock_bulk():
-    """Push stock for selected items using job queue - only pushes to stores with existing listings"""
+    """Queue stock push jobs for selected items, gated by Settings."""
     try:
-        from queue_manager import enqueue_sync_job, JOB_PUSH_ITEM, PRIORITY_HIGH
-        
-        # Get selected item IDs from request
         data = request.get_json()
         if not data or 'item_ids' not in data:
             return jsonify({'success': False, 'error': 'No items selected'})
-        
+
         item_ids = data['item_ids']
         if not item_ids:
             return jsonify({'success': False, 'error': 'No items selected'})
-        
+
         logging.info(f"Enqueueing bulk stock push for {len(item_ids)} items")
-        
-        # Get the inventory items
+
         items = db.session.query(InventoryItem).filter(InventoryItem.id.in_(item_ids)).all()
         if not items:
             return jsonify({'success': False, 'error': 'No valid items found'})
-        
-        # Track results for each item
+
         results = []
         total_jobs_enqueued = 0
-        
+
         for item in items:
-            # Get warehouse stock for this SKU
             warehouse_stock = db.session.query(WarehouseStock).filter_by(sku=item.sku).first()
             if not warehouse_stock:
                 logging.warning(f"No warehouse stock for SKU {item.sku} - skipping")
@@ -5391,15 +5398,14 @@ def push_stock_bulk():
                     'error': f'No warehouse stock found for SKU {item.sku}'
                 })
                 continue
-            
-            # Find active stores that have listings for this specific SKU
+
             stores_with_listings = db.session.query(Store).join(
                 MarketplaceListing, Store.id == MarketplaceListing.store_id
             ).filter(
                 Store.is_active == True,
                 MarketplaceListing.warehouse_stock_id == warehouse_stock.id
             ).distinct().all()
-            
+
             if not stores_with_listings:
                 logging.info(f"SKU {item.sku} has no marketplace listings - skipping")
                 results.append({
@@ -5412,46 +5418,70 @@ def push_stock_bulk():
                     'error': f'No marketplace listings for {item.sku}. Import it to a store first.'
                 })
                 continue
-            
-            # Enqueue high-priority push jobs for each store with listings
+
             jobs_enqueued_for_item = []
+            blocked_stores = []
+
             for store in stores_with_listings:
                 try:
-                    # Skip stores without proper credentials
+                    allowed, reason = is_runtime_action_allowed(
+                        store=store,
+                        action_type="push",
+                        manual=True
+                    )
+
+                    if not allowed:
+                        blocked_stores.append({
+                            'store': store.name,
+                            'platform': store.platform,
+                            'reason': reason
+                        })
+                        continue
+
                     if not store.api_key:
                         logging.warning(f"Skipping store {store.name}: No API credentials")
+                        blocked_stores.append({
+                            'store': store.name,
+                            'platform': store.platform,
+                            'reason': 'No API credentials configured'
+                        })
                         continue
-                    
-                    # Enqueue high-priority job
+
                     job = enqueue_sync_job(
                         store_id=store.id,
                         job_type=JOB_PUSH_ITEM,
                         payload={'item_id': item.id},
                         priority=PRIORITY_HIGH
                     )
+
                     jobs_enqueued_for_item.append({
                         'store': store.name,
                         'platform': store.platform,
                         'job_id': job.id
                     })
                     total_jobs_enqueued += 1
-                    
+
                 except Exception as store_error:
                     logging.error(f"Error enqueueing job for {item.sku} to store {store.name}: {str(store_error)}")
-            
+                    blocked_stores.append({
+                        'store': store.name,
+                        'platform': store.platform,
+                        'reason': str(store_error)
+                    })
+
             results.append({
                 'item_id': item.id,
                 'item_sku': item.sku,
                 'item_name': item.name,
                 'success': len(jobs_enqueued_for_item) > 0,
                 'jobs_enqueued': len(jobs_enqueued_for_item),
-                'stores': [j['store'] for j in jobs_enqueued_for_item]
+                'stores': [j['store'] for j in jobs_enqueued_for_item],
+                'blocked_stores': blocked_stores
             })
-        
-        # Count successes
+
         successful_items = [r for r in results if r['success']]
         failed_items = [r for r in results if not r['success']]
-        
+
         return jsonify({
             'success': len(successful_items) > 0,
             'total_items': len(items),
@@ -5461,13 +5491,14 @@ def push_stock_bulk():
             'results': results,
             'message': f'Queued {total_jobs_enqueued} push jobs for {len(successful_items)} items. Processing now...'
         })
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         logging.error(f"Error in bulk stock push: {str(e)}")
         logging.error(f"Full traceback: {error_details}")
         return jsonify({'success': False, 'error': str(e)})
+
 
 @bp.route('/push_stock_all', methods=['POST'])
 def push_stock_all():
