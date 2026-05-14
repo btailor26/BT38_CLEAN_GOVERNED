@@ -367,7 +367,7 @@ class SyncDispatcher:
         log_data['reason'] = 'Job qty matches current item qty'
         logging.info(f"[PUSH_AUTHORITY_ALLOWED] {log_data}")
 
-        from routes import is_runtime_action_allowed
+        from services.runtime_gate import is_runtime_action_allowed
 
         allowed, reason = is_runtime_action_allowed(
             store=store,

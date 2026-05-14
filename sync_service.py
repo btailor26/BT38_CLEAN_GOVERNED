@@ -1119,7 +1119,7 @@ def automatic_push_to_stores(item, operation="update"):
                     })
                     continue
                 
-                from routes import is_runtime_action_allowed
+                from services.runtime_gate import is_runtime_action_allowed
 
                 allowed, reason = is_runtime_action_allowed(
                     store=store,
