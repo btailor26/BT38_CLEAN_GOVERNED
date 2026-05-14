@@ -306,6 +306,20 @@ def queue_real_push_for_warehouse(warehouse_stock_id: int) -> Dict:
                 continue
             
             try:
+                from services.runtime_gate import is_runtime_action_allowed
+
+                allowed, reason = is_runtime_action_allowed(
+                    store=store,
+                    action_type="push",
+                    manual=True
+                )
+
+                if not allowed:
+                    result['listings_skipped'] += 1
+                    result['skipped_reasons'].append(f"SKU {sku} → {platform}: {reason}")
+                    logger.warning(f"[RUNTIME_GATE_BLOCKED] Queue creation blocked for SKU {sku} store={store.name}: {reason}")
+                    continue
+
                 job = enqueue_sync_job(
                     store_id=store.id,
                     job_type=JOB_PUSH_ITEM,
