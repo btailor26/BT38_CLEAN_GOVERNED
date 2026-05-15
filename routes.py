@@ -1328,14 +1328,23 @@ def ebay_setup():
             db.session.commit()
             flash(" eBay store connected successfully! Your inventory will sync automatically every 30 seconds.", 'success')
             
-            # Trigger immediate sync
-            from sync_service import immediate_sync_store
-            import threading
-            sync_thread = threading.Thread(
-                target=lambda: immediate_sync_store(store.id),
-                daemon=True
+            # Queue sync through dispatcher/runtime gate path
+            from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+            enqueue_sync_job(
+                store_id=store.id,
+                job_type=JOB_FULL_SYNC,
+                payload={
+                    'source': 'ebay_setup_success',
+                    'manual': False,
+                    'store_id': store.id,
+                    'store_name': store.name
+                },
+                priority=PRIORITY_HIGH
             )
-            sync_thread.start()
+
+            store.sync_status = 'queued'
+            db.session.commit()
             
             return redirect(url_for('routes.stores'))
         else:
@@ -4415,19 +4424,26 @@ def add_store():
             db.session.add(store)
             db.session.commit()
             
-            # Trigger immediate sync if connection was successful
+            # Queue sync if connection was successful
             if connection_success:
-                from sync_service import immediate_sync_store
-                import threading
-                
-                # Start immediate sync in background thread
-                sync_thread = threading.Thread(
-                    target=lambda: immediate_sync_store(store.id),
-                    daemon=True
+                from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+                enqueue_sync_job(
+                    store_id=store.id,
+                    job_type=JOB_FULL_SYNC,
+                    payload={
+                        'source': 'store_added_success',
+                        'manual': False,
+                        'store_id': store.id,
+                        'store_name': store.name
+                    },
+                    priority=PRIORITY_HIGH
                 )
-                sync_thread.start()
-                
-                flash(f'Store added and connected successfully! Starting immediate inventory sync. {connection_message}', 'success')
+
+                store.sync_status = 'queued'
+                db.session.commit()
+
+                flash(f'Store added and connected successfully! Sync queued. {connection_message}', 'success')
             elif store.platform.lower() in ['amazon', 'ebay'] and store.api_key.strip():
                 flash(f'Store added but connection failed. {connection_message}', 'warning')
             else:
@@ -4523,16 +4539,23 @@ def edit_store(store_id):
                                 store.last_sync = datetime.utcnow()
                                 connection_message = f"  {store.platform} connection re-established"
                                 
-                                # Trigger immediate sync for updated store
-                                from sync_service import immediate_sync_store
-                                import threading
-                                
-                                sync_thread = threading.Thread(
-                                    target=lambda: immediate_sync_store(store.id),
-                                    daemon=True
+                                # Queue sync for updated store through dispatcher/runtime gate path
+                                from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+                                enqueue_sync_job(
+                                    store_id=store.id,
+                                    job_type=JOB_FULL_SYNC,
+                                    payload={
+                                        'source': 'store_reconnect_success',
+                                        'manual': False,
+                                        'store_id': store.id,
+                                        'store_name': store.name
+                                    },
+                                    priority=PRIORITY_HIGH
                                 )
-                                sync_thread.start()
-                                connection_message += " - Starting immediate sync"
+
+                                store.sync_status = 'queued'
+                                connection_message += " - Sync queued"
                             else:
                                 store.sync_status = 'error'
                                 store.is_active = False
@@ -4733,11 +4756,15 @@ def sync_status():
 
 @bp.route('/stores/sync/<int:store_id>', methods=['POST'])
 def manual_sync_store(store_id):
-    """Manually run real sync for a specific store, gated by Settings."""
+    """Queue manual sync through dispatcher/runtime gate path only."""
     try:
         store = db.session.get(Store, store_id)
+
         if not store:
-            return jsonify({'success': False, 'message': 'Store not found'}), 404
+            return jsonify({
+                'success': False,
+                'message': 'Store not found'
+            }), 404
 
         allowed, reason = is_runtime_action_allowed(
             store=store,
@@ -4753,23 +4780,45 @@ def manual_sync_store(store_id):
                 'store_name': store.name
             }), 400
 
-        from sync_service import immediate_sync_store
+        from queue_manager import (
+            enqueue_sync_job,
+            JOB_FULL_SYNC,
+            PRIORITY_HIGH
+        )
 
-        success, message = immediate_sync_store(store.id)
-        db.session.refresh(store)
+        job = enqueue_sync_job(
+            store_id=store.id,
+            job_type=JOB_FULL_SYNC,
+            payload={
+                'source': 'manual_store_sync',
+                'manual': True,
+                'store_id': store.id,
+                'store_name': store.name
+            },
+            priority=PRIORITY_HIGH
+        )
+
+        store.sync_status = 'queued'
+        db.session.commit()
 
         return jsonify({
-            'success': bool(success),
-            'message': message,
+            'success': True,
+            'message': 'Store sync queued through dispatcher/runtime gate.',
             'store_id': store.id,
             'store_name': store.name,
+            'job_id': getattr(job, 'id', job),
             'sync_status': store.sync_status,
             'last_sync': store.last_sync.isoformat() if store.last_sync else None
         })
 
     except Exception as e:
-        logging.error(f"Error in manual store sync for {store_id}: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        db.session.rollback()
+        logging.error(f'Error queueing manual store sync for {store_id}: {str(e)}')
+
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
 
 
 @bp.route('/api/stores')
