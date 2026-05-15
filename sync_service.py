@@ -411,15 +411,51 @@ def immediate_sync_store(store_id):
 # Old import functions removed - now using outbound push system
 
 def should_sync(store):
-    """Determine if a store should be synced based on last sync time and push settings"""
+    """Determine if a store should sync based on store override or global admin setting.
+
+    Control rule:
+    - Manual push/sync is handled outside this scheduler check.
+    - Webhook/notification-triggered work is handled outside this scheduler check.
+    - Automatic scheduled sync uses store.push_frequency_minutes when set.
+    - If store frequency is missing/invalid, automatic scheduled sync falls back to PushSettings.default_push_frequency_minutes.
+    """
     if not store.last_sync:
         return True
-    
-    # Use store-specific push frequency (default 5 minutes if not set)
-    frequency_seconds = (store.push_frequency_minutes or 5) * 60
-    
-    time_diff = datetime.utcnow() - store.last_sync
-    return time_diff.total_seconds() > frequency_seconds
+
+    try:
+        from models import PushSettings
+
+        frequency_minutes = None
+
+        store_frequency = getattr(store, "push_frequency_minutes", None)
+        if store_frequency is not None:
+            try:
+                store_frequency = int(store_frequency)
+                if store_frequency > 0:
+                    frequency_minutes = store_frequency
+            except (TypeError, ValueError):
+                frequency_minutes = None
+
+        if frequency_minutes is None:
+            settings = PushSettings.query.first()
+            global_frequency = getattr(settings, "default_push_frequency_minutes", None) if settings else None
+            try:
+                global_frequency = int(global_frequency)
+                if global_frequency > 0:
+                    frequency_minutes = global_frequency
+            except (TypeError, ValueError):
+                frequency_minutes = None
+
+        if frequency_minutes is None:
+            frequency_minutes = 15
+
+        frequency_seconds = frequency_minutes * 60
+        time_diff = datetime.utcnow() - store.last_sync
+        return time_diff.total_seconds() > frequency_seconds
+
+    except Exception as e:
+        logging.error(f"should_sync runtime setting check failed for store {getattr(store, 'id', None)}: {e}")
+        return False
 
 def should_push_to_store(store):
     """Determine if inventory should be pushed to this store based on push settings"""
