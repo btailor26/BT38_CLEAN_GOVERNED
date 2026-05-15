@@ -5864,31 +5864,35 @@ def settings():
         'platforms': {}
     }
 
+    from sqlalchemy import cast, String
+
     for platform in webhook_platforms:
         enabled = SystemSetting.get_value(f'webhook_{platform}_enabled', False)
+        platform_match = f'"platform": "{platform}"'
 
         last_event = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook',
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).order_by(SystemEvent.timestamp.desc()).first()
 
         received_24h = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook',
             SystemEvent.timestamp >= yesterday,
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).count()
 
         failed_24h = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook_failed',
             SystemEvent.timestamp >= yesterday,
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).count()
 
         webhook_settings['platforms'][platform] = {
             'enabled': enabled,
             'last_received': last_event.timestamp if last_event else None,
             'received_24h': received_24h,
-            'failed_24h': failed_24h
+            'failed_24h': failed_24h,
+            'polling_impact': 'Reduced polling' if enabled else 'Polling fallback'
         }
 
     return render_template(
