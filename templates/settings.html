@@ -488,6 +488,7 @@ function updateWebhookSetting(key, value) {
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
   fetch('/api/webhook-settings', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
     body: JSON.stringify({[key]: value})
   })
@@ -508,6 +509,7 @@ function updateStoreControl(storeId, field, value) {
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
   fetch(`/api/store-push-settings/${storeId}`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
     body: JSON.stringify({[field]: value})
   })
