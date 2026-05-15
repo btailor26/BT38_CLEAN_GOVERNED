@@ -5831,6 +5831,7 @@ def command_center_preview():
 # =================== PUSH SETTINGS ROUTES ===================
 
 @bp.route('/settings')
+@login_required
 def settings():
     """Main settings page for push configuration"""
     global_settings = PushSettings.get_or_create_settings()
@@ -5956,6 +5957,7 @@ def update_webhook_settings():
 
 
 @bp.route('/settings', methods=['POST'])
+@login_required
 def update_settings():
     """Update global push settings"""
     try:
