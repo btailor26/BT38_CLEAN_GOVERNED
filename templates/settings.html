@@ -1,131 +1,508 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>BT38 Control Center - Full Preview</title>
-  <style>
-    body{font-family:Arial,sans-serif;background:#f5f6f8;margin:0;padding:18px;color:#111}
-    .top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:14px}
-    h1{margin:0;font-size:26px}
-    p{margin:4px 0;color:#666}
-    .badge{display:inline-block;background:#111;color:#fff;border-radius:18px;padding:4px 9px;font-size:12px}
-    .btn{border:1px solid #ccc;background:#fff;border-radius:8px;padding:8px 11px;margin-left:5px}
-    .danger{background:#111;color:#fff}
-    .tabs{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}
-    .tab{background:#fff;border:1px solid #ddd;border-radius:18px;padding:8px 13px;font-size:13px}
-    .tab.active{background:#111;color:#fff}
-    .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
-    .card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px}
-    .card h4{margin:0 0 5px;font-size:12px;color:#666}
-    .card strong{font-size:19px}
-    .section{background:#fff;border:1px solid #ddd;border-radius:12px;margin-bottom:14px;overflow:hidden}
-    .section h3{margin:0;padding:12px 14px;background:#fafafa;border-bottom:1px solid #eee;font-size:16px}
-    table{width:100%;border-collapse:collapse}
-    th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;font-size:13px;vertical-align:middle}
-    th{background:#fafafa;color:#555}
-    .switch{display:inline-block;width:42px;height:22px;background:#111;border-radius:20px}
-    .off{background:#bbb}
-    .readonly{background:#e9ecef;color:#333;border-radius:8px;padding:5px 8px}
-    .ok{background:#e9f7ef;color:#146c43;border-radius:8px;padding:5px 8px}
-    .warn{background:#fff3cd;color:#664d03;border-radius:8px;padding:5px 8px}
-    .bad{background:#f8d7da;color:#842029;border-radius:8px;padding:5px 8px}
-    @media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}.top{display:block}.btn{margin-top:8px}}
-  </style>
-</head>
-<body>
+{% extends "base.html" %}
 
-<div class="top">
-  <div>
-    <h1>BT38 Control Center <span class="badge">Admin Runtime</span></h1>
-    <p>All backend controls visible in one compact settings page. Locked truth rules are display-only.</p>
+{% block title %}BT38 Control Center{% endblock %}
+
+{% block content %}
+
+<style>
+.settings-control-center{background:#f8f9fa;padding:18px;color:#212529}
+.settings-hero{background:#fff;border:1px solid #dee2e6;border-radius:14px;padding:16px;margin-bottom:14px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center}
+.settings-hero h1{margin:0;font-size:26px;font-weight:800}
+.settings-hero p{margin:4px 0 0;color:#6c757d}
+.badge-dark{display:inline-block;background:#212529;color:#fff;border-radius:999px;padding:4px 9px;font-size:12px}
+.admin-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.admin-btn{border:1px solid #ced4da;background:#fff;border-radius:9px;padding:8px 12px;font-weight:700;color:#212529;white-space:nowrap}
+.admin-btn.danger{background:#212529;color:#fff;border-color:#212529}
+
+.summary-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+.summary-card{background:#fff;border:1px solid #dee2e6;border-radius:12px;padding:12px}
+.summary-card h4{font-size:12px;color:#6c757d;margin:0 0 4px}
+.summary-card strong{font-size:20px}
+
+.control-section{background:#fff;border:1px solid #dee2e6;border-radius:14px;margin-bottom:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.control-section h3{margin:0;padding:13px 15px;background:#f8f9fa;border-bottom:1px solid #e9ecef;font-size:16px;font-weight:800}
+
+.control-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.control-table th,.control-table td{padding:12px 13px;border-bottom:1px solid #eef0f2;font-size:13px;vertical-align:middle;line-height:1.35}
+.control-table th{background:#fff;color:#495057;font-weight:800;text-align:left}
+.control-table td:first-child{font-weight:800}
+.control-table th:nth-child(1),.control-table td:nth-child(1){width:22%}
+.control-table th:nth-child(2),.control-table td:nth-child(2){width:24%}
+.control-table th:nth-child(3),.control-table td:nth-child(3){width:14%;text-align:center}
+.control-table th:nth-child(4),.control-table td:nth-child(4){width:16%;text-align:right}
+.control-table th:nth-child(5),.control-table td:nth-child(5){width:24%}
+
+.field-code{font-family:Consolas,monospace;background:#f1f3f5;border-radius:7px;padding:4px 7px;font-size:12px;display:inline-block;max-width:100%;overflow-wrap:anywhere}
+.state-pill{border-radius:999px;padding:5px 9px;font-weight:800;display:inline-block;white-space:nowrap}
+.state-on{background:#d1e7dd;color:#0f5132}
+.state-off{background:#f8d7da;color:#842029}
+.state-neutral{background:#e9ecef;color:#343a40}
+.state-warn{background:#fff3cd;color:#664d03}
+
+.toggle-wrap{display:inline-flex;align-items:center;justify-content:flex-end;gap:8px;min-width:72px}
+.toggle-input{position:absolute;opacity:0;width:0;height:0}
+.toggle-slider{width:50px;height:26px;background:#adb5bd;border-radius:999px;position:relative;display:inline-block;transition:.18s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
+.toggle-slider:before{content:"";position:absolute;width:20px;height:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.28)}
+.toggle-input:checked + .toggle-slider{background:#198754}
+.toggle-input:checked + .toggle-slider:before{transform:translateX(24px)}
+
+.number-input{border:1px solid #ced4da;border-radius:8px;padding:6px 8px;background:#fff;width:86px;text-align:right}
+.text-input, textarea{width:100%;box-sizing:border-box;border:1px solid #ced4da;border-radius:9px;padding:9px;background:#fff}
+textarea{min-height:82px}
+.command-box{display:grid;gap:10px;padding:14px}
+pre{background:#212529;color:#f8f9fa;border-radius:10px;padding:12px;white-space:pre-wrap;overflow:auto}
+.faq-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:14px}
+.faq-card{border:1px solid #e9ecef;border-radius:12px;padding:12px;background:#fff}
+.faq-card strong{display:block;margin-bottom:4px}
+
+@media(max-width:1000px){
+  .settings-hero{grid-template-columns:1fr}
+  .admin-actions{justify-content:flex-start}
+  .summary-grid{grid-template-columns:repeat(2,1fr)}
+  .control-section{overflow-x:auto}
+  .control-table{min-width:1050px}
+  .faq-grid{grid-template-columns:1fr}
+}
+</style>
+
+<div class="settings-control-center">
+
+  <div class="settings-hero">
+    <div>
+      <h1>BT38 Control Center <span class="badge-dark">Admin Runtime</span></h1>
+      <p>Simple admin table for settings, marketplaces, workers, webhooks, safety, queues, and command preview.</p>
+    </div>
+    <div class="admin-actions">
+      <button class="admin-btn" type="submit" form="settingsForm">Save Settings</button>
+      <button class="admin-btn" type="button" onclick="window.print()">Export Settings</button>
+      <button class="admin-btn danger" type="button" onclick="alert('Emergency Freeze backend action is not enabled in this UI pass.')">Emergency Freeze</button>
+    </div>
   </div>
-  <div>
-    <button class="btn" type="submit" form="settingsForm">Save Settings</button>
-    <button class="btn">Export Settings</button>
-    <button class="btn danger">Emergency Freeze</button>
+
+  <div class="summary-grid">
+    <div class="summary-card"><h4>Runtime</h4><strong>Live</strong></div>
+    <div class="summary-card"><h4>Global Push</h4><strong>{% if global_settings.global_push_enabled %}On{% else %}Off{% endif %}</strong></div>
+    <div class="summary-card"><h4>Batch Scheduling</h4><strong>{% if global_settings.enable_batch_scheduling %}On{% else %}Off{% endif %}</strong></div>
+    <div class="summary-card"><h4>Queue</h4><strong>Guarded</strong></div>
+    <div class="summary-card"><h4>Failures 24h</h4><strong>{{ stats.failed_syncs }}</strong></div>
+    <div class="summary-card"><h4>Success Rate</h4><strong>{{ stats.success_rate }}%</strong></div>
   </div>
-</div>
 
-<div class="tabs">
-  <div class="tab active">Master</div>
-  <div class="tab">Marketplaces</div>
-  <div class="tab">Stores</div>
-  <div class="tab">Workers</div>
-  <div class="tab">Safety</div>
-  <div class="tab">Logs</div>
-</div>
+  <form method="POST" id="settingsForm">
 
-<div class="grid">
-  <div class="card"><h4>Runtime</h4><strong>Live</strong></div>
-  <div class="card"><h4>Global Push</h4><strong>{% if global_settings.global_push_enabled %}On{% else %}Off{% endif %}</strong></div>
-  <div class="card"><h4>Auto Sync</h4><strong>Dry Run</strong></div>
-  <div class="card"><h4>Queue</h4><strong>Active</strong></div>
-  <div class="card"><h4>Failures 24h</h4><strong>{{ stats.failed_syncs }}</strong></div>
-  <div class="card"><h4>Success Rate</h4><strong>{{ stats.success_rate }}%</strong></div>
-</div>
+    <div class="control-section">
+      <h3>Master Admin Controls</h3>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        <tr>
+          <td>Global Push</td>
+          <td><span class="field-code">global_push_enabled</span></td>
+          <td><span class="state-pill {% if global_settings.global_push_enabled %}state-on{% else %}state-off{% endif %}">{% if global_settings.global_push_enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" name="global_push_enabled" {% if global_settings.global_push_enabled %}checked{% endif %}><span class="toggle-slider"></span></label></td>
+          <td>Master setting used by the runtime gate for push/sync/import protection.</td>
+        </tr>
+        <tr>
+          <td>Default Push Frequency</td>
+          <td><span class="field-code">default_push_frequency_minutes</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.default_push_frequency_minutes }} min</span></td>
+          <td><input class="number-input" type="number" name="default_push_frequency_minutes" value="{{ global_settings.default_push_frequency_minutes }}" min="1" max="60"></td>
+          <td>Minimum time between push activity.</td>
+        </tr>
+        <tr>
+          <td>Default Batch Size</td>
+          <td><span class="field-code">default_batch_size</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.default_batch_size }}</span></td>
+          <td><input class="number-input" type="number" name="default_batch_size" value="{{ global_settings.default_batch_size }}" min="1" max="100"></td>
+          <td>Items processed in one batch.</td>
+        </tr>
+        <tr>
+          <td>Retry Attempts</td>
+          <td><span class="field-code">default_retry_attempts</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.default_retry_attempts }}</span></td>
+          <td><input class="number-input" type="number" name="default_retry_attempts" value="{{ global_settings.default_retry_attempts }}" min="0" max="10"></td>
+          <td>Retries before failed status.</td>
+        </tr>
+        <tr>
+          <td>Runtime Gate</td>
+          <td><span class="field-code">services/runtime_gate.py</span></td>
+          <td><span class="state-pill state-on">CENTRALIZED</span></td>
+          <td><span class="state-pill state-neutral">Read-only</span></td>
+          <td>All important push/sync/import paths must pass through this gate.</td>
+        </tr>
+      </table>
+    </div>
 
-<form method="POST" id="settingsForm">
-<div class="section">
-  <h3>Master Runtime Control</h3>
-  <table>
-    <tr><th>Control</th><th>Current State</th><th>Backend Field / API</th><th>Purpose</th></tr>
-    <tr><td>Global Push</td><td><input type="checkbox" name="global_push_enabled" {% if global_settings.global_push_enabled %}checked{% endif %}></td><td>global_push_enabled</td><td>Master switch for automatic pushing</td></tr>
-    <tr><td>Default Push Frequency</td><td><input type="number" name="default_push_frequency_minutes" value="{{ global_settings.default_push_frequency_minutes }}" min="1" max="60"> minutes</td><td>default_push_frequency_minutes</td><td>Minimum time between pushes</td></tr>
-    <tr><td>Default Batch Size</td><td><input type="number" name="default_batch_size" value="{{ global_settings.default_batch_size }}" min="1" max="100"></td><td>default_batch_size</td><td>Items processed in one batch</td></tr>
-    <tr><td>Default Retry Attempts</td><td><input type="number" name="default_retry_attempts" value="{{ global_settings.default_retry_attempts }}" min="0" max="10"></td><td>default_retry_attempts</td><td>Retries before failed status</td></tr>
-    <tr><td>Auto-Sync Engine</td><td><span class="switch off"></span></td><td>/api/auto-sync/toggle</td><td>Stock change queue engine</td></tr>
-    <tr><td>Dry Run Logs</td><td><span class="ok">Visible</span></td><td>/api/auto-sync/dry-run-logs</td><td>Shows what would run before live execution</td></tr>
-  </table>
-</div>
+    <div class="control-section">
+      <h3>Scheduling, Safety & Alerts</h3>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        <tr>
+          <td>Batch Scheduling</td>
+          <td><span class="field-code">enable_batch_scheduling</span></td>
+          <td><span class="state-pill {% if global_settings.enable_batch_scheduling %}state-on{% else %}state-off{% endif %}">{% if global_settings.enable_batch_scheduling %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" name="enable_batch_scheduling" {% if global_settings.enable_batch_scheduling %}checked{% endif %}><span class="toggle-slider"></span></label></td>
+          <td>Groups pushes into scheduled batches.</td>
+        </tr>
+        <tr>
+          <td>Batch Interval</td>
+          <td><span class="field-code">batch_schedule_minutes</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.batch_schedule_minutes }} min</span></td>
+          <td><input class="number-input" type="number" name="batch_schedule_minutes" value="{{ global_settings.batch_schedule_minutes }}" min="5" max="120"></td>
+          <td>Time between batch cycles.</td>
+        </tr>
+        <tr>
+          <td>Off-Hours Only</td>
+          <td><span class="field-code">off_hours_only</span></td>
+          <td><span class="state-pill {% if global_settings.off_hours_only %}state-on{% else %}state-off{% endif %}">{% if global_settings.off_hours_only %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" name="off_hours_only" {% if global_settings.off_hours_only %}checked{% endif %}><span class="toggle-slider"></span></label></td>
+          <td>Restricts pushes to off-peak hours.</td>
+        </tr>
+        <tr>
+          <td>Off-Hours Start / End</td>
+          <td><span class="field-code">off_hours_start / off_hours_end</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.off_hours_start }}:00 → {{ global_settings.off_hours_end }}:00</span></td>
+          <td><input class="number-input" type="number" name="off_hours_start" value="{{ global_settings.off_hours_start }}" min="0" max="23"> <input class="number-input" type="number" name="off_hours_end" value="{{ global_settings.off_hours_end }}" min="0" max="23"></td>
+          <td>Start and end of off-hours window.</td>
+        </tr>
+        <tr>
+          <td>Auto Pause On Errors</td>
+          <td><span class="field-code">auto_pause_on_errors</span></td>
+          <td><span class="state-pill {% if global_settings.auto_pause_on_errors %}state-on{% else %}state-off{% endif %}">{% if global_settings.auto_pause_on_errors %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" name="auto_pause_on_errors" {% if global_settings.auto_pause_on_errors %}checked{% endif %}><span class="toggle-slider"></span></label></td>
+          <td>Stops risky activity when failures rise.</td>
+        </tr>
+        <tr>
+          <td>Error Rate Threshold</td>
+          <td><span class="field-code">error_rate_threshold</span></td>
+          <td><span class="state-pill state-neutral">{{ global_settings.error_rate_threshold }}</span></td>
+          <td><input class="number-input" type="number" step="0.01" name="error_rate_threshold" value="{{ global_settings.error_rate_threshold }}" min="0" max="1"></td>
+          <td>0.30 means 30% failure threshold.</td>
+        </tr>
+        <tr>
+          <td>Failure Alerts</td>
+          <td><span class="field-code">notify_on_failures</span></td>
+          <td><span class="state-pill {% if global_settings.notify_on_failures %}state-on{% else %}state-off{% endif %}">{% if global_settings.notify_on_failures %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" name="notify_on_failures" {% if global_settings.notify_on_failures %}checked{% endif %}><span class="toggle-slider"></span></label></td>
+          <td>Alerts when marketplace push failures happen.</td>
+        </tr>
+      </table>
+    </div>
 
-<div class="section">
-  <h3>Scheduling & Timing</h3>
-  <table>
-    <tr><th>Control</th><th>State</th><th>Backend Field</th><th>Purpose</th></tr>
-    <tr><td>Batch Scheduling</td><td><input type="checkbox" name="enable_batch_scheduling" {% if global_settings.enable_batch_scheduling %}checked{% endif %}></td><td>enable_batch_scheduling</td><td>Group pushes into batches</td></tr>
-    <tr><td>Batch Interval</td><td><input type="number" name="batch_schedule_minutes" value="{{ global_settings.batch_schedule_minutes }}" min="5" max="120"> minutes</td><td>batch_schedule_minutes</td><td>Batch timing</td></tr>
-    <tr><td>Off-Hours Only</td><td><input type="checkbox" name="off_hours_only" {% if global_settings.off_hours_only %}checked{% endif %}></td><td>off_hours_only</td><td>Restrict push timing</td></tr>
-    <tr><td>Off-Hours Start</td><td><input type="number" name="off_hours_start" value="{{ global_settings.off_hours_start }}" min="0" max="23">:00</td><td>off_hours_start</td><td>Start window</td></tr>
-    <tr><td>Off-Hours End</td><td><input type="number" name="off_hours_end" value="{{ global_settings.off_hours_end }}" min="0" max="23">:00</td><td>off_hours_end</td><td>End window</td></tr>
-  </table>
-</div>
+    <details class="control-section" open>
+      <summary><h3>User Plans, Promotions & White Label Controls</h3></summary>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        <tr>
+          <td>Default User Plan</td>
+          <td><span class="field-code">system_settings.default_user_plan</span></td>
+          <td><span class="state-pill state-neutral">Free</span></td>
+          <td>
+            <select class="text-input" name="default_user_plan">
+              <option value="free" selected>Free</option>
+              <option value="standard">Standard</option>
+              <option value="premium">Premium</option>
+              <option value="enterprise">Enterprise</option>
+            </select>
+          </td>
+          <td>Admin chooses the starting plan for new users.</td>
+        </tr>
+        <tr>
+          <td>Free Plan Limits</td>
+          <td><span class="field-code">free_plan_limits</span></td>
+          <td><span class="state-pill state-neutral">1 auto scan/day · 5 manual scans/day · 20 orders/month</span></td>
+          <td><span class="state-pill state-neutral">Configured</span></td>
+          <td>Free users can use all 20 monthly orders in one day or across the month.</td>
+        </tr>
+        <tr>
+          <td>White Label Mode</td>
+          <td><span class="field-code">system_settings.white_label_enabled</span></td>
+          <td><span class="state-pill state-off">OFF</span></td>
+          <td>
+            <select class="text-input" name="white_label_enabled">
+              <option value="false" selected>Off</option>
+              <option value="true">On</option>
+            </select>
+          </td>
+          <td>Separates white-label users from normal BT38 users.</td>
+        </tr>
+        <tr>
+          <td>White Label Starting Users</td>
+          <td><span class="field-code">system_settings.white_label_starting_users</span></td>
+          <td><span class="state-pill state-neutral">10 users</span></td>
+          <td><input class="number-input" type="number" name="white_label_starting_users" value="10" min="1"></td>
+          <td>White-label package starts with 10 users by default.</td>
+        </tr>
+        <tr>
+          <td>White Label Usage Cap</td>
+          <td><span class="field-code">system_settings.white_label_usage_cap</span></td>
+          <td><span class="state-pill state-neutral">Admin controlled</span></td>
+          <td><input class="number-input" type="number" name="white_label_usage_cap" value="10" min="1"></td>
+          <td>Admin controls the usage/user cap for each white-label setup.</td>
+        </tr>
+        <tr>
+          <td>Promotion / Extra Features</td>
+          <td><span class="field-code">system_settings.promotion_extra_features</span></td>
+          <td><span class="state-pill state-off">OFF</span></td>
+          <td>
+            <select class="text-input" name="promotion_extra_features">
+              <option value="false" selected>Off</option>
+              <option value="true">On</option>
+            </select>
+          </td>
+          <td>Allows selected users to receive extra features during a promotion.</td>
+        </tr>
+        <tr>
+          <td>User Identification Rule</td>
+          <td><span class="field-code">users.username</span></td>
+          <td><span class="state-pill state-on">USERNAME</span></td>
+          <td><span class="state-pill state-neutral">Read-only</span></td>
+          <td>All users are identified by username, whether white-label or non-white-label.</td>
+        </tr>
+      </table>
+    </details>
 
-<div class="section">
-  <h3>Marketplace Control</h3>
-  <table>
-    <tr><th>Store</th><th>Platform</th><th>Active</th><th>FBA Import</th><th>FBM Push</th><th>Auto Push</th><th>Status</th><th>Last Sync</th></tr>
-    {% for store in stores %}
-    <tr>
-      <td>{{ store.name }}</td>
-      <td>{{ store.platform }}</td>
-      <td><input type="checkbox" {% if store.is_active %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'is_active', this.checked)"></td>
-      <td>
+    <div class="control-section">
+      <h3>Marketplace Store Controls</h3>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        {% for store in stores %}
+        <tr>
+          <td>{{ store.name }} Active</td>
+          <td><span class="field-code">/api/store-push-settings/{{ store.id }} · is_active</span></td>
+          <td><span class="state-pill {% if store.is_active %}state-on{% else %}state-off{% endif %}">{% if store.is_active %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if store.is_active %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'is_active', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>{{ store.platform }} store active state. Current sync status: {{ store.sync_status or 'Unknown' }}.</td>
+        </tr>
         {% if store.platform and 'amazon' in store.platform|lower %}
-          <input type="checkbox" {% if store.fba_import_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'fba_import_enabled', this.checked)">
-        {% else %}
-          <span class="readonly">N/A</span>
+        <tr>
+          <td>{{ store.name }} FBA Import</td>
+          <td><span class="field-code">/api/store-push-settings/{{ store.id }} · fba_import_enabled</span></td>
+          <td><span class="state-pill {% if store.fba_import_enabled %}state-on{% else %}state-off{% endif %}">{% if store.fba_import_enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if store.fba_import_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'fba_import_enabled', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>Allows Amazon FBA read-only import.</td>
+        </tr>
+        <tr>
+          <td>{{ store.name }} FBM Push</td>
+          <td><span class="field-code">/api/store-push-settings/{{ store.id }} · fbm_sync_enabled</span></td>
+          <td><span class="state-pill {% if store.fbm_sync_enabled %}state-on{% else %}state-off{% endif %}">{% if store.fbm_sync_enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if store.fbm_sync_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'fbm_sync_enabled', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>Allows merchant-fulfilled stock pushes.</td>
+        </tr>
         {% endif %}
-      </td>
-      <td>
-        {% if store.platform and 'amazon' in store.platform|lower %}
-          <input type="checkbox" {% if store.fbm_sync_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'fbm_sync_enabled', this.checked)">
+        <tr>
+          <td>{{ store.name }} Auto Push</td>
+          <td><span class="field-code">/api/store-push-settings/{{ store.id }} · auto_push_enabled</span></td>
+          <td><span class="state-pill {% if store.auto_push_enabled %}state-on{% else %}state-off{% endif %}">{% if store.auto_push_enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if store.auto_push_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'auto_push_enabled', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>Allows automatic warehouse-to-marketplace push for this store.</td>
+        </tr>
         {% else %}
-          <span class="readonly">N/A</span>
-        {% endif %}
-      </td>
-      <td><input type="checkbox" {% if store.auto_push_enabled %}checked{% endif %} onchange="updateStoreControl({{ store.id }}, 'auto_push_enabled', this.checked)"></td>
-      <td>
-        {% if store.sync_status %}<span class="readonly">{{ store.sync_status }}</span>{% else %}<span class="readonly">Unknown</span>{% endif %}
-      </td>
-      <td>{{ store.last_sync or 'Never' }}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="8"><span class="readonly">No stores configured</span></td></tr>
-    {% endfor %}
-  </table>
+        <tr><td colspan="5"><span class="state-pill state-neutral">No stores configured</span></td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="control-section">
+      <h3>Marketplace Webhooks & Notifications</h3>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        {% for platform, info in webhook_settings.platforms.items() %}
+        <tr>
+          <td>{{ platform|capitalize }} Webhook</td>
+          <td><span class="field-code">webhook_{{ platform }}_enabled</span></td>
+          <td><span class="state-pill {% if info.enabled %}state-on{% else %}state-off{% endif %}">{% if info.enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if info.enabled %}checked{% endif %} onchange="updateWebhookSetting('webhook_{{ platform }}_enabled', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>Received 24h: {{ info.received_24h }} · Failed 24h: {{ info.failed_24h }} · Last: {% if info.last_received %}{{ info.last_received }}{% else %}Never{% endif %}</td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td>Notification Worker</td>
+          <td><span class="field-code">webhook_worker_enabled</span></td>
+          <td><span class="state-pill {% if webhook_settings.worker_enabled %}state-on{% else %}state-off{% endif %}">{% if webhook_settings.worker_enabled %}ON{% else %}OFF{% endif %}</span></td>
+          <td><label class="toggle-wrap"><input class="toggle-input" type="checkbox" {% if webhook_settings.worker_enabled %}checked{% endif %} onchange="updateWebhookSetting('webhook_worker_enabled', this.checked)"><span class="toggle-slider"></span></label></td>
+          <td>Visibility/control flag for webhook notification processing. Live ingestion not enabled in this pass.</td>
+        </tr>
+      </table>
+    </div>
+
+    <details class="control-section" open>
+      <summary><h3>Promotions, Offers & Billing Rules</h3></summary>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        <tr>
+          <td>Offer Name</td>
+          <td><span class="field-code">system_settings.promo_offer_name</span></td>
+          <td><span class="state-pill state-neutral">Auto or manual</span></td>
+          <td><input class="text-input" name="promo_offer_name" placeholder="Leave blank to auto-generate"></td>
+          <td>Admin can name the offer or let BT38 generate a name.</td>
+        </tr>
+        <tr>
+          <td>Offer Applies To</td>
+          <td><span class="field-code">system_settings.promo_applies_to_plan</span></td>
+          <td><span class="state-pill state-neutral">Plan based</span></td>
+          <td>
+            <select class="text-input" name="promo_applies_to_plan">
+              <option value="free">Free</option>
+              <option value="standard">Standard</option>
+              <option value="premium">Premium</option>
+              <option value="enterprise">Enterprise</option>
+              <option value="white_label">White Label</option>
+            </select>
+          </td>
+          <td>Select which plan or white-label package the promotion applies to.</td>
+        </tr>
+        <tr>
+          <td>Start Date / Time</td>
+          <td><span class="field-code">system_settings.promo_start_at</span></td>
+          <td><span class="state-pill state-neutral">Scheduled</span></td>
+          <td><input class="text-input" type="datetime-local" name="promo_start_at"></td>
+          <td>Offer should only become visible/usable after this time.</td>
+        </tr>
+        <tr>
+          <td>End Date / Time</td>
+          <td><span class="field-code">system_settings.promo_end_at</span></td>
+          <td><span class="state-pill state-neutral">Optional</span></td>
+          <td><input class="text-input" type="datetime-local" name="promo_end_at"></td>
+          <td>Optional fixed close time for the offer.</td>
+        </tr>
+        <tr>
+          <td>Maximum Signup Users</td>
+          <td><span class="field-code">system_settings.promo_max_users</span></td>
+          <td><span class="state-pill state-neutral">Optional</span></td>
+          <td><input class="number-input" type="number" name="promo_max_users" min="0" placeholder="0"></td>
+          <td>Offer closes when this many users sign up under it. Zero means no user-count cap.</td>
+        </tr>
+        <tr>
+          <td>Discount Percentage</td>
+          <td><span class="field-code">system_settings.promo_discount_percent</span></td>
+          <td><span class="state-pill state-neutral">Optional</span></td>
+          <td><input class="number-input" type="number" name="promo_discount_percent" min="0" max="100" placeholder="0"></td>
+          <td>Billing must apply this discount to users enrolled under the offer.</td>
+        </tr>
+        <tr>
+          <td>Discount Duration</td>
+          <td><span class="field-code">system_settings.promo_duration_months</span></td>
+          <td><span class="state-pill state-neutral">Months</span></td>
+          <td><input class="number-input" type="number" name="promo_duration_months" min="0" placeholder="0"></td>
+          <td>Number of months the promotional billing price should last.</td>
+        </tr>
+        <tr>
+          <td>Offer Close Rule</td>
+          <td><span class="field-code">system_settings.promo_close_rule</span></td>
+          <td><span class="state-pill state-neutral">Whichever first</span></td>
+          <td>
+            <select class="text-input" name="promo_close_rule">
+              <option value="whichever_first" selected>Close when any rule completes</option>
+              <option value="date_only">Date/time only</option>
+              <option value="user_count_only">User count only</option>
+              <option value="manual_only">Manual close only</option>
+            </select>
+          </td>
+          <td>Controls whether date, signup count, or manual closure ends the offer.</td>
+        </tr>
+        <tr>
+          <td>Homepage Display</td>
+          <td><span class="field-code">system_settings.promo_show_on_homepage</span></td>
+          <td><span class="state-pill state-off">OFF</span></td>
+          <td>
+            <select class="text-input" name="promo_show_on_homepage">
+              <option value="false" selected>Hide</option>
+              <option value="true">Show active offer</option>
+            </select>
+          </td>
+          <td>Active offers must be clearly displayed on the main home/dashboard page.</td>
+        </tr>
+        <tr>
+          <td>User Signup Binding</td>
+          <td><span class="field-code">future_promotion_enrollment.user_id + offer_id</span></td>
+          <td><span class="state-pill state-warn">Required later</span></td>
+          <td><span class="state-pill state-neutral">Read-only</span></td>
+          <td>Every user signing up under an offer must permanently keep that offer’s billing rules.</td>
+        </tr>
+        <tr>
+          <td>Billing Support</td>
+          <td><span class="field-code">future_billing_rules.promotion_price</span></td>
+          <td><span class="state-pill state-warn">Required later</span></td>
+          <td><span class="state-pill state-neutral">Read-only</span></td>
+          <td>Billing must charge the promotional price for the correct duration.</td>
+        </tr>
+      </table>
+    </details>
+
+    <div class="control-section">
+      <h3>Advanced Settings</h3>
+      <table class="control-table">
+        <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+        <tr><td>Concurrent Store Pushes</td><td><span class="field-code">concurrent_store_pushes</span></td><td><span class="state-pill state-neutral">{{ global_settings.concurrent_store_pushes }}</span></td><td><input class="number-input" type="number" name="concurrent_store_pushes" value="{{ global_settings.concurrent_store_pushes }}" min="1" max="20"></td><td>Maximum stores pushed at once.</td></tr>
+        <tr><td>API Rate Limit Buffer</td><td><span class="field-code">api_rate_limit_buffer</span></td><td><span class="state-pill state-neutral">{{ global_settings.api_rate_limit_buffer }}</span></td><td><input class="number-input" type="number" step="0.05" name="api_rate_limit_buffer" value="{{ global_settings.api_rate_limit_buffer }}" min="0.1" max="1"></td><td>Marketplace API safety buffer.</td></tr>
+        <tr><td>SendGrid From Email</td><td><span class="field-code">sendgrid_from_email</span></td><td><span class="state-pill state-neutral">{{ sendgrid_from_email or 'Not set' }}</span></td><td><span class="state-pill state-neutral">Read-only</span></td><td>Email sender display only.</td></tr>
+      </table>
+    </div>
+
+  </form>
+
+  <div class="control-section">
+    <h3>Workers & Queues</h3>
+    <table class="control-table">
+      <tr><th>Action / Control</th><th>Backend Field / API</th><th>Current State</th><th>Admin Control</th><th>What this does</th></tr>
+      <tr><td>Push Worker</td><td><span class="field-code">services/runtime_gate.py</span></td><td><span class="state-pill state-on">PROTECTED</span></td><td><span class="state-pill state-neutral">Read-only</span></td><td>Marketplace push execution is gated.</td></tr>
+      <tr><td>Queue Dispatcher</td><td><span class="field-code">sync_dispatcher.py</span></td><td><span class="state-pill state-on">PROTECTED</span></td><td><span class="state-pill state-neutral">Read-only</span></td><td>Queued jobs pass through runtime gate.</td></tr>
+      <tr><td>Auto Push Queue</td><td><span class="field-code">auto_push_service.py</span></td><td><span class="state-pill state-on">PROTECTED</span></td><td><span class="state-pill state-neutral">Read-only</span></td><td>Queue creation is gated.</td></tr>
+      <tr><td>Emergency Freeze</td><td><span class="field-code">future_freeze_action</span></td><td><span class="state-pill state-warn">VISIBLE ONLY</span></td><td><span class="state-pill state-neutral">Not live</span></td><td>Backend freeze action not enabled in this UI pass.</td></tr>
+    </table>
+  </div>
+
+  <div class="control-section">
+    <h3>BT38 Command Center</h3>
+    <div class="command-box">
+      <p><strong>Preview only.</strong> Live command execution remains disabled.</p>
+      <textarea id="bt38CommandInput" placeholder="Example: freeze pushes for all stores"></textarea>
+      <div class="admin-actions">
+        <button class="admin-btn danger" id="bt38PreviewBtn" type="button">Preview Command</button>
+        <button class="admin-btn" id="bt38RunBtn" type="button" disabled>Run Approved Command</button>
+        <span id="bt38PreviewStatus" class="state-pill state-neutral">Waiting for command</span>
+      </div>
+      <div id="bt38PreviewOutput"><span class="state-pill state-neutral">No command preview generated yet.</span></div>
+    </div>
+  </div>
+
+  <div class="control-section">
+    <h3>Control Center FAQ</h3>
+    <div class="faq-grid">
+      <div class="faq-card"><strong>What is Global Push?</strong> The master switch checked by the runtime gate before push/sync/import work is allowed.</div>
+      <div class="faq-card"><strong>What is a Webhook?</strong> A marketplace notification that can reduce polling by telling BT38 something changed.</div>
+      <div class="faq-card"><strong>What is Polling Fallback?</strong> Scheduled checking used when webhooks are off, unavailable, or not trusted yet.</div>
+      <div class="faq-card"><strong>What is Runtime Gate?</strong> The central backend safety check used by routes, queues, dispatcher, and services.</div>
+      <div class="faq-card"><strong>Can any admin use this?</strong> Yes. Each row shows the action, backend field/API, current state, control, and plain-English meaning.</div>
+      <div class="faq-card"><strong>What should not be changed casually?</strong> Marketplace active state, FBM push, webhook worker, and emergency controls should only be changed when the operator understands the effect.</div>
+    </div>
+  </div>
+
 </div>
 
+{% endblock %}
+
+{% block scripts %}
 <script>
+function updateWebhookSetting(key, value) {
+  fetch('/api/webhook-settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[key]: value})
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (!data.success) {
+      alert('Webhook setting update failed: ' + (data.error || 'Unknown error'));
+      window.location.reload();
+    }
+  })
+  .catch(error => {
+    alert('Webhook setting update failed: ' + error);
+    window.location.reload();
+  });
+}
+
 function updateStoreControl(storeId, field, value) {
   fetch(`/api/store-push-settings/${storeId}`, {
     method: 'POST',
@@ -140,128 +517,24 @@ function updateStoreControl(storeId, field, value) {
     }
   })
   .catch(error => {
-    alert('Setting update failed: ' + error.message);
+    alert('Setting update failed: ' + error);
     window.location.reload();
   });
 }
-</script>
 
-<div class="section">
-  <h3>Store Control</h3>
-  <table>
-    <tr><th>Store</th><th>Active</th><th>Auto Push</th><th>Priority</th><th>Frequency</th><th>Triggers</th><th>Safety</th><th>Action</th></tr>
-    <tr><td>Amazon Store</td><td><span class="switch"></span></td><td><span class="switch"></span></td><td>10</td><td>1 min</td><td>Qty / Price / Item</td><td>Retry 3 / Freeze 5</td><td>Configure / Test</td></tr>
-    <tr><td>eBay Store</td><td><span class="switch"></span></td><td><span class="switch"></span></td><td>9</td><td>1 min</td><td>Qty / Price / Item</td><td>Retry 3 / Freeze 5</td><td>Configure / Test</td></tr>
-  </table>
-</div>
-
-<div class="section">
-  <h3>Store Trigger Settings</h3>
-  <table>
-    <tr><th>Setting</th><th>Backend Field</th><th>Editable</th><th>Purpose</th></tr>
-    <tr><td>Quantity Change Push</td><td>push_on_quantity_change</td><td>Yes</td><td>Push when stock changes</td></tr>
-    <tr><td>Price Change Push</td><td>push_on_price_change</td><td>Yes</td><td>Push when price changes</td></tr>
-    <tr><td>New Item Push</td><td>push_on_item_create</td><td>Yes</td><td>Push when new item created</td></tr>
-    <tr><td>Item Update Push</td><td>push_on_item_update</td><td>Yes</td><td>Push when item updated</td></tr>
-    <tr><td>Immediate Push</td><td>immediate_push</td><td>Yes</td><td>Immediate or batched execution</td></tr>
-  </table>
-</div>
-
-<div class="section">
-  <h3>Workers & Queues</h3>
-  <table>
-    <tr><th>Worker / Queue</th><th>Status</th><th>Mode</th><th>Control</th><th>Notes</th></tr>
-    <tr><td>Import Worker</td><td><span class="switch"></span></td><td>Controlled</td><td>On / Off</td><td>Listings, orders, sales records</td></tr>
-    <tr><td>Push Worker</td><td><span class="switch"></span></td><td>Controlled</td><td>On / Off</td><td>Marketplace updates</td></tr>
-    <tr><td>Notification Worker</td><td><span class="switch"></span></td><td>Immediate</td><td>On / Off</td><td>Sales/orders should trigger fast queue</td></tr>
-    <tr><td>Document / Email Worker</td><td><span class="switch off"></span></td><td>Background</td><td>On / Off</td><td>Invoices, emails, reports</td></tr>
-    <tr><td>Reorder Worker</td><td><span class="switch off"></span></td><td>Rules</td><td>On / Off</td><td>Low stock and reorder alerts</td></tr>
-    <tr><td>Queue Processing</td><td><span class="switch"></span></td><td>Locked</td><td>Controlled</td><td>Traffic-light orchestration</td></tr>
-  </table>
-</div>
-
-<div class="section">
-  <h3>Safety & Governance</h3>
-  <table>
-    <tr><th>Rule / Control</th><th>Status</th><th>Backend Field</th><th>Editable</th></tr>
-    <tr><td>Warehouse Source of Truth</td><td><span class="ok">Active</span></td><td>Core Rule</td><td><span class="readonly">Locked</span></td></tr>
-    <tr><td>Marketplace Overwrite Warehouse</td><td><span class="bad">Disabled</span></td><td>sync_priority_policy=warehouse</td><td><span class="readonly">Locked</span></td></tr>
-    <tr><td>FBA Read Only</td><td><span class="ok">Active</span></td><td>fba_import_enabled</td><td><span class="readonly">Locked Push</span></td></tr>
-    <tr><td>Reverse Sync</td><td><span class="warn">Disabled Default</span></td><td>reverse_sync_enabled</td><td>Admin only</td></tr>
-    <tr><td>Large Change Confirmation</td><td><span class="switch"></span></td><td>large_change_confirmation</td><td>Yes</td></tr>
-    <tr><td>Large Change Threshold</td><td>50</td><td>large_change_threshold / require_confirmation_threshold</td><td>Yes</td></tr>
-    <tr><td>Auto Pause on Errors</td><td><span class="switch"></span></td><td>auto_pause_on_errors</td><td>Yes</td></tr>
-    <tr><td>Error Rate Threshold</td><td>30%</td><td>error_rate_threshold</td><td>Yes</td></tr>
-    <tr><td>API Rate Limit Buffer</td><td>80%</td><td>api_rate_limit_buffer</td><td>Yes</td></tr>
-    <tr><td>Concurrent Store Pushes</td><td>1 recommended</td><td>concurrent_store_pushes</td><td>Yes, safety-limited</td></tr>
-  </table>
-</div>
-
-<div class="section">
-  <h3>Logs & Diagnostics</h3>
-  <table>
-    <tr><th>Log / Tool</th><th>Source</th><th>Status</th><th>Action</th></tr>
-    <tr><td>System Logs</td><td>settings page log viewer</td><td><span class="ok">Visible</span></td><td>Refresh</td></tr>
-    <tr><td>Push Activity</td><td>push activity panel</td><td><span class="warn">Currently placeholder/disabled</span></td><td>Review</td></tr>
-    <tr><td>Dry Run Logs</td><td>/api/auto-sync/dry-run-logs</td><td><span class="ok">Visible</span></td><td>View</td></tr>
-    <tr><td>Amazon Health</td><td>/api/diagnostics/amazon/health</td><td><span class="ok">Available</span></td><td>Test</td></tr>
-    <tr><td>Push Settings JSON</td><td>/api/push-settings</td><td><span class="ok">Available</span></td><td>Export</td></tr>
-  </table>
-</div>
-
-
-<div class="section">
-  <h3>BT38 Command Center</h3>
-  <table>
-    <tr><th>Plain English Command</th><th>Meaning</th><th>Status</th></tr>
-    <tr><td>Freeze all sync</td><td>Turns off automatic push/import/sync controls safely</td><td><span class="readonly">Not wired yet</span></td></tr>
-    <tr><td>Enable eBay only</td><td>Keeps eBay active and pauses other marketplace execution</td><td><span class="readonly">Not wired yet</span></td></tr>
-    <tr><td>Run health check</td><td>Checks routes, API keys, tokens, queue, workers, and failed jobs</td><td><span class="readonly">Not wired yet</span></td></tr>
-    <tr><td>Retry failed queue</td><td>Retries only approved failed jobs through the queue</td><td><span class="readonly">Not wired yet</span></td></tr>
-    <tr><td>Export settings snapshot</td><td>Saves current settings state for audit/rollback/GitHub proof</td><td><span class="readonly">Not wired yet</span></td></tr>
-    <tr><td>Rollback last settings change</td><td>Restores previous approved settings snapshot</td><td><span class="readonly">Not wired yet</span></td></tr>
-  </table>
-
-  <div style="padding:14px;">
-    <label><strong>Enter command</strong></label><br>
-    <input type="text" id="bt38CommandInput" placeholder="Example: Freeze all sync" style="width:70%;max-width:720px;padding:10px;border:1px solid #ccc;border-radius:8px;">
-    <button type="button" class="btn" id="bt38PreviewBtn">Preview Command</button>
-
-      <div id="bt38PreviewStatus" style="margin-top:10px;color:#666;"></div>
-
-      <pre id="bt38PreviewOutput" style="margin-top:10px;background:#111;color:#0f0;padding:12px;border-radius:8px;min-height:120px;overflow:auto;">No preview yet.</pre>
-    <button type="button" class="btn danger" disabled>Run Approved Command</button>
-    <p class="small" style="color:#666;margin-top:8px;">
-      Commands are visual only at this stage. Execution will be wired later through one approved command engine.
-    </p>
-  </div>
-
-  <table>
-    <tr><th>Layer</th><th>Required Path</th><th>Status</th></tr>
-    <tr><td>Input</td><td>Plain English command</td><td><span class="ok">Designed</span></td></tr>
-    <tr><td>Guard</td><td>Settings permission check before action</td><td><span class="readonly">Pending</span></td></tr>
-    <tr><td>Queue</td><td>Commands must queue safely, not direct push</td><td><span class="readonly">Pending</span></td></tr>
-    <tr><td>Log</td><td>Every command records before/after and result</td><td><span class="readonly">Pending</span></td></tr>
-    <tr><td>GitHub proof</td><td>Optional settings snapshot/export evidence</td><td><span class="readonly">Pending</span></td></tr>
-  </table>
-</div>
-
-</form>
-
-<script>
 document.addEventListener("DOMContentLoaded", function () {
-
   const btn = document.getElementById("bt38PreviewBtn");
+  const input = document.getElementById("bt38CommandInput");
+  const status = document.getElementById("bt38PreviewStatus");
+  const output = document.getElementById("bt38PreviewOutput");
+  const runBtn = document.getElementById("bt38RunBtn");
 
   if (!btn) return;
+  runBtn.disabled = true;
 
   btn.addEventListener("click", async function () {
-
-    const input = document.getElementById("bt38CommandInput");
-    const status = document.getElementById("bt38PreviewStatus");
-    const output = document.getElementById("bt38PreviewOutput");
-
-    const command = (input.value || "").trim();
+    const command = input.value.trim();
+    runBtn.disabled = true;
 
     if (!command) {
       status.innerText = "Enter a command first.";
@@ -269,119 +542,46 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     status.innerText = "Generating preview...";
-    output.innerText = "";
 
     try {
-
       const res = await fetch("/api/command-center/preview", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          command: command
-        })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({command})
       });
 
       const data = await res.json();
-
-      const recognized =
-        data.recognized ?? data.success ?? false;
-
-      const risk =
-        data.risk_level ?? "Unknown";
-
-      const systems =
-        Array.isArray(data.affected_systems)
-          ? data.affected_systems.join(", ")
-          : (data.affected_systems || "None");
-
-      const executionPlan =
-        data.execution_plan || data.plan || "No execution plan returned.";
-
-      const requiresConfirmation =
-        data.requires_confirmation ?? true;
-
-      const safetyMessage =
-        data.message ||
-        data.safety_message ||
-        "Preview only. No execution performed.";
-
-      const failed =
-        (!res.ok || data.success === false);
+      const failed = (!res.ok || data.success === false);
+      const plan = data.plan || data.preview || data || {};
+      const recognized = data.recognized ?? plan.recognized ?? data.success ?? false;
+      const risk = data.risk_level ?? plan.risk_level ?? "Unknown";
+      const systems = Array.isArray(data.affected_systems || plan.affected_systems)
+        ? (data.affected_systems || plan.affected_systems).join(", ")
+        : (data.affected_systems || plan.affected_systems || "None");
+      const executionPlan = data.execution_plan || plan.execution_plan || plan.plan || "No execution plan returned.";
+      const requiresConfirmation = data.requires_confirmation ?? plan.requires_confirmation ?? true;
+      const safetyMessage = data.message || data.safety_message || plan.message || "Preview only. No execution performed.";
 
       output.innerHTML = `
-<div style="display:grid;gap:12px;font-family:Arial,sans-serif;">
+        <div style="display:grid;gap:10px">
+          <div class="${failed ? "state-pill state-off" : "state-pill state-on"}"><strong>Status:</strong> ${failed ? "Preview failed" : "Preview generated successfully"}</div>
+          <div class="field-code"><strong>Command entered:</strong><br>${command}</div>
+          <div class="field-code"><strong>Recognized:</strong><br>${recognized ? "Yes" : "No"}</div>
+          <div class="field-code"><strong>Risk level:</strong><br>${risk}</div>
+          <div class="field-code"><strong>Affected systems:</strong><br>${systems}</div>
+          <div class="field-code"><strong>Execution plan:</strong><br>${executionPlan}</div>
+          <div class="field-code"><strong>Requires confirmation:</strong><br>${requiresConfirmation ? "Yes" : "No"}</div>
+          <div class="field-code"><strong>Safety message:</strong><br>${safetyMessage}</div>
+          <details><summary><strong>Raw JSON debug</strong></summary><pre>${JSON.stringify(data, null, 2)}</pre></details>
+        </div>
+      `;
 
-  <div style="padding:12px;border-radius:8px;background:${failed ? "#3a1010" : "#102a12"};color:${failed ? "#ffb3b3" : "#b9ffbe"};">
-    <strong>Status:</strong>
-    ${failed ? "Preview failed" : "Preview generated successfully"}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Command entered</strong><br>
-    ${command}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Recognized</strong><br>
-    ${recognized ? "Yes" : "No"}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Risk level</strong><br>
-    ${risk}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Affected systems</strong><br>
-    ${systems}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Execution plan</strong><br>
-    ${executionPlan}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Requires confirmation</strong><br>
-    ${requiresConfirmation ? "Yes" : "No"}
-  </div>
-
-  <div style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <strong>Safety message</strong><br>
-    ${safetyMessage}
-  </div>
-
-  <details style="padding:12px;border:1px solid #333;border-radius:8px;">
-    <summary><strong>Raw JSON (debug)</strong></summary>
-    <pre style="margin-top:10px;white-space:pre-wrap;">${JSON.stringify(data, null, 2)}</pre>
-  </details>
-
-</div>
-`;
-
-      if (failed) {
-        status.innerText =
-          "Preview failed. No execution performed.";
-        return;
-      }
-
-      status.innerText =
-        "Preview generated successfully. No execution performed.";
-
-    } catch (err) {
-
-      output.innerText = String(err);
-
+      status.innerText = failed ? "Preview failed. No execution performed." : "Preview generated. No execution performed.";
+    } catch (error) {
       status.innerText = "Preview failed.";
-
+      output.innerHTML = `<div class="state-pill state-off">Preview error: ${error}</div>`;
     }
-
   });
-
 });
 </script>
-
-</body>
-</html>
+{% endblock %}

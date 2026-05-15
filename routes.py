@@ -14,7 +14,7 @@ import hashlib
 
 # Import db from extensions (not app) to avoid circular import
 from extensions import db
-from models import InventoryItem, Store, SyncLog, SyncJob, ProductGroup, GroupExternalRef, PushSettings, WarehouseStock, StockLedgerEntry, MarketplaceListing, SystemConfig, Supplier, ReorderNotification, PurchaseOrder, PurchaseOrderItem, ReceivingInspection, ReceivingInspectionItem, Warehouse
+from models import InventoryItem, Store, SyncLog, SyncJob, ProductGroup, GroupExternalRef, PushSettings, WarehouseStock, StockLedgerEntry, MarketplaceListing, SystemConfig, SystemSetting, SystemEvent, Supplier, ReorderNotification, PurchaseOrder, PurchaseOrderItem, ReceivingInspection, ReceivingInspectionItem, Warehouse
 from amazon_service import AmazonAPIService
 from ebay_service import eBayAPIService
 from smart_push_service import smart_push_service
@@ -1328,14 +1328,23 @@ def ebay_setup():
             db.session.commit()
             flash(" eBay store connected successfully! Your inventory will sync automatically every 30 seconds.", 'success')
             
-            # Trigger immediate sync
-            from sync_service import immediate_sync_store
-            import threading
-            sync_thread = threading.Thread(
-                target=lambda: immediate_sync_store(store.id),
-                daemon=True
+            # Queue sync through dispatcher/runtime gate path
+            from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+            enqueue_sync_job(
+                store_id=store.id,
+                job_type=JOB_FULL_SYNC,
+                payload={
+                    'source': 'ebay_setup_success',
+                    'manual': False,
+                    'store_id': store.id,
+                    'store_name': store.name
+                },
+                priority=PRIORITY_HIGH
             )
-            sync_thread.start()
+
+            store.sync_status = 'queued'
+            db.session.commit()
             
             return redirect(url_for('routes.stores'))
         else:
@@ -4415,19 +4424,26 @@ def add_store():
             db.session.add(store)
             db.session.commit()
             
-            # Trigger immediate sync if connection was successful
+            # Queue sync if connection was successful
             if connection_success:
-                from sync_service import immediate_sync_store
-                import threading
-                
-                # Start immediate sync in background thread
-                sync_thread = threading.Thread(
-                    target=lambda: immediate_sync_store(store.id),
-                    daemon=True
+                from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+                enqueue_sync_job(
+                    store_id=store.id,
+                    job_type=JOB_FULL_SYNC,
+                    payload={
+                        'source': 'store_added_success',
+                        'manual': False,
+                        'store_id': store.id,
+                        'store_name': store.name
+                    },
+                    priority=PRIORITY_HIGH
                 )
-                sync_thread.start()
-                
-                flash(f'Store added and connected successfully! Starting immediate inventory sync. {connection_message}', 'success')
+
+                store.sync_status = 'queued'
+                db.session.commit()
+
+                flash(f'Store added and connected successfully! Sync queued. {connection_message}', 'success')
             elif store.platform.lower() in ['amazon', 'ebay'] and store.api_key.strip():
                 flash(f'Store added but connection failed. {connection_message}', 'warning')
             else:
@@ -4523,16 +4539,23 @@ def edit_store(store_id):
                                 store.last_sync = datetime.utcnow()
                                 connection_message = f"  {store.platform} connection re-established"
                                 
-                                # Trigger immediate sync for updated store
-                                from sync_service import immediate_sync_store
-                                import threading
-                                
-                                sync_thread = threading.Thread(
-                                    target=lambda: immediate_sync_store(store.id),
-                                    daemon=True
+                                # Queue sync for updated store through dispatcher/runtime gate path
+                                from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
+
+                                enqueue_sync_job(
+                                    store_id=store.id,
+                                    job_type=JOB_FULL_SYNC,
+                                    payload={
+                                        'source': 'store_reconnect_success',
+                                        'manual': False,
+                                        'store_id': store.id,
+                                        'store_name': store.name
+                                    },
+                                    priority=PRIORITY_HIGH
                                 )
-                                sync_thread.start()
-                                connection_message += " - Starting immediate sync"
+
+                                store.sync_status = 'queued'
+                                connection_message += " - Sync queued"
                             else:
                                 store.sync_status = 'error'
                                 store.is_active = False
@@ -4733,11 +4756,15 @@ def sync_status():
 
 @bp.route('/stores/sync/<int:store_id>', methods=['POST'])
 def manual_sync_store(store_id):
-    """Manually run real sync for a specific store, gated by Settings."""
+    """Queue manual sync through dispatcher/runtime gate path only."""
     try:
         store = db.session.get(Store, store_id)
+
         if not store:
-            return jsonify({'success': False, 'message': 'Store not found'}), 404
+            return jsonify({
+                'success': False,
+                'message': 'Store not found'
+            }), 404
 
         allowed, reason = is_runtime_action_allowed(
             store=store,
@@ -4753,23 +4780,45 @@ def manual_sync_store(store_id):
                 'store_name': store.name
             }), 400
 
-        from sync_service import immediate_sync_store
+        from queue_manager import (
+            enqueue_sync_job,
+            JOB_FULL_SYNC,
+            PRIORITY_HIGH
+        )
 
-        success, message = immediate_sync_store(store.id)
-        db.session.refresh(store)
+        job = enqueue_sync_job(
+            store_id=store.id,
+            job_type=JOB_FULL_SYNC,
+            payload={
+                'source': 'manual_store_sync',
+                'manual': True,
+                'store_id': store.id,
+                'store_name': store.name
+            },
+            priority=PRIORITY_HIGH
+        )
+
+        store.sync_status = 'queued'
+        db.session.commit()
 
         return jsonify({
-            'success': bool(success),
-            'message': message,
+            'success': True,
+            'message': 'Store sync queued through dispatcher/runtime gate.',
             'store_id': store.id,
             'store_name': store.name,
+            'job_id': getattr(job, 'id', job),
             'sync_status': store.sync_status,
             'last_sync': store.last_sync.isoformat() if store.last_sync else None
         })
 
     except Exception as e:
-        logging.error(f"Error in manual store sync for {store_id}: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        db.session.rollback()
+        logging.error(f'Error queueing manual store sync for {store_id}: {str(e)}')
+
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
 
 
 @bp.route('/api/stores')
@@ -5784,41 +5833,123 @@ def command_center_preview():
 @bp.route('/settings')
 def settings():
     """Main settings page for push configuration"""
-    # Get or create global settings
     global_settings = PushSettings.get_or_create_settings()
-    
-    # Get all stores for per-store settings overview
     stores = db.session.query(Store).order_by(Store.name).all()
-    
-    # Get recent push activity stats
+
     from datetime import datetime, timedelta
-    
-    # Statistics for the last 24 hours
+
     yesterday = datetime.utcnow() - timedelta(days=1)
+
     recent_syncs = db.session.query(SyncLog).filter(
         SyncLog.created_at >= yesterday
     ).count()
-    
+
     failed_syncs = db.session.query(SyncLog).filter(
         SyncLog.created_at >= yesterday,
         SyncLog.status == 'failed'
     ).count()
-    
+
     stats = {
         'recent_syncs': recent_syncs,
         'failed_syncs': failed_syncs,
         'success_rate': round(((recent_syncs - failed_syncs) / recent_syncs * 100) if recent_syncs > 0 else 100, 1)
     }
-    
-    # Get SendGrid sender email from database
+
     sendgrid_email_config = SystemConfig.query.filter_by(key='sendgrid_from_email').first()
     sendgrid_from_email = sendgrid_email_config.value if sendgrid_email_config else ''
-    
-    return render_template('settings.html', 
-                         global_settings=global_settings, 
-                         stores=stores, 
-                         stats=stats,
-                         sendgrid_from_email=sendgrid_from_email)
+
+    webhook_platforms = ['amazon', 'ebay', 'tiktok', 'shopify']
+    webhook_settings = {
+        'worker_enabled': SystemSetting.get_value('webhook_worker_enabled', False),
+        'platforms': {}
+    }
+
+    for platform in webhook_platforms:
+        enabled = SystemSetting.get_value(f'webhook_{platform}_enabled', False)
+
+        last_event = db.session.query(SystemEvent).filter(
+            SystemEvent.category == 'marketplace_webhook',
+            SystemEvent.details_json.contains({'platform': platform})
+        ).order_by(SystemEvent.timestamp.desc()).first()
+
+        received_24h = db.session.query(SystemEvent).filter(
+            SystemEvent.category == 'marketplace_webhook',
+            SystemEvent.timestamp >= yesterday,
+            SystemEvent.details_json.contains({'platform': platform})
+        ).count()
+
+        failed_24h = db.session.query(SystemEvent).filter(
+            SystemEvent.category == 'marketplace_webhook_failed',
+            SystemEvent.timestamp >= yesterday,
+            SystemEvent.details_json.contains({'platform': platform})
+        ).count()
+
+        webhook_settings['platforms'][platform] = {
+            'enabled': enabled,
+            'last_received': last_event.timestamp if last_event else None,
+            'received_24h': received_24h,
+            'failed_24h': failed_24h
+        }
+
+    return render_template(
+        'settings.html',
+        global_settings=global_settings,
+        stores=stores,
+        stats=stats,
+        sendgrid_from_email=sendgrid_from_email,
+        webhook_settings=webhook_settings
+    )
+
+
+
+@bp.route('/api/webhook-settings', methods=['POST'])
+def update_webhook_settings():
+    """Update webhook visibility/runtime flags."""
+    try:
+        data = request.get_json() or {}
+
+        allowed_keys = {
+            'webhook_worker_enabled',
+            'webhook_amazon_enabled',
+            'webhook_ebay_enabled',
+            'webhook_tiktok_enabled',
+            'webhook_shopify_enabled'
+        }
+
+        updated = {}
+
+        for key, value in data.items():
+            if key not in allowed_keys:
+                continue
+
+            bool_value = bool(value)
+
+            SystemSetting.set_value(
+                key,
+                bool_value,
+                description='Marketplace webhook runtime setting',
+                value_type='bool'
+            )
+
+            updated[key] = bool_value
+
+        db.session.add(SystemEvent(
+            actor='admin',
+            category='config_change',
+            entity_type='webhook_settings',
+            description='Webhook runtime settings updated',
+            details_json=updated
+        ))
+
+        db.session.commit()
+
+        return jsonify({'success': True, 'updated': updated})
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error updating webhook settings: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @bp.route('/settings', methods=['POST'])
 def update_settings():
