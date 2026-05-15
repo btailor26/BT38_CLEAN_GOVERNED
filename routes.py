@@ -1326,7 +1326,7 @@ def ebay_setup():
             store.sync_status = 'success'
             store.last_sync = datetime.utcnow()
             db.session.commit()
-            flash(" eBay store connected successfully! Your inventory will sync automatically every 30 seconds.", 'success')
+            flash("eBay store connected successfully! Your inventory will now sync using your admin runtime settings.", 'success')
             
             # Queue sync through dispatcher/runtime gate path
             from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
