@@ -340,70 +340,8 @@ function updateGroupStock(event, groupId) {
 
 // Push group stock to all marketplaces
 function pushGroupStock(groupId) {
-    const btn = document.getElementById('pushGroupBtn');
-    const statusDiv = document.getElementById('pushStatus');
-    
-    // Disable button and show status
-    btn.disabled = true;
-    statusDiv.style.display = 'block';
-    statusDiv.innerHTML = `
-        <div class="alert alert-info mb-0">
-            <div class="spinner-border spinner-border-sm me-2" role="status">
-                <span class="visually-hidden">Pushing...</span>
-            </div>
-            Pushing to all marketplaces...
-        </div>
-    `;
-    
-    // Make POST request to push endpoint
-    fetch(`/groups/${groupId}/push`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        btn.disabled = false;
-        
-        if (data.success) {
-            let statusText = data.message;
-            if (data.results && (data.results.successful !== undefined || data.results.failed !== undefined)) {
-                statusText += `<hr class="my-2"><small>${data.results.successful || 0} successful, ${data.results.failed || 0} failed</small>`;
-            }
-            statusDiv.innerHTML = `
-                <div class="alert alert-success mb-0">
-                    <i data-feather="check-circle" class="me-1"></i>
-                    ${statusText}
-                </div>
-            `;
-            feather.replace();
-            
-            // Hide success message after 5 seconds
-            setTimeout(() => {
-                statusDiv.style.display = 'none';
-            }, 5000);
-        } else {
-            statusDiv.innerHTML = `
-                <div class="alert alert-danger mb-0">
-                    <i data-feather="alert-circle" class="me-1"></i>
-                    ${data.message}
-                </div>
-            `;
-            feather.replace();
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        btn.disabled = false;
-        statusDiv.innerHTML = `
-            <div class="alert alert-danger mb-0">
-                <i data-feather="alert-circle" class="me-1"></i>
-                Error pushing stock. Please try again.
-            </div>
-        `;
-        feather.replace();
-    });
+    alert('Legacy direct group marketplace push is retired. Use Admin Product Linking or governed bulk queue actions.');
+    return;
 }
 </script>
 {% endblock %}

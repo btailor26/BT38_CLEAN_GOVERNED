@@ -797,44 +797,8 @@ function updateLocalPendingBar() {
 
 // Individual item push function
 function pushIndividualItem(itemId, sku) {
-    const btn = event.target.closest('button');
-    const originalContent = btn.innerHTML;
-    
-    // Show loading state
-    btn.innerHTML = '<i data-feather="loader" class="spin"></i>';
-    btn.disabled = true;
-    feather.replace();
-    
-    fetch(`/push_stock/${itemId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-        }
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            showAlert('success', `✅ Stock pushed for ${sku}`);
-        } else {
-            showAlert('danger', `❌ Failed to push ${sku}: ${data.error}`);
-        }
-    })
-    .catch(error => {
-        console.error('Error pushing stock:', error);
-        showAlert('danger', `❌ Network error pushing ${sku}`);
-    })
-    .finally(() => {
-        // Restore button
-        btn.innerHTML = originalContent;
-        btn.disabled = false;
-        feather.replace();
-    });
+    alert('Legacy direct group marketplace push is retired. Use Admin Product Linking or governed bulk queue actions.');
+    return;
 }
 
 // Release item from group function

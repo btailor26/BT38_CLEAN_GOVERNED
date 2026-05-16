@@ -135,65 +135,11 @@
         const csrfToken = '{{ csrf_token }}';
 
         // Handle test push button clicks
-        document.querySelectorAll('.test-push-btn').forEach(btn => {
-            btn.addEventListener('click', async function() {
-                const itemId = this.dataset.itemId;
-                const sku = this.dataset.sku;
-                const resultRow = document.getElementById(`result-row-${itemId}`);
-                const resultDiv = document.getElementById(`result-${itemId}`);
-                
-                // Disable button and show loading
-                this.disabled = true;
-                this.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Pushing...';
-                
-                // Show result row
-                resultRow.style.display = '';
-                resultDiv.className = 'alert alert-info mb-0';
-                resultDiv.innerHTML = '<i data-feather="loader"></i> Pushing to eBay... This may take a few seconds.';
-                feather.replace();
-                
-                try {
-                    const response = await fetch(`/api/test/ebay-push/${itemId}`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-CSRF-Token': csrfToken
-                        },
-                        body: JSON.stringify({})
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        const pushed = data.push_successful;
-                        resultDiv.className = `alert ${pushed ? 'alert-success' : 'alert-warning'} mb-0`;
-                        resultDiv.innerHTML = `
-                            <strong>${pushed ? '✅ Push Successful!' : '⚠️ Push Completed with Warning'}</strong><br>
-                            <small>
-                                SKU: <code>${data.item_sku}</code><br>
-                                Warehouse Quantity: <strong>${data.warehouse_qty}</strong><br>
-                                eBay Before: <strong>${data.ebay_qty_before}</strong><br>
-                                eBay After: <strong>${data.ebay_qty_after}</strong><br>
-                                ${pushed ? '<span class="text-success">✓ Quantities match!</span>' : '<span class="text-warning">! Quantities do not match</span>'}<br>
-                                Job ID: <code>${data.job_id}</code><br>
-                                Status: ${data.sync_log.status}
-                            </small>
-                        `;
-                    } else {
-                        resultDiv.className = 'alert alert-danger mb-0';
-                        resultDiv.innerHTML = `<strong>❌ Error:</strong> ${data.error}`;
-                    }
-                } catch (error) {
-                    resultDiv.className = 'alert alert-danger mb-0';
-                    resultDiv.innerHTML = `<strong>❌ Error:</strong> ${error.message}`;
-                }
-                
-                // Re-enable button
-                this.disabled = false;
-                this.innerHTML = '<i data-feather="send" style="width: 14px; height: 14px;"></i> Test Push';
-                feather.replace();
-            });
-        });
+    document.querySelectorAll('.test-push-btn').forEach(btn => {
+        btn.disabled = true;
+        btn.innerHTML = 'Retired';
+        btn.title = 'Debug eBay push route is retired. Use governed queue actions.';
+    });
     </script>
 </body>
 </html>

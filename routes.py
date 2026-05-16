@@ -210,90 +210,17 @@ def test_ebay_push():
 @bp.route('/api/test/ebay-push/<int:item_id>', methods=['POST'])
 # @login_required  # Temporarily disabled for access
 def api_test_ebay_push(item_id):
-    """API endpoint to trigger a test push to eBay and return results"""
-    try:
-        # CSRF Protection
-        csrf_token = request.headers.get('X-CSRF-Token') or (request.json.get('csrf_token') if request.json else None)
-        if not validate_csrf_token(csrf_token):
-            return jsonify({'success': False, 'error': 'Invalid CSRF token'}), 403
-        
-        # Get the item
-        item = db.session.get(InventoryItem, item_id)
-        if not item:
-            return jsonify({'success': False, 'error': 'Item not found'}), 404
-        
-        # Get eBay store
-        ebay_store = db.session.query(Store).filter(Store.platform == 'ebay', Store.is_active == True).first()
-        if not ebay_store:
-            return jsonify({'success': False, 'error': 'No active eBay store found'}), 404
-        
-        # Get the eBay listing
-        listing = db.session.query(MarketplaceListing).filter(
-            MarketplaceListing.inventory_item_id == item.id,
-            MarketplaceListing.store_id == ebay_store.id
-        ).first()
-        
-        if not listing:
-            return jsonify({'success': False, 'error': 'No eBay listing found for this item'}), 404
-        
-        # Get current eBay quantity before push
-        from ebay_service import eBayAPIService
-        ebay_service = eBayAPIService(ebay_store)
-        
-        try:
-            # Get current quantity from eBay
-            ebay_data = ebay_service.get_item(listing.external_id)
-            current_ebay_qty = ebay_data.get('quantity', 0)
-        except Exception as e:
-            current_ebay_qty = 'Error reading from eBay'
-            logging.error(f"Error reading eBay quantity: {str(e)}")
-        
-        # Trigger the push using unified queue system
-        from queue_manager import enqueue_sync_job, JOB_PUSH_ITEM, PRIORITY_HIGH
-        
-        job_id = enqueue_sync_job(
-            store_id=ebay_store.id,
-            job_type=JOB_PUSH_ITEM,
-            payload={'item_id': item.id},
-            priority=PRIORITY_HIGH
-        )
-        
-        # Wait a moment for the job to process
-        import time
-        time.sleep(3)
-        
-        # Get new eBay quantity after push
-        try:
-            ebay_data_after = ebay_service.get_item(listing.external_id)
-            new_ebay_qty = ebay_data_after.get('quantity', 0)
-        except Exception as e:
-            new_ebay_qty = 'Error reading from eBay'
-            logging.error(f"Error reading eBay quantity after push: {str(e)}")
-        
-        # Get the latest sync log for this item
-        latest_log = db.session.query(SyncLog).filter(
-            SyncLog.store_id == ebay_store.id,
-            SyncLog.sku == item.sku
-        ).order_by(desc(SyncLog.timestamp)).first()
-        
-        return jsonify({
-            'success': True,
-            'item_sku': item.sku,
-            'warehouse_qty': item.quantity,
-            'ebay_qty_before': current_ebay_qty,
-            'ebay_qty_after': new_ebay_qty,
-            'push_successful': new_ebay_qty == item.quantity if isinstance(new_ebay_qty, int) else False,
-            'job_id': job_id,
-            'sync_log': {
-                'status': latest_log.status if latest_log else 'No logs',
-                'message': latest_log.message if latest_log else '',
-                'timestamp': latest_log.timestamp.isoformat() if latest_log else ''
-            }
-        })
-        
-    except Exception as e:
-        logging.error(f'Error in api_test_ebay_push: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """Retired debug eBay push route.
+
+    This endpoint is intentionally fail-closed. It must not read eBay,
+    enqueue push jobs, sleep inside the request, or trigger marketplace execution.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Debug eBay push route is retired. Use governed Command Center preview and approved dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True
+    }), 410
 
 @bp.route('/health')
 def health():
@@ -758,28 +685,22 @@ def terms():
 
 @bp.route('/api/push-sku', methods=['POST'])
 def api_push_sku():
-    """API endpoint for immediate SKU push to all connected stores"""
-    try:
-        data = request.get_json()
-        sku = data.get('sku')
-        store_name = data.get('store_name')  # Optional - push to specific store
-        
-        if not sku:
-            return jsonify({'error': 'SKU is required'}), 400
-            
-        # Use smart push service for immediate push
-        results = smart_push_service.push_specific_sku(sku, store_name)
-        
-        return jsonify({
-            'success': True,
-            'sku': sku,
-            'results': results
-        })
-        
-    except Exception as e:
-        logging.error(f"Error in immediate push API: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-        
+    """Retired direct SKU push API.
+
+    Marketplace execution must go through governed dispatcher flow only.
+    This route must not call smart_push_service.push_specific_sku directly.
+    """
+    data = request.get_json(silent=True) or {}
+    sku = data.get("sku") or request.form.get("sku") or request.args.get("sku")
+
+    return jsonify({
+        "success": False,
+        "error": "Direct SKU push route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "sku": sku
+    }), 410
+
 @bp.route('/api/classify-listings', methods=['POST'])
 def api_classify_listings():
     """API endpoint to classify and update listing types"""
@@ -806,81 +727,33 @@ def api_classify_listings():
 
 @bp.route('/api/sync/amazon/sku/<sku>', methods=['POST'])
 def api_sync_amazon_sku(sku):
-    """API endpoint to sync a specific Amazon SKU"""
-    try:
-        qty = request.args.get('qty', type=int)
-        
-        # Find Amazon store
-        amazon_store = Store.query.filter_by(platform='Amazon', is_active=True).first()
-        if not amazon_store:
-            return jsonify({'error': 'No active Amazon store found', 'ok': False}), 404
-        
-        # Get warehouse stock
-        warehouse_stock = WarehouseStock.query.filter_by(sku=sku).first()
-        if not warehouse_stock:
-            return jsonify({'error': f'SKU {sku} not found in warehouse', 'ok': False}), 404
-        
-        # Update quantity if provided
-        if qty is not None:
-            warehouse_stock.available_quantity = qty
-            db.session.commit()
-            logging.info(f"Updated warehouse stock for {sku} to {qty}")
-        
-        # Push to Amazon using smart push service
-        results = smart_push_service.push_specific_sku(sku, amazon_store.name)
-        
-        return jsonify({
-            'ok': True,
-            'sku': sku,
-            'warehouse_quantity': warehouse_stock.available_quantity,
-            'push_results': results
-        })
-        
-    except Exception as e:
-        logging.error(f"Error syncing Amazon SKU {sku}: {str(e)}")
-        return jsonify({'error': str(e), 'ok': False}), 500
+    """Retired direct Amazon SKU sync route.
+
+    Warehouse quantity must not be mutated from sync routes.
+    Marketplace execution must go through governed dispatcher flow only.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct Amazon SKU sync route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "sku": sku
+    }), 410
 
 @bp.route('/api/sync/ebay/sku/<sku>', methods=['POST'])
 def api_sync_ebay_sku(sku):
-    """API endpoint to sync a specific eBay SKU using quantity-only updates"""
-    try:
-        qty = request.args.get('qty', type=int)
-        
-        # Find eBay store
-        ebay_store = Store.query.filter_by(platform='eBay', is_active=True).first()
-        if not ebay_store:
-            return jsonify({'error': 'No active eBay store found', 'ok': False}), 404
-        
-        # Get warehouse stock
-        warehouse_stock = WarehouseStock.query.filter_by(sku=sku).first()
-        if not warehouse_stock:
-            return jsonify({'error': f'SKU {sku} not found in warehouse', 'ok': False}), 404
-        
-        # Update quantity if provided
-        if qty is not None:
-            warehouse_stock.available_quantity = qty
-            db.session.commit()
-            logging.info(f"Updated warehouse stock for {sku} to {qty}")
-        
-        # Use quantity-only push to avoid Business Policy errors (21920303)
-        ebay_svc = eBayAPIService()
-        success, message = ebay_svc.push_quantity_only(sku, warehouse_stock.available_quantity, ebay_store)
-        
-        return jsonify({
-            'ok': success,
-            'sku': sku,
-            'warehouse_quantity': warehouse_stock.available_quantity,
-            'push_results': {
-                'message': message,
-                'successful': 1 if success else 0,
-                'failed': 0 if success else 1,
-                'sku': sku
-            }
-        })
-        
-    except Exception as e:
-        logging.error(f"Error syncing eBay SKU {sku}: {str(e)}")
-        return jsonify({'error': str(e), 'ok': False}), 500
+    """Retired direct eBay SKU sync route.
+
+    Warehouse quantity must not be mutated from sync routes.
+    Marketplace execution must go through governed dispatcher flow only.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct eBay SKU sync route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "sku": sku
+    }), 410
 
 @bp.route('/api/push-status/<sku>')
 def api_push_status(sku):
@@ -1326,7 +1199,7 @@ def ebay_setup():
             store.sync_status = 'success'
             store.last_sync = datetime.utcnow()
             db.session.commit()
-            flash(" eBay store connected successfully! Your inventory will sync automatically every 30 seconds.", 'success')
+            flash("eBay store connected successfully! Your inventory will now sync using your admin runtime settings.", 'success')
             
             # Queue sync through dispatcher/runtime gate path
             from queue_manager import enqueue_sync_job, JOB_FULL_SYNC, PRIORITY_HIGH
@@ -2922,126 +2795,17 @@ def edit_group(group_id):
 
 @bp.route('/groups/<int:group_id>/push', methods=['POST'])
 def push_group_stock(group_id):
-    """Push stock for all items in a product group to all marketplaces, gated by Settings."""
-    from sync_service import sync_item_to_store
+    """Retired direct group push route.
 
-    try:
-        group = db.session.get(ProductGroup, group_id)
-        if not group:
-            return jsonify({'success': False, 'message': 'Group not found'}), 404
-
-        if not group.items:
-            return jsonify({'success': False, 'message': 'Group has no items'}), 400
-
-        stores = Store.query.filter_by(is_active=True).all()
-        if not stores:
-            return jsonify({'success': False, 'message': 'No active stores configured'}), 400
-
-        valid_stores = [s for s in stores if s.sync_status != 'error']
-        auth_error_stores = [s for s in stores if s.sync_status == 'error']
-
-        if not valid_stores and auth_error_stores:
-            auth_store_names = ', '.join([s.name for s in auth_error_stores])
-            return jsonify({
-                'success': False,
-                'message': f'Cannot push: All stores have authentication errors ({auth_store_names}). Please reconnect your stores first.'
-            }), 400
-
-        successful_pushes = 0
-        failed_pushes = 0
-        skipped_pushes = 0
-        results = []
-
-        for store in auth_error_stores:
-            for item in group.items:
-                skipped_pushes += 1
-                results.append({
-                    'sku': item.sku,
-                    'store': store.name,
-                    'platform': store.platform,
-                    'status': 'skipped',
-                    'message': f'Store has authentication error - please reconnect {store.name}'
-                })
-
-        for item in group.items:
-            for store in valid_stores:
-                try:
-                    allowed, reason = is_runtime_action_allowed(
-                        store=store,
-                        action_type="push",
-                        manual=True
-                    )
-
-                    if not allowed:
-                        skipped_pushes += 1
-                        results.append({
-                            'sku': item.sku,
-                            'store': store.name,
-                            'platform': store.platform,
-                            'status': 'skipped',
-                            'message': reason
-                        })
-                        continue
-
-                    success, message = sync_item_to_store(store, item)
-                    if success:
-                        successful_pushes += 1
-                        results.append({
-                            'sku': item.sku,
-                            'store': store.name,
-                            'platform': store.platform,
-                            'status': 'success',
-                            'message': message
-                        })
-                    else:
-                        failed_pushes += 1
-                        results.append({
-                            'sku': item.sku,
-                            'store': store.name,
-                            'platform': store.platform,
-                            'status': 'failed',
-                            'message': message
-                        })
-                except Exception as e:
-                    failed_pushes += 1
-                    results.append({
-                        'sku': item.sku,
-                        'store': store.name,
-                        'platform': store.platform,
-                        'status': 'error',
-                        'message': str(e)
-                    })
-
-        sync_log = SyncLog(
-            store_id=None,
-            operation='group_push',
-            status='completed' if failed_pushes == 0 else 'partial',
-            details=f"Pushed {len(group.items)} items to {len(stores)} stores. Success: {successful_pushes}, Failed: {failed_pushes}, Skipped: {skipped_pushes}",
-            timestamp=datetime.utcnow()
-        )
-        db.session.add(sync_log)
-        db.session.commit()
-
-        message = 'Stock pushed to marketplaces'
-        if auth_error_stores:
-            message += f' (skipped {len(auth_error_stores)} stores with auth errors)'
-
-        return jsonify({
-            'success': True,
-            'message': message,
-            'results': {
-                'successful': successful_pushes,
-                'failed': failed_pushes,
-                'skipped': skipped_pushes,
-                'details': results
-            }
-        })
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error pushing group stock: {str(e)}")
-        return jsonify({'success': False, 'message': f'Error pushing group stock: {str(e)}'}), 500
-
+    Group marketplace execution must go through governed dispatcher flow only.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct group push route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "group_id": group_id
+    }), 410
 
 @bp.route('/groups/<int:group_id>/update-stock', methods=['POST'])
 def update_group_stock(group_id):
@@ -4483,7 +4247,15 @@ def edit_store(store_id):
             
             # Advanced push settings
             store.push_priority = int(request.form.get('push_priority', 5))
-            store.push_frequency_minutes = int(request.form.get('push_frequency_minutes', 1))
+
+            try:
+                submitted_frequency = int(request.form.get('push_frequency_minutes', 15))
+                if submitted_frequency <= 0:
+                    submitted_frequency = 15
+            except (TypeError, ValueError):
+                submitted_frequency = 15
+
+            store.push_frequency_minutes = submitted_frequency
             store.push_batch_size = int(request.form.get('push_batch_size', 10))
             
             # Push trigger conditions
@@ -4756,70 +4528,17 @@ def sync_status():
 
 @bp.route('/stores/sync/<int:store_id>', methods=['POST'])
 def manual_sync_store(store_id):
-    """Queue manual sync through dispatcher/runtime gate path only."""
-    try:
-        store = db.session.get(Store, store_id)
+    """Retired direct manual store sync route.
 
-        if not store:
-            return jsonify({
-                'success': False,
-                'message': 'Store not found'
-            }), 404
-
-        allowed, reason = is_runtime_action_allowed(
-            store=store,
-            action_type="sync",
-            manual=True
-        )
-
-        if not allowed:
-            return jsonify({
-                'success': False,
-                'message': reason,
-                'store_id': store.id,
-                'store_name': store.name
-            }), 400
-
-        from queue_manager import (
-            enqueue_sync_job,
-            JOB_FULL_SYNC,
-            PRIORITY_HIGH
-        )
-
-        job = enqueue_sync_job(
-            store_id=store.id,
-            job_type=JOB_FULL_SYNC,
-            payload={
-                'source': 'manual_store_sync',
-                'manual': True,
-                'store_id': store.id,
-                'store_name': store.name
-            },
-            priority=PRIORITY_HIGH
-        )
-
-        store.sync_status = 'queued'
-        db.session.commit()
-
-        return jsonify({
-            'success': True,
-            'message': 'Store sync queued through dispatcher/runtime gate.',
-            'store_id': store.id,
-            'store_name': store.name,
-            'job_id': getattr(job, 'id', job),
-            'sync_status': store.sync_status,
-            'last_sync': store.last_sync.isoformat() if store.last_sync else None
-        })
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f'Error queueing manual store sync for {store_id}: {str(e)}')
-
-        return jsonify({
-            'success': False,
-            'message': str(e)
-        }), 500
-
+    Store sync must be requested through governed dispatcher flow only.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct store sync route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "store_id": store_id
+    }), 410
 
 @bp.route('/api/stores')
 def api_stores():
@@ -5561,121 +5280,17 @@ def push_stock_bulk():
 
 @bp.route('/push_stock_all', methods=['POST'])
 def push_stock_all():
-    """Push stock for all items to all connected stores, gated by Settings."""
-    try:
-        items = db.session.query(InventoryItem).all()
-        if not items:
-            return jsonify({'success': False, 'error': 'No inventory items found'})
+    """Retired broad direct push-all route.
 
-        active_stores = db.session.query(Store).filter(Store.is_active == True).all()
-        if not active_stores:
-            return jsonify({'success': False, 'error': 'No active stores configured'})
+    Broad marketplace pushes must not execute directly from routes.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct push-all route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True
+    }), 410
 
-        from sync_service import sync_item_to_store
-
-        results = []
-        overall_success = True
-        total_synced = 0
-        batch_size = 50
-
-        for i in range(0, len(items), batch_size):
-            batch_items = items[i:i + batch_size]
-
-            for item in batch_items:
-                item_results = []
-                item_success = True
-
-                warehouse_stock = db.session.query(WarehouseStock).filter_by(sku=item.sku).first()
-                if not warehouse_stock:
-                    logging.warning(f"No warehouse stock for SKU {item.sku} - skipping")
-                    continue
-
-                item_stores = db.session.query(Store).join(
-                    MarketplaceListing, Store.id == MarketplaceListing.store_id
-                ).filter(
-                    Store.is_active == True,
-                    MarketplaceListing.warehouse_stock_id == warehouse_stock.id
-                ).distinct().all()
-
-                for store in item_stores:
-                    try:
-                        allowed, reason = is_runtime_action_allowed(
-                            store=store,
-                            action_type="push",
-                            manual=True
-                        )
-
-                        if not allowed:
-                            item_results.append({
-                                'store': store.name,
-                                'platform': store.platform,
-                                'success': False,
-                                'message': reason
-                            })
-                            item_success = False
-                            continue
-
-                        if not store.api_key:
-                            item_results.append({
-                                'store': store.name,
-                                'platform': store.platform,
-                                'success': False,
-                                'message': 'No API credentials configured'
-                            })
-                            item_success = False
-                            continue
-
-                        success, message = sync_item_to_store(store, item)
-
-                        item_results.append({
-                            'store': store.name,
-                            'platform': store.platform,
-                            'success': success,
-                            'message': message
-                        })
-
-                        if not success:
-                            item_success = False
-
-                    except Exception as store_error:
-                        logging.error(f"Error pushing item {item.sku} to store {store.name}: {str(store_error)}")
-                        item_results.append({
-                            'store': store.name,
-                            'platform': store.platform,
-                            'success': False,
-                            'message': f'Error: {str(store_error)}'
-                        })
-                        item_success = False
-
-                results.append({
-                    'item_id': item.id,
-                    'item_sku': item.sku,
-                    'item_name': item.name,
-                    'success': item_success,
-                    'store_results': item_results
-                })
-
-                if item_success:
-                    total_synced += 1
-                else:
-                    overall_success = False
-
-        return jsonify({
-            'success': overall_success,
-            'total_items': len(items),
-            'total_synced': total_synced,
-            'total_failed': len(items) - total_synced,
-            'results': results,
-            'message': f'Push all completed: {total_synced}/{len(items)} items synced successfully'
-        })
-
-    except Exception as e:
-        logging.error(f"Error in push all stock: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
-
-
-
-from services.runtime_gate import is_runtime_action_allowed
 def command_center_governance_guard(command_key, plan, confirmed=False):
     """Central guard for future Command Center execution. Preview-safe only."""
     risk_level = (plan or {}).get('risk_level', 'unknown')
@@ -5831,6 +5446,7 @@ def command_center_preview():
 # =================== PUSH SETTINGS ROUTES ===================
 
 @bp.route('/settings')
+@login_required
 def settings():
     """Main settings page for push configuration"""
     global_settings = PushSettings.get_or_create_settings()
@@ -5864,31 +5480,35 @@ def settings():
         'platforms': {}
     }
 
+    from sqlalchemy import cast, String
+
     for platform in webhook_platforms:
         enabled = SystemSetting.get_value(f'webhook_{platform}_enabled', False)
+        platform_match = f'"platform": "{platform}"'
 
         last_event = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook',
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).order_by(SystemEvent.timestamp.desc()).first()
 
         received_24h = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook',
             SystemEvent.timestamp >= yesterday,
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).count()
 
         failed_24h = db.session.query(SystemEvent).filter(
             SystemEvent.category == 'marketplace_webhook_failed',
             SystemEvent.timestamp >= yesterday,
-            SystemEvent.details_json.contains({'platform': platform})
+            cast(SystemEvent.details_json, String).contains(platform_match)
         ).count()
 
         webhook_settings['platforms'][platform] = {
             'enabled': enabled,
             'last_received': last_event.timestamp if last_event else None,
             'received_24h': received_24h,
-            'failed_24h': failed_24h
+            'failed_24h': failed_24h,
+            'polling_impact': 'Reduced polling' if enabled else 'Polling fallback'
         }
 
     return render_template(
@@ -5952,6 +5572,7 @@ def update_webhook_settings():
 
 
 @bp.route('/settings', methods=['POST'])
+@login_required
 def update_settings():
     """Update global push settings"""
     try:
@@ -5959,7 +5580,15 @@ def update_settings():
         
         # Update global settings from form
         global_settings.global_push_enabled = request.form.get('global_push_enabled') == 'on'
-        global_settings.default_push_frequency_minutes = int(request.form.get('default_push_frequency_minutes', 1))
+
+        try:
+            submitted_frequency = int(request.form.get('default_push_frequency_minutes', 15))
+            if submitted_frequency <= 0:
+                submitted_frequency = 15
+        except (TypeError, ValueError):
+            submitted_frequency = 15
+
+        global_settings.default_push_frequency_minutes = submitted_frequency
         global_settings.default_batch_size = int(request.form.get('default_batch_size', 10))
         global_settings.default_retry_attempts = int(request.form.get('default_retry_attempts', 3))
         
@@ -6057,7 +5686,14 @@ def update_store_push_settings(store_id):
             store.push_priority = int(data['push_priority'])
 
         if 'push_frequency_minutes' in data:
-            store.push_frequency_minutes = int(data['push_frequency_minutes'])
+            try:
+                submitted_frequency = int(data['push_frequency_minutes'])
+                if submitted_frequency <= 0:
+                    submitted_frequency = 15
+            except (TypeError, ValueError):
+                submitted_frequency = 15
+
+            store.push_frequency_minutes = submitted_frequency
 
         if 'push_batch_size' in data:
             store.push_batch_size = int(data['push_batch_size'])
@@ -6929,65 +6565,19 @@ def amazon_sku_precheck(sku):
 # ===============================
 @bp.post("/api/admin/amazon/set-price-and-push/<sku>")
 def admin_set_price_and_push_amazon(sku):
-    import os
-    from flask import jsonify, request
-    from extensions import db
-    from models import Store, MarketplaceListing, WarehouseStock
-    from amazon_service import AmazonAPIService
+    """Retired direct admin price-and-push route.
 
-    if request.headers.get("X-Task-Key") != os.getenv("TASK_API_KEY"):
-        return jsonify({"error": "unauthorized"}), 401
+    Price updates and marketplace pushes must be separated. This route must not
+    update price and trigger marketplace push in one request.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct price-and-push route is retired. Use governed pricing update and approved dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "sku": sku
+    }), 410
 
-    try:
-        new_price = request.args.get("price", type=float)
-        if not new_price or new_price <= 0:
-            return jsonify({"ok": False, "error": "price must be > 0"}), 400
-
-        store = Store.query.filter_by(platform="Amazon", is_active=True).first()
-        if not store:
-            return jsonify({"ok": False, "error": "No active Amazon store"}), 404
-
-        from sqlalchemy import or_
-
-        conds = [MarketplaceListing.external_sku == sku]
-        if hasattr(MarketplaceListing, "sku"):
-            conds.append(MarketplaceListing.sku == sku)
-
-        listing = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.store_id == store.id)
-            .filter(or_(*conds))
-            .first()
-        )
-        if not listing:
-            return jsonify({"ok": False, "error": f"Listing not found for SKU {sku}"}), 404
-
-        old_price = listing.price
-        listing.price = new_price
-        if getattr(listing, "push_state", None) in ("blocked", "error", None):
-            listing.push_state = "active"
-        db.session.commit()
-
-        # Push to Amazon using smart_push_service
-        from smart_push_service import SmartPushService
-        push_service = SmartPushService()
-        push_result = push_service.push_specific_sku(sku, store.name)
-
-        return jsonify({
-            "ok": True,
-            "sku": sku,
-            "old_price": old_price,
-            "new_price": new_price,
-            "push_result": push_result
-        })
-
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ===========================================
-# ADMIN DIAGNOSTIC: Get Latest Amazon Feed Status
-# ===========================================
 @bp.get("/api/diagnostics/amazon/feed/last")
 def get_latest_amazon_feed_status():
     import os
@@ -8284,31 +7874,17 @@ def delete_listing(listing_id):
 
 @bp.route('/api/listings/<int:listing_id>/push', methods=['POST'])
 def push_listing(listing_id):
-    """Push a single listing to its marketplace"""
-    try:
-        listing = db.session.query(MarketplaceListing).get(listing_id)
-        if not listing:
-            return jsonify({'success': False, 'error': 'Listing not found'}), 404
-        
-        store = listing.store
-        warehouse_stock = listing.warehouse_stock
-        
-        # TODO: Implement actual marketplace push logic
-        # For now, just mark as pending
-        listing.last_push_status = 'pending'
-        listing.push_attempts += 1
-        listing.updated_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Push initiated for {warehouse_stock.sku} to {store.name}'
-        })
-        
-    except Exception as e:
-        logging.error(f"Error pushing listing {listing_id}: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """Retired listing direct push-state mutation route.
+
+    A listing must not be marked pending unless a governed dispatcher job exists.
+    """
+    return jsonify({
+        "success": False,
+        "error": "Direct listing push route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "listing_id": listing_id
+    }), 410
 
 @bp.route('/api/listings/bulk-action', methods=['POST'])
 def bulk_listing_action():

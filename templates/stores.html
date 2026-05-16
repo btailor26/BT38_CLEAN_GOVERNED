@@ -239,62 +239,9 @@
     let currentStoreId = null;
     
     function manualSync(storeId, storeName) {
-        const btn = document.getElementById(`sync-btn-${storeId}`);
-        const originalContent = btn.innerHTML;
-        
-        // Show loading state
-        btn.disabled = true;
-        btn.innerHTML = '<i data-feather="loader" class="me-1"></i>Syncing...';
-        
-        fetch(`/stores/sync/${storeId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Show success state temporarily
-                btn.innerHTML = '<i data-feather="check" class="me-1"></i>Started';
-                btn.classList.remove('btn-outline-info');
-                btn.classList.add('btn-success');
-                
-                // Reset button after 3 seconds
-                setTimeout(() => {
-                    btn.innerHTML = originalContent;
-                    btn.classList.remove('btn-success');
-                    btn.classList.add('btn-outline-info');
-                    btn.disabled = false;
-                    feather.replace();
-                }, 3000);
-                
-                // Show success message
-                const alertContainer = document.querySelector('.container-fluid');
-                const alert = document.createElement('div');
-                alert.className = 'alert alert-success alert-dismissible fade show';
-                alert.innerHTML = `
-                    <i data-feather="check-circle" class="me-2"></i>
-                    ${data.message}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                `;
-                alertContainer.insertBefore(alert, alertContainer.firstChild);
-                feather.replace();
-            } else {
-                // Show error
-                btn.innerHTML = originalContent;
-                btn.disabled = false;
-                feather.replace();
-                alert('Error: ' + data.message);
-            }
-        })
-        .catch(error => {
-            btn.innerHTML = originalContent;
-            btn.disabled = false;
-            feather.replace();
-            alert('Error: ' + error.message);
-        });
-    }
+        alert('Direct store sync is retired. Use the governed Command Center / Admin Product Linking queue flow.');
+        return;
+}
     
     function reconnectAmazon(storeId, storeName) {
         if (!confirm(`Reconnect Amazon store "${storeName}"?\n\nThis will attempt to refresh the authentication token and resume sync.`)) {
@@ -399,30 +346,9 @@
     }
     
     function executeTriggerSync() {
-        if (!currentStoreId) return;
-        
-        fetch(`/stores/sync/${currentStoreId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                alert('Error: ' + data.error);
-            } else {
-                alert('Sync triggered successfully!');
-                // Close modal and refresh page
-                bootstrap.Modal.getInstance(document.getElementById('syncModal')).hide();
-                setTimeout(() => location.reload(), 1000);
-            }
-        })
-        .catch(error => {
-            console.error('Error triggering sync:', error);
-            alert('Error triggering sync');
-        });
-    }
+        alert('Direct store sync is retired. Use the governed Command Center / Admin Product Linking queue flow.');
+        return;
+}
     
     function toggleStore(storeId, isActive) {
         // This would normally make an API call to update store status

@@ -335,19 +335,9 @@ class InventoryDashboard {
     
     // Method to trigger manual sync for a store
     async triggerStoreSync(storeId, storeName) {
-        try {
-            const data = await api(`/stores/sync/${storeId}`, {
-                method: 'POST'
-            });
-            
-            this.showNotification(`Sync triggered for ${storeName}`, 'success');
-            // Update sync status immediately
-            setTimeout(() => this.updateSyncStatus(), 1000);
-            
-        } catch (error) {
-            showError('Failed to trigger sync', error);
-        }
-    }
+          this.showNotification('Direct store sync is retired. Use governed queue actions from Admin Product Linking / Command Center.', 'warning', 5000);
+          return;
+}
     
     // Clean up intervals when leaving the page
     destroy() {
@@ -1223,54 +1213,16 @@ async function pushSelectedItems() {
  * Push all items to connected stores
  */
 async function pushAllItems() {
-    const confirmed = confirm('Are you sure you want to push all items to connected stores? This may take a while.');
-    if (!confirmed) return;
-    
-    const pushBtn = document.getElementById('pushAllBtn');
-    const originalContent = pushBtn.innerHTML;
-    
-    try {
-        pushBtn.innerHTML = '<i data-feather="loader" class="me-1"></i>Pushing All...';
-        pushBtn.disabled = true;
-        
-        const csrfToken = getCSRFToken();
-        // Call the correct push all endpoint
-        const data = await api('/push_stock_all', {
-            method: 'POST',
-            headers: {
-                'X-CSRF-Token': csrfToken
-            },
-            body: {
-                csrf_token: csrfToken
-            }
-        });
-        
-        if (data.success) {
-            if (window.inventoryDashboard && window.inventoryDashboard.showNotification) {
-                window.inventoryDashboard.showNotification(data.message || 'All items push initiated successfully', 'success', 4000);
-            } else {
-                alert(data.message || 'All items push initiated successfully');
-            }
-        } else {
-            throw new Error(data.error || 'Failed to push all items');
-        }
-        
-    } catch (error) {
-        console.error('Error pushing all items:', error);
-        const errorMsg = `Error pushing all items: ${error.message}`;
-        if (window.inventoryDashboard && window.inventoryDashboard.showNotification) {
-            window.inventoryDashboard.showNotification(errorMsg, 'danger', 5000);
-        } else {
-            alert(errorMsg);
-        }
-    } finally {
-        pushBtn.innerHTML = originalContent;
-        pushBtn.disabled = false;
-        
-        if (typeof feather !== 'undefined') {
-            feather.replace();
-        }
+    if (window.inventoryDashboard && window.inventoryDashboard.showNotification) {
+        window.inventoryDashboard.showNotification(
+            'Legacy Push All is retired. Use governed bulk queue actions from Admin Product Linking / Jobs.',
+            'warning',
+            5000
+        );
+    } else {
+        alert('Legacy Push All is retired. Use governed bulk queue actions from Admin Product Linking / Jobs.');
     }
+    return;
 }
 
 /**

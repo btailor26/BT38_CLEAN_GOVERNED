@@ -1293,35 +1293,17 @@ class AmazonAPIService:
             is_fba_item = warehouse_stock and warehouse_stock.location and 'FBA' in warehouse_stock.location
             is_fbm_item = warehouse_stock and warehouse_stock.location and 'FBM' in warehouse_stock.location
             
-            # For FBA items, verify they exist in Amazon FBA inventory before pushing
-            # For FBM items, skip this check since FBA API won't find them
+            # Governed fulfillment guard:
+            # FBA/AFN inventory is read-only/import-only and must never enter Amazon feed/update execution.
             if is_fba_item:
-                try:
-                    self.logger.info(f"Verifying FBA product exists on Amazon for SKU: {item.sku}")
-                    inventory_response = inventory_client.get_inventory_summary_marketplace(
-                        granularityType='Marketplace',
-                        granularityId=self.marketplace.marketplace_id,
-                        marketplaceIds=marketplace_ids,
-                        sellerSkus=[item.sku]
-                    )
-                    
-                    if not (inventory_response.payload and 'inventorySummaries' in inventory_response.payload):
-                        return False, "Unable to retrieve inventory from Amazon FBA"
-                        
-                    summaries = inventory_response.payload['inventorySummaries']
-                    if not summaries:
-                        return False, f"FBA product {item.sku} not found in Amazon FBA inventory. Cannot update quantity for non-existent product."
-                        
-                    # Product exists, proceed with inventory update
-                    self.logger.info(f"Found existing FBA product on Amazon for SKU: {item.sku}")
-                except Exception as fba_check_error:
-                    self.logger.error(f"Error verifying FBA product {item.sku}: {str(fba_check_error)}")
-                    return False, f"FBA verification error: {str(fba_check_error)}"
-            elif is_fbm_item:
-                self.logger.info(f"Skipping FBA verification for FBM item: {item.sku} - proceeding with feed update")
+                self.logger.info(f"Blocked FBA/AFN push for SKU: {item.sku} - FBA stock is read-only/import-only")
+                return False, f"FBA/AFN SKU {item.sku} is read-only/import-only. Quantity push blocked."
+
+            if is_fbm_item:
+                self.logger.info(f"FBM/MFN item allowed for Amazon feed update: {item.sku}")
             else:
                 self.logger.warning(f"Unknown fulfillment type for SKU: {item.sku} (location: {warehouse_stock.location if warehouse_stock else 'None'}) - attempting feed update")
-            
+
             # Proceed with inventory feed update
             try:
                 
@@ -2195,3 +2177,139 @@ class AmazonAPIService:
                 code = 403 if code == 0 else code
             logging.error(f"Feeds scope probe failed: {msg}")
             return {"ok": False, "http": code or 0, "error": msg}
+
+    # ==============================
+    # Phase 1: Order Import for Auto-Sync Engine
+    # ==============================
+    def get_mfn_orders(self, store: 'Store', created_after: str = None, max_results: int = 100) -> Dict:
+        """
+        Fetch MFN (Merchant Fulfilled Network) orders from Amazon SP-API.
+        Only fetches orders that are NOT fulfilled by Amazon (i.e., FBM orders).
+        
+        Args:
+            store: Store object with Amazon credentials
+            created_after: ISO 8601 timestamp to fetch orders after (e.g., '2025-01-01T00:00:00Z')
+            max_results: Maximum number of orders to fetch (default 100)
+        
+        Returns:
+            Dict with 'success', 'orders' list, and optional 'error' message
+        """
+        import requests
+        from datetime import datetime, timedelta
+        
+        try:
+            if not store.api_key:
+                return {"success": False, "orders": [], "error": "No API credentials configured"}
+            
+            creds = json.loads(store.api_key)
+            marketplace_id = creds.get('marketplace_id', 'A1F83G8C2ARO7P')  # Default to UK
+            
+            # Governed Amazon auth path: all SP-API access tokens must come from amazon_auth.py
+            try:
+                from amazon_auth import ensure_access_token, AmazonAuthError
+                access_token = ensure_access_token(store)
+            except AmazonAuthError as auth_error:
+                return {"success": False, "orders": [], "error": f"Auth error: {auth_error.message}"}
+            
+            # Default to last 24 hours if no created_after specified
+            if not created_after:
+                created_after = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            # Resolve region and host
+            region, host = resolve_region_host(marketplace_id)
+            
+            # Call SP-API Orders API
+            url = f"https://{host}/orders/v0/orders"
+            headers = {
+                'x-amz-access-token': access_token,
+                'Content-Type': 'application/json'
+            }
+            params = {
+                'MarketplaceIds': marketplace_id,
+                'CreatedAfter': created_after,
+                'FulfillmentChannels': 'MFN',  # Only Merchant Fulfilled orders
+                'OrderStatuses': 'Unshipped,PartiallyShipped,Shipped',  # Relevant statuses
+                'MaxResultsPerPage': min(max_results, 100)
+            }
+            
+            logging.info(f"Fetching MFN orders for store {store.name} since {created_after}")
+            
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                from amazon_auth import safe_parse_json, AmazonNonJsonResponseError
+                try:
+                    data = safe_parse_json(response, "MFN Orders fetch")
+                except AmazonNonJsonResponseError as e:
+                    logging.error(f"[AMAZON_NON_JSON_RESPONSE] Orders API: {e}")
+                    return {"success": False, "orders": [], "error": f"Amazon returned HTML: {e.preview[:100]}"}
+                orders_payload = data.get('payload', {})
+                orders = orders_payload.get('Orders', [])
+                
+                # Process orders to extract relevant data
+                processed_orders = []
+                for order in orders:
+                    order_id = order.get('AmazonOrderId', '')
+                    order_status = order.get('OrderStatus', '')
+                    purchase_date = order.get('PurchaseDate', '')
+                    
+                    # Fetch order items for this order
+                    items = self._fetch_order_items(host, access_token, order_id)
+                    
+                    for item in items:
+                        processed_orders.append({
+                            'marketplace_order_id': order_id,
+                            'marketplace_order_item_id': item.get('OrderItemId', ''),
+                            'sku': item.get('SellerSKU', ''),
+                            'quantity': item.get('QuantityOrdered', 0),
+                            'quantity_shipped': item.get('QuantityShipped', 0),
+                            'item_price': float(item.get('ItemPrice', {}).get('Amount', 0)),
+                            'currency': item.get('ItemPrice', {}).get('CurrencyCode', 'GBP'),
+                            'order_status': order_status,
+                            'purchase_date': purchase_date,
+                            'fulfillment_channel': 'MFN'
+                        })
+                
+                logging.info(f"Fetched {len(processed_orders)} MFN order items for store {store.name}")
+                return {"success": True, "orders": processed_orders, "error": None}
+                
+            elif response.status_code == 429:
+                logging.warning(f"Rate limited on Orders API for store {store.name}")
+                return {"success": False, "orders": [], "error": "Rate limited - try again later"}
+            else:
+                error_msg = f"Orders API returned {response.status_code}: {response.text[:500]}"
+                logging.error(error_msg)
+                return {"success": False, "orders": [], "error": error_msg}
+                
+        except Exception as e:
+            logging.error(f"Error fetching MFN orders for store {store.name}: {str(e)}")
+            return {"success": False, "orders": [], "error": str(e)}
+    
+    def _fetch_order_items(self, host: str, access_token: str, order_id: str) -> List[Dict]:
+        """Fetch order items for a specific order"""
+        import requests
+        
+        try:
+            url = f"https://{host}/orders/v0/orders/{order_id}/orderItems"
+            headers = {
+                'x-amz-access-token': access_token,
+                'Content-Type': 'application/json'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                from amazon_auth import safe_parse_json, AmazonNonJsonResponseError
+                try:
+                    data = safe_parse_json(response, f"Order items {order_id}")
+                except AmazonNonJsonResponseError as e:
+                    logging.error(f"[AMAZON_NON_JSON_RESPONSE] Order items {order_id}: {e}")
+                    return []
+                return data.get('payload', {}).get('OrderItems', [])
+            else:
+                logging.warning(f"Failed to fetch items for order {order_id}: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logging.warning(f"Error fetching items for order {order_id}: {str(e)}")
+            return []

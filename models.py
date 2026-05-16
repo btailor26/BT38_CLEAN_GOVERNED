@@ -1658,25 +1658,30 @@ class MarketplaceListing(db.Model):
     
     @property
     def normalized_amazon_fulfillment_channel(self):
-        """
-        Commercial rule (BT38):
-        - FBA/AFN listings are read-only (never push).
-        - Amazon MarketplaceListing rows represent FBM push targets.
-        - If amazon_fulfillment_channel is missing, default to MFN for MarketplaceListing
-          to prevent 'unknown fulfillment' behaviour and unreliable pushes.
-        """
-        try:
-            platform = (self.store.platform or "").strip().lower() if self.store else ""
-        except Exception:
-            platform = ""
+        """Normalized Amazon fulfillment channel.
 
-        if platform != "amazon":
+        Fail-closed rule:
+        - Explicit AFN/FBA stays AFN.
+        - Explicit MFN/FBM/MERCHANT stays MFN.
+        - Missing/unknown Amazon fulfillment returns None.
+        - Unknown must not default to MFN.
+        """
+        if not getattr(self, "store", None):
+            return self.amazon_fulfillment_channel
+
+        platform = (getattr(self.store, "platform", "") or "").lower()
+        if "amazon" not in platform:
             return self.amazon_fulfillment_channel
 
         ch = (self.amazon_fulfillment_channel or "").strip().upper()
-        if not ch:
+
+        if ch in ("AFN", "FBA", "AMAZON_NA", "AMAZON_EU", "AMAZON_FE", "DEFAULT"):
+            return "AFN"
+
+        if ch in ("MFN", "FBM", "MERCHANT"):
             return "MFN"
-        return ch
+
+        return None
     
     @property
     def is_pushable(self):

@@ -511,9 +511,25 @@ class OrderImportScheduler:
         self.running = False
         self.scheduler_thread = None
         self.shutdown_event = threading.Event()
-        # AMAZON-ORDER-SYNC-THROTTLE-FIX-008: Increase interval to 5 minutes
-        # to prevent Amazon Orders API rate limiting (6 req/min quota)
-        self.import_interval_seconds = 300  # 5 minutes (THROTTLE-FIX-008)
+        self.import_interval_seconds = self._load_admin_interval_seconds()
+
+    def _load_admin_interval_seconds(self):
+        """Load order import scheduler interval from admin settings."""
+        try:
+            from models import PushSettings
+
+            settings = PushSettings.query.first()
+            minutes = getattr(settings, "default_push_frequency_minutes", None) if settings else None
+            minutes = int(minutes) if minutes else 15
+
+            if minutes <= 0:
+                minutes = 15
+
+            return minutes * 60
+
+        except Exception as e:
+            logging.error(f"Failed to load admin scheduler interval; using 15 minutes: {e}")
+            return 15 * 60
     
     def start(self):
         """Start the order import scheduler"""

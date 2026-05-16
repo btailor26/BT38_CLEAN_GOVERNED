@@ -604,74 +604,19 @@ print("="*60 + "\n")
 @app.route("/sync/run/<int:store_id>", methods=["POST"])
 @login_required
 def run_real_store_sync(store_id):
-    """Queue sync through dispatcher/runtime gate only."""
+    """Retired direct app-level sync route.
 
-    try:
-        from models import Store
-        from services.runtime_gate import is_runtime_action_allowed
-        from queue_manager import (
-            enqueue_sync_job,
-            JOB_FULL_SYNC,
-            PRIORITY_HIGH
-        )
-
-        store = db.session.get(Store, store_id)
-
-        if not store:
-            return {
-                "ok": False,
-                "store_id": store_id,
-                "error": "Store not found"
-            }, 404
-
-        allowed, reason = is_runtime_action_allowed(
-            store=store,
-            action_type="sync",
-            manual=True
-        )
-
-        if not allowed:
-            return {
-                "ok": False,
-                "store_id": store_id,
-                "error": reason
-            }, 400
-
-        job = enqueue_sync_job(
-            store_id=store.id,
-            job_type=JOB_FULL_SYNC,
-            payload={
-                "source": "app_sync_run_route",
-                "manual": True,
-                "store_id": store.id,
-                "store_name": store.name
-            },
-            priority=PRIORITY_HIGH
-        )
-
-        store.sync_status = "queued"
-        db.session.commit()
-
-        return {
-            "ok": True,
-            "store_id": store.id,
-            "job_id": getattr(job, "id", job),
-            "status": "queued",
-            "message": "Sync queued through dispatcher/runtime gate."
-        }
-
-    except Exception as e:
-        db.session.rollback()
-
-        return {
-            "ok": False,
-            "store_id": store_id,
-            "error": str(e)
-        }, 500
-
-
-
-
+    This route is intentionally fail-closed so marketplace sync cannot bypass
+    governed dispatcher execution.
+    """
+    from flask import jsonify
+    return jsonify({
+        "success": False,
+        "error": "Direct app-level sync route is retired. Use governed dispatcher execution path.",
+        "execution_blocked": True,
+        "route_retired": True,
+        "store_id": store_id
+    }), 410
 
 @app.route("/debug/fba-local")
 def debug_fba_local():

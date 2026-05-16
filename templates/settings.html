@@ -485,9 +485,11 @@ pre{background:#212529;color:#f8f9fa;border-radius:10px;padding:12px;white-space
 {% block scripts %}
 <script>
 function updateWebhookSetting(key, value) {
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
   fetch('/api/webhook-settings', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
     body: JSON.stringify({[key]: value})
   })
   .then(response => response.json())
@@ -504,9 +506,11 @@ function updateWebhookSetting(key, value) {
 }
 
 function updateStoreControl(storeId, field, value) {
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
   fetch(`/api/store-push-settings/${storeId}`, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
     body: JSON.stringify({[field]: value})
   })
   .then(response => response.json())
