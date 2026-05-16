@@ -147,11 +147,14 @@ def is_fba_listing(listing):
     return listing.amazon_fulfillment_channel == 'AFN'
 
 def is_fbm_listing(listing):
-    """Check if a listing is merchant fulfilled (MFN)"""
+    """Check if a listing is explicitly merchant fulfilled (MFN).
+
+    Unknown/empty Amazon fulfillment must NOT default to FBM.
+    """
     if not listing:
         return False
-    # MFN or NULL means merchant fulfilled
-    return listing.amazon_fulfillment_channel == 'MFN' or listing.amazon_fulfillment_channel is None
+    ch = (getattr(listing, "amazon_fulfillment_channel", None) or "").strip().upper()
+    return ch == "MFN"
 
 def can_push_to_store(store):
     """Check if we can push inventory to this store (FBM-enabled stores only)"""
@@ -163,24 +166,35 @@ def can_push_to_store(store):
     return has_fbm_enabled(store)
 
 def can_push_listing(listing, store=None):
-    """Check if we can push this listing to marketplace"""
+    """Check if we can push this listing to marketplace.
+
+    Amazon listings must be explicit FBM/MFN. Unknown fulfillment fails closed.
+    """
     if not listing:
         return False
-    # FBA listings are read-only
+
+    if store and is_amazon_store(store):
+        if not has_fbm_enabled(store):
+            return False
+        channel_type = classify_fulfillment_channel(
+            getattr(listing, "amazon_fulfillment_channel", None)
+        )
+        return channel_type == "FBM"
+
     if is_fba_listing(listing):
         return False
-    # If store provided, check if store allows pushing
-    if store and is_amazon_store(store) and not has_fbm_enabled(store):
-        return False
+
     return True
 
 def get_fulfillment_type_from_channel(channel):
-    """Convert Amazon fulfillment channel to our fulfillment type"""
-    if channel == 'AFN':
-        return 'FBA'
-    elif channel == 'MFN':
-        return 'FBM'
-    return 'FBM'
+    """Convert Amazon fulfillment channel to BT38 fulfillment type.
+
+    Returns:
+        "FBA" for explicit Amazon fulfilled.
+        "FBM" for explicit merchant fulfilled.
+        None for unknown/empty values.
+    """
+    return classify_fulfillment_channel(channel)
 
 def classify_fulfillment_channel(fulfillment_channel: str) -> str:
     """
