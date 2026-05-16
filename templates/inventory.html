@@ -802,134 +802,19 @@ function releaseFromGroup(btn, itemId, itemSku) {
 
 // Stock Push Functions
 function pushIndividualItem(itemId, itemSku) {
-    const button = event.target.closest('button');
-    const originalContent = button.innerHTML;
-    
-    // Show loading state
-    button.innerHTML = '<i data-feather="loader" class="spin"></i>';
-    button.disabled = true;
-    feather.replace();
-    
-    fetch(`/push_stock/${itemId}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            showAlert('success', `✅ Stock pushed successfully for ${itemSku}!`);
-            
-            // Show detailed results if available
-            if (data.results && Array.isArray(data.results)) {
-                let details = data.results.map(result => 
-                    `${result.platform}: ${result.success ? '✅' : '❌'} ${result.message}`
-                ).join('<br>');
-                
-                if (details) {
-                    setTimeout(() => {
-                        showAlert('info', `Push results:<br>${details}`);
-                    }, 1000);
-                }
-            }
-        } else {
-            showAlert('danger', `❌ Failed to push stock for ${itemSku}: ${data.error}`);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('danger', `❌ Error pushing stock for ${itemSku}: ${error.message}`);
-    })
-    .finally(() => {
-        // Restore button state
-        button.innerHTML = originalContent;
-        button.disabled = false;
-        feather.replace();
-    });
+    showAlert(
+        'warning',
+        '⚠️ Legacy direct marketplace push is retired. Use Admin Product Linking → Push to Marketplaces / Jobs for governed queue execution.'
+    );
+    return;
 }
 
 function pushSelectedItems() {
-    const selectedItems = Array.from(document.querySelectorAll('.item-checkbox:checked'))
-                              .map(cb => parseInt(cb.value));
-    
-    if (selectedItems.length === 0) {
-        showAlert('warning', '⚠️ Please select at least one item to push.');
-        return;
-    }
-    
-    const button = document.getElementById('pushSelectedBtn');
-    const originalContent = button.innerHTML;
-    
-    // Show loading state
-    button.innerHTML = '<i data-feather="loader" class="spin me-1"></i>Pushing...';
-    button.disabled = true;
-    feather.replace();
-    
-    fetch('/push_stock_bulk', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            item_ids: selectedItems
-        })
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            const message = data.message || `✅ Queued ${data.total_jobs_enqueued || 0} push jobs for ${data.successful_items || data.total_items} items!`;
-            showAlert('success', message);
-            
-            if (data.total_jobs_enqueued > 0) {
-                setTimeout(() => {
-                    showAlert('info', `📡 Background workers are processing your push jobs. Changes will appear on marketplaces within 1-2 minutes.`);
-                }, 1500);
-            }
-            
-            // Clear selections
-            uncheckAllItems();
-        } else {
-            if (data.successful_items > 0) {
-                showAlert('warning', `⚠️ Mixed results: ${data.successful_items} succeeded, ${data.failed_items} failed.`);
-                
-                if (data.results && Array.isArray(data.results)) {
-                    const failedItems = data.results.filter(r => !r.success);
-                    if (failedItems.length > 0) {
-                        const failedDetails = failedItems.map(item => 
-                            `${item.item_sku}: ${item.error || 'Unknown error'}`
-                        ).join('<br>');
-                        setTimeout(() => {
-                            showAlert('danger', `Failed items:<br>${failedDetails}`);
-                        }, 1000);
-                    }
-                }
-            } else {
-                let errorMsg = data.error || data.message || 'Unknown error';
-                showAlert('danger', `❌ Failed to push stock: ${errorMsg}`);
-            }
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showAlert('danger', `❌ Error during bulk push: ${error.message}`);
-    })
-    .finally(() => {
-        // Restore button state
-        button.innerHTML = originalContent;
-        button.disabled = true; // Keep disabled until new selection
-        feather.replace();
-    });
+    showAlert(
+        'warning',
+        '⚠️ Legacy direct marketplace push is retired. Use Admin Product Linking → Push to Marketplaces / Jobs for governed queue execution.'
+    );
+    return;
 }
 
 function deleteSelectedItems() {
@@ -1000,60 +885,11 @@ function deleteSelectedItems() {
 }
 
 function pushAllItems() {
-    if (!confirm('⚠️ This will push stock for ALL inventory items to all connected stores. This may take a while. Continue?')) {
-        return;
-    }
-    
-    const button = document.getElementById('pushAllBtn');
-    const originalContent = button.innerHTML;
-    
-    // Show loading state
-    button.innerHTML = '<i data-feather="loader" class="spin me-1"></i>Pushing All...';
-    button.disabled = true;
-    document.getElementById('pushSelectedBtn').disabled = true;
-    feather.replace();
-    
-    // Show progress modal
-    showProgressModal('Pushing stock to all connected stores...', 'This may take several minutes for large inventories.');
-    
-    fetch('/push_stock_all', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        hideProgressModal();
-        
-        if (data.success) {
-            showAlert('success', `✅ Successfully pushed stock for all ${data.total_synced} items!`);
-        } else {
-            showAlert('warning', `⚠️ Push completed with mixed results: ${data.total_synced}/${data.total_items} items succeeded.`);
-        }
-        
-        // Show summary
-        setTimeout(() => {
-            showAlert('info', `Summary: ${data.total_synced} successful, ${data.total_failed} failed out of ${data.total_items} total items.`);
-        }, 2000);
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        hideProgressModal();
-        showAlert('danger', `❌ Error during push all operation: ${error.message}`);
-    })
-    .finally(() => {
-        // Restore button states
-        button.innerHTML = originalContent;
-        button.disabled = false;
-        updateBulkButtons(); // Re-enable based on selections
-        feather.replace();
-    });
+    showAlert(
+        'warning',
+        '⚠️ Legacy direct marketplace push is retired. Use Admin Product Linking → Push to Marketplaces / Jobs for governed queue execution.'
+    );
+    return;
 }
 
 // Checkbox Management Functions

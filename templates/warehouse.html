@@ -31,33 +31,17 @@ function bt38ClearSelection(){
 
 function bt38OpenRowAction(button){
   const row = button.closest('tr');
-  if (!row) return;
-
-  const itemId = row.dataset.itemId;
-  const stockId = row.dataset.stockId;
-  const sku = row.dataset.sku || '';
-  const groupId = row.dataset.groupId || '';
-  const marketplace = row.dataset.marketplace || '';
+  const sku = row?.dataset?.sku || '';
 
   if (button.classList.contains('bt38-marketplace-control')) {
-    if (!itemId) return alert('Missing item id for marketplace action.');
-    if (!confirm(`Queue marketplace sync for ${sku}?`)) return;
-
-    const endpoint = marketplace.includes('eBay')
-      ? `/api/sync/ebay/sku/${encodeURIComponent(sku)}`
-      : `/push_stock/${itemId}`;
-
-    fetch(endpoint, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'}
-    })
-    .then(r => r.json())
-    .then(data => alert(data.message || data.error || 'Marketplace sync queued.'))
-    .catch(err => alert('Marketplace sync failed: ' + err));
+    alert(`Legacy direct marketplace sync is retired for ${sku}. Use governed queue actions from Admin Product Linking.`);
     return;
   }
 
   if (button.classList.contains('bt38-qty-action')) {
+    if (!row) return alert('Missing row for quantity update.');
+
+    const itemId = row.dataset.itemId;
     if (!itemId) return alert('Missing item id for quantity update.');
 
     const current = button.querySelector('span')?.innerText?.trim() || '0';
@@ -79,7 +63,7 @@ function bt38OpenRowAction(button){
     .then(data => {
       if (!data.success) return alert(data.error || data.message || 'Quantity update failed.');
       button.querySelector('span').innerText = qty;
-      alert(data.message || 'Quantity saved and push queued.');
+      alert(data.message || 'Quantity saved.');
       window.location.reload();
     })
     .catch(err => alert('Quantity update failed: ' + err));
@@ -88,18 +72,6 @@ function bt38OpenRowAction(button){
 
   if (button.classList.contains('bt38-price-action')) {
     alert('Price editing will be wired after quantity and sync actions are stable.');
-    return;
-  }
-
-  if (button.classList.contains('bt38-warehouse-action')) {
-    if (stockId) {
-      window.location.href = `/warehouse/${stockId}`;
-    }
-    return;
-  }
-
-  if (button.classList.contains('bt38-action-btn')) {
-    alert('Use the marketplace icon for single sync, Qty Save for quantity, or Group Source for group control.');
     return;
   }
 }

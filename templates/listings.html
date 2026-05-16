@@ -723,29 +723,8 @@ function formatDate(dateStr) {
 
 // Individual actions
 function pushListing(listingId) {
-    if (!confirm('Push this listing to the marketplace?')) {
-        return;
-    }
-    
-    fetch(`/api/listings/${listingId}/push`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert(data.message);
-            window.location.reload();
-        } else {
-            alert('Error: ' + data.error);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('An error occurred while pushing the listing');
-    });
+    alert('Direct listing push is retired. Use Bulk Push / Jobs so execution goes through governed queue flow.');
+    return;
 }
 
 function deleteListing(listingId) {
