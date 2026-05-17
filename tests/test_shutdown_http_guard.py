@@ -5,9 +5,12 @@ These tests prove:
 - the guard is auto-installed
 - blocked paths are centrally fail-closed
 - old marketplace/debug/setup routes cannot execute
+- real known SKU requests are blocked before any marketplace execution path
 """
 
 import shutdown_http_guard as guard
+
+REAL_KNOWN_SKU = "FBA-CG-UN-05"
 
 
 def test_sitecustomize_installs_shutdown_guard():
@@ -31,12 +34,22 @@ def test_exact_marketplace_paths_are_blocked():
         assert guard.is_shutdown_path(path) is True, f"Expected blocked path: {path}"
 
 
+def test_real_sku_marketplace_paths_are_blocked_before_execution():
+    blocked = [
+        f"/api/sync/amazon/sku/{REAL_KNOWN_SKU}",
+        f"/api/sync/ebay/sku/{REAL_KNOWN_SKU}",
+    ]
+
+    for path in blocked:
+        assert guard.is_shutdown_path(path) is True, f"Expected real SKU path to be blocked: {path}"
+
+
 def test_prefixed_marketplace_paths_are_blocked():
     blocked = [
         "/sync/run/123",
         "/api/test/ebay-push/44",
-        "/api/sync/amazon/sku/ABC123",
-        "/api/sync/ebay/sku/SKU-001",
+        f"/api/sync/amazon/sku/{REAL_KNOWN_SKU}",
+        f"/api/sync/ebay/sku/{REAL_KNOWN_SKU}",
     ]
 
     for path in blocked:
