@@ -225,12 +225,11 @@ function updateStoreControl(storeId, field, value) {
   <div style="padding:14px;">
     <label><strong>Enter command</strong></label><br>
     <input type="text" id="bt38CommandInput" placeholder="Example: Freeze all sync" style="width:70%;max-width:720px;padding:10px;border:1px solid #ccc;border-radius:8px;">
-    <button type="button" class="btn" id="bt38PreviewBtn">Preview Command</button>
+    <button type="button" class="btn" disabled>Preview Command</button>
     <button type="button" class="btn danger" disabled>Run Approved Command</button>
     <p class="small" style="color:#666;margin-top:8px;">
-      Commands are preview-only at this stage. Live execution remains disabled until wired later through one approved command engine.
+      Commands are visual only at this stage. Execution will be wired later through one approved command engine.
     </p>
-    <div id="bt38PreviewOutput" aria-live="polite" style="display:none;background:#f5f6f8;border:1px solid #ddd;border-radius:8px;margin-top:10px;padding:12px;"></div>
   </div>
 
   <table>
@@ -244,130 +243,5 @@ function updateStoreControl(storeId, field, value) {
 </div>
 
 </form>
-<script>
-(function () {
-  const previewButton = document.getElementById('bt38PreviewBtn');
-  const commandInput = document.getElementById('bt38CommandInput');
-  const previewResult = document.getElementById('bt38PreviewOutput');
-
-  if (!previewButton || !commandInput || !previewResult) {
-    return;
-  }
-
-  function appendSection(title, value) {
-    const section = document.createElement('div');
-    section.style.marginBottom = '10px';
-
-    const heading = document.createElement('strong');
-    heading.textContent = title;
-    section.appendChild(heading);
-
-    const body = document.createElement('div');
-    body.style.marginTop = '4px';
-
-    if (Array.isArray(value)) {
-      if (value.length === 0) {
-        body.textContent = 'None listed';
-      } else {
-        const list = document.createElement('ul');
-        list.style.margin = '4px 0 0 18px';
-        list.style.padding = '0';
-        value.forEach(function (item) {
-          const listItem = document.createElement('li');
-          listItem.textContent = item;
-          list.appendChild(listItem);
-        });
-        body.appendChild(list);
-      }
-    } else {
-      body.textContent = value;
-    }
-
-    section.appendChild(body);
-    previewResult.appendChild(section);
-  }
-
-  function renderRawJson(payload) {
-    const details = document.createElement('details');
-    details.style.marginTop = '12px';
-
-    const summary = document.createElement('summary');
-    summary.textContent = 'Raw JSON for debugging';
-    details.appendChild(summary);
-
-    const rawJson = document.createElement('pre');
-    rawJson.style.whiteSpace = 'pre-wrap';
-    rawJson.style.background = '#fff';
-    rawJson.style.border = '1px solid #ddd';
-    rawJson.style.borderRadius = '8px';
-    rawJson.style.marginTop = '8px';
-    rawJson.style.padding = '10px';
-    rawJson.textContent = JSON.stringify(payload, null, 2);
-    details.appendChild(rawJson);
-
-    previewResult.appendChild(details);
-  }
-
-  function renderPreview(payload, requestSucceeded) {
-    const plan = payload.plan || {};
-    const failed = !requestSucceeded || payload.success === false;
-    const recognized = payload.recognized === true;
-
-    previewResult.style.display = 'block';
-    previewResult.innerHTML = '';
-
-    appendSection('Status', failed ? 'Preview failed' : 'Preview ready');
-    appendSection('Command entered', payload.command_entered || commandInput.value.trim() || 'No command entered');
-    appendSection('Recognized', recognized ? 'Yes' : 'No');
-    appendSection('Risk level', plan.risk_level || 'Not available');
-    appendSection('Affected systems', plan.affected_systems || []);
-    appendSection('Execution plan', plan.execution_plan || []);
-    appendSection('Requires confirmation', plan.requires_confirmation === true ? 'Yes' : 'No');
-    appendSection('Safety message', payload.message || payload.error || 'Preview only. No live action was executed.');
-    renderRawJson(payload);
-  }
-
-  function renderLoading() {
-    previewResult.style.display = 'block';
-    previewResult.innerHTML = '';
-    appendSection('Status', 'Creating preview...');
-    appendSection('Safety message', 'Preview only. No live action is being executed.');
-  }
-
-  previewButton.addEventListener('click', function () {
-    const command = commandInput.value.trim();
-
-    previewButton.disabled = true;
-    renderLoading();
-
-    fetch('/api/command-center/preview', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ command: command })
-    })
-      .then(function (response) {
-        return response.json().then(function (payload) {
-          return { ok: response.ok, payload: payload };
-        });
-      })
-      .then(function (result) {
-        renderPreview(result.payload, result.ok);
-      })
-      .catch(function (error) {
-        renderPreview({
-          success: false,
-          command_entered: command,
-          error: 'Preview failed: ' + error.message
-        }, false);
-      })
-      .finally(function () {
-        previewButton.disabled = false;
-      });
-  });
-}());
-</script>
-
 </body>
 </html>
