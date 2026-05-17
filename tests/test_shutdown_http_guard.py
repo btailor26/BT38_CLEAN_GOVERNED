@@ -10,7 +10,10 @@ These tests prove:
 
 import shutdown_http_guard as guard
 
-REAL_KNOWN_SKU = "FBA-CG-UN-05"
+REAL_KNOWN_SKUS = [
+    "FBA-CG-UN-05",
+    "FBA-KA-OL-100-ML",
+]
 
 
 def test_sitecustomize_installs_shutdown_guard():
@@ -35,10 +38,13 @@ def test_exact_marketplace_paths_are_blocked():
 
 
 def test_real_sku_marketplace_paths_are_blocked_before_execution():
-    blocked = [
-        f"/api/sync/amazon/sku/{REAL_KNOWN_SKU}",
-        f"/api/sync/ebay/sku/{REAL_KNOWN_SKU}",
-    ]
+    blocked = []
+
+    for sku in REAL_KNOWN_SKUS:
+        blocked.extend([
+            f"/api/sync/amazon/sku/{sku}",
+            f"/api/sync/ebay/sku/{sku}",
+        ])
 
     for path in blocked:
         assert guard.is_shutdown_path(path) is True, f"Expected real SKU path to be blocked: {path}"
@@ -48,9 +54,13 @@ def test_prefixed_marketplace_paths_are_blocked():
     blocked = [
         "/sync/run/123",
         "/api/test/ebay-push/44",
-        f"/api/sync/amazon/sku/{REAL_KNOWN_SKU}",
-        f"/api/sync/ebay/sku/{REAL_KNOWN_SKU}",
     ]
+
+    for sku in REAL_KNOWN_SKUS:
+        blocked.extend([
+            f"/api/sync/amazon/sku/{sku}",
+            f"/api/sync/ebay/sku/{sku}",
+        ])
 
     for path in blocked:
         assert guard.is_shutdown_path(path) is True, f"Expected blocked prefix path: {path}"
