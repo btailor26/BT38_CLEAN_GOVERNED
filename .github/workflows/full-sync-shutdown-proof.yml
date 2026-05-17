@@ -11,6 +11,8 @@ on:
 jobs:
   shutdown-proof:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout repository
@@ -25,6 +27,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
+
+      - name: Show Python import path
+        run: |
+          python - <<'PY'
+          import os, sys
+          print('cwd=', os.getcwd())
+          print('PYTHONPATH=', os.environ.get('PYTHONPATH'))
+          print('sys.path[:5]=', sys.path[:5])
+          import shutdown_http_guard
+          print('shutdown_http_guard import OK:', shutdown_http_guard.__file__)
+          PY
 
       - name: Compile shutdown branch files
         run: |
@@ -46,6 +59,6 @@ jobs:
 
       - name: Run shutdown proof tests
         run: |
-          pytest -v \
+          python -m pytest -v \
             tests/test_shutdown_http_guard.py \
             tests/test_old_sync_paths_shutdown.py
