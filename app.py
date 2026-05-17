@@ -427,57 +427,17 @@ app.register_blueprint(routes_bp)
 from admin_routes import admin_bp
 app.register_blueprint(admin_bp)
 
-# Start queue-based sync system (dispatcher + scheduler)
-# CRITICAL: In Gunicorn, app.py is imported by EACH worker process.
-# Without a per-machine startup lock, dispatcher/schedulers start multiple times.
-# This lock ensures only ONE worker on this Fly machine starts background services.
-_STARTUP_LOCK_HANDLE = None
-
-def acquire_startup_lock():
-    """Acquire a per-machine non-blocking lock for background service startup."""
-    global _STARTUP_LOCK_HANDLE
-    lock_path = "/tmp/bt38_startup_services.lock"
-    try:
-        handle = open(lock_path, "w")
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        handle.write(f"pid={os.getpid()}\n")
-        handle.flush()
-        _STARTUP_LOCK_HANDLE = handle  # Keep handle alive so lock is held
-        logging.info(f"[STAGE5] Startup lock acquired by pid={os.getpid()}")
-        return True
-    except BlockingIOError:
-        logging.warning(f"[STAGE5] Startup services already owned by another worker on this machine; pid={os.getpid()} will skip")
-        return False
-    except Exception as e:
-        logging.error(f"[STAGE5] Failed to acquire startup lock: {str(e)}")
-        return False
-
-with app.app_context():
-    from sync_dispatcher import start_dispatcher, set_app_instance, start_order_import_scheduler
-
-    # Set app instance for dispatcher worker threads
-    set_app_instance(app)
-
-    owns_startup = acquire_startup_lock()
-
-    if owns_startup and IS_ACTIVE_PRIMARY:
-        start_dispatcher()
-        logging.info(f"[STAGE5] Sync dispatcher started (ENV: {APP_ENV}, ROLE: {FAILOVER_ROLE})")
-    elif not IS_ACTIVE_PRIMARY:
-        logging.warning(f"[STAGE5] Sync dispatcher DISABLED (IS_ACTIVE_PRIMARY=false, ROLE: {FAILOVER_ROLE})")
-    else:
-        logging.warning("[STAGE5] Sync dispatcher SKIPPED in this worker (startup lock not owned)")
-
-    if owns_startup and ENABLE_SCHEDULERS and IS_ACTIVE_PRIMARY:
-        start_order_import_scheduler()
-        logging.info("[STAGE5] Order import scheduler started (Phase 1 Auto-Sync)")
-    elif not ENABLE_SCHEDULERS or not IS_ACTIVE_PRIMARY:
-        logging.warning(f"[STAGE5] Order import scheduler DISABLED (ENABLE_SCHEDULERS={ENABLE_SCHEDULERS}, IS_ACTIVE_PRIMARY={IS_ACTIVE_PRIMARY})")
-    else:
-        logging.warning("[STAGE5] Order import scheduler SKIPPED in this worker (startup lock not owned)")
-
-    # Background scheduler remains permanently disabled
-    logging.warning("[STAGE5] Background scheduler DISABLED permanently - dispatcher is the single execution path")
+# Governed startup checkpoint.
+#
+# Startup is intentionally quiet and non-executing: Flask import/module load must
+# not start workers, schedulers, queue consumers, order import ticks, direct
+# pushers, or marketplace API clients. Runtime execution remains disabled until
+# a future approved governed command path is built.
+logging.info(
+    "[GOVERNED_STARTUP] Marketplace execution disabled on app boot: "
+    "FBA read-only; FBM/eBay push disabled until governed path exists; "
+    "no workers, schedulers, queue consumers, or marketplace API calls started."
+)
 
 # Run system events backfill on startup (automatically populates from existing logs)
 with app.app_context():
@@ -555,45 +515,22 @@ if IS_STAGING:
     print("  ⚠️  Push/write operations are BLOCKED by default")
 print("="*60)
 
-# Print deployment verification message
+# Startup marketplace safety report.
+# This is informational only: it performs no imports/calls to marketplace service
+# clients and starts no workers, schedulers, queue consumers, or push loops.
 print("\n" + "="*60)
-print("SYSTEM REPORTING MODULE DEPLOYED — READY FOR VERIFICATION")
+print("MARKETPLACE STARTUP SAFETY — SHUTDOWN ONLY")
 print("="*60)
 print(f"Environment: {APP_ENV.upper()}")
 print(f"Admin Dashboard: /admin/system-activity")
-print("Features:")
-print("  [OK] Unified System Events table with all categories")
-print("  [OK] Sync Job logging (FBA import, FBM push, eBay sync)")
-print("  [OK] API Error tracking (Amazon, eBay)")
-print("  [OK] Configuration change history")
-print("  [OK] Agent run logging")
-print("  [OK] Authentication event logging")
-print("  [OK] Date range filtering on all tabs")
-print("  [OK] Export to CSV, JSON, TXT formats")
-print("="*60)
-
-print("\n" + "="*60)
-print("AMAZON FBA/FBM UNIFIED ARCHITECTURE")
-print("="*60)
-print("Store Model: ONE store with fba_import_enabled + fbm_sync_enabled flags")
-print("")
-print("FBA (Amazon-Fulfilled):")
-print("  - Fulfillment channel: AFN")
-print("  - Data stored in: amazon_fba_inventory table")
-print("  - Import via: sync_fba_inventory() / FBA Inventory API")
-print("  - NEVER pushed (read-only from Amazon)")
-print("")
-print("FBM (Merchant-Fulfilled):")
-print("  - Fulfillment channel: MFN")
-print("  - Data stored in: marketplace_listings + warehouse_stock")
-print("  - Push to Amazon via: smart_push_service / Listings API")
-print("  - Warehouse is authoritative source")
-print("")
-print("Safety Guards:")
-print("  [OK] is_pushable property blocks AFN listings")
-print("  [OK] classify_fulfillment_channel() centralizes FBA/FBM logic")
-print("  [OK] smart_push_service filters FBA at query time")
-print("  [OK] All operations logged to System Activity")
+print("Runtime status:")
+print("  [OK] No marketplace execution starts on app boot")
+print("  [OK] No workers, schedulers, queue consumers, or order-import ticks start on app boot")
+print("  [OK] FBA/AFN is read-only; no FBA push path is started")
+print("  [OK] FBM/MFN push is disabled until the governed path exists")
+print("  [OK] eBay push/import is disabled until the governed path exists")
+print("  [OK] Amazon/eBay API error tables remain reporting-only at startup")
+print("  [OK] System Activity remains available for audit/reporting")
 print("="*60 + "\n")
 
 # =========================
@@ -601,117 +538,3 @@ print("="*60 + "\n")
 # =========================
 # REAL LOCAL SYNC ROUTE
 # =========================
-@app.route("/sync/run/<int:store_id>", methods=["POST"])
-@login_required
-def run_real_store_sync(store_id):
-    try:
-        from sync_service import immediate_sync_store
-        result = immediate_sync_store(store_id)
-        return {"ok": True, "store_id": store_id, "result": str(result)}
-    except Exception as e:
-        return {"ok": False, "store_id": store_id, "error": str(e)}, 500
-
-
-
-
-@app.route("/debug/fba-local")
-def debug_fba_local():
-    import sqlite3
-    import os
-
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance", "bt38_ims_local.db")
-
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT seller_sku, available_quantity, reserved_quantity, total_inbound
-        FROM amazon_fba_inventory
-        LIMIT 50
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    return {
-        "db_path": db_path,
-        "rows": [
-            {
-                "seller_sku": r[0],
-                "available_quantity": r[1],
-                "reserved_quantity": r[2],
-                "total_inbound": r[3],
-            }
-            for r in rows
-        ],
-        "count": len(rows)
-    }
-
-
-
-    return {
-        "db_path": db_path,
-        "count": len(rows),
-        "rows": [
-            {
-                "seller_sku": r[0],
-                "available_quantity": r[1],
-                "reserved_quantity": r[2],
-                "total_inbound": r[3],
-            }
-            for r in rows
-        ]
-    }
-
-
-@app.route("/debug/fba-local-direct")
-def debug_fba_local_direct():
-    import sqlite3
-
-    db_path = r"C:\Users\btail\_ARCHIVE_OLD_BT38\BT38\instance\bt38_ims_local.db"
-
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT seller_sku, available_quantity, reserved_quantity, total_inbound
-        FROM amazon_fba_inventory
-        LIMIT 100
-    """)
-
-    rows = cur.fetchall()
-    conn.close()
-
-    return {
-        "db_path": db_path,
-        "count": len(rows),
-        "rows": rows
-    }
-
-
-
-
-@app.route("/debug/fba-open")
-def debug_fba_open():
-    import sqlite3
-
-    db_path = "instance/bt38_ims_local.db"
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    # get real columns
-    cur.execute("PRAGMA table_info(amazon_fba_inventory)")
-    cols = [r["name"] for r in cur.fetchall()]
-
-    cur.execute("SELECT * FROM amazon_fba_inventory LIMIT 20")
-    rows = [dict(r) for r in cur.fetchall()]
-
-    conn.close()
-
-    return {
-        "db_path": db_path,
-        "columns": cols,
-        "row_count": len(rows),
-        "rows": rows
-    }

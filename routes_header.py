@@ -1,22 +1,13 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify, session
-from flask_login import login_required, current_user, login_user, logout_user
-from sqlalchemy import desc, or_, text
-from datetime import datetime
-import logging
-import json
-import requests
-import base64
-import secrets
-from urllib.parse import urlencode
-import os
-import hashlib
+"""Retired route header compatibility shim.
 
-# Import db + models from models module to avoid circular import
-from models import db, InventoryItem, Store, SyncLog, ProductGroup, GroupExternalRef, PushSettings, WarehouseStock, StockLedgerEntry, MarketplaceListing, SystemConfig
-from amazon_service import AmazonAPIService
-from ebay_service import eBayAPIService
-from smart_push_service import smart_push_service
+The active shutdown branch uses routes.py plus shutdown_http_guard.py. This old
+header file no longer imports marketplace services or exposes execution routes.
+"""
 
-# Create Blueprint instead of using app directly
-bp = Blueprint('routes', __name__)
+from flask import Blueprint
 
+bp = Blueprint("routes_header_disabled", __name__)
+
+OLD_SYNC_DISABLED = True
+MARKETPLACE_EXECUTION_DISABLED = True
+GOVERNED_PATH_REQUIRED = True

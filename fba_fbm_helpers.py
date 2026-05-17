@@ -147,11 +147,14 @@ def is_fba_listing(listing):
     return listing.amazon_fulfillment_channel == 'AFN'
 
 def is_fbm_listing(listing):
-    """Check if a listing is merchant fulfilled (MFN)"""
+    """Check if a listing is explicitly merchant fulfilled (MFN).
+
+    Unknown/empty fulfillment is not FBM. Unknown fulfillment must fail closed
+    until marketplace import classifies it explicitly.
+    """
     if not listing:
         return False
-    # MFN or NULL means merchant fulfilled
-    return listing.amazon_fulfillment_channel == 'MFN' or listing.amazon_fulfillment_channel is None
+    return (listing.amazon_fulfillment_channel or '').upper().strip() == 'MFN'
 
 def can_push_to_store(store):
     """Check if we can push inventory to this store (FBM-enabled stores only)"""
@@ -163,24 +166,35 @@ def can_push_to_store(store):
     return has_fbm_enabled(store)
 
 def can_push_listing(listing, store=None):
-    """Check if we can push this listing to marketplace"""
+    """Check if we can push this listing to marketplace.
+
+    Amazon listings are pushable only when explicitly classified as FBM/MFN.
+    Unknown fulfillment is non-pushable and must be reviewed/import-classified first.
+    """
     if not listing:
         return False
-    # FBA listings are read-only
+
+    if store and is_amazon_store(store):
+        if not has_fbm_enabled(store):
+            return False
+        return classify_fulfillment_channel(getattr(listing, 'amazon_fulfillment_channel', None)) == 'FBM'
+
     if is_fba_listing(listing):
-        return False
-    # If store provided, check if store allows pushing
-    if store and is_amazon_store(store) and not has_fbm_enabled(store):
         return False
     return True
 
 def get_fulfillment_type_from_channel(channel):
-    """Convert Amazon fulfillment channel to our fulfillment type"""
-    if channel == 'AFN':
+    """Convert Amazon fulfillment channel to our fulfillment type.
+
+    Unknown/empty channels return None so callers fail closed instead of
+    silently treating unclassified inventory as FBM.
+    """
+    classified = classify_fulfillment_channel(channel)
+    if classified == 'FBA':
         return 'FBA'
-    elif channel == 'MFN':
+    if classified == 'FBM':
         return 'FBM'
-    return 'FBM'
+    return None
 
 def classify_fulfillment_channel(fulfillment_channel: str) -> str:
     """
@@ -210,6 +224,107 @@ def classify_fulfillment_channel(fulfillment_channel: str) -> str:
     # Unknown/empty channels - return None (caller must decide what to do)
     # SAFETY: Do NOT default to FBM - could accidentally push to FBA listings
     return None
+
+
+def marketplace_push_eligibility(store, *, sku=None, item=None, warehouse_stock=None, listing=None, payload=None, query_database=True):
+    """Central marketplace push eligibility guard.
+
+    This is the single authority for outbound marketplace inventory push
+    decisions. It allows non-Amazon marketplaces, allows explicit Amazon
+    MFN/FBM, and fail-closes Amazon FBA/AFN/read-only or unclassified
+    inventory before queueing, dispatch, service calls, or feed creation.
+
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    payload = payload or {}
+    sku = (sku or payload.get('sku') or getattr(item, 'sku', None) or getattr(warehouse_stock, 'sku', None) or '').strip()
+
+    if not store:
+        return False, 'missing store'
+
+    if not is_amazon_store(store):
+        return True, 'non-Amazon marketplace allowed'
+
+    platform = (getattr(store, 'platform', None) or '').strip().lower()
+    fulfillment_type = (getattr(store, 'fulfillment_type', None) or '').strip().upper()
+
+    if sku.upper().startswith('FBA-'):
+        return False, f'Amazon push blocked: SKU {sku} uses FBA- prefix'
+
+    if warehouse_stock is not None:
+        location = (getattr(warehouse_stock, 'location', None) or '').upper()
+        if 'FBA' in location:
+            return False, f'Amazon push blocked: warehouse location is FBA for SKU {sku}'
+
+    if platform in ('amazonfba', 'amazon_fba') or 'fba' in platform:
+        return False, f'Amazon push blocked: store platform {getattr(store, "platform", None)} is read-only/FBA'
+
+    if fulfillment_type == 'FBA' and not has_fbm_enabled(store):
+        return False, 'Amazon push blocked: store fulfillment_type is FBA/read-only'
+
+    if not has_fbm_enabled(store):
+        return False, 'Amazon push blocked: FBM sync is not explicitly enabled for store'
+
+    resolved_listing = listing
+    resolved_warehouse_stock = warehouse_stock
+
+    if query_database:
+        from extensions import db
+        from models import MarketplaceListing, WarehouseStock, AmazonFBAInventory, AmazonFBAListing
+
+        if not sku and payload.get('item_id'):
+            from models import InventoryItem
+            resolved_item = db.session.get(InventoryItem, payload.get('item_id'))
+            sku = (getattr(resolved_item, 'sku', None) or '').strip()
+            if sku.upper().startswith('FBA-'):
+                return False, f'Amazon push blocked: SKU {sku} uses FBA- prefix'
+
+        if resolved_warehouse_stock is None and sku:
+            resolved_warehouse_stock = WarehouseStock.query.filter_by(sku=sku).first()
+            if resolved_warehouse_stock is not None:
+                location = (getattr(resolved_warehouse_stock, 'location', None) or '').upper()
+                if 'FBA' in location:
+                    return False, f'Amazon push blocked: warehouse location is FBA for SKU {sku}'
+
+        if resolved_listing is None:
+            if payload.get('listing_id'):
+                resolved_listing = db.session.get(MarketplaceListing, payload.get('listing_id'))
+            elif sku:
+                query = MarketplaceListing.query.filter_by(store_id=store.id)
+                if resolved_warehouse_stock is not None:
+                    query = query.filter(MarketplaceListing.warehouse_stock_id == resolved_warehouse_stock.id)
+                else:
+                    query = query.filter(MarketplaceListing.external_sku == sku)
+                resolved_listing = query.first()
+
+        if sku:
+            fba_inventory_exists = AmazonFBAInventory.query.filter_by(store_id=store.id, seller_sku=sku).first() is not None
+            fba_listing_exists = AmazonFBAListing.query.filter_by(store_id=store.id, seller_sku=sku).first() is not None
+            marketplace_listing_exists = resolved_listing is not None
+            if (fba_inventory_exists or fba_listing_exists) and not marketplace_listing_exists:
+                return False, f'Amazon push blocked: SKU {sku} exists only in FBA read-only tables'
+
+    if resolved_listing is None:
+        return False, f'Amazon push blocked: SKU {sku or "unknown"} has no explicit MFN MarketplaceListing classification'
+
+    channel = getattr(resolved_listing, 'amazon_fulfillment_channel', None)
+    classified = classify_fulfillment_channel(channel)
+    if classified == 'FBA':
+        return False, f'Amazon push blocked: fulfillment channel {channel} is FBA/read-only for SKU {sku}'
+    if classified is None:
+        return False, f'Amazon push blocked: fulfillment channel is unknown/blank for SKU {sku}'
+
+    return True, f'Amazon explicit {classified} push allowed for SKU {sku}'
+
+
+def assert_marketplace_push_allowed(store, **kwargs):
+    """Raise ValueError unless marketplace_push_eligibility allows the push."""
+    allowed, reason = marketplace_push_eligibility(store, **kwargs)
+    if not allowed:
+        raise ValueError(reason)
+    return True, reason
+
 
 def get_store_type_label(store):
     """Get a human-readable label for store type"""
@@ -279,86 +394,15 @@ def get_store_badge_class(store):
 # ============================================================================
 
 def get_amazon_client_for_store(store_id: int, marketplace_region: str = 'UK'):
-    """
-    SINGLE SOURCE OF TRUTH for Amazon API client creation.
-    
-    Use THIS function everywhere you need an Amazon API client.
-    This ensures consistent credential loading and error handling.
-    
-    IMPORTANT: Checks auth_status before attempting connection.
-    If store has auth_error status, returns failure immediately.
-    
-    Args:
-        store_id: The ID of the Amazon store
-        marketplace_region: The marketplace region (UK, US, DE, etc.)
-        
-    Returns:
-        Tuple of (success: bool, client_or_error: AmazonAPIService|str, store: Store|None)
-        - If success=True: (True, AmazonAPIService instance, Store instance)
-        - If success=False: (False, error_message, store or None)
-    """
-    import logging
-    from app import db
-    from models import Store
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        # Get store from database
-        store = db.session.get(Store, store_id)
-        if not store:
-            return (False, f"Store ID {store_id} not found", None)
-        
-        if not is_amazon_store(store):
-            return (False, f"Store '{store.name}' is not an Amazon store (platform: {store.platform})", None)
-        
-        if not store.is_active:
-            return (False, f"Store '{store.name}' is not active", None)
-        
-        # Check auth status - skip if store has auth error
-        from amazon_auth import should_skip_amazon_sync
-        should_skip, skip_reason = should_skip_amazon_sync(store)
-        if should_skip:
-            logger.warning(f"Skipping Amazon client creation for store {store.name}: {skip_reason}")
-            return (False, f"Store has auth error: {skip_reason}. Use 'Reconnect Amazon' to fix.", store)
-        
-        # Import Amazon service
-        from amazon_service import AmazonAPIService
-        
-        # Determine region from store credentials or use default
-        region = marketplace_region
-        if store.api_key:
-            try:
-                import json
-                creds = json.loads(store.api_key)
-                region = creds.get('region', marketplace_region)
-            except:
-                pass
-        
-        # Create Amazon service
-        amazon_service = AmazonAPIService(marketplace_region=region)
-        
-        # Test connection (this will use ensure_access_token internally)
-        if not amazon_service.authenticate_store(store):
-            # Check if auth error was set
-            db.session.refresh(store)
-            if getattr(store, 'auth_status', 'ok') == 'auth_error':
-                error_msg = f"Authentication failed: {store.auth_error_code or 'unknown'}"
-            else:
-                error_msg = f"Authentication failed for store '{store.name}'"
-            return (False, error_msg, store)
-        
-        logger.info(f"✅ Amazon client created successfully for store: {store.name}")
-        return (True, amazon_service, store)
-        
-    except Exception as e:
-        logger.error(f"Error creating Amazon client for store {store_id}: {str(e)}")
-        # Check if it's an auth error
-        from amazon_auth import is_auth_failure
-        if is_auth_failure(error_message=str(e)):
-            return (False, f"Authentication failed: {str(e)}", store if 'store' in locals() else None)
-        return (False, str(e), store if 'store' in locals() else None)
+    """Fail closed: old Amazon client creation is disabled during shutdown proof."""
+    from old_path_shutdown import disabled_response
 
+    disabled = disabled_response(
+        "get_amazon_client_for_store",
+        store_id=store_id,
+        marketplace_region=marketplace_region,
+    )
+    return (False, disabled["error"], None)
 
 def test_amazon_connection_for_store(store_id: int):
     """
