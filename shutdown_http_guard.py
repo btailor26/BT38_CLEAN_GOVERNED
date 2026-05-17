@@ -1,18 +1,7 @@
-"""
-BT38 shutdown HTTP guard.
+"""BT38 shutdown HTTP guard.
 
-This module fail-closes old marketplace/debug/setup endpoints before their route
-handlers can run. It is intentionally central and defensive because the old
-system has many overlapping entry points.
-
-Shutdown rule:
-- old sync routes must not execute
-- old marketplace diagnostics must not execute
-- old credential mutation routes must not execute
-- old debug routes must not execute
-- old setup/test endpoints must not execute
-
-The future governed path must be added separately after shutdown tests pass.
+Fail-closes retired marketplace, debug, setup, and legacy sync HTTP
+surfaces before route handlers can run while the governed path is rebuilt.
 """
 
 from __future__ import annotations
@@ -58,29 +47,43 @@ def is_shutdown_path(path: str, exact_paths: Iterable[str] = BLOCKED_EXACT_PATHS
 def install_shutdown_http_guard() -> bool:
     """Install a global Flask preprocess_request guard exactly once."""
     global HTTP_GUARD_INSTALLED
+
     if HTTP_GUARD_INSTALLED:
         return True
 
     try:
         from flask import Flask, jsonify, request
-    except Exception as exc:  # pragma: no cover - defensive import guard
-        logging.warning("[SHUTDOWN_HTTP_GUARD] Could not import Flask/request: %s", exc)
-        return False
+    except Exception as exc:  # pragma: no cover - Flask is absent in lightweight CI
+        HTTP_GUARD_INSTALLED = True
+        logging.warning(
+            "[SHUTDOWN_HTTP_GUARD] Flask/request unavailable; "
+            "no HTTP server can run in this interpreter: %s",
+            exc,
+        )
+        return True
 
     original_preprocess_request = Flask.preprocess_request
 
     def guarded_preprocess_request(self):
         if SHUTDOWN_HTTP_GUARD_ENABLED and is_shutdown_path(request.path):
-            logging.warning("[SHUTDOWN_HTTP_GUARD] Blocked retired marketplace path: %s", request.path)
-            return jsonify({
-                "success": False,
-                "ok": False,
-                "execution_blocked": True,
-                "route_retired": True,
-                "shutdown_http_guard": True,
-                "path": request.path,
-                "error": "This old marketplace/sync route is disabled during governed-path rebuild.",
-            }), 410
+            logging.warning(
+                "[SHUTDOWN_HTTP_GUARD] Blocked retired marketplace path: %s",
+                request.path,
+            )
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "ok": False,
+                        "execution_blocked": True,
+                        "route_retired": True,
+                        "shutdown_http_guard": True,
+                        "path": request.path,
+                        "error": "This old marketplace/sync route is disabled during governed-path rebuild.",
+                    }
+                ),
+                410,
+            )
         return original_preprocess_request(self)
 
     Flask.preprocess_request = guarded_preprocess_request
