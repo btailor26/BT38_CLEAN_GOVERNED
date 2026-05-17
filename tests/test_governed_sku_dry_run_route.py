@@ -24,22 +24,22 @@ class FakeBlueprint:
         return lambda func: func
 
 
-def import_routes_with_fake_flask(monkeypatch):
+def import_governed_routes_with_fake_flask(monkeypatch):
     request_obj = types.SimpleNamespace(headers={}, get_json=lambda silent=True: {})
     fake_flask = types.ModuleType("flask")
     fake_flask.Blueprint = FakeBlueprint
     fake_flask.jsonify = lambda payload: payload
     fake_flask.request = request_obj
     monkeypatch.setitem(sys.modules, "flask", fake_flask)
-    sys.modules.pop("routes", None)
-    return importlib.import_module("routes"), request_obj
+    sys.modules.pop("governed_routes", None)
+    return importlib.import_module("governed_routes"), request_obj
 
 
 def call_dry_run_route(monkeypatch, payload):
-    routes, request_obj = import_routes_with_fake_flask(monkeypatch)
+    governed_routes, request_obj = import_governed_routes_with_fake_flask(monkeypatch)
     request_obj.headers = {"X-Actor": "pytest"}
     request_obj.get_json = lambda silent=True: payload
-    body, status = routes.governed_sku_dry_run()
+    body, status = governed_routes.governed_sku_dry_run()
     assert status == 200
     return body
 
@@ -115,8 +115,8 @@ def test_governed_dry_run_route_returns_ebay_dry_run_blocked(monkeypatch):
 
 
 def test_route_calls_only_governed_entry_point_not_adapters_directly():
-    source = (ROOT / "routes.py").read_text(encoding="utf-8")
-    route_source = source.split('@bp.post("/governed/actions/sku/dry-run")', 1)[1]
+    source = (ROOT / "governed_routes.py").read_text(encoding="utf-8")
+    route_source = source.split('@governed_bp.post("/governed/actions/sku/dry-run")', 1)[1]
     assert "submit_governed_marketplace_action" in route_source
     forbidden = ["marketplace_adapters", "AmazonFbmAdapter", "EbayAdapter", ".execute("]
     for marker in forbidden:
