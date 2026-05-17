@@ -423,6 +423,13 @@ with app.app_context():
 from routes import bp as routes_bp
 app.register_blueprint(routes_bp)
 
+try:
+    from governed_routes import bp as governed_routes_bp
+    app.register_blueprint(governed_routes_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed routes: {exc}")
+
+
 # Import and register admin reporting blueprint
 from admin_routes import admin_bp
 app.register_blueprint(admin_bp)

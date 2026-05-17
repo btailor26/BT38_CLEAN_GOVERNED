@@ -178,10 +178,10 @@ def _check_marketplace_eligibility(command: GovernedCommand) -> Dict[str, Any]:
             or ""
         ).strip().upper()
         sku = str(command.payload.get("sku") or "")
+        if fulfillment not in {"AFN", "FBA", "MFN", "FBM"}:
+            return {"allowed": False, "reason": "Amazon fulfillment is unknown; governed execution fails closed."}
         if fulfillment in {"AFN", "FBA"} or sku.upper().startswith("FBA-"):
             return {"allowed": False, "reason": "Amazon FBA/AFN is read-only; no FBA push path is permitted."}
-        if fulfillment not in {"MFN", "FBM"}:
-            return {"allowed": False, "reason": "Amazon fulfillment is unknown; governed execution fails closed."}
         if command.dry_run:
             return {"allowed": True, "reason": "Amazon explicit FBM/MFN dry-run eligible."}
         return _check_amazon_fbm_live_eligibility(command, fulfillment, sku)

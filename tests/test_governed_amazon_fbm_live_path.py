@@ -240,7 +240,7 @@ def test_amazon_adapter_live_calls_single_governed_service_method(monkeypatch):
 
 
 def test_route_still_dry_run_only_and_old_paths_remain_blocked():
-    route_source = open("routes.py", encoding="utf-8").read().split('@bp.post("/governed/actions/sku/dry-run")', 1)[1]
+    route_source = open("governed_routes.py", encoding="utf-8").read().split('@governed_bp.post("/governed/actions/sku/dry-run")', 1)[1]
     assert "submit_governed_marketplace_action" in route_source
     assert "dry_run=True" in route_source
     assert "AmazonAPIService" not in route_source
