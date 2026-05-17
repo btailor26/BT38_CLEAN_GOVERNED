@@ -3,7 +3,7 @@ name: Full Sync Shutdown Proof
 on:
   push:
     branches:
-      - codex/full-sync-shutdown
+      - codex/stage4-shutdown-proof-clean
   pull_request:
     branches:
       - main
@@ -47,6 +47,7 @@ jobs:
           python -m py_compile \
             app.py \
             routes.py \
+            models.py \
             sync_dispatcher.py \
             queue_manager.py \
             sync_service.py \
@@ -63,8 +64,7 @@ jobs:
             governed_execution.py \
             marketplace_adapters/base.py \
             marketplace_adapters/amazon_fbm.py \
-            marketplace_adapters/ebay.py \
-            tests/test_governed_amazon_fbm_live_path.py
+            marketplace_adapters/ebay.py
 
       - name: Run shutdown proof tests
         run: |
