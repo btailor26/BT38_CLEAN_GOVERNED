@@ -5,6 +5,16 @@ from flask import Blueprint, jsonify, request
 governed_bp = Blueprint("governed", __name__)
 
 
+@governed_bp.get("/shutdown-proof/status")
+def shutdown_proof_status():
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "shutdown_mode": True,
+        "old_marketplace_routes_present": False,
+    })
+
+
 @governed_bp.post("/governed/actions/sku/dry-run")
 def governed_sku_dry_run():
     """Manual governed SKU dry-run trigger; never performs live execution."""
