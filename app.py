@@ -424,8 +424,8 @@ from routes import bp as routes_bp
 app.register_blueprint(routes_bp)
 
 try:
-    from governed_routes import bp as governed_routes_bp
-    app.register_blueprint(governed_routes_bp)
+    from governed_routes import governed_bp
+    app.register_blueprint(governed_bp)
 except Exception as exc:
     logging.error(f"Failed to register governed routes: {exc}")
 
