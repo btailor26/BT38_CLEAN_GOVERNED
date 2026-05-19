@@ -3957,9 +3957,17 @@ def add_store():
 
                     # Validate credentials and test connection
                     if service:
-                        is_valid, validation_msg = service.validate_credentials_format(store.api_key)
+                        validation_result = service.validate_credentials_format(store.api_key)
+                        if isinstance(validation_result, tuple):
+                            is_valid = bool(validation_result[0]) if len(validation_result) > 0 else False
+                            validation_msg = str(validation_result[1]) if len(validation_result) > 1 else ""
+                        else:
+                            is_valid = bool(validation_result)
+                            validation_msg = ""
+
                         if is_valid:
-                            connection_success = service.disabled_disabled_store_auth_check(store)
+                            auth_result = service.disabled_disabled_store_auth_check(store)
+                            connection_success = bool(auth_result[0]) if isinstance(auth_result, tuple) and len(auth_result) > 0 else bool(auth_result)
                             if connection_success:
                                 store.sync_status = 'success'
                                 store.last_sync = datetime.utcnow()
@@ -4103,9 +4111,17 @@ def edit_store(store_id):
 
                     # Validate and test new credentials
                     if service:
-                        is_valid, validation_msg = service.validate_credentials_format(store.api_key)
+                        validation_result = service.validate_credentials_format(store.api_key)
+                        if isinstance(validation_result, tuple):
+                            is_valid = bool(validation_result[0]) if len(validation_result) > 0 else False
+                            validation_msg = str(validation_result[1]) if len(validation_result) > 1 else ""
+                        else:
+                            is_valid = bool(validation_result)
+                            validation_msg = ""
+
                         if is_valid:
-                            connection_success = service.disabled_disabled_store_auth_check(store)
+                            auth_result = service.disabled_disabled_store_auth_check(store)
+                            connection_success = bool(auth_result[0]) if isinstance(auth_result, tuple) and len(auth_result) > 0 else bool(auth_result)
                             if connection_success:
                                 store.sync_status = 'success'
                                 store.last_sync = datetime.utcnow()
@@ -4387,12 +4403,20 @@ def test_amazon_connection(store_id):
         amazon_service = AmazonAPIService()
 
         # First validate the credential format
-        is_valid, message = amazon_service.validate_credentials_format(credentials)
+        validation_result = amazon_service.validate_credentials_format(credentials)
+        if isinstance(validation_result, tuple):
+            is_valid = bool(validation_result[0]) if len(validation_result) > 0 else False
+            message = str(validation_result[1]) if len(validation_result) > 1 else ""
+        else:
+            is_valid = bool(validation_result)
+            message = ""
+
         if not is_valid:
             return jsonify({'success': False, 'error': message})
 
         # Test authentication
-        auth_success = amazon_service.authenticate_store(test_store)
+        auth_result = amazon_service.authenticate_store(test_store)
+        auth_success = bool(auth_result[0]) if isinstance(auth_result, tuple) and len(auth_result) > 0 else bool(auth_result)
 
         if auth_success:
             return jsonify({'success': True, 'message': 'Amazon connection successful'})
@@ -4432,14 +4456,22 @@ def test_ebay_connection(store_id):
 
         ebay_service = eBayAPIService()
 
-        is_valid, message = ebay_service.validate_credentials_format(store.api_key)
+        validation_result = ebay_service.validate_credentials_format(store.api_key)
+        if isinstance(validation_result, tuple):
+            is_valid = bool(validation_result[0]) if len(validation_result) > 0 else False
+            message = str(validation_result[1]) if len(validation_result) > 1 else ""
+        else:
+            is_valid = bool(validation_result)
+            message = ""
+
         if not is_valid:
             store.sync_status = 'error'
             store.is_active = False
             db.session.commit()
             return jsonify({'success': False, 'error': message})
 
-        auth_success = ebay_service.disabled_disabled_store_auth_check(store)
+        auth_result = ebay_service.disabled_disabled_store_auth_check(store)
+        auth_success = bool(auth_result[0]) if isinstance(auth_result, tuple) and len(auth_result) > 0 else bool(auth_result)
 
         if auth_success:
             store.sync_status = 'success'
