@@ -66,6 +66,7 @@ jobs:
             shutdown_http_guard.py \
             sitecustomize.py \
             services/runtime_gate.py \
+            services/governed_approval.py \
             old_path_shutdown.py \
             governed_execution.py \
             marketplace_adapters/base.py \
@@ -80,4 +81,5 @@ jobs:
             tests/test_governed_execution_skeleton.py \
             tests/test_governed_sku_dry_run_route.py \
             tests/test_governed_amazon_fbm_live_path.py \
-            tests/test_stage5_governed_marketplace_gate_contract.py
+            tests/test_stage5_governed_marketplace_gate_contract.py \
+            tests/test_governed_approval_object.py
