@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -135,19 +136,30 @@ def _load_credentials(store) -> dict[str, Any]:
         parsed = raw
 
     credentials = {
-        "refresh_token": parsed.get("refresh_token") or "",
-        "lwa_app_id": parsed.get("lwa_app_id") or parsed.get("client_id") or "",
-        "lwa_client_secret": parsed.get("lwa_client_secret") or parsed.get("client_secret") or "",
-        "seller_id": parsed.get("seller_id") or parsed.get("selling_partner_id") or "",
-        "marketplace_id": parsed.get("marketplace_id") or DEFAULT_UK_MARKETPLACE_ID,
-        "aws_access_key_id": parsed.get("aws_access_key_id") or "",
-        "aws_secret_access_key": parsed.get("aws_secret_access_key") or "",
+        "refresh_token": _first_value(parsed, "refresh_token", "AMAZON_REFRESH_TOKEN", "SP_API_REFRESH_TOKEN"),
+        "lwa_app_id": _first_value(parsed, "lwa_app_id", "client_id", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_APP_ID", "SP_API_LWA_CLIENT_ID"),
+        "lwa_client_secret": _first_value(parsed, "lwa_client_secret", "client_secret", "AMAZON_LWA_CLIENT_SECRET", "SP_API_LWA_CLIENT_SECRET"),
+        "seller_id": _first_value(parsed, "seller_id", "selling_partner_id", "AMAZON_SELLER_ID", "SP_API_SELLER_ID"),
+        "marketplace_id": _first_value(parsed, "marketplace_id", "AMAZON_MARKETPLACE_ID", "SP_API_MARKETPLACE_ID") or DEFAULT_UK_MARKETPLACE_ID,
+        "aws_access_key_id": _first_value(parsed, "aws_access_key_id", "AWS_ACCESS_KEY_ID", "AMAZON_AWS_ACCESS_KEY_ID", "SP_API_AWS_ACCESS_KEY_ID"),
+        "aws_secret_access_key": _first_value(parsed, "aws_secret_access_key", "AWS_SECRET_ACCESS_KEY", "AMAZON_AWS_SECRET_ACCESS_KEY", "SP_API_AWS_SECRET_ACCESS_KEY"),
     }
     missing = [key for key, value in credentials.items() if key != "marketplace_id" and not value]
     if missing:
         return {"ok": False, "reason": f"Missing Amazon credential fields: {', '.join(missing)}"}
     credentials["ok"] = True
     return credentials
+
+
+def _first_value(source: Mapping[str, Any], *names: str) -> str:
+    for name in names:
+        value = source.get(name)
+        if value:
+            return str(value).strip()
+        env_value = os.getenv(name)
+        if env_value:
+            return env_value.strip()
+    return ""
 
 
 def _get_lwa_access_token(credentials: Mapping[str, str]) -> str:
