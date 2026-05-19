@@ -2743,72 +2743,68 @@ def warehouse():
             if getattr(listing, 'is_active', False)
         ]
 
-        amazon_fbm = [
-            listing for listing in active_listings
-            if listing.store
-            and 'amazon' in (listing.store.platform or '').lower()
-            and (listing.normalized_amazon_fulfillment_channel or '').upper() in ('MFN', 'FBM', 'MERCHANT')
-        ]
+        # NO LINKED MARKETPLACE ROWS
+        if not active_listings:
+            enriched_items.append(SimpleNamespace(
+                id=stock.id,
+                inventory_item_id=getattr(stock, 'inventory_item_id', None),
+                item_id=getattr(stock, 'item_id', None),
+                marketplace_listing_id=None,
+                sku=stock.sku,
+                barcode=stock.barcode,
+                product_name=stock.product_name,
+                title=None,
+                group_title=stock.group_title,
+                image_url=stock.image_url,
+                available_quantity=stock.available_quantity,
+                price=stock.unit_cost,
+                store_name=None,
+                location=stock.location or 'Warehouse',
+                amazon_fulfillment_channel=None,
+                master_product_group_id=stock.master_product_group_id,
+                is_group_controlled=stock.is_group_controlled,
+                mcf_group_source=False,
+                linked_listing_count=0,
+            ))
+            continue
 
-        amazon_fba = [
-            listing for listing in active_listings
-            if listing.store
-            and 'amazon' in (listing.store.platform or '').lower()
-            and (listing.normalized_amazon_fulfillment_channel or '').upper() in ('AFN', 'FBA')
-        ]
+        # CREATE ONE VISIBLE ROW PER MARKETPLACE LISTING
+        for listing in active_listings:
 
-        ebay_rows = [
-            listing for listing in active_listings
-            if listing.store
-            and 'ebay' in (listing.store.platform or '').lower()
-        ]
+            platform = listing.store.platform if listing.store else None
+            store_name = listing.store.name if listing.store else None
+            channel = listing.normalized_amazon_fulfillment_channel
 
-        if amazon_fbm:
-            primary_listing = amazon_fbm[0]
-        elif ebay_rows:
-            primary_listing = ebay_rows[0]
-        elif amazon_fba:
-            primary_listing = amazon_fba[0]
-        elif active_listings:
-            primary_listing = active_listings[0]
-        else:
-            primary_listing = None
+            if platform and 'amazon' in platform.lower() and channel in ('AFN', 'FBA'):
+                location = 'Amazon FBA'
+            elif platform and 'amazon' in platform.lower():
+                location = 'Amazon FBM'
+            elif platform and 'ebay' in platform.lower():
+                location = 'eBay'
+            else:
+                location = stock.location or 'Warehouse'
 
-        platform = primary_listing.store.platform if primary_listing and primary_listing.store else None
-        store_name = primary_listing.store.name if primary_listing and primary_listing.store else None
-        channel = primary_listing.normalized_amazon_fulfillment_channel if primary_listing else None
-
-        if platform and 'amazon' in platform.lower() and channel in ('AFN', 'FBA'):
-            location = 'Amazon FBA'
-        elif platform and 'amazon' in platform.lower():
-            location = 'Amazon FBM'
-        elif platform and 'ebay' in platform.lower():
-            location = 'eBay'
-        else:
-            location = stock.location or 'Warehouse'
-
-        enriched_items.append(SimpleNamespace(
-            id=stock.id,
-            inventory_item_id=getattr(stock, 'inventory_item_id', None),
-            item_id=getattr(stock, 'item_id', None),
-            marketplace_listing_id=primary_listing.id if primary_listing else None,
-            sku=stock.sku,
-            barcode=stock.barcode,
-            product_name=stock.product_name,
-            title=primary_listing.title if primary_listing else None,
-            group_title=stock.group_title,
-            image_url=stock.image_url,
-            available_quantity=stock.available_quantity,
-            price=primary_listing.price if primary_listing else stock.unit_cost,
-            store_name=store_name,
-            location=location,
-            amazon_fulfillment_channel=channel,
-            master_product_group_id=stock.master_product_group_id,
-            is_group_controlled=stock.is_group_controlled,
-            mcf_group_source=False,
-            linked_listing_count=len(active_listings),
-        ))
-
+            enriched_items.append(SimpleNamespace(
+                id=stock.id,
+                inventory_item_id=getattr(stock, 'inventory_item_id', None),
+                item_id=getattr(stock, 'item_id', None),
+                marketplace_listing_id=listing.id,
+                sku=stock.sku,
+                barcode=stock.barcode,
+                product_name=stock.product_name,
+                title=listing.title,
+                group_title=stock.group_title,
+                image_url=stock.image_url,
+                available_quantity=stock.available_quantity,
+                price=listing.price if listing.price else stock.unit_cost,
+                store_name=store_name,
+                location=location,
+                amazon_fulfillment_channel=channel,
+                master_product_group_id=stock.master_product_group_id,
+                is_group_controlled=stock.is_group_controlled,
+                mcf_group_source=False,
+                linked_listing_count=len(active_listings),
+            ))
     warehouse_items = SimpleNamespace(
         items=enriched_items,
         total=raw_page.total,
