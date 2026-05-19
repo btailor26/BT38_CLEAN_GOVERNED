@@ -36,7 +36,8 @@ class AmazonAPIService(DisabledMarketplaceService):
     ) -> Dict[str, Any]:
         """Governed-only Amazon FBM execution entry point.
 
-        This method intentionally avoids all retired sync/push/import paths.
+        This method intentionally avoids all retired sync/push/import paths and
+        delegates only to the dedicated governed Amazon live PATCH module.
         """
 
         channel = (fulfillment_channel or "").strip().upper()
@@ -64,25 +65,28 @@ class AmazonAPIService(DisabledMarketplaceService):
                 reason="Unknown Amazon fulfillment",
             )
 
-        return {
-            "success": True,
-            "ok": True,
-            "governed": True,
-            "execution_blocked": False,
-            "method": "update_fbm_inventory_quantity_governed",
-            "delegated_method": None,
-            "old_sync_disabled": OLD_SYNC_DISABLED,
-            "marketplace_execution_disabled": MARKETPLACE_EXECUTION_DISABLED,
-            "governed_path_required": GOVERNED_PATH_REQUIRED,
-            "sku": clean_sku,
-            "quantity": quantity,
-            "marketplace_id": marketplace_id,
-            "command_id": command_id,
-            "approval_id": approval_id,
-            "store_id": getattr(store, "id", None),
-            "listing_id": getattr(listing, "id", None),
-            "reason": "Governed Amazon FBM service path reached successfully.",
-        }
+        from amazon_service_live_patch import governed_amazon_quantity_patch
+
+        result = governed_amazon_quantity_patch(
+            store=store,
+            listing=listing,
+            sku=clean_sku,
+            quantity=quantity,
+            marketplace_id=marketplace_id,
+            command_id=command_id,
+            approval_id=approval_id,
+        )
+
+        result.update(
+            {
+                "method": "update_fbm_inventory_quantity_governed",
+                "delegated_method": None,
+                "old_sync_disabled": OLD_SYNC_DISABLED,
+                "marketplace_execution_disabled": MARKETPLACE_EXECUTION_DISABLED,
+                "governed_path_required": GOVERNED_PATH_REQUIRED,
+            }
+        )
+        return result
 
 
 def _blocked(action: str, **context: Any) -> Dict[str, Any]:
