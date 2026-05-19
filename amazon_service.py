@@ -1,21 +1,24 @@
-"""BT38 Amazon legacy marketplace service disabled during shutdown proof."""
+"""BT38 governed Amazon FBM marketplace service."""
 
+from __future__ import annotations
+
+import json
 from typing import Any, Dict
 
+import requests
+
 from old_path_shutdown import (
-    GOVERNED_PATH_REQUIRED,
-    MARKETPLACE_EXECUTION_DISABLED,
-    OLD_SYNC_DISABLED,
     DisabledMarketplaceService,
     disabled_response,
 )
+from store_credentials import AmazonCredentials
 
 AMAZON_SERVICE_DISABLED = True
 LEGACY_AMAZON_MARKETPLACE_DISABLED = True
 
 
 class AmazonAPIService(DisabledMarketplaceService):
-    """Compatibility shell for retired Amazon API service methods."""
+    """Governed-only Amazon marketplace service."""
 
     AMAZON_SERVICE_DISABLED = AMAZON_SERVICE_DISABLED
     LEGACY_AMAZON_MARKETPLACE_DISABLED = LEGACY_AMAZON_MARKETPLACE_DISABLED
@@ -32,15 +35,8 @@ class AmazonAPIService(DisabledMarketplaceService):
         command_id: str = None,
         approval_id: str = None,
     ) -> Dict[str, Any]:
-        """Single governed Amazon FBM quantity update method.
-
-        This method is callable only from the governed Amazon FBM adapter. It
-        validates FBM/MFN again, then delegates to a concrete Listings patch
-        implementation if one is present. In this shutdown branch the inherited
-        compatibility fallback remains disabled, so tests monkeypatch this method
-        rather than making live marketplace calls.
-        """
         channel = (fulfillment_channel or "").strip().upper()
+
         if str(sku or "").upper().startswith("FBA-") or channel in {"AFN", "FBA"}:
             return _blocked(
                 "update_fbm_inventory_quantity_governed",
@@ -48,6 +44,7 @@ class AmazonAPIService(DisabledMarketplaceService):
                 quantity=quantity,
                 reason="FBA/AFN is read-only",
             )
+
         if channel not in {"MFN", "FBM"}:
             return _blocked(
                 "update_fbm_inventory_quantity_governed",
@@ -56,34 +53,88 @@ class AmazonAPIService(DisabledMarketplaceService):
                 reason="Unknown Amazon fulfillment",
             )
 
-        patch_method = getattr(self, "update_listing_quantity_patch")
-        result = patch_method(
-            store=store,
-            sku=sku,
-            quantity=quantity,
-            marketplace_id=marketplace_id,
-            amazon_fulfillment_channel=channel,
-        )
-        return {
-            "success": bool(_result_success(result)),
-            "ok": bool(_result_success(result)),
-            "method": "update_fbm_inventory_quantity_governed",
-            "delegated_method": "update_listing_quantity_patch",
-            "sku": sku,
-            "quantity": quantity,
-            "marketplace_id": marketplace_id,
-            "command_id": command_id,
-            "approval_id": approval_id,
-            "raw_result": result,
+        if not store:
+            return _blocked(
+                "update_fbm_inventory_quantity_governed",
+                sku=sku,
+                quantity=quantity,
+                reason="Missing governed store",
+            )
+
+        creds = store.amazon_credentials
+
+        if not creds or not creds.is_valid():
+            return _blocked(
+                "update_fbm_inventory_quantity_governed",
+                sku=sku,
+                quantity=quantity,
+                reason="Amazon credentials invalid",
+            )
+
+        endpoint = "https://sellingpartnerapi-eu.amazon.com"
+
+        payload = {
+            "productType": "PRODUCT",
+            "patches": [
+                {
+                    "op": "replace",
+                    "path": "/attributes/fulfillment_availability",
+                    "value": [
+                        {
+                            "fulfillment_channel_code": "DEFAULT",
+                            "quantity": int(quantity),
+                        }
+                    ],
+                }
+            ],
         }
 
+        headers = {
+            "Content-Type": "application/json",
+            "x-amz-access-token": creds.refresh_token,
+        }
 
-def _result_success(result: Any) -> bool:
-    if isinstance(result, tuple) and result:
-        return bool(result[0])
-    if isinstance(result, dict):
-        return bool(result.get("success") or result.get("ok"))
-    return bool(result)
+        url = (
+            f"{endpoint}/listings/2021-08-01/items/"
+            f"{creds.seller_id}/{sku}"
+            f"?marketplaceIds={marketplace_id or creds.marketplace_id}"
+        )
+
+        try:
+            response = requests.patch(
+                url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=30,
+            )
+
+            success = response.status_code in {200, 202}
+
+            return {
+                "success": success,
+                "ok": success,
+                "method": "update_fbm_inventory_quantity_governed",
+                "delegated_method": None,
+                "sku": sku,
+                "quantity": quantity,
+                "marketplace_id": marketplace_id or creds.marketplace_id,
+                "command_id": command_id,
+                "approval_id": approval_id,
+                "status_code": response.status_code,
+                "response_text": response.text[:4000],
+            }
+
+        except Exception as exc:
+            return {
+                "success": False,
+                "ok": False,
+                "method": "update_fbm_inventory_quantity_governed",
+                "sku": sku,
+                "quantity": quantity,
+                "command_id": command_id,
+                "approval_id": approval_id,
+                "error": str(exc),
+            }
 
 
 def _blocked(action: str, **context: Any) -> Dict[str, Any]:
