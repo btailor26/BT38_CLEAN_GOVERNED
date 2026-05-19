@@ -271,6 +271,36 @@ def test_stage5_fba_unknown_and_ebay_live_remain_blocked(monkeypatch):
     assert "disabled" in result["reason"].lower() or "ebay live" in result["reason"].lower()
 
 
+def test_real_fba_sku_sr_ay_tc_80g_returns_stop_transfer_reason_before_adapter(monkeypatch):
+    open_stage5_gate(monkeypatch)
+    payload = live_payload(
+        sku="FBA-SR-AY-TC-80g",
+        amazon_fulfillment_channel="AFN",
+        quantity=1,
+    )
+    patch_valid_store_and_listing(monkeypatch, fulfillment="AFN", sku="FBA-SR-AY-TC-80g")
+    monkeypatch.setattr(
+        governed_execution,
+        "_select_adapter",
+        lambda _marketplace: (_ for _ in ()).throw(AssertionError("FBA stop-transfer must not select adapter")),
+    )
+
+    result = governed_execution.submit_governed_marketplace_action(
+        payload,
+        actor="stage5-real-fba-stop-transfer-test",
+        approval=approval_for(payload),
+        dry_run=False,
+    )
+
+    assert result["governed"] is True
+    assert result["execution_blocked"] is True
+    assert result["runtime_gate_allowed"] is True
+    assert result["eligibility_checked"] is True
+    assert result["marketplace"] == "amazon"
+    assert result["action"] == "push_inventory"
+    assert "FBA/AFN is read-only" in result["reason"]
+
+
 def test_stage5_http_route_remains_dry_run_only_and_old_paths_stay_shutdown():
     route_source = open("governed_routes.py", encoding="utf-8").read().split(
         '@governed_bp.post("/governed/actions/sku/dry-run")',
