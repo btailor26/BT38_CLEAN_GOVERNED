@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from app import db
-from models import MarketplaceListing, Store, WarehouseStock
+from models import MarketplaceListing, Store, Warehouse, WarehouseStock
 
 ALLOWED_MARKETPLACES = {"amazon"}
 ALLOWED_FULFILLMENT_CHANNELS = {"MFN", "FBM", "AFN", "FBA"}
@@ -27,6 +27,68 @@ def normalize_fulfillment_channel(value: Any) -> str:
 
 def normalize_sku(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _warehouse_location_for_fulfillment(fulfillment: str) -> str:
+    if fulfillment in {"AFN", "FBA"}:
+        return "Amazon FBA"
+    if fulfillment in {"MFN", "FBM"}:
+        return "Amazon FBM"
+    return "Warehouse"
+
+
+def _find_or_create_warehouse_stock_for_listing(*, sku: str, title: str | None, fulfillment: str) -> WarehouseStock:
+    """Ensure every governed imported listing has a WarehouseStock truth row.
+
+    The warehouse page renders from WarehouseStock first. If a governed import
+    creates a MarketplaceListing without a warehouse_stock_id, that listing is
+    hidden from /warehouse and quantity actions fail. This helper keeps import
+    visibility aligned without changing UI or marketplace execution.
+    """
+    default_warehouse = Warehouse.get_default()
+
+    stock = db.session.query(WarehouseStock).filter(
+        WarehouseStock.warehouse_id == default_warehouse.id,
+        WarehouseStock.sku == sku,
+    ).first()
+
+    if stock is None:
+        stock = WarehouseStock(
+            warehouse_id=default_warehouse.id,
+            sku=sku,
+            available_quantity=0,
+            reserved_quantity=0,
+            allocated_quantity=0,
+            on_order_quantity=0,
+            product_name=title or sku,
+            location=_warehouse_location_for_fulfillment(fulfillment),
+            unit_cost=0.0,
+            is_active=True,
+            is_deleted=False,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.session.add(stock)
+        db.session.flush()
+        return stock
+
+    changed = False
+    if not getattr(stock, "product_name", None) and title:
+        stock.product_name = title
+        changed = True
+    if not getattr(stock, "location", None):
+        stock.location = _warehouse_location_for_fulfillment(fulfillment)
+        changed = True
+    if getattr(stock, "is_deleted", False):
+        stock.is_deleted = False
+        changed = True
+    if getattr(stock, "is_active", True) is not True:
+        stock.is_active = True
+        changed = True
+    if changed:
+        stock.updated_at = datetime.utcnow()
+
+    return stock
 
 
 def refresh_governed_listing_from_snapshot(
@@ -72,6 +134,12 @@ def refresh_governed_listing_from_snapshot(
         warehouse_stock = db.session.get(WarehouseStock, warehouse_stock_id)
         if warehouse_stock is None:
             return _blocked("missing warehouse stock")
+    else:
+        warehouse_stock = _find_or_create_warehouse_stock_for_listing(
+            sku=sku,
+            title=title,
+            fulfillment=fulfillment,
+        )
 
     listing = MarketplaceListing.query.filter_by(
         store_id=store.id,
@@ -89,6 +157,7 @@ def refresh_governed_listing_from_snapshot(
             price=float(price or 0),
             currency=currency or "GBP",
             amazon_fulfillment_channel=fulfillment,
+            warehouse_stock_id=warehouse_stock.id,
             is_active=True,
             push_state="needs_review" if transfer_status == TRANSFER_PENDING_REVIEW else "active",
             last_push_status="pending",
