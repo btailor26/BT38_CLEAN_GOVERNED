@@ -26,12 +26,7 @@ def governed_amazon_quantity_patch(
     command_id: str | None,
     approval_id: str | None,
 ) -> dict[str, Any]:
-    """Run one governed Amazon FBM/MFN ListingsItems quantity PATCH.
-
-    Uses the installed python-amazon-sp-api package instead of a raw manual
-    SigV4 implementation. This keeps marketplace mutation inside the governed
-    lane while avoiding old sync/push/import code.
-    """
+    """Run one governed Amazon FBM/MFN ListingsItems quantity PATCH."""
     started = time.monotonic()
     clean_sku = str(sku or "").strip()
 
@@ -60,8 +55,17 @@ def governed_amazon_quantity_patch(
             quantity=clean_quantity,
             marketplace_id=resolved_marketplace_id,
         )
-        status_code = int(response.get("status_code") or 0)
-        success = 200 <= status_code < 300
+
+        raw_status = response.get("status_code")
+
+        if isinstance(raw_status, str):
+            normalized = raw_status.strip().upper()
+            success = normalized in {"ACCEPTED", "SUCCESS", "OK"}
+            status_code = 202 if normalized == "ACCEPTED" else 200
+        else:
+            status_code = int(raw_status or 200)
+            success = 200 <= status_code < 300
+
         return {
             "success": success,
             "ok": success,
@@ -181,14 +185,15 @@ def _patch_listing_quantity_with_sp_api(*, credentials: Mapping[str, str], sku: 
         marketplaceIds=[marketplace_id],
     )
 
-    status_code = int(getattr(response, "status_code", None) or getattr(response, "status", None) or 200)
+    raw_status = getattr(response, "status_code", None) or getattr(response, "status", None) or 200
+
     payload = getattr(response, "payload", None)
     if payload is None and hasattr(response, "json"):
         payload = response.json()
     if payload is None:
         payload = str(response)
 
-    return {"status_code": status_code, "body": payload}
+    return {"status_code": raw_status, "body": payload}
 
 
 def _sp_api_credentials(credentials: Mapping[str, str]) -> dict[str, str]:
