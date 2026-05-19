@@ -2724,7 +2724,30 @@ def warehouse():
     )
 
     if search_query:
-        query = query.filter(WarehouseStock.sku.ilike(f'%{search_query}%'))
+        search_pattern = f'%{search_query}%'
+        query = query.outerjoin(
+            InventoryItem, WarehouseStock.sku == InventoryItem.sku
+        ).outerjoin(
+            MarketplaceListing, MarketplaceListing.warehouse_stock_id == WarehouseStock.id
+        ).filter(or_(
+            WarehouseStock.sku.ilike(search_pattern),
+            WarehouseStock.product_name.ilike(search_pattern),
+            InventoryItem.name.ilike(search_pattern),
+            MarketplaceListing.title.ilike(search_pattern),
+            MarketplaceListing.external_sku.ilike(search_pattern),
+            MarketplaceListing.asin.ilike(search_pattern),
+            MarketplaceListing.fnsku.ilike(search_pattern),
+        )).distinct()
+
+    marketplace_filter = request.args.get('marketplace', '').strip()
+    if marketplace_filter:
+        marketplace_stock_ids = db.session.query(WarehouseStock.id).join(
+            MarketplaceListing, MarketplaceListing.warehouse_stock_id == WarehouseStock.id
+        ).join(
+            Store, MarketplaceListing.store_id == Store.id
+        ).filter(Store.platform == marketplace_filter).distinct().subquery()
+
+        query = query.filter(WarehouseStock.id.in_(db.session.query(marketplace_stock_ids.c.id)))
 
     if low_stock == 'true':
         query = query.filter(WarehouseStock.available_quantity <= WarehouseStock.reorder_point)
@@ -2844,7 +2867,8 @@ def warehouse():
         warehouse_items=warehouse_items,
         stats=stats,
         current_search=search_query,
-        low_stock_filter=low_stock
+        low_stock_filter=low_stock,
+        current_marketplace_filter=marketplace_filter
     )
 
 @bp.route('/warehouse/<int:stock_id>')
