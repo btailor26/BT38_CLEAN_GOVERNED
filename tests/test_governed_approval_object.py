@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from services import governed_approval, runtime_gate
 
 
@@ -74,18 +76,18 @@ def test_command_center_approval_matches_runtime_gate_contract(monkeypatch):
         quantity=payload["quantity"],
         approved_by="pytest-user",
     )
-
-    class Command:
-        marketplace = "amazon"
-        action = "push_inventory"
-        dry_run = False
-        payload = payload
-        approval = approval
+    command = SimpleNamespace(
+        marketplace="amazon",
+        action="push_inventory",
+        dry_run=False,
+        payload=payload,
+        approval=approval,
+    )
 
     monkeypatch.setattr(runtime_gate, "RUNTIME_GATE_FORCE_CLOSED", False)
     monkeypatch.setattr(runtime_gate, "GOVERNED_AMAZON_FBM_LIVE_ENABLED", True)
 
-    assert runtime_gate.is_runtime_allowed(Command()) is True
+    assert runtime_gate.is_runtime_allowed(command) is True
 
 
 def test_command_center_approval_mismatch_fails_runtime_gate(monkeypatch):
@@ -105,15 +107,15 @@ def test_command_center_approval_mismatch_fails_runtime_gate(monkeypatch):
         quantity=payload["quantity"] + 1,
         approved_by="pytest-user",
     )
-
-    class Command:
-        marketplace = "amazon"
-        action = "push_inventory"
-        dry_run = False
-        payload = payload
-        approval = approval
+    command = SimpleNamespace(
+        marketplace="amazon",
+        action="push_inventory",
+        dry_run=False,
+        payload=payload,
+        approval=approval,
+    )
 
     monkeypatch.setattr(runtime_gate, "RUNTIME_GATE_FORCE_CLOSED", False)
     monkeypatch.setattr(runtime_gate, "GOVERNED_AMAZON_FBM_LIVE_ENABLED", True)
 
-    assert runtime_gate.is_runtime_allowed(Command()) is False
+    assert runtime_gate.is_runtime_allowed(command) is False
