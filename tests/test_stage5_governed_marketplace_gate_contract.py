@@ -83,6 +83,35 @@ def test_stage5_defaults_remain_closed_before_any_live_validation(monkeypatch):
     assert "disabled" in result["reason"].lower()
 
 
+def test_stage5_dual_flag_gate_requires_both_flags_before_adapter(monkeypatch):
+    payload = live_payload()
+    patch_valid_store_and_listing(monkeypatch)
+    monkeypatch.setattr(
+        governed_execution,
+        "_select_adapter",
+        lambda _marketplace: (_ for _ in ()).throw(AssertionError("partial gate must not select adapter")),
+    )
+
+    partial_states = [
+        {"RUNTIME_GATE_FORCE_CLOSED": True, "GOVERNED_AMAZON_FBM_LIVE_ENABLED": False},
+        {"RUNTIME_GATE_FORCE_CLOSED": True, "GOVERNED_AMAZON_FBM_LIVE_ENABLED": True},
+        {"RUNTIME_GATE_FORCE_CLOSED": False, "GOVERNED_AMAZON_FBM_LIVE_ENABLED": False},
+    ]
+
+    for state in partial_states:
+        monkeypatch.setattr(runtime_gate, "RUNTIME_GATE_FORCE_CLOSED", state["RUNTIME_GATE_FORCE_CLOSED"])
+        monkeypatch.setattr(runtime_gate, "GOVERNED_AMAZON_FBM_LIVE_ENABLED", state["GOVERNED_AMAZON_FBM_LIVE_ENABLED"])
+        result = governed_execution.submit_governed_marketplace_action(
+            payload,
+            actor="stage5-test",
+            approval=approval_for(payload),
+            dry_run=False,
+        )
+        assert result["execution_blocked"] is True
+        assert result["runtime_gate_allowed"] is False
+        assert result["eligibility_checked"] is False
+
+
 def test_stage5_internal_amazon_fbm_live_path_requires_exact_approval_and_valid_listing(monkeypatch):
     open_stage5_gate(monkeypatch)
     payload = live_payload()
