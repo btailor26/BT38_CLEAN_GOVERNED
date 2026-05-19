@@ -29,31 +29,84 @@ function bt38ClearSelection(){
   bt38UpdateActionBar();
 }
 
+function bt38PostJson(endpoint, body){
+  return fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': '{{ csrf_token if csrf_token is defined else "" }}'
+    },
+    body: JSON.stringify(body || {})
+  }).then(async response => {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false || data.ok === false) {
+      throw new Error(data.reason || data.error || data.message || 'Governed action failed.');
+    }
+    return data;
+  });
+}
+
+function bt38PushGovernedListing(row){
+  if (!row) return Promise.reject(new Error('Missing row for governed push.'));
+
+  const listingId = row.dataset.listingId || '';
+  const sku = row.dataset.sku || '';
+
+  if (!listingId || listingId === '0') {
+    return Promise.reject(new Error(`Missing marketplace listing id for ${sku || 'this row'}.`));
+  }
+
+  return bt38PostJson(`/governed/actions/listings/${encodeURIComponent(listingId)}/push`, {});
+}
+
+function bt38ChooseAction(value){
+  if (!value) return;
+
+  const selected = bt38SelectedRows();
+  if (!selected.length) return alert('Select at least one SKU first.');
+
+  if (value !== 'push' && value !== 'sync') {
+    alert('Only governed Push is wired on this page right now. Other actions remain unchanged until approved.');
+    const select = document.getElementById('bt38ActionSelect');
+    if (select) select.value = '';
+    return;
+  }
+
+  if (!confirm(`Run governed push for ${selected.length} selected SKU(s)?`)) {
+    const select = document.getElementById('bt38ActionSelect');
+    if (select) select.value = '';
+    return;
+  }
+
+  Promise.allSettled(selected.map(cb => bt38PushGovernedListing(cb.closest('tr'))))
+    .then(results => {
+      const passed = results.filter(result => result.status === 'fulfilled').length;
+      const failed = results.length - passed;
+      alert(`Governed push complete. Success: ${passed}. Failed: ${failed}.`);
+      window.location.reload();
+    })
+    .catch(err => alert('Governed push failed: ' + err.message));
+}
+
 function bt38OpenRowAction(button){
   const row = button.closest('tr');
   if (!row) return;
 
   const itemId = row.dataset.itemId;
   const stockId = row.dataset.stockId;
+  const listingId = row.dataset.listingId;
   const sku = row.dataset.sku || '';
-  const groupId = row.dataset.groupId || '';
-  const marketplace = row.dataset.marketplace || '';
 
   if (button.classList.contains('bt38-marketplace-control')) {
-    if (!itemId) return alert('Missing item id for marketplace action.');
-    if (!confirm(`Queue marketplace sync for ${sku}?`)) return;
+    if (!listingId || listingId === '0') return alert('Missing marketplace listing id for governed push.');
+    if (!confirm(`Run governed marketplace push for ${sku}?`)) return;
 
-    const endpoint = marketplace.includes('eBay')
-      ? `/api/sync/ebay/sku/${encodeURIComponent(sku)}`
-      : `/push_stock/${itemId}`;
-
-    fetch(endpoint, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'}
-    })
-    .then(r => r.json())
-    .then(data => alert(data.message || data.error || 'Marketplace sync queued.'))
-    .catch(err => alert('Marketplace sync failed: ' + err));
+    bt38PushGovernedListing(row)
+      .then(data => {
+        alert(data.reason || data.message || 'Governed marketplace push completed.');
+        window.location.reload();
+      })
+      .catch(err => alert('Governed marketplace push failed: ' + err.message));
     return;
   }
 
@@ -79,7 +132,7 @@ function bt38OpenRowAction(button){
     .then(data => {
       if (!data.success) return alert(data.error || data.message || 'Quantity update failed.');
       button.querySelector('span').innerText = qty;
-      alert(data.message || 'Quantity saved and push queued.');
+      alert(data.message || 'Quantity saved. Use the marketplace icon to run governed push.');
       window.location.reload();
     })
     .catch(err => alert('Quantity update failed: ' + err));
@@ -87,7 +140,7 @@ function bt38OpenRowAction(button){
   }
 
   if (button.classList.contains('bt38-price-action')) {
-    alert('Price editing will be wired after quantity and sync actions are stable.');
+    alert('Price editing will be wired after quantity and governed push actions are stable.');
     return;
   }
 
@@ -99,7 +152,7 @@ function bt38OpenRowAction(button){
   }
 
   if (button.classList.contains('bt38-action-btn')) {
-    alert('Use the marketplace icon for single sync, Qty Save for quantity, or Group Source for group control.');
+    alert('Use the marketplace icon for governed single push, Qty Save for quantity, or row select for bulk governed push.');
     return;
   }
 }
@@ -268,6 +321,7 @@ function bt38OpenRowAction(button){
             <tr
               data-item-id="{{ item.inventory_item_id or item.item_id or item.id }}"
               data-stock-id="{{ item.id }}"
+              data-listing-id="{{ item.marketplace_listing_id if item.marketplace_listing_id else '' }}"
               data-sku="{{ item.sku }}"
               data-group-id="{{ item.master_product_group_id or "" }}"
               data-marketplace="{{ item.location or "" }}"
@@ -428,7 +482,7 @@ onclick="window.location.href='/groups/{{ item.master_product_group_id }}'">
 
               <button type="button" class="bt38-action-btn" onclick="bt38OpenRowAction(this)">
                 Action
-              </div>
+              </button>
 
             </td>
 
