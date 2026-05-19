@@ -4883,267 +4883,33 @@ def amazon_oauth():
 
 @bp.route('/push_stock/<int:item_id>', methods=['POST'])
 def push_stock_individual(item_id):
-    """Push stock for individual item to all connected stores using job queue"""
-    try:
-        from queue_manager import enqueue_sync_job, JOB_PUSH_ITEM, PRIORITY_HIGH
 
-        logging.info(f"Enqueueing stock push for item ID: {item_id}")
-
-        # Get the inventory item
-        item = db.session.query(InventoryItem).filter(InventoryItem.id == item_id).first()
-        if not item:
-            logging.error(f"Item not found: {item_id}")
-            return jsonify({'success': False, 'error': 'Item not found'})
-
-        logging.info(f"Found item: {item.sku}")
-
-        # CRITICAL FIX: Get warehouse stock for this SKU, then find stores with listings
-        # Don't push Amazon SKUs to eBay stores or vice versa!
-        warehouse_stock = db.session.query(WarehouseStock).filter_by(sku=item.sku).first()
-        if not warehouse_stock:
-            return jsonify({'success': False, 'error': f'No warehouse stock found for SKU {item.sku}'})
-
-        active_stores = db.session.query(Store).join(
-            MarketplaceListing, Store.id == MarketplaceListing.store_id
-        ).filter(
-            Store.is_active == True,
-            MarketplaceListing.warehouse_stock_id == warehouse_stock.id
-        ).distinct().all()
-
-        if not active_stores:
-            logging.error(f"No active stores with listings for SKU {item.sku}")
-            return jsonify({'success': False, 'error': f'No stores configured for this SKU. Import it to a store first.'})
-
-        logging.info(f"Found {len(active_stores)} stores with listings for {item.sku}")
-
-        # Enqueue high-priority push jobs for each store
-        jobs_enqueued = []
-        for store in active_stores:
-            try:
-                # Skip stores without proper credentials
-                if not store.api_key:
-                    logging.warning(f"Skipping store {store.name}: No API credentials")
-                    continue
-
-                # Enqueue high-priority job
-                job = disabled_queue_job(
-                    store_id=store.id,
-                    job_type=JOB_PUSH_ITEM,
-                    payload={'item_id': item_id},
-                    priority=PRIORITY_HIGH
-                )
-                jobs_enqueued.append({
-                    'store': store.name,
-                    'platform': store.platform,
-                    'job_id': job.id
-                })
-
-            except Exception as store_error:
-                logging.error(f"Error enqueueing job for store {store.name}: {str(store_error)}")
-
-        if not jobs_enqueued:
-            return jsonify({
-                'success': False,
-                'error': 'No jobs could be enqueued (check store credentials)'
-            })
-
-        response = {
-            'success': True,
-            'item_sku': item.sku,
-            'item_name': item.name,
-            'jobs_enqueued': len(jobs_enqueued),
-            'stores': [j['store'] for j in jobs_enqueued],
-            'message': f'Push queued for {item.name} to {len(jobs_enqueued)} store(s). Processing now...'
-        }
-
-        return jsonify(response)
-
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        logging.error(f"Error in individual stock push for item {item_id}: {str(e)}")
-        logging.error(f"Full traceback: {error_details}")
-        return jsonify({
-            'success': False,
-            'error': f'Server error: {str(e)}',
-            'item_id': item_id
-        }), 500
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "error": "Direct inventory push route frozen. Use /warehouse governed actions."
+    }), 410
 
 @bp.route('/push_stock_bulk', methods=['POST'])
 def push_stock_bulk():
-    """Queue stock push jobs for selected items, gated by Settings."""
-    try:
-        data = request.get_json()
-        if not data or 'item_ids' not in data:
-            return jsonify({'success': False, 'error': 'No items selected'})
 
-        item_ids = data['item_ids']
-        if not item_ids:
-            return jsonify({'success': False, 'error': 'No items selected'})
-
-        logging.info(f"Enqueueing bulk stock push for {len(item_ids)} items")
-
-        items = db.session.query(InventoryItem).filter(InventoryItem.id.in_(item_ids)).all()
-        if not items:
-            return jsonify({'success': False, 'error': 'No valid items found'})
-
-        results = []
-        total_jobs_enqueued = 0
-
-        for item in items:
-            warehouse_stock = db.session.query(WarehouseStock).filter_by(sku=item.sku).first()
-            if not warehouse_stock:
-                logging.warning(f"No warehouse stock for SKU {item.sku} - skipping")
-                results.append({
-                    'item_id': item.id,
-                    'item_sku': item.sku,
-                    'item_name': item.name,
-                    'success': False,
-                    'jobs_enqueued': 0,
-                    'stores': [],
-                    'error': f'No warehouse stock found for SKU {item.sku}'
-                })
-                continue
-
-            stores_with_listings = db.session.query(Store).join(
-                MarketplaceListing, Store.id == MarketplaceListing.store_id
-            ).filter(
-                Store.is_active == True,
-                MarketplaceListing.warehouse_stock_id == warehouse_stock.id
-            ).distinct().all()
-
-            if not stores_with_listings:
-                logging.info(f"SKU {item.sku} has no marketplace listings - skipping")
-                results.append({
-                    'item_id': item.id,
-                    'item_sku': item.sku,
-                    'item_name': item.name,
-                    'success': False,
-                    'jobs_enqueued': 0,
-                    'stores': [],
-                    'error': f'No marketplace listings for {item.sku}. Import it to a store first.'
-                })
-                continue
-
-            jobs_enqueued_for_item = []
-            blocked_stores = []
-
-            for store in stores_with_listings:
-                try:
-                    allowed, reason = is_runtime_action_allowed(
-                        store=store,
-                        action_type="push",
-                        manual=True
-                    )
-
-                    if not allowed:
-                        blocked_stores.append({
-                            'store': store.name,
-                            'platform': store.platform,
-                            'reason': reason
-                        })
-                        continue
-
-                    if not store.api_key:
-                        logging.warning(f"Skipping store {store.name}: No API credentials")
-                        blocked_stores.append({
-                            'store': store.name,
-                            'platform': store.platform,
-                            'reason': 'No API credentials configured'
-                        })
-                        continue
-
-                    job = disabled_queue_job(
-                        store_id=store.id,
-                        job_type=JOB_PUSH_ITEM,
-                        payload={'item_id': item.id},
-                        priority=PRIORITY_HIGH
-                    )
-
-                    jobs_enqueued_for_item.append({
-                        'store': store.name,
-                        'platform': store.platform,
-                        'job_id': job.id
-                    })
-                    total_jobs_enqueued += 1
-
-                except Exception as store_error:
-                    logging.error(f"Error enqueueing job for {item.sku} to store {store.name}: {str(store_error)}")
-                    blocked_stores.append({
-                        'store': store.name,
-                        'platform': store.platform,
-                        'reason': str(store_error)
-                    })
-
-            results.append({
-                'item_id': item.id,
-                'item_sku': item.sku,
-                'item_name': item.name,
-                'success': len(jobs_enqueued_for_item) > 0,
-                'jobs_enqueued': len(jobs_enqueued_for_item),
-                'stores': [j['store'] for j in jobs_enqueued_for_item],
-                'blocked_stores': blocked_stores
-            })
-
-        successful_items = [r for r in results if r['success']]
-        failed_items = [r for r in results if not r['success']]
-
-        return jsonify({
-            'success': len(successful_items) > 0,
-            'total_items': len(items),
-            'successful_items': len(successful_items),
-            'failed_items': len(failed_items),
-            'total_jobs_enqueued': total_jobs_enqueued,
-            'results': results,
-            'message': f'Queued {total_jobs_enqueued} push jobs for {len(successful_items)} items. Processing now...'
-        })
-
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        logging.error(f"Error in bulk stock push: {str(e)}")
-        logging.error(f"Full traceback: {error_details}")
-        return jsonify({'success': False, 'error': str(e)})
-
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "error": "Inventory bulk push frozen. Use /warehouse governed actions."
+    }), 410
 
 @bp.route('/push_stock_all', methods=['POST'])
 def push_stock_all():
-    """Retired broad direct push-all route.
 
-    Broad marketplace pushes must not execute directly from routes.
-    """
     return jsonify({
         "success": False,
-        "error": "Direct push-all route is retired. Use governed dispatcher execution path.",
-        "execution_blocked": True,
-        "route_retired": True
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "error": "Inventory push-all frozen. Use /warehouse governed actions."
     }), 410
-
-def command_center_governance_guard(command_key, plan, confirmed=False):
-    """Central guard for future Command Center execution. Preview-safe only."""
-    risk_level = (plan or {}).get('risk_level', 'unknown')
-    requires_confirmation = bool((plan or {}).get('requires_confirmation', True))
-
-    guard_result = {
-        'allowed': False,
-        'preview_safe': True,
-        'execution_blocked': True,
-        'risk_level': risk_level,
-        'requires_confirmation': requires_confirmation,
-        'confirmed': bool(confirmed),
-        'checks': [
-            {'name': 'command_known', 'passed': bool(command_key)},
-            {'name': 'preview_mode_only', 'passed': True},
-            {'name': 'live_execution_disabled', 'passed': True},
-            {'name': 'confirmation_required_if_high_risk', 'passed': not (risk_level == 'high' and not confirmed)},
-        ],
-        'message': 'Preview allowed. Live execution remains disabled.'
-    }
-
-    return guard_result
-
-
-# =================== BT38 COMMAND CENTER ROUTES ===================
 
 @bp.route('/api/command-center/preview', methods=['POST'])
 def command_center_preview():
