@@ -1,0 +1,138 @@
+cat <<'EOF'
+
+BT38 MASTER GOVERNED EXECUTION + PRODUCTION SOURCE-OF-TRUTH RULESET
+===================================================================
+
+MANDATORY RULES
+===============
+
+1. PRODUCTION/Fly runtime is the ONLY source of truth.
+
+2. NEVER trust:
+- local templates
+- archive templates
+- restored templates
+- copied templates
+- partial template rebuilds
+- local-only browser behavior
+
+3. NEVER patch blindly.
+
+4. NEVER create:
+- duplicate routes
+- duplicate execution owners
+- hybrid push systems
+- inline marketplace execution blocks
+- parallel worker ownership
+
+5. ALL marketplace execution must flow through ONE governed execution lane only.
+
+6. ALL audits must trace FULL FLOW:
+
+template
+→ javascript
+→ route
+→ execution lane
+→ worker ownership
+→ DB/runtime state
+→ production response
+
+7. NO deploy until:
+- browser execution proven
+- JS console clean
+- route ownership aligned
+- execution ownership aligned
+- runtime returns 200
+- no dead buttons
+- no legacy execution paths
+- no duplicate handlers
+- no runtime exceptions
+
+8. DELETE AND REPLACE blocks only.
+No regex surgery unless explicitly approved.
+
+9. NO LOCAL TEMPLATE SOURCE OF TRUTH.
+Fly runtime is authoritative.
+
+10. NO HALF MIGRATIONS.
+If old execution is removed:
+- replacement execution must already be fully wired
+- UI controls must already work
+- backend contracts must already match frontend calls
+
+MANDATORY AUDIT OUTPUT
+======================
+
+Every audit/rebuild must provide:
+
+- files changed
+- files deleted
+- routes replaced
+- execution blocks removed
+- execution owner proof
+- grep proof
+- browser execution proof
+- runtime proof
+- compile proof
+- git diff stat
+- deploy status
+
+MANDATORY GREP CHECKS
+=====================
+
+Must always grep for:
+
+push_stock
+push_stock_all
+push_stock_bulk
+/api/group-push
+/api/push-individual
+worker
+queue
+legacy
+fetch(
+
+MANDATORY GOVERNED OWNERSHIP
+============================
+
+Only approved execution owner:
+
+static/js/governed-ui.js
+
+Only approved push routes:
+
+POST /governed/actions/listings/<id>/push
+POST /governed/actions/groups/<id>/push
+
+NO OTHER EXECUTION PATHS ALLOWED.
+
+MANDATORY EXECUTION SAFETY
+==========================
+
+Before deploy prove:
+
+- buttons wired
+- onclick exists
+- fetch path exists
+- backend route exists
+- runtime returns success
+- no JS syntax corruption
+- no dead UI controls
+- no empty payload contracts
+- no hidden legacy execution
+
+MANDATORY WORKFLOW
+==================
+
+1. AUDIT
+2. GREP
+3. TRACE OWNERSHIP
+4. DELETE OLD PATHS
+5. REBUILD CLEAN PATH
+6. COMPILE
+7. BROWSER TEST
+8. RUNTIME TEST
+9. SHOW OUTPUT
+10. DEPLOY ONLY AFTER APPROVAL
+
+EOF
