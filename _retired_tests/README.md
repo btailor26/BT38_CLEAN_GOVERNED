@@ -5,7 +5,7 @@ from pytest collection.
 
 These files are retained for audit history only.
 
-`test_encryption.py` was an old Amazon live feed encryption test that attempted
+`amazon_live_feed_encryption_retired.py` was an old Amazon live feed encryption test that attempted
 to call the retired `AmazonService.push_quantity_update(...)` path. The governed
 system now routes Amazon FBM inventory changes through the governed execution
 layer and `AmazonAPIService.update_fbm_inventory_quantity_governed(...)`.
