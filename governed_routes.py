@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 import json
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, request
 try:
     from flask_login import current_user
 except Exception:
@@ -170,6 +170,8 @@ def governed_warehouse_page():
         inventory_value=sum((float(getattr(row, "price", 0) or 0) * int(getattr(row, "available_quantity", 0) or 0)) for row in all_rows),
     )
     warehouse_items = SimpleNamespace(items=rows, total=len(rows))
+
+    from flask import render_template
 
     html = render_template(
         "warehouse.html",
@@ -463,15 +465,92 @@ def _patch_warehouse_phase1_ui(html: str, stats, search_query: str, active_view:
     }});
   }}
 
+  function applyRuntimeState(row, state) {{
+    if (!row || !state) return;
+
+    row.dataset.runtimeRole = state.runtime_role || '';
+    row.dataset.actionState = state.action_state || '';
+    row.dataset.quantityAuthority = state.quantity_authority || '';
+
+    const statusCell = row.querySelector('.bt38-status');
+    if (statusCell) {{
+      if (state.is_fba) {{
+        statusCell.textContent = 'FBA Locked';
+        statusCell.title = state.reason || 'FBA read-only';
+      }} else if (state.is_pushable) {{
+        statusCell.textContent = 'Governed Pushable';
+        statusCell.title = state.reason || 'Governed pushable';
+      }} else if (state.action_state === 'blocked') {{
+        statusCell.textContent = 'Blocked';
+        statusCell.title = state.reason || 'Blocked';
+      }}
+    }}
+
+    const groupCell = row.querySelector('.bt38-group-pill');
+    if (groupCell) {{
+      if (state.is_mcf_eligible) {{
+        groupCell.textContent = 'MCF';
+        groupCell.title = 'MCF eligible: Amazon FBA only';
+      }} else if (state.is_group_controlled) {{
+        groupCell.title = 'Controlled by MasterProductGroup';
+      }}
+    }}
+
+    const btn = row.querySelector('.bt38-marketplace-control');
+    if (btn) {{
+      if (state.is_fba) {{
+        btn.title = 'FBA read-only';
+        btn.setAttribute('aria-disabled', 'true');
+      }} else if (state.is_pushable) {{
+        btn.title = 'Governed pushable receiver';
+      }} else {{
+        btn.title = state.reason || 'Not pushable';
+      }}
+    }}
+  }}
+
+  function loadRuntimeOverlay() {{
+    fetch('/governed/warehouse/runtime-state')
+      .then(r => r.json())
+      .then(data => {{
+        if (!data || !Array.isArray(data.rows)) return;
+
+        const byListing = new Map();
+        const byStock = new Map();
+
+        data.rows.forEach(state => {{
+          if (state.listing_id) byListing.set(String(state.listing_id), state);
+          if (state.warehouse_stock_id) byStock.set(String(state.warehouse_stock_id), state);
+        }});
+
+        document.querySelectorAll('tr[data-stock-id], tr[data-listing-id]').forEach(row => {{
+          const listingId = row.dataset.listingId || '';
+          const stockId = row.dataset.stockId || '';
+
+          const state =
+            (listingId && byListing.get(String(listingId))) ||
+            (stockId && byStock.get(String(stockId)));
+
+          applyRuntimeState(row, state);
+        }});
+      }})
+      .catch(() => console.warn('Governed runtime overlay unavailable'));
+  }}
+
   document.addEventListener('DOMContentLoaded', function() {{
     wireSearch();
     wireKpis();
     wireTabs();
+    loadRuntimeOverlay();
   }});
 }})();
 </script>
 <style id="bt38Phase1WarehouseWiringStyle">
 .bt38-kpi-card:hover{{box-shadow:0 0 0 2px rgba(37,99,235,.10);}}
+tr[data-runtime-role="quantity_authority"]{{outline:1px solid rgba(37,99,235,.12);}}
+tr[data-action-state="governed_pushable"]{{outline:1px solid rgba(22,163,74,.12);}}
+tr[data-action-state="skip_before_push"]{{outline:1px solid rgba(245,158,11,.16);}}
+tr[data-action-state="blocked"]{{outline:1px solid rgba(220,38,38,.14);}}
 </style>
 """
     return html + script
