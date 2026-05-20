@@ -154,13 +154,13 @@ if IS_DEVELOPMENT:
 
     # Block SQLite unless explicitly allowed (for emergency local testing only)
     if dev_db_url.startswith("sqlite"):
-        allow_sqlite = os.environ.get("ALLOW_SQLITE_DEV", "true").lower() == "true"
+        allow_sqlite = os.environ.get("ALLOW_SQLITE_DEV", "false").lower() == "true"
         if not allow_sqlite:
             raise RuntimeError(
                 "DEV cannot use SQLite. DEV must match PROD (PostgreSQL). "
                 "Set DEV_DATABASE_URL to Postgres, or set ALLOW_SQLITE_DEV=true (temporary only)."
             )
-        logging.warning("⚠️  DEV MODE: SQLite allowed via ALLOW_SQLITE_DEV=true (NOT recommended)")
+        logging.critical("⚠️  SQLITE DEV OVERRIDE ENABLED — GOVERNANCE BYPASS ACTIVE")
 
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///C:/Users/btail/_ARCHIVE_OLD_BT38/BT38/instance/bt38_ims_local.db"
     logging.info(f"DEV MODE: Using database: {dev_db_url.split('@')[-1] if '@' in dev_db_url else 'configured'}")
