@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 import json
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, request
 try:
     from flask_login import current_user
 except Exception:
@@ -170,6 +170,8 @@ def governed_warehouse_page():
         inventory_value=sum((float(getattr(row, "price", 0) or 0) * int(getattr(row, "available_quantity", 0) or 0)) for row in all_rows),
     )
     warehouse_items = SimpleNamespace(items=rows, total=len(rows))
+
+    from flask import render_template
 
     html = render_template(
         "warehouse.html",
