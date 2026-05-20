@@ -181,9 +181,15 @@ function bt38OpenRowAction(button){
     </div>
 
     <div class="bt38-top-actions">
-      <button class="bt38-sync-btn">
-        Sync Now
-      </button>
+      
+<button
+    type="button"
+    class="btn btn-primary"
+    id="governedWarehouseSyncBtn"
+>
+    Sync Now
+</button>
+
     </div>
 
   </div>
@@ -1128,3 +1134,63 @@ onclick="window.location.href='/groups/{{ item.master_product_group_id }}'">
   font-weight:800;
 }
 </style>
+
+
+<script>
+async function runGovernedWarehouseSync() {
+    const btn = document.getElementById("governedWarehouseSyncBtn");
+
+    if (!btn) {
+        console.error("Governed warehouse sync button not found");
+        return;
+    }
+
+    const original = btn.innerHTML;
+
+    btn.disabled = true;
+    btn.innerHTML = "Syncing...";
+
+    try {
+        const resp = await fetch("/governed/warehouse/sync", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Actor": "warehouse-sync-button"
+            },
+            body: JSON.stringify({})
+        });
+
+        const data = await resp.json();
+
+        console.log("Governed warehouse sync result:", data);
+
+        if (data.success) {
+            btn.innerHTML = `Synced (${data.pushed || 0})`;
+
+            setTimeout(() => {
+                window.location.reload();
+            }, 1200);
+        } else {
+            btn.innerHTML = "Sync Failed";
+            console.error(data);
+        }
+
+    } catch (err) {
+        console.error(err);
+        btn.innerHTML = "Sync Error";
+    }
+
+    setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }, 3000);
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    const btn = document.getElementById("governedWarehouseSyncBtn");
+
+    if (!btn) return;
+
+    btn.addEventListener("click", runGovernedWarehouseSync);
+});
+</script>
