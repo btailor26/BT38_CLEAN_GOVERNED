@@ -92,7 +92,6 @@ function bt38OpenRowAction(button){
   const row = button.closest('tr');
   if (!row) return;
 
-  const itemId = row.dataset.itemId;
   const stockId = row.dataset.stockId;
   const listingId = row.dataset.listingId;
   const sku = row.dataset.sku || '';
@@ -111,31 +110,7 @@ function bt38OpenRowAction(button){
   }
 
   if (button.classList.contains('bt38-qty-action')) {
-    if (!itemId) return alert('Missing item id for quantity update.');
-
-    const current = button.querySelector('span')?.innerText?.trim() || '0';
-    const next = prompt(`New quantity for ${sku}:`, current);
-    if (next === null) return;
-
-    const qty = parseInt(next, 10);
-    if (Number.isNaN(qty) || qty < 0) return alert('Enter a valid quantity.');
-
-    fetch(`/update_stock/${itemId}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': '{{ csrf_token if csrf_token is defined else "" }}'
-      },
-      body: JSON.stringify({quantity: qty})
-    })
-    .then(r => r.json())
-    .then(data => {
-      if (!data.success) return alert(data.error || data.message || 'Quantity update failed.');
-      button.querySelector('span').innerText = qty;
-      alert(data.message || 'Quantity saved. Use the marketplace icon to run governed push.');
-      window.location.reload();
-    })
-    .catch(err => alert('Quantity update failed: ' + err));
+    alert('Quantity save is not wired yet. Clean governed quantity endpoint required first.');
     return;
   }
 
@@ -1195,6 +1170,5 @@ document.addEventListener("DOMContentLoaded", function () {
   font-weight:800;
 }
 </style>
-
 
 
