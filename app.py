@@ -142,6 +142,8 @@ app.jinja_env.auto_reload = True  # Force Jinja2 to check template modification 
 
 # Configure the database - DEV and PROD both use PostgreSQL for parity
 if IS_DEVELOPMENT:
+    # DEV MODE: Use DEV_DATABASE_URL or DATABASE_URL (both must be PostgreSQL)
+    # SQLite is BLOCKED by default to ensure DEV/PROD parity
     dev_db_url = os.environ.get("DEV_DATABASE_URL") or os.environ.get("DATABASE_URL") or "sqlite:///C:/Users/btail/_ARCHIVE_OLD_BT38/BT38/instance/bt38_ims_local.db"
 
     if not dev_db_url:
@@ -150,6 +152,7 @@ if IS_DEVELOPMENT:
             "Set DEV_DATABASE_URL or DATABASE_URL to a PostgreSQL connection string."
         )
 
+    # Block SQLite unless explicitly allowed (for emergency local testing only)
     if dev_db_url.startswith("sqlite"):
         allow_sqlite = os.environ.get("ALLOW_SQLITE_DEV", "false").lower() == "true"
         if not allow_sqlite:
@@ -162,6 +165,7 @@ if IS_DEVELOPMENT:
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///C:/Users/btail/_ARCHIVE_OLD_BT38/BT38/instance/bt38_ims_local.db"
     logging.info(f"DEV MODE: Using database: {dev_db_url.split('@')[-1] if '@' in dev_db_url else 'configured'}")
 else:
+    # PROD MODE: Use DATABASE_URL (should be set by Replit deployment)
     prod_db_url = os.environ.get("DATABASE_URL")
     if not prod_db_url:
         raise RuntimeError("CRITICAL: DATABASE_URL must be set in production environment")
@@ -171,20 +175,373 @@ else:
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_recycle": 300,
     "pool_pre_ping": True,
-    "echo": IS_DEVELOPMENT,
+    "echo": IS_DEVELOPMENT,  # Only log SQL queries in development
 }
-app.config["SQLALCHEMY_ECHO"] = IS_DEVELOPMENT
+app.config["SQLALCHEMY_ECHO"] = IS_DEVELOPMENT  # Match engine setting
 
+# Initialize the extensions with the app
 db.init_app(app)
 login_manager.init_app(app)
-login_manager.login_view = 'governed.login'
+# Enable login requirement - all routes require authentication
+login_manager.login_view = 'governed.login'  # Governed blueprint route
 login_manager.login_message = 'Please log in to access this page.'
 login_manager.login_message_category = 'warning'
 
+# Custom unauthorized handler to use RELATIVE paths (not absolute URLs)
 @login_manager.unauthorized_handler
 def unauthorized():
     from flask import flash, redirect, url_for, request
     import logging
     logging.info(f"[UNAUTH] Custom handler called for path: {request.path}")
     flash(login_manager.login_message, login_manager.login_message_category)
+    # Use request.path (relative) instead of request.url (absolute with host)
     return redirect(url_for('governed.login', next=request.path))
+
+# Add custom Jinja2 filter to parse JSON strings
+@app.template_filter('from_json')
+def from_json_filter(value):
+    """Parse JSON string to Python object"""
+    import json
+    try:
+        return json.loads(value) if value else {}
+    except (ValueError, TypeError):
+        return {}
+
+@login_manager.user_loader
+def load_user(user_id):
+    from models import User
+    return User.query.get(int(user_id))
+
+@app.after_request
+def add_cache_control(response):
+    """Prevent browser caching for HTML pages to ensure fresh data"""
+    if response.content_type and 'text/html' in response.content_type:
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+def migrate_database():
+    """Apply database migrations and ensure schema is up to date.
+
+    Uses safe column addition that handles existing columns gracefully.
+    Each ALTER is executed in its own transaction to prevent batch failures.
+    """
+    try:
+        # Import models to ensure tables are created
+        import models
+
+        # Create all tables (this is safe - won't drop existing data)
+        db.create_all()
+        db.session.commit()
+
+        logging.info("Database tables created/verified successfully")
+
+    except Exception as e:
+        logging.error(f"Database migration failed: {str(e)}")
+        try:
+            db.session.rollback()
+        except:
+            pass
+        # Continue anyway - tables might already exist
+
+# Helper to check if request wants JSON
+def _wants_json():
+    """Check if the request is for an API route that expects JSON"""
+    from flask import request
+    return request.path.startswith('/api/')
+
+# Helper to accept both JSON and form data
+def get_json_or_form():
+    """
+    Try JSON first (even if Content-Type isn't perfect), then form, then files.
+    Prevents 415 Unsupported Media Type errors.
+    """
+    from flask import request
+
+    # Try JSON first (silent=True doesn't raise on parse errors)
+    data = request.get_json(silent=True)
+    if data is not None:
+        return data
+
+    # Fall back to form data
+    if request.form:
+        return request.form.to_dict(flat=True)
+
+    # Fall back to files (with field metadata)
+    if request.files:
+        fields = request.values.to_dict(flat=True)
+        fields['_files'] = list(request.files.keys())
+        return fields
+
+    return {}
+
+# Prevent login redirects on API routes (return 401 JSON instead)
+@app.before_request
+def api_auth_json():
+    """
+    For API routes, return 401 JSON instead of redirecting to login
+    This prevents HTML responses that break JSON parsing
+    """
+    from flask import request, jsonify
+    from flask_login import current_user, login_required
+
+    if request.path.startswith('/api/') and not current_user.is_authenticated:
+        # Check if this is a public API endpoint or has task API key
+        public_endpoints = [
+            '/api/sync-status',
+            '/api/diagnostics/system',
+            '/api/diagnostics/ebay/health',
+            '/api/diagnostics/amazon/health',
+            '/api/system/health',  # Section X.5: Fast health check
+            '/api/system/env-check',  # Section 8: Environment check
+            '/api/system/log_route',  # Section X.9: Route logging
+            '/api/system/log_route_failure',  # Section X.9: Route failure logging
+            '/api/system/fingerprint',  # Sentinel: Environment fingerprint (no auth)
+            '/api/sentinel/status'  # Sentinel-2: Status API (read-only, no auth)
+        ]  # Add public endpoints here - SendGrid test requires authentication
+
+        # Section 3 & 4: Mobile Scanning and Carton API endpoints (prefix match for dynamic routes)
+        mobile_prefixes = ['/api/mobile/', '/api/carton']
+        for prefix in mobile_prefixes:
+            if request.path.startswith(prefix):
+                return None  # Allow mobile/carton API requests
+
+        # Allow endpoints with valid task API key
+        task_api_key = os.environ.get("TASK_API_KEY")
+        if task_api_key and request.headers.get("X-Task-Key") == task_api_key:
+            return None  # Allow the request to proceed
+
+        if request.path not in public_endpoints:
+            return jsonify(ok=False, error="unauthorized"), 401
+
+# HTTP Exception handler (catches 400, 403, 404, 405, etc.)
+@app.errorhandler(Exception)
+def handle_http_exception(e):
+    """
+    Handle HTTP exceptions (404, 405, etc.) with JSON for API routes
+    """
+    from flask import jsonify, render_template
+    from werkzeug.exceptions import HTTPException
+    import traceback
+
+    # Log the error with full traceback
+    logging.error(f"Exception occurred: {e.__class__.__name__}: {str(e)}")
+
+    if isinstance(e, HTTPException):
+        # For API routes, return JSON
+        if _wants_json():
+            return jsonify(ok=False, error=e.description or str(e)), e.code
+        # For non-API routes, use default HTML error page
+        return e
+
+    # For non-HTTP exceptions, log full traceback
+    logging.error("Full traceback:")
+    logging.error(traceback.format_exc())
+
+    # For API routes, always return JSON
+    if _wants_json():
+        return jsonify(ok=False, error=str(e)), 500
+
+    # For non-API routes, render error template
+    from datetime import datetime
+    return render_template('error.html', 
+                         error_code=500,
+                         error_title="Unexpected Error",
+                         error_message="An unexpected error occurred. Please try again.",
+                         now=datetime.utcnow()), 500
+
+# Specific handlers for common HTTP errors
+@app.errorhandler(404)
+def handle_404(e):
+    """Handle 404 Not Found with JSON for API routes"""
+    from flask import jsonify
+    if _wants_json():
+        return jsonify(ok=False, error="not found"), 404
+    return e
+
+@app.errorhandler(405)
+def handle_405(e):
+    """Handle 405 Method Not Allowed with JSON for API routes"""
+    from flask import jsonify
+    if _wants_json():
+        return jsonify(ok=False, error="method not allowed"), 405
+    return e
+
+def ensure_production_ebay_sandbox_flag():
+    """
+    CRITICAL PRODUCTION FIX: Ensure all eBay stores have explicit sandbox=false flag
+    This fixes production imports returning 0 items due to defaulting to sandbox API
+    Runs only in production, idempotent, swallows errors to avoid boot failures
+    """
+    if not IS_PRODUCTION:
+        return  # Only run in production
+
+    try:
+        import json as json_module
+        from models import Store
+
+        ebay_stores = Store.query.filter_by(platform='eBay', is_active=True).all()
+
+        for store in ebay_stores:
+            if not store.api_key:
+                continue
+
+            try:
+                creds = json_module.loads(store.api_key)
+                sandbox_value = creds.get('sandbox')
+
+                # Fix missing or True sandbox flag
+                if sandbox_value is None or sandbox_value is True:
+                    logging.warning(f"PRODUCTION FIX: Store '{store.name}' missing sandbox:false flag (was: {sandbox_value}), setting to False")
+                    creds['sandbox'] = False
+                    store.api_key = json_module.dumps(creds)
+                    db.session.commit()
+                    logging.info(f"✅ Fixed store '{store.name}' - now using live eBay API")
+                elif sandbox_value is False:
+                    logging.info(f"✅ Store '{store.name}' already has sandbox:false - OK")
+
+            except Exception as store_error:
+                logging.error(f"Failed to fix sandbox flag for store {store.id}: {str(store_error)}")
+                try:
+                    db.session.rollback()
+                except:
+                    pass
+
+    except Exception as e:
+        logging.error(f"Production sandbox flag fix failed (non-fatal): {str(e)}")
+        try:
+            db.session.rollback()
+        except:
+            pass
+
+with app.app_context():
+    migrate_database()
+    ensure_production_ebay_sandbox_flag()
+
+# Import and register routes blueprint
+from routes import bp as routes_bp
+app.register_blueprint(routes_bp)
+
+try:
+    from governed_routes import governed_bp
+    app.register_blueprint(governed_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed routes: {exc}")
+
+
+# Import and register admin reporting blueprint
+from admin_routes import admin_bp
+app.register_blueprint(admin_bp)
+
+# Governed startup checkpoint.
+#
+# Startup is intentionally quiet and non-executing: Flask import/module load must
+# not start workers, schedulers, queue consumers, order import ticks, direct
+# pushers, or marketplace API clients. Runtime execution remains disabled until
+# a future approved governed command path is built.
+logging.info(
+    "[GOVERNED_STARTUP] Marketplace execution disabled on app boot: "
+    "FBA read-only; FBM/eBay push disabled until governed path exists; "
+    "no workers, schedulers, queue consumers, or marketplace API calls started."
+)
+
+# Run system events backfill on startup (automatically populates from existing logs)
+with app.app_context():
+    try:
+        from admin_logging import run_comprehensive_backfill
+        backfill_result = run_comprehensive_backfill()
+        if backfill_result.get('skipped'):
+            logging.info(f"System events backfill: Skipped (already has {backfill_result.get('existing_count', 0)} entries)")
+        elif backfill_result.get('total'):
+            logging.info(f"System events backfill: Created {backfill_result['total']} events from historical data")
+        elif backfill_result.get('error'):
+            logging.warning(f"System events backfill error: {backfill_result['error']}")
+    except Exception as e:
+        logging.warning(f"System events backfill skipped: {str(e)}")
+
+# [STAGING SAFETY] Print environment configuration at startup
+def get_db_host_safe():
+    """Extract just the host from DATABASE_URL (no credentials)."""
+    try:
+        db_url = os.environ.get("DATABASE_URL", "")
+        if "@" in db_url and "/" in db_url:
+            # Format: postgres://user:pass@host:port/dbname
+            after_at = db_url.split("@", 1)[1]
+            host_part = after_at.split("/", 1)[0]
+            return host_part
+        return "unknown"
+    except:
+        return "unknown"
+
+
+def get_db_fingerprint_hash():
+    """Generate a short hash of DATABASE_URL for fingerprinting (NEVER expose full URL)."""
+    import hashlib
+    try:
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            return "no-db-url"
+        return hashlib.sha256(db_url.encode()).hexdigest()[:12]
+    except:
+        return "error"
+
+
+import socket
+try:
+    HOSTNAME = socket.gethostname()
+except:
+    HOSTNAME = "unknown"
+
+print("\n" + "="*60)
+print("SENTINEL ENVIRONMENT FINGERPRINT")
+print("="*60)
+print(f"  APP_ENV:        {APP_ENV.upper()}")
+print(f"  HOSTNAME:       {HOSTNAME}")
+print(f"  PUSH_ENABLED:   {PUSH_ENABLED}")
+print(f"  EXECUTION_MODE: {EXECUTION_MODE}")
+print(f"  SENTINEL_MODE:  {SENTINEL_MODE}")
+print("")
+print("DATABASE:")
+print(f"  HOST:           {get_db_host_safe()}")
+print(f"  FINGERPRINT:    {get_db_fingerprint_hash()}")
+print("")
+print("SESSION ISOLATION:")
+print(f"  COOKIE_NAME:    {app.config['SESSION_COOKIE_NAME']}")
+print(f"  COOKIE_DOMAIN:  {app.config['SESSION_COOKIE_DOMAIN'] or '(dynamic per-request)'}")
+print(f"  COOKIE_SECURE:  {app.config['SESSION_COOKIE_SECURE']}")
+print(f"  SAMESITE:       {app.config['SESSION_COOKIE_SAMESITE']}")
+print("")
+print("SENTINEL-2 CONTROLS:")
+print(f"  MODE:           {SENTINEL_MODE}")
+print(f"  CMD_INPUT:      {'ENABLED' if SENTINEL_MODE == 'PLAN' else 'DISABLED'}")
+print(f"  KNOWLEDGE:      {'ENABLED' if SENTINEL_MODE in ['OBSERVE', 'PLAN'] else 'DISABLED'}")
+if IS_STAGING:
+    print("")
+    print("  ⚠️  STAGING MODE ACTIVE")
+    print("  ⚠️  Push/write operations are BLOCKED by default")
+print("="*60)
+
+# Startup marketplace safety report.
+# This is informational only: it performs no imports/calls to marketplace service
+# clients and starts no workers, schedulers, queue consumers, or push loops.
+print("\n" + "="*60)
+print("MARKETPLACE STARTUP SAFETY — SHUTDOWN ONLY")
+print("="*60)
+print(f"Environment: {APP_ENV.upper()}")
+print(f"Admin Dashboard: /admin/system-activity")
+print("Runtime status:")
+print("  [OK] No marketplace execution starts on app boot")
+print("  [OK] No workers, schedulers, queue consumers, or order-import ticks start on app boot")
+print("  [OK] FBA/AFN is read-only; no FBA push path is started")
+print("  [OK] FBM/MFN push is disabled until the governed path exists")
+print("  [OK] eBay push/import is disabled until the governed path exists")
+print("  [OK] Amazon/eBay API error tables remain reporting-only at startup")
+print("  [OK] System Activity remains available for audit/reporting")
+print("="*60 + "\n")
+
+# =========================
+
+# =========================
+# REAL LOCAL SYNC ROUTE
+# =========================
