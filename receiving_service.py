@@ -192,26 +192,26 @@ class ReceivingService:
                     logging.info(f"✅ Confirmed: {line.sku} - {confirmed_qty} units NOW AVAILABLE FOR SALE")
                     skus_to_push.append(line.sku)
             
-            # UNIFIED PUSH SYSTEM: Prepare marketplace pushes BEFORE commit
-            from warehouse_push_coordinator import WarehousePushCoordinator
-            coordinator = WarehousePushCoordinator()
-            prepared_count = coordinator.prepare_for_items(skus_to_push, operation="update")
-            
-            # Commit ALL changes including warehouse stock
+            # Legacy warehouse push orchestration is retired.
+            # Commit warehouse confirmation changes only.
             db.session.commit()
+            logging.info(
+                "Legacy warehouse push orchestration retired for receipt %s; "
+                "use governed propagation path.",
+                receipt.receipt_number,
+            )
             
-            # UNIFIED PUSH SYSTEM: Enqueue jobs AFTER successful commit
-            jobs_enqueued = coordinator.enqueue_pending_jobs()
-            logging.info(f"🚀 Triggered {jobs_enqueued} marketplace push jobs for {prepared_count} SKUs")
-            
-            # Build compatible push_results structure for UI
+            # Build compatible push_results structure for UI without enqueueing or marketplace execution.
             push_results = []
             for sku in skus_to_push:
                 push_results.append({
                     'sku': sku,
-                    'success': True,
-                    'message': 'Push job enqueued',
-                    'successful': 1,
+                    'success': False,
+                    'message': 'Legacy warehouse push orchestration retired. Use governed propagation path.',
+                    'execution_blocked': True,
+                    'governed': True,
+                    'retired': True,
+                    'successful': 0,
                     'failed': 0
                 })
             
@@ -220,12 +220,15 @@ class ReceivingService:
                 push_results.append({
                     'summary': True,
                     'sku': 'SUMMARY',
-                    'success': True,
+                    'success': False,
                     'total_skus': len(skus_to_push),
-                    'jobs_enqueued': jobs_enqueued,
-                    'successful': prepared_count,
+                    'jobs_enqueued': 0,
+                    'successful': 0,
                     'failed': 0,
-                    'message': f'Enqueued {jobs_enqueued} push jobs for {prepared_count} SKUs'
+                    'message': 'Legacy warehouse push orchestration retired. Use governed propagation path.',
+                    'execution_blocked': True,
+                    'governed': True,
+                    'retired': True
                 })
             
             return {
