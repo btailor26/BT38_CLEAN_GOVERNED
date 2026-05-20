@@ -62,10 +62,12 @@ def patch_valid_store_and_listing(monkeypatch, *, fulfillment="MFN", sku="FBM-SA
 
 def open_gate(monkeypatch):
     monkeypatch.setattr(runtime_gate, "RUNTIME_GATE_FORCE_CLOSED", False)
+    monkeypatch.setattr(runtime_gate, "GOVERNED_AMAZON_FBM_LIVE_ENABLED", True)
 
 
 def close_gate(monkeypatch):
     monkeypatch.setattr(runtime_gate, "RUNTIME_GATE_FORCE_CLOSED", True)
+    monkeypatch.setattr(runtime_gate, "GOVERNED_AMAZON_FBM_LIVE_ENABLED", False)
 
 
 def test_fba_live_push_blocked_before_adapter(monkeypatch):
