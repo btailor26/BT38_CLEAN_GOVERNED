@@ -276,7 +276,6 @@
     
     <!-- Custom JavaScript -->
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}"></script>
     
     <!-- Initialize Feather Icons -->
     <script>
@@ -287,5 +286,8 @@
     </script>
     
     {% block scripts %}{% endblock %}
+
+    <!-- Governed marketplace bridge must load last so legacy template handlers cannot override it. -->
+    <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}"></script>
 </body>
 </html>
