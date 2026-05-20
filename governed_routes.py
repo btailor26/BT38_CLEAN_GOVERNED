@@ -248,3 +248,26 @@ def governed_amazon_inventory_hydration_manual_run():
         "auto_execution": False,
         "result": result,
     })
+
+
+@governed_bp.post("/governed/warehouse/sync")
+def governed_warehouse_sync_manual_run():
+    """
+    Manual governed warehouse sync endpoint.
+
+    This is the single future-facing warehouse sync path.
+    No old queue workers.
+    No old auto sync.
+    No UI layout dependency.
+    """
+    from services.governed_warehouse_sync import run_governed_warehouse_sync
+
+    body = dict(request.get_json(silent=True) or {})
+    store_id = body.get("store_id")
+
+    result = run_governed_warehouse_sync(
+        store_id=store_id,
+        actor=request.headers.get("X-Actor", "warehouse-sync-button"),
+    )
+
+    return jsonify(result), 200 if result.get("success") else 400
