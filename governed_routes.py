@@ -36,16 +36,16 @@ def shutdown_proof_status():
 @governed_bp.get("/")
 @governed_bp.get("/warehouse")
 def governed_warehouse_page():
-    """Read-only governed Master Stock UI.
+    """Governed Master Stock UI.
 
-    Source alignment:
-    - MarketplaceListing rows are shown after sync/import.
-    - Linked WarehouseStock provides warehouse truth quantities.
-    - master_product_group_id flows into the UI for grouping controls.
-    - FBA/AFN rows are displayed as read-only; FBM/MFN rows remain governed-pushable.
+    Existing UI only. No layout rebuild.
+    This route aligns DB -> governed runtime -> warehouse.html.
     """
     from extensions import db
     from models import MarketplaceListing, WarehouseStock
+
+    q = (request.args.get("q") or "").strip().lower()
+    view = (request.args.get("view") or "all").strip().lower()
 
     listing_rows = (
         db.session.query(MarketplaceListing)
@@ -63,10 +63,13 @@ def governed_warehouse_page():
         if stock:
             linked_stock_ids.add(stock.id)
         platform = (listing.store.platform if listing.store else "Marketplace") or "Marketplace"
+        platform_lower = platform.lower()
         channel = (listing.normalized_amazon_fulfillment_channel or "").upper()
-        is_fba = "amazon" in platform.lower() and channel not in ("MFN", "FBM", "MERCHANT")
-        location = f"{platform} {'FBA' if is_fba else 'FBM'}" if "amazon" in platform.lower() else platform
-        rows.append(SimpleNamespace(
+        is_amazon = "amazon" in platform_lower
+        is_fbm = is_amazon and channel in ("MFN", "FBM", "MERCHANT")
+        is_fba = is_amazon and not is_fbm
+        location = f"{platform} {'FBA' if is_fba else 'FBM'}" if is_amazon else platform
+        row = SimpleNamespace(
             id=stock.id if stock else 0,
             inventory_item_id=None,
             item_id=None,
@@ -79,12 +82,20 @@ def governed_warehouse_page():
             title=listing.title,
             group_title=stock.group_title if stock else None,
             barcode=listing.fnsku or listing.barcode or (stock.barcode if stock else None),
-            mcf_group_source=False,
+            mcf_group_source=bool(is_fba),
+            is_fba=bool(is_fba),
+            is_fbm=bool(is_fbm),
             is_group_controlled=bool(stock.is_group_controlled) if stock else False,
             available_quantity=stock.sellable_quantity if stock else 0,
             price=listing.price or 0,
             store_name=listing.store.name if listing.store else platform,
-        ))
+            platform=platform,
+            external_listing_id=listing.external_listing_id,
+            external_sku=listing.external_sku,
+            asin=listing.asin,
+            fnsku=listing.fnsku,
+        )
+        rows.append(row)
 
     unlinked_stock = (
         db.session.query(WarehouseStock)
@@ -111,22 +122,61 @@ def governed_warehouse_page():
             group_title=stock.group_title,
             barcode=stock.barcode,
             mcf_group_source=False,
+            is_fba=False,
+            is_fbm=False,
             is_group_controlled=bool(stock.is_group_controlled),
             available_quantity=stock.sellable_quantity,
             price=0,
             store_name=stock.warehouse.name if stock.warehouse else "Warehouse",
+            platform="Warehouse",
+            external_listing_id=None,
+            external_sku=None,
+            asin=None,
+            fnsku=None,
         ))
         if len(rows) >= 500:
             break
 
+    all_rows = rows
+
+    if q:
+        def _matches(row):
+            haystack = " ".join(str(getattr(row, field, "") or "") for field in (
+                "sku", "external_sku", "asin", "fnsku", "barcode", "product_name", "title",
+                "group_title", "external_listing_id", "store_name", "platform", "master_product_group_id"
+            )).lower()
+            return q in haystack
+        rows = [row for row in rows if _matches(row)]
+
+    if view == "available":
+        rows = [row for row in rows if int(getattr(row, "available_quantity", 0) or 0) > 0]
+    elif view == "low-stock":
+        rows = [row for row in rows if int(getattr(row, "available_quantity", 0) or 0) <= 0]
+    elif view == "listings":
+        rows = [row for row in rows if getattr(row, "marketplace_listing_id", None)]
+    elif view == "fba":
+        rows = [row for row in rows if getattr(row, "is_fba", False)]
+    elif view == "fbm":
+        rows = [row for row in rows if getattr(row, "is_fbm", False)]
+    elif view == "groups":
+        rows = [row for row in rows if getattr(row, "master_product_group_id", None) or getattr(row, "is_group_controlled", False)]
+
     stats = SimpleNamespace(
-        total_skus=len(rows),
-        total_available=sum(int(getattr(row, "available_quantity", 0) or 0) for row in rows),
-        low_stock_count=sum(1 for row in rows if int(getattr(row, "available_quantity", 0) or 0) <= 0),
+        total_skus=len(all_rows),
+        total_available=sum(int(getattr(row, "available_quantity", 0) or 0) for row in all_rows),
+        low_stock_count=sum(1 for row in all_rows if int(getattr(row, "available_quantity", 0) or 0) <= 0),
+        listing_count=sum(1 for row in all_rows if getattr(row, "marketplace_listing_id", None)),
+        inventory_value=sum((float(getattr(row, "price", 0) or 0) * int(getattr(row, "available_quantity", 0) or 0)) for row in all_rows),
     )
     warehouse_items = SimpleNamespace(items=rows, total=len(rows))
 
-    return render_template("warehouse.html", warehouse_items=warehouse_items, stats=stats)
+    return render_template(
+        "warehouse.html",
+        warehouse_items=warehouse_items,
+        stats=stats,
+        search_query=q,
+        active_view=view,
+    )
 
 
 @governed_bp.post("/governed/actions/sku/dry-run")
@@ -325,17 +375,6 @@ def _blocked(reason: str, **extra) -> dict:
 
 @governed_bp.post("/amazon-inventory-hydration/manual-run")
 def governed_amazon_inventory_hydration_manual_run():
-    """
-    Manual governed Amazon inventory hydration endpoint.
-
-    Block-replaced governed route.
-    No scheduler.
-    No worker.
-    No automatic execution.
-    No UI dependency.
-    No legacy login_required decorator.
-    No legacy .route decorator.
-    """
     from services.governed_amazon_inventory_hydration import hydrate_amazon_inventory
 
     result = hydrate_amazon_inventory()
@@ -351,14 +390,6 @@ def governed_amazon_inventory_hydration_manual_run():
 
 @governed_bp.post("/governed/warehouse/sync")
 def governed_warehouse_sync_manual_run():
-    """
-    Manual governed warehouse sync endpoint.
-
-    This is the single future-facing warehouse sync path.
-    No old queue workers.
-    No old auto sync.
-    No UI layout dependency.
-    """
     from services.governed_warehouse_sync import run_governed_warehouse_sync
 
     body = dict(request.get_json(silent=True) or {})
@@ -374,7 +405,6 @@ def governed_warehouse_sync_manual_run():
 
 @governed_bp.post("/governed/amazon/inventory/import")
 def governed_amazon_inventory_import():
-
     from services.governed_amazon_inventory_import import (
         run_governed_amazon_inventory_import
     )
