@@ -128,7 +128,6 @@ def _push_one_listing(*, listing_id: int, quantity, actor: str, source: str) -> 
     from extensions import db
     from governed_execution import AMAZON_FBM_LIVE_APPROVAL_TYPE, submit_governed_marketplace_action
     from models import MarketplaceListing, SyncLog
-    from services import runtime_gate
 
     listing = db.session.get(MarketplaceListing, listing_id)
     if not listing:
@@ -170,21 +169,12 @@ def _push_one_listing(*, listing_id: int, quantity, actor: str, source: str) -> 
         },
     }
 
-    previous_force_closed = runtime_gate.RUNTIME_GATE_FORCE_CLOSED
-    previous_amazon_enabled = runtime_gate.GOVERNED_AMAZON_FBM_LIVE_ENABLED
-    try:
-        if marketplace == "amazon":
-            runtime_gate.RUNTIME_GATE_FORCE_CLOSED = False
-            runtime_gate.GOVERNED_AMAZON_FBM_LIVE_ENABLED = True
-        result = submit_governed_marketplace_action(
-            payload,
-            actor=actor,
-            approval=approval,
-            dry_run=False,
-        )
-    finally:
-        runtime_gate.RUNTIME_GATE_FORCE_CLOSED = previous_force_closed
-        runtime_gate.GOVERNED_AMAZON_FBM_LIVE_ENABLED = previous_amazon_enabled
+    result = submit_governed_marketplace_action(
+        payload,
+        actor=actor,
+        approval=approval,
+        dry_run=False,
+    )
 
     ok = bool(result.get("ok") or result.get("success"))
     listing.last_push_at = datetime.utcnow()
