@@ -1,15 +1,7 @@
 """
 BT38 GOVERNED AMAZON INVENTORY IMPORT
 
-Clean governed import path.
-
-Rules:
-- No old queue workers
-- No legacy orchestration
-- No restore patching
-- Warehouse truth only
-- AFN/FBA read-only
-- MFN/FBM writable
+Single governed execution path.
 """
 
 from datetime import datetime
@@ -23,7 +15,9 @@ from models import (
     SyncLog,
 )
 
-from backend.services.amazon_service import AmazonService
+from backend.adapters.amazon_sp_api_adapter import (
+    AmazonSPAPIAdapter,
+)
 
 
 def run_governed_amazon_inventory_import(store_id=None):
@@ -42,19 +36,15 @@ def run_governed_amazon_inventory_import(store_id=None):
 
     for store in stores:
 
-        service = AmazonService(store)
+        adapter = AmazonSPAPIAdapter(store)
 
-        inventory = service.get_fba_inventory()
+        inventory = adapter.get_inventory()
 
         imported = 0
 
         for row in inventory:
 
-            sku = (
-                row.get("seller_sku")
-                or row.get("sku")
-                or ""
-            ).strip()
+            sku = (row.get("seller_sku") or "").strip()
 
             if not sku:
                 continue
@@ -63,13 +53,14 @@ def run_governed_amazon_inventory_import(store_id=None):
 
             channel = (
                 row.get("fulfillment_channel")
-                or row.get("channel")
                 or "AFN"
             ).upper()
 
             inv = (
                 db.session.query(AmazonFBAInventory)
-                .filter(AmazonFBAInventory.seller_sku == sku)
+                .filter(
+                    AmazonFBAInventory.seller_sku == sku
+                )
                 .first()
             )
 
@@ -80,6 +71,8 @@ def run_governed_amazon_inventory_import(store_id=None):
                 db.session.add(inv)
 
             inv.available_quantity = qty
+            inv.asin = row.get("asin")
+            inv.fnsku = row.get("fnsku")
             inv.updated_at = datetime.utcnow()
 
             listings = (
@@ -104,7 +97,11 @@ def run_governed_amazon_inventory_import(store_id=None):
 
                     if ws:
 
-                        if channel in ("MFN", "FBM", "MERCHANT"):
+                        if channel in (
+                            "MFN",
+                            "FBM",
+                            "MERCHANT"
+                        ):
                             ws.available_quantity = qty
 
                         ws.last_synced_at = datetime.utcnow()
@@ -115,7 +112,10 @@ def run_governed_amazon_inventory_import(store_id=None):
             store_id=store.id,
             status="success",
             items_synced=imported,
-            message=f"governed_amazon_inventory_import imported={imported}",
+            message=(
+                f"governed_amazon_inventory_import "
+                f"imported={imported}"
+            ),
             created_at=datetime.utcnow(),
         ))
 
