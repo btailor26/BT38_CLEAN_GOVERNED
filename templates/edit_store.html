@@ -385,11 +385,12 @@
                                     </div>
                                     
                                     <!-- Current Status -->
-                                    {% if store.current_failure_count > 0 %}
+                                    {% set real_failure_count = (store.consecutive_failures|default(store.failure_count|default(0, true), true))|int %}
+                                    {% if real_failure_count > 0 %}
                                     <div class="alert alert-warning">
                                         <i data-feather="alert-triangle" class="me-2"></i>
-                                        <strong>Warning:</strong> This store has {{ store.current_failure_count }} consecutive failures.
-                                        {% if store.current_failure_count >= store.failure_threshold and store.auto_disable_on_failures %}
+                                        <strong>Warning:</strong> This store has {{ real_failure_count }} consecutive failures.
+                                        {% if real_failure_count >= (store.failure_threshold|default(999999, true)|int) and store.auto_disable_on_failures %}
                                         Auto-push has been disabled due to repeated failures.
                                         {% endif %}
                                     </div>
