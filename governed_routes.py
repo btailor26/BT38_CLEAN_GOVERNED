@@ -271,3 +271,19 @@ def governed_warehouse_sync_manual_run():
     )
 
     return jsonify(result), 200 if result.get("success") else 400
+
+
+@governed_bp.post("/governed/amazon/inventory/import")
+def governed_amazon_inventory_import():
+
+    from services.governed_amazon_inventory_import import (
+        run_governed_amazon_inventory_import
+    )
+
+    body = dict(request.get_json(silent=True) or {})
+
+    result = run_governed_amazon_inventory_import(
+        store_id=body.get("store_id")
+    )
+
+    return jsonify(result), 200
