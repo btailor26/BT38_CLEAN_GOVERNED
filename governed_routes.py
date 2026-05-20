@@ -224,18 +224,18 @@ def _blocked(reason: str, **extra) -> dict:
     result.update(extra)
     return result
 
-@governed_bp.route("/amazon-inventory-hydration/manual-run", methods=["POST"])
-@login_required
+@governed_bp.post("/amazon-inventory-hydration/manual-run")
 def governed_amazon_inventory_hydration_manual_run():
     """
     Manual governed Amazon inventory hydration endpoint.
 
+    Block-replaced governed route.
     No scheduler.
     No worker.
     No automatic execution.
     No UI dependency.
-
-    Must be called manually after review.
+    No legacy login_required decorator.
+    No legacy .route decorator.
     """
     from services.governed_amazon_inventory_hydration import hydrate_amazon_inventory
 
