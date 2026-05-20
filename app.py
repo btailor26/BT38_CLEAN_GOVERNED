@@ -431,6 +431,12 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed group routes: {exc}")
 
+try:
+    from governed_group_propagation_routes import governed_group_propagation_bp
+    app.register_blueprint(governed_group_propagation_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed group propagation routes: {exc}")
+
 
 # Import and register admin reporting blueprint
 from admin_routes import admin_bp
