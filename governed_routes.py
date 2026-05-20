@@ -11,6 +11,17 @@ except Exception:
 governed_bp = Blueprint("governed", __name__)
 
 
+@governed_bp.get("/login")
+def login():
+    return jsonify({
+        "success": False,
+        "ok": False,
+        "governed": True,
+        "auth_required": True,
+        "reason": "Login must be handled through the governed auth path.",
+    }), 401
+
+
 @governed_bp.get("/shutdown-proof/status")
 def shutdown_proof_status():
     return jsonify({
@@ -223,6 +234,7 @@ def _blocked(reason: str, **extra) -> dict:
     }
     result.update(extra)
     return result
+
 
 @governed_bp.post("/amazon-inventory-hydration/manual-run")
 def governed_amazon_inventory_hydration_manual_run():
