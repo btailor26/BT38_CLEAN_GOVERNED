@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, render_template, request
 try:
     from flask_login import current_user
 except Exception:
@@ -30,6 +31,102 @@ def shutdown_proof_status():
         "shutdown_mode": True,
         "old_marketplace_routes_present": False,
     })
+
+
+@governed_bp.get("/")
+@governed_bp.get("/warehouse")
+def governed_warehouse_page():
+    """Read-only governed Master Stock UI.
+
+    Source alignment:
+    - MarketplaceListing rows are shown after sync/import.
+    - Linked WarehouseStock provides warehouse truth quantities.
+    - master_product_group_id flows into the UI for grouping controls.
+    - FBA/AFN rows are displayed as read-only; FBM/MFN rows remain governed-pushable.
+    """
+    from extensions import db
+    from models import MarketplaceListing, WarehouseStock
+
+    listing_rows = (
+        db.session.query(MarketplaceListing)
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .order_by(MarketplaceListing.updated_at.desc(), MarketplaceListing.id.desc())
+        .limit(500)
+        .all()
+    )
+
+    rows = []
+    linked_stock_ids = set()
+
+    for listing in listing_rows:
+        stock = listing.warehouse_stock
+        if stock:
+            linked_stock_ids.add(stock.id)
+        platform = (listing.store.platform if listing.store else "Marketplace") or "Marketplace"
+        channel = (listing.normalized_amazon_fulfillment_channel or "").upper()
+        is_fba = "amazon" in platform.lower() and channel not in ("MFN", "FBM", "MERCHANT")
+        location = f"{platform} {'FBA' if is_fba else 'FBM'}" if "amazon" in platform.lower() else platform
+        rows.append(SimpleNamespace(
+            id=stock.id if stock else 0,
+            inventory_item_id=None,
+            item_id=None,
+            marketplace_listing_id=listing.id,
+            sku=(stock.sku if stock else listing.external_sku) or "",
+            master_product_group_id=listing.master_product_group_id or (stock.master_product_group_id if stock else None),
+            location=location,
+            image_url=stock.image_url if stock else None,
+            product_name=(stock.product_name if stock else None) or listing.title,
+            title=listing.title,
+            group_title=stock.group_title if stock else None,
+            barcode=listing.fnsku or listing.barcode or (stock.barcode if stock else None),
+            mcf_group_source=False,
+            is_group_controlled=bool(stock.is_group_controlled) if stock else False,
+            available_quantity=stock.sellable_quantity if stock else 0,
+            price=listing.price or 0,
+            store_name=listing.store.name if listing.store else platform,
+        ))
+
+    unlinked_stock = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.is_active == True)  # noqa: E712
+        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+        .order_by(WarehouseStock.updated_at.desc(), WarehouseStock.id.desc())
+        .limit(500)
+        .all()
+    )
+    for stock in unlinked_stock:
+        if stock.id in linked_stock_ids:
+            continue
+        rows.append(SimpleNamespace(
+            id=stock.id,
+            inventory_item_id=None,
+            item_id=None,
+            marketplace_listing_id=None,
+            sku=stock.sku,
+            master_product_group_id=stock.master_product_group_id,
+            location="Warehouse",
+            image_url=stock.image_url,
+            product_name=stock.product_name,
+            title=stock.product_name,
+            group_title=stock.group_title,
+            barcode=stock.barcode,
+            mcf_group_source=False,
+            is_group_controlled=bool(stock.is_group_controlled),
+            available_quantity=stock.sellable_quantity,
+            price=0,
+            store_name=stock.warehouse.name if stock.warehouse else "Warehouse",
+        ))
+        if len(rows) >= 500:
+            break
+
+    stats = SimpleNamespace(
+        total_skus=len(rows),
+        total_available=sum(int(getattr(row, "available_quantity", 0) or 0) for row in rows),
+        low_stock_count=sum(1 for row in rows if int(getattr(row, "available_quantity", 0) or 0) <= 0),
+    )
+    warehouse_items = SimpleNamespace(items=rows, total=len(rows))
+
+    return render_template("warehouse.html", warehouse_items=warehouse_items, stats=stats)
 
 
 @governed_bp.post("/governed/actions/sku/dry-run")
