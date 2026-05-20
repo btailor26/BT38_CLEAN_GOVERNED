@@ -437,6 +437,12 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed group propagation routes: {exc}")
 
+try:
+    from governed_runtime_visibility_routes import governed_runtime_visibility_bp
+    app.register_blueprint(governed_runtime_visibility_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed runtime visibility routes: {exc}")
+
 
 # Import and register admin reporting blueprint
 from admin_routes import admin_bp
