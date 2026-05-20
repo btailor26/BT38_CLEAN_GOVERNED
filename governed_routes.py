@@ -225,7 +225,6 @@ def _blocked(reason: str, **extra) -> dict:
     return result
 
 @governed_bp.route("/amazon-inventory-hydration/manual-run", methods=["POST"])
-@login_required
 def governed_amazon_inventory_hydration_manual_run():
     """
     Manual governed Amazon inventory hydration endpoint.
