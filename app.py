@@ -419,10 +419,6 @@ with app.app_context():
     migrate_database()
     ensure_production_ebay_sandbox_flag()
 
-# Import and register routes blueprint
-from routes import bp as routes_bp
-app.register_blueprint(routes_bp)
-
 try:
     from governed_routes import governed_bp
     app.register_blueprint(governed_bp)
