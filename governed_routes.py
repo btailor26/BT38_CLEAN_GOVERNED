@@ -223,3 +223,28 @@ def _blocked(reason: str, **extra) -> dict:
     }
     result.update(extra)
     return result
+
+@governed_bp.route("/amazon-inventory-hydration/manual-run", methods=["POST"])
+@login_required
+def governed_amazon_inventory_hydration_manual_run():
+    """
+    Manual governed Amazon inventory hydration endpoint.
+
+    No scheduler.
+    No worker.
+    No automatic execution.
+    No UI dependency.
+
+    Must be called manually after review.
+    """
+    from services.governed_amazon_inventory_hydration import hydrate_amazon_inventory
+
+    result = hydrate_amazon_inventory()
+
+    return jsonify({
+        "success": True,
+        "manual": True,
+        "governed": True,
+        "auto_execution": False,
+        "result": result,
+    })
