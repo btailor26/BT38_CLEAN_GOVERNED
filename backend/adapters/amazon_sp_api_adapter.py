@@ -1,16 +1,8 @@
 """
 BT38 CLEAN AMAZON SP-API ADAPTER
-
-Single governed adapter layer.
-
-Rules:
-- No old routes
-- No queue workers
-- No orchestration services
-- No marketplace startup execution
-- Inventory read only
 """
 
+import json
 from datetime import datetime
 
 from sp_api.api import Inventories
@@ -25,13 +17,25 @@ class AmazonSPAPIAdapter:
 
         creds = store.api_key or {}
 
+        if isinstance(creds, str):
+            try:
+                creds = json.loads(creds)
+            except Exception:
+                creds = {}
+
+        self.creds = creds
+
         self.client = Inventories(
             marketplace=Marketplaces.UK,
             refresh_token=creds.get("refresh_token"),
-            lwa_app_id=creds.get("lwa_app_id")
-                or creds.get("client_id"),
-            lwa_client_secret=creds.get("lwa_client_secret")
-                or creds.get("client_secret"),
+            lwa_app_id=(
+                creds.get("lwa_app_id")
+                or creds.get("client_id")
+            ),
+            lwa_client_secret=(
+                creds.get("lwa_client_secret")
+                or creds.get("client_secret")
+            ),
             aws_access_key=creds.get("aws_access_key"),
             aws_secret_key=creds.get("aws_secret_key"),
             role_arn=creds.get("role_arn"),
@@ -49,11 +53,14 @@ class AmazonSPAPIAdapter:
 
         for row in rows:
 
-            inventory_details = row.get("inventoryDetails") or {}
+            inventory_details = (
+                row.get("inventoryDetails") or {}
+            )
 
             fulfillable = (
-                inventory_details.get("fulfillableQuantity")
-                or 0
+                inventory_details.get(
+                    "fulfillableQuantity"
+                ) or 0
             )
 
             normalized.append({
@@ -67,7 +74,9 @@ class AmazonSPAPIAdapter:
                     else "MFN"
                 ),
                 "raw": row,
-                "synced_at": datetime.utcnow().isoformat(),
+                "synced_at": (
+                    datetime.utcnow().isoformat()
+                ),
             })
 
         return normalized
