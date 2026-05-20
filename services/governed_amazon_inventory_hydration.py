@@ -69,8 +69,9 @@ def hydrate_amazon_inventory():
 
                 if ws:
 
+                    # sellable_quantity is a computed read-only property.
+                    # available_quantity is the governed writable warehouse truth.
                     ws.available_quantity = qty
-                    ws.sellable_quantity = qty
 
                     stats["warehouse_updates"] += 1
 
