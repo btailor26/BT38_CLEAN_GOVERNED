@@ -1743,673 +1743,112 @@ def quick_scan_stock_adjust(stock_id):
 @bp.route('/inventory')
 # @login_required  # Temporarily disabled for access
 def inventory():
-    """Display warehouse stock (the boss) with optional grouping and search - warehouse-authoritative view"""
-    # Check for view mode (grouped or flat)
-    view_mode = request.args.get('view', 'flat')
-    group_filter = request.args.get('group')
-    search_query = request.args.get('search', '').strip()
-    marketplace_filter = request.args.get('marketplace', '').strip()
+    """Legacy inventory page retired.
 
-    # Base query for WarehouseStock (the boss) with eager-loaded relationships
-    query = db.session.query(WarehouseStock).options(
-        joinedload(WarehouseStock.supplier),
-        joinedload(WarehouseStock.marketplace_listings).joinedload(MarketplaceListing.store)
-    )
+    Warehouse is the only inventory truth page.
+    Keep the endpoint alive only as a safe redirect so old links do not create a second truth screen.
+    """
+    search = request.args.get("search", "").strip()
+    if search:
+        return redirect(url_for("routes.warehouse", search=search))
+    return redirect(url_for("routes.warehouse"))
 
-    # Apply search filter if specified (search on SKU, inventory item names, or marketplace titles)
-    if search_query:
-        search_pattern = f'%{search_query}%'
-        # Search by warehouse SKU, inventory item name, or marketplace listing title
-        query = query.outerjoin(InventoryItem, WarehouseStock.sku == InventoryItem.sku).outerjoin(
-            MarketplaceListing, MarketplaceListing.warehouse_stock_id == WarehouseStock.id
-        ).filter(or_(
-            WarehouseStock.sku.ilike(search_pattern),
-            InventoryItem.name.ilike(search_pattern),
-            MarketplaceListing.title.ilike(search_pattern)
-        )).distinct()
-
-    # Apply marketplace filter if specified
-    if marketplace_filter:
-        # Get distinct warehouse stock IDs that are listed on this marketplace
-        subquery = db.session.query(WarehouseStock.id).join(
-            MarketplaceListing, MarketplaceListing.warehouse_stock_id == WarehouseStock.id
-        ).join(
-            Store, MarketplaceListing.store_id == Store.id
-        ).filter(Store.platform == marketplace_filter).distinct().subquery()
-
-        # Filter main query to only these IDs
-        query = query.filter(WarehouseStock.id.in_(db.session.query(subquery.c.id)))
-
-    # Order by SKU
-    warehouse_stocks = query.order_by(WarehouseStock.sku).all()
-
-    # Get all unique marketplaces from stores
-    all_marketplaces = db.session.query(Store.platform).distinct().order_by(Store.platform).all()
-    all_marketplaces = [m[0] for m in all_marketplaces]
-
-    # Create a simple view model class to avoid mutating SQLAlchemy objects
-    class WarehouseStockView:
-        """View model for displaying warehouse stock with associated data"""
-        def __init__(self, warehouse_stock, inventory_items, marketplace_summary):
-            self.warehouse_stock = warehouse_stock
-            self.linked_items = inventory_items
-            self.marketplace_summary = marketplace_summary
-
-            # Try to get product name from marketplace listing title (most descriptive)
-            product_name = None
-            for listing in warehouse_stock.marketplace_listings:
-                if listing.title and listing.title.strip():
-                    product_name = listing.title
-                    break
-
-            # Use first inventory item for display metadata, or create defaults
-            if inventory_items:
-                primary = inventory_items[0]
-                self.id = primary.id
-                # Use marketplace title if available, otherwise fall back to inventory item name
-                self.name = product_name or primary.name
-                self.description = primary.description
-                self.price = primary.price
-                self.variant_attributes = primary.variant_attributes
-                self.group_id = primary.group_id
-                self.group = primary.group
-                self.updated_at = warehouse_stock.updated_at or primary.updated_at
-            else:
-                # Warehouse-only item (no InventoryItem yet)
-                self.id = warehouse_stock.id
-                # Use marketplace title if available, otherwise use warehouse SKU
-                self.name = product_name or f"Warehouse Item - {warehouse_stock.sku}"
-                self.description = "Managed at warehouse level"
-                self.price = warehouse_stock.unit_cost or 0.0
-                self.variant_attributes = None
-                self.group_id = None
-                self.group = None
-                self.updated_at = warehouse_stock.updated_at
-
-            # Always use warehouse SKU as authoritative
-            self.sku = warehouse_stock.sku
-
-    # Batch-load all inventory items to avoid N+1 queries
-    all_skus = [ws.sku for ws in warehouse_stocks]
-    if all_skus:
-        all_inventory_items = InventoryItem.query.options(
-            joinedload(InventoryItem.group)
-        ).filter(InventoryItem.sku.in_(all_skus)).all()
-
-        # Group inventory items by SKU for fast lookup
-        inventory_by_sku = {}
-        for item in all_inventory_items:
-            if item.sku not in inventory_by_sku:
-                inventory_by_sku[item.sku] = []
-            inventory_by_sku[item.sku].append(item)
-    else:
-        inventory_by_sku = {}
-
-    # For each warehouse stock, create a view model
-    items = []
-    for ws in warehouse_stocks:
-        # Get inventory items for this SKU from our pre-loaded batch
-        inventory_items = inventory_by_sku.get(ws.sku, [])
-
-        # Calculate marketplace summary for this warehouse stock
-        marketplace_summary = {}
-        for listing in ws.marketplace_listings:
-            platform = listing.store.platform if listing.store else 'Unknown'
-
-            if platform not in marketplace_summary:
-                marketplace_summary[platform] = {
-                    'total_listings': 0,
-                    'active_listings': 0,
-                    'needs_push': False,
-                    'last_sync': None
-                }
-
-            marketplace_summary[platform]['total_listings'] += 1
-            if listing.is_active:
-                marketplace_summary[platform]['active_listings'] += 1
-            if listing.needs_push:
-                marketplace_summary[platform]['needs_push'] = True
-            if listing.last_push_at:
-                if not marketplace_summary[platform]['last_sync'] or listing.last_push_at > marketplace_summary[platform]['last_sync']:
-                    marketplace_summary[platform]['last_sync'] = listing.last_push_at
-
-        # Create view model (one per warehouse stock - no mutation!)
-        view_item = WarehouseStockView(ws, inventory_items, marketplace_summary)
-        items.append(view_item)
-
-    # Organize items by groups if in grouped view
-    grouped_items = {}
-    ungrouped_items = []
-    all_groups = []
-
-    if view_mode == 'grouped':
-        # Get all groups
-        all_groups = db.session.query(ProductGroup).order_by(ProductGroup.name).all()
-
-        # Apply group filter if specified
-        if group_filter:
-            if group_filter == 'ungrouped':
-                items = [item for item in items if not item.group_id]
-            else:
-                try:
-                    group_id = int(group_filter)
-                    items = [item for item in items if item.group_id == group_id]
-                except ValueError:
-                    flash('Invalid group filter', 'warning')
-
-        # Organize items by groups
-        for item in items:
-            if item.group_id:
-                if item.group_id not in grouped_items:
-                    grouped_items[item.group_id] = {
-                        'group': item.group,
-                        'items': [],
-                        'marketplace_summary': {}
-                    }
-                grouped_items[item.group_id]['items'].append(item)
-            else:
-                ungrouped_items.append(item)
-
-        # Aggregate marketplace data for each group
-        for group_id, group_data in grouped_items.items():
-            marketplace_summary = {}
-
-            for item in group_data['items']:
-                for platform, data in item.marketplace_summary.items():
-                    if platform not in marketplace_summary:
-                        marketplace_summary[platform] = {
-                            'total_listings': 0,
-                            'active_listings': 0,
-                            'needs_push': False
-                        }
-
-                    marketplace_summary[platform]['total_listings'] += data['total_listings']
-                    marketplace_summary[platform]['active_listings'] += data['active_listings']
-                    if data['needs_push']:
-                        marketplace_summary[platform]['needs_push'] = True
-
-            group_data['marketplace_summary'] = marketplace_summary
-    else:
-        # Apply group filter in flat view
-        if group_filter:
-            if group_filter == 'ungrouped':
-                items = [item for item in items if not item.group_id]
-            else:
-                try:
-                    group_id = int(group_filter)
-                    items = [item for item in items if item.group_id == group_id]
-                except ValueError:
-                    flash('Invalid group filter', 'warning')
-
-    return render_template('inventory.html',
-                         items=items,
-                         view_mode=view_mode,
-                         grouped_items=grouped_items,
-                         ungrouped_items=ungrouped_items,
-                         all_groups=all_groups,
-                         all_marketplaces=all_marketplaces,
-                         current_group_filter=group_filter,
-                         current_marketplace_filter=marketplace_filter,
-                         current_search=search_query)
 
 @bp.route('/inventory/add', methods=['GET', 'POST'])
 # @login_required  # Temporarily disabled for access
 def add_item():
-    """Add new inventory item"""
-    if request.method == 'POST':
-        try:
-            # CSRF Protection
-            csrf_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
-            if not validate_csrf_token(csrf_token):
-                logging.warning(f"CSRF token validation failed for add_item request from {request.remote_addr}")
-                flash('Invalid request. Please try again.', 'danger')
-                return redirect(url_for('routes.add_item'))
+    """Legacy inventory write route frozen.
 
-            item = InventoryItem()
-            item.name = request.form['name']
-            item.sku = request.form['sku']
-            item.quantity = int(request.form['quantity'])
-            item.price = float(request.form['price'])
-            item.description = request.form.get('description', '')
-            item.reorder_point = int(request.form.get('reorder_point', 0) or 0)
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "add_item",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-            # Handle group assignment
-            group_id = request.form.get('group_id')
-            if group_id and group_id != '':
-                item.group_id = int(group_id)
-
-            # Handle variant attributes
-            variant_attrs = {}
-            for key in ['color', 'size', 'material', 'style']:
-                value = request.form.get(f'variant_{key}')
-                if value and value.strip():
-                    variant_attrs[key] = value.strip()
-
-            if variant_attrs:
-                item.variant_attributes = variant_attrs
-
-            db.session.add(item)
-            db.session.flush()  # Get item.id for use in prepare step
-
-            # Step 1: Prepare warehouse stock and get stores list (BEFORE commit)
-            stores_to_push, warehouse_stock = prepare_warehouse_push(item, operation="create")
-
-            # Step 2: Commit item AND warehouse stock together
-            db.session.commit()
-
-            # Step 3: Enqueue jobs AFTER successful commit (won't rollback if push fails)
-            jobs_count = 0
-            if stores_to_push:
-                try:
-                    jobs_count = enqueue_push_jobs(item.id, stores_to_push)
-                except Exception as push_error:
-                    logging.error(f"Push job enqueue failed after adding item {item.sku}: {str(push_error)}")
-                    # Item is already saved, just warn user
-                    flash(f'Item added successfully! However, push enqueue failed - use manual push button.', 'warning')
-                    return redirect(url_for('routes.inventory'))
-
-            if jobs_count > 0:
-                flash(f'Item added successfully! High-priority push queued for {jobs_count} marketplace(s).', 'success')
-            else:
-                flash('Item added successfully!', 'success')
-
-            return redirect(url_for('routes.inventory'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Error adding item: {str(e)}', 'danger')
-            logging.error(f'Error adding item: {str(e)}')
-
-    # Get all groups for selection dropdown
-    groups = db.session.query(ProductGroup).order_by(ProductGroup.name).all()
-    return render_template('add_item.html', groups=groups)
 
 @bp.route('/inventory/edit/<int:item_id>', methods=['GET', 'POST'])
 # @login_required  # Temporarily disabled for access
 def edit_item(item_id):
-    """Edit existing inventory item"""
-    item = db.session.get(InventoryItem, item_id)
-    if not item:
-        flash('Item not found!', 'danger')
-        return redirect(url_for('routes.inventory'))
+    """Legacy inventory write route frozen.
 
-    if request.method == 'POST':
-        try:
-            # CSRF Protection
-            csrf_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
-            if not validate_csrf_token(csrf_token):
-                logging.warning(f"CSRF token validation failed for edit_item request from {request.remote_addr}")
-                flash('Invalid request. Please try again.', 'danger')
-                return redirect(url_for('routes.edit_item', item_id=item_id))
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "edit_item",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-            # Capture original quantity before updating
-            original_quantity = item.quantity
-
-            item.name = request.form['name']
-            item.sku = request.form['sku']
-            new_quantity = int(request.form['quantity'])
-            item.quantity = new_quantity
-            item.price = float(request.form['price'])
-            item.description = request.form.get('description', '')
-            item.reorder_point = int(request.form.get('reorder_point', 0) or 0)
-
-            # Handle group assignment
-            group_id = request.form.get('group_id')
-            if group_id and group_id != '':
-                item.group_id = int(group_id)
-            else:
-                item.group_id = None
-
-            # Handle variant attributes
-            variant_attrs = {}
-            for key in ['color', 'size', 'material', 'style']:
-                value = request.form.get(f'variant_{key}')
-                if value and value.strip():
-                    variant_attrs[key] = value.strip()
-
-            item.variant_attributes = variant_attrs if variant_attrs else None
-
-            # Check if quantity changed
-            quantity_changed = original_quantity != new_quantity
-            stores_to_push = []
-
-            if quantity_changed:
-                # Step 1: Prepare warehouse stock and get stores list (BEFORE commit)
-                stores_to_push, warehouse_stock = prepare_warehouse_push(item, operation="update")
-
-            # Step 2: Commit item changes AND warehouse stock together
-            db.session.commit()
-
-            # Step 3: Enqueue jobs AFTER successful commit
-            jobs_count = 0
-            if quantity_changed and stores_to_push:
-                try:
-                    jobs_count = enqueue_push_jobs(item.id, stores_to_push)
-                except Exception as push_error:
-                    logging.error(f"Push job enqueue failed after updating item {item.sku}: {str(push_error)}")
-                    # Item is already saved, just warn user
-                    flash(f'Item updated successfully! Quantity changed from {original_quantity} to {new_quantity} but push enqueue failed - use manual push button.', 'warning')
-                    return redirect(url_for('routes.inventory'))
-
-            if quantity_changed:
-                if jobs_count > 0:
-                    flash(f'Item updated successfully! Quantity changed from {original_quantity} to {new_quantity}. High-priority push queued for {jobs_count} marketplace(s).', 'success')
-                else:
-                    flash(f'Item updated successfully! Quantity changed from {original_quantity} to {new_quantity}', 'success')
-            else:
-                flash('Item updated successfully!', 'success')
-
-            return redirect(url_for('routes.inventory'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Error updating item: {str(e)}', 'danger')
-            logging.error(f'Error updating item: {str(e)}')
-
-    # Get all groups for selection dropdown
-    groups = db.session.query(ProductGroup).order_by(ProductGroup.name).all()
-    return render_template('edit_item.html', item=item, groups=groups)
 
 @bp.route('/inventory/delete/<int:item_id>', methods=['POST'])
 # @login_required  # Temporarily disabled for access
 def delete_item(item_id):
-    """Delete inventory item"""
-    try:
-        # CSRF Protection
-        csrf_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
-        if not validate_csrf_token(csrf_token):
-            logging.warning(f"CSRF token validation failed for delete_item request from {request.remote_addr}")
-            flash('Invalid request. Please try again.', 'danger')
-            return redirect(url_for('routes.inventory'))
+    """Legacy inventory write route frozen.
 
-        item = db.session.get(InventoryItem, item_id)
-        if item:
-            db.session.delete(item)
-            db.session.commit()
-            flash('Item deleted successfully!', 'success')
-        else:
-            flash('Item not found!', 'danger')
-    except Exception as e:
-        db.session.rollback()
-        flash(f'Error deleting item: {str(e)}', 'danger')
-        logging.error(f'Error deleting item: {str(e)}')
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "delete_item",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-    return redirect(url_for('routes.inventory'))
 
 @bp.route('/inventory/delete_bulk', methods=['POST'])
 # @login_required  # Temporarily disabled for access
 def delete_bulk_items():
-    """Delete multiple inventory items in bulk"""
-    try:
-        # CSRF Protection
-        csrf_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
-        if not validate_csrf_token(csrf_token):
-            logging.warning(f"CSRF token validation failed for delete_bulk_items request from {request.remote_addr}")
-            return jsonify({'success': False, 'error': 'Invalid request token'}), 403
+    """Legacy inventory write route frozen.
 
-        # Get item IDs from request
-        data = request.get_json()
-        if not data or 'item_ids' not in data:
-            return jsonify({'success': False, 'error': 'No items selected'}), 400
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "delete_bulk_items",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-        item_ids = data['item_ids']
-        if not isinstance(item_ids, list) or len(item_ids) == 0:
-            return jsonify({'success': False, 'error': 'No items selected'}), 400
-
-        # Delete items
-        deleted_count = 0
-        for item_id in item_ids:
-            try:
-                item = db.session.get(InventoryItem, int(item_id))
-                if item:
-                    db.session.delete(item)
-                    deleted_count += 1
-            except Exception as item_error:
-                logging.error(f'Error deleting item {item_id}: {str(item_error)}')
-
-        db.session.commit()
-
-        message = f'{deleted_count} item(s) deleted successfully!'
-        logging.info(f'Bulk delete: {deleted_count} items deleted')
-
-        return jsonify({'success': True, 'message': message, 'deleted_count': deleted_count})
-
-    except Exception as e:
-        db.session.rollback()
-        error_msg = f'Error deleting items: {str(e)}'
-        logging.error(error_msg)
-        return jsonify({'success': False, 'error': error_msg}), 500
 
 @bp.route('/update_stock/<int:item_id>', methods=['POST'])
 # @login_required  # Temporarily disabled for access
 def update_stock(item_id):
-    """AJAX endpoint for updating stock quantities inline"""
-    try:
-        # CSRF Protection
-        csrf_token = request.headers.get('X-CSRF-Token') or (request.json.get('csrf_token') if request.json else None)
-        if not validate_csrf_token(csrf_token):
-            logging.warning(f"CSRF token validation failed for update_stock request from {request.remote_addr}")
-            return jsonify({'success': False, 'error': 'Invalid request token'}), 403
+    """Legacy inventory write route frozen.
 
-        # Get the item
-        item = db.session.get(InventoryItem, item_id)
-        if not item:
-            return jsonify({'success': False, 'error': 'Item not found'}), 404
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "update_stock",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-        # Get the new quantity from request
-        data = request.get_json()
-        if not data or 'quantity' not in data:
-            return jsonify({'success': False, 'error': 'Quantity is required'}), 400
-
-        try:
-            new_quantity = int(data['quantity'])
-            if new_quantity < 0:
-                return jsonify({'success': False, 'error': 'Quantity cannot be negative'}), 400
-        except (ValueError, TypeError):
-            return jsonify({'success': False, 'error': 'Invalid quantity value'}), 400
-
-        # Store original quantity for logging
-        original_quantity = item.quantity
-
-        # Update the quantity
-        item.quantity = new_quantity
-        item.updated_at = datetime.utcnow()
-
-        # Prepare push if quantity changed (BEFORE commit)
-        stores_to_push = []
-        if original_quantity != new_quantity:
-            stores_to_push, warehouse_stock = prepare_warehouse_push(item, operation="update")
-
-        # Commit quantity change AND warehouse stock together
-        db.session.commit()
-
-        # Enqueue jobs AFTER successful commit
-        jobs_count = 0
-        if stores_to_push:
-            try:
-                jobs_count = enqueue_push_jobs(item.id, stores_to_push)
-                logging.info(f"Stock updated for {item.sku}: {original_quantity} -> {new_quantity}. Queued {jobs_count} push jobs.")
-            except Exception as push_error:
-                logging.error(f"Push job enqueue failed after updating stock for {item.sku}: {str(push_error)}")
-                # Continue anyway, item is already saved
-
-        # Determine badge class based on new quantity
-        if new_quantity < 10:
-            badge_class = 'bg-warning text-dark'
-        elif new_quantity > 50:
-            badge_class = 'bg-success'
-        else:
-            badge_class = 'bg-secondary'
-
-        # Prepare response data
-        push_message_suffix = f' - high-priority push queued for {jobs_count} marketplace(s)' if jobs_count > 0 else ''
-        response_data = {
-            'success': True,
-            'message': f'Quantity updated from {original_quantity} to {new_quantity}{push_message_suffix}',
-            'new_quantity': new_quantity,
-            'badge_class': badge_class,
-            'needs_reorder': new_quantity <= (item.reorder_point or 0),
-            'item_id': item_id,
-            'sku': item.sku
-        }
-
-        return jsonify(response_data)
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f'Error updating stock for item {item_id}: {str(e)}')
-        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
 @bp.route('/batch_update_stock', methods=['POST'])
 # @login_required  # Temporarily disabled for access
 def batch_update_stock():
-    """AJAX endpoint for updating multiple stock quantities in one atomic transaction"""
-    try:
-        # CSRF Protection
-        csrf_token = request.headers.get('X-CSRF-Token') or (request.json.get('csrf_token') if request.json else None)
-        if not validate_csrf_token(csrf_token):
-            logging.warning(f"CSRF token validation failed for batch_update_stock request from {request.remote_addr}")
-            return jsonify({'success': False, 'error': 'Invalid request token'}), 403
+    """Legacy inventory write route frozen.
 
-        # Get the batch updates from request
-        data = request.get_json()
-        if not data or 'updates' not in data:
-            return jsonify({'success': False, 'error': 'Updates array is required'}), 400
+    Inventory writes must go through governed warehouse truth paths only.
+    """
+    return jsonify({
+        "success": False,
+        "frozen": True,
+        "legacy_inventory_write_disabled": True,
+        "route": "batch_update_stock",
+        "error": "Legacy inventory write route is frozen. Use governed warehouse truth only."
+    }), 410
 
-        updates = data['updates']
-        if not isinstance(updates, list) or len(updates) == 0:
-            return jsonify({'success': False, 'error': 'Updates must be a non-empty array'}), 400
-
-        # Validate all updates first
-        validated_updates = []
-        for update in updates:
-            if not isinstance(update, dict) or 'item_id' not in update or 'quantity' not in update:
-                return jsonify({'success': False, 'error': 'Each update must have item_id and quantity'}), 400
-
-            try:
-                item_id = int(update['item_id'])
-                new_quantity = int(update['quantity'])
-                if new_quantity < 0:
-                    return jsonify({'success': False, 'error': f'Quantity cannot be negative for item {item_id}'}), 400
-            except (ValueError, TypeError):
-                return jsonify({'success': False, 'error': f'Invalid item_id or quantity values'}), 400
-
-            # Check if item exists
-            item = db.session.get(InventoryItem, item_id)
-            if not item:
-                return jsonify({'success': False, 'error': f'Item {item_id} not found'}), 404
-
-            validated_updates.append({
-                'item_id': item_id,
-                'item': item,
-                'original_quantity': item.quantity,
-                'new_quantity': new_quantity
-            })
-
-        # Perform all updates in a single transaction
-        updated_items = []
-        items_with_changes = []
-
-        for update_data in validated_updates:
-            item = update_data['item']
-            original_quantity = update_data['original_quantity']
-            new_quantity = update_data['new_quantity']
-
-            # Update the quantity in inventory_items
-            item.quantity = new_quantity
-            item.updated_at = datetime.utcnow()
-
-            # CRITICAL: Use row-level locking to prevent concurrent modification races
-            # This protects against simultaneous marketplace sales during batch updates
-            warehouse_stock = db.session.execute(
-                select(WarehouseStock)
-                .filter_by(sku=item.sku)
-                .with_for_update()  # SELECT FOR UPDATE - blocks other transactions
-            ).scalar_one_or_none()
-
-            if warehouse_stock:
-                warehouse_stock.available_quantity = new_quantity
-                warehouse_stock.stock_version += 1  # Increment version for optimistic locking
-                warehouse_stock.updated_at = datetime.utcnow()
-                logging.info(f" Synced warehouse_stock for SKU {item.sku}: {original_quantity}  {new_quantity} (version {warehouse_stock.stock_version})")
-            else:
-                # Create warehouse_stock if it doesn't exist
-                warehouse_stock = WarehouseStock(
-                    sku=item.sku,
-                    available_quantity=new_quantity,
-                    stock_version=0,  # Initial version
-                    unit_cost=item.price,
-                    location='Warehouse',
-                    is_active=True,
-                    track_inventory=True
-                )
-                db.session.add(warehouse_stock)
-                logging.info(f" Created warehouse_stock for SKU {item.sku}: {new_quantity} units")
-
-            # Determine badge class based on new quantity
-            if new_quantity < 10:
-                badge_class = 'bg-warning text-dark'
-            elif new_quantity > 50:
-                badge_class = 'bg-success'
-            else:
-                badge_class = 'bg-secondary'
-
-            updated_items.append({
-                'item_id': item.id,
-                'sku': item.sku,
-                'original_quantity': original_quantity,
-                'new_quantity': new_quantity,
-                'badge_class': badge_class,
-                'needs_reorder': new_quantity <= (item.reorder_point or 0)
-            })
-
-            # Track items that actually changed (collect SKUs)
-            if original_quantity != new_quantity:
-                items_with_changes.append(item.sku)  # Store SKU for coordinator
-
-        # UNIFIED PUSH SYSTEM: Prepare marketplace pushes BEFORE commit (deduplicate SKUs)
-        skus_to_push = list(set(items_with_changes))  # Remove duplicates
-        from warehouse_push_coordinator import WarehousePushCoordinator
-        coordinator = WarehousePushCoordinator()
-        if skus_to_push:
-            prepared_count = coordinator.prepare_for_items(skus_to_push, operation="update")
-            logging.info(f" Batch update: Prepared {prepared_count} SKUs for marketplace push")
-
-        # Commit all changes including warehouse stock
-        db.session.commit()
-
-        # UNIFIED PUSH SYSTEM: Enqueue jobs AFTER successful commit
-        total_jobs = 0
-        auto_sync_errors = []
-        if skus_to_push:
-            try:
-                total_jobs = coordinator.enqueue_pending_jobs()
-                logging.info(f" Batch update: Enqueued {total_jobs} push jobs for {len(skus_to_push)} SKUs")
-            except Exception as e:
-                logging.error(f"Error during batch push enqueue: {str(e)}")
-                auto_sync_errors = skus_to_push[:3]  # Sample of failed SKUs
-
-        # Prepare response
-        response_data = {
-            'success': True,
-            'message': f'Successfully updated {len(updated_items)} items',
-            'updated_items': updated_items,
-            'changed_count': len(items_with_changes),
-            'auto_sync_initiated': len(items_with_changes) > 0
-        }
-
-        if auto_sync_errors:
-            response_data['warning'] = f'Auto-sync failed for {len(auto_sync_errors)} items: {", ".join(auto_sync_errors[:3])}{"..." if len(auto_sync_errors) > 3 else ""}'
-        elif items_with_changes:
-            response_data['message'] += ' - automatic sync initiated'
-
-        logging.info(f"Batch stock update completed: {len(updated_items)} items updated, {len(items_with_changes)} changes made")
-        return jsonify(response_data)
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f'Error in batch stock update: {str(e)}')
-        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
-
-# =================== GROUP MANAGEMENT ROUTES ===================
 
 @bp.route('/groups')
 # @login_required  # Temporarily disabled for access
