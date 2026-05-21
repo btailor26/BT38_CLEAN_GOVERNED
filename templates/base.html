@@ -33,198 +33,28 @@
             <a class="navbar-brand fw-bold" href="{{ url_for('governed.governed_warehouse_page') }}">
                 <i data-feather="package" class="me-2"></i>BT38 Inventory
             </a>
-            
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
-            
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
-                    <!-- Inventory Dropdown -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['warehouse', 'warehouse_detail', 'product_linking', 'admin_product_linking', 'amazon_fba_stock', 'stock_transfers'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="package" class="me-1"></i>Inventory
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.warehouse') }}">
-                                <i data-feather="list" class="me-1"></i>Inventory
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.admin_product_linking') }}">
-                                <i data-feather="link" class="me-1"></i>GroupView
-                            </a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.warehouse') }}">
-                                <i data-feather="box" class="me-1"></i>Amazon FBA Stock
-                                <span class="badge bg-secondary ms-1" style="font-size:0.6rem;">Read-Only</span>
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.warehouse') }}">
-                                <i data-feather="repeat" class="me-1"></i>Stock Transfers
-                            </a></li>
-                        </ul>
-                    </li>
-                    
-                    <!-- Orders Dropdown -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['customers_list', 'orders_list', 'invoices_list', 'purchase_orders', 'suppliers', 'suggested_orders'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="shopping-cart" class="me-1"></i>Orders
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.purchase_orders') }}">
-                                <i data-feather="file-text" class="me-1"></i>Purchase Orders
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.suppliers') }}">
-                                <i data-feather="truck" class="me-1"></i>Suppliers
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.suggested_orders') }}">
-                                <i data-feather="alert-circle" class="me-1"></i>Suggested Orders
-                            </a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.stores') }}">
-                                <i data-feather="users" class="me-1"></i>Customers
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.stores') }}">
-                                <i data-feather="shopping-cart" class="me-1"></i>Sales Orders
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.stores') }}">
-                                <i data-feather="file-text" class="me-1"></i>Invoices
-                            </a></li>
-                        </ul>
-                    </li>
-                    
-                    <!-- Listings -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['listings', 'stores'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="tag" class="me-1"></i>Listings
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.listings') }}">
-                                <i data-feather="list" class="me-1"></i>All Listings
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.stores') }}">
-                                <i data-feather="shopping-bag" class="me-1"></i>Stores
-                            </a></li>
-                        </ul>
-                    </li>
-                    
-                    <!-- Analytics -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['analytics', 'monthly_roi', 'dashboard'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="bar-chart-2" class="me-1"></i>Analytics
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('governed.governed_warehouse_page') }}">
-                                <i data-feather="home" class="me-1"></i>Dashboard
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.analytics') }}">
-                                <i data-feather="bar-chart-2" class="me-1"></i>Analytics
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.monthly_roi') }}">
-                                <i data-feather="trending-up" class="me-1"></i>Monthly ROI
-                            </a></li>
-                        </ul>
-                    </li>
-                    
-                    <!-- Settings -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['settings', 'user_management', 'master_cartons', 'warehouse_layout', 'box_types_list', 'shelf_capacity', 'inventory_import'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="settings" class="me-1"></i>Settings
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.settings') }}">
-                                <i data-feather="sliders" class="me-1"></i>Push Settings
-                            </a></li>
-                            {% if current_user.is_authenticated %}
-                            <li><a class="dropdown-item" href="{{ url_for('routes.user_management') }}">
-                                <i data-feather="users" class="me-1"></i>Users
-                            </a></li>
-                            {% endif %}
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.master_cartons') }}">
-                                <i data-feather="package" class="me-1"></i>Master Cartons
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.warehouse_layout') }}">
-                                <i data-feather="map" class="me-1"></i>Warehouse Layout
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.box_types_list') }}">
-                                <i data-feather="box" class="me-1"></i>Box Types
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.shelf_capacity') }}">
-                                <i data-feather="layers" class="me-1"></i>Shelf Capacity
-                            </a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.inventory_import') }}">
-                                <i data-feather="upload" class="me-1"></i>Import from Amazon
-                            </a></li>
-                            {% if current_user.is_authenticated and current_user.role == 'admin' %}
-                            <li><a class="dropdown-item" href="">
-                                <i data-feather="activity" class="me-1"></i>System Activity
-                            </a></li>
-                            {% endif %}
-                        </ul>
-                    </li>
-                    
-                    <!-- Tools (collapsed) -->
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['quick_scan', 'mobile_scan', 'ai_image_studio', 'sentinel_console'] %}active{% endif %}" 
-                           href="/" role="button" data-bs-toggle="dropdown">
-                            <i data-feather="tool" class="me-1"></i>Tools
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.mobile_scan') }}">
-                                <i data-feather="smartphone" class="me-1"></i>Mobile Scanner
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.quick_scan') }}">
-                                <i data-feather="camera" class="me-1"></i>Quick Scan
-                            </a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.ai_image_studio') }}">
-                                <i data-feather="image" class="me-1"></i>AI Image Studio
-                            </a></li>
-                            {% if current_user.is_authenticated and current_user.role == 'admin' %}
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('routes.sentinel_console') }}">
-                                <i data-feather="shield" class="me-1"></i>Sentinel
-                            </a></li>
-                            {% endif %}
-                        </ul>
-                    </li>
-                    
-                    <!-- Help -->
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'faq' %}active{% endif %}" 
-                           href="{{ url_for('routes.faq') }}">
-                            <i data-feather="help-circle" class="me-1"></i>Help
+                        <a class="nav-link" href="{{ url_for('governed.governed_warehouse_page') }}">
+                            <i data-feather="box" class="me-1"></i>Master Stock
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/system-activity">
+                            <i data-feather="activity" class="me-1"></i>System Activity
                         </a>
                     </li>
                 </ul>
-                
-                <div class="navbar-text me-3">
-                    <small id="sync-status">Sync: <span class="badge bg-info">Checking...</span></small>
-                </div>
-                
                 <ul class="navbar-nav">
-                    {% if current_user.is_authenticated %}
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle" href="/" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
-                                <i data-feather="user" class="me-1"></i>{{ current_user.username }}
-                            </a>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                                <li><a class="dropdown-item" href="{{ url_for('routes.logout') }}">
-                                    <i data-feather="log-out" class="me-1"></i>Logout
-                                </a></li>
-                            </ul>
-                        </li>
-                    {% else %}
-                        <li class="nav-item">
-                            <a class="nav-link" href="{{ url_for('routes.login') }}">
-                                <i data-feather="log-in" class="me-1"></i>Login
-                            </a>
-                        </li>
-                    {% endif %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/login">
+                            <i data-feather="log-in" class="me-1"></i>Login
+                        </a>
+                    </li>
                 </ul>
             </div>
         </div>
@@ -257,9 +87,7 @@
                     <span class="text-muted small">BT38 Inventory Management</span>
                 </div>
                 <div class="col-md-4 text-center">
-                    <a href="{{ url_for('routes.faq') }}" class="btn btn-outline-secondary btn-sm">
-                        <i data-feather="help-circle" class="me-1"></i>Help
-                    </a>
+                    <span class="text-muted small">Help (retired)</span>
                 </div>
                 <div class="col-md-4 text-md-end">
                     <span class="text-muted small">Updated: <span id="last-update"></span></span>
