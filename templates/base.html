@@ -30,7 +30,7 @@
     <!-- Top Navigation - Dark Bar -->
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container-fluid px-4">
-            <a class="navbar-brand fw-bold" href="{{ url_for('routes.dashboard') }}">
+            <a class="navbar-brand fw-bold" href="{{ url_for('governed.governed_warehouse_page') }}">
                 <i data-feather="package" class="me-2"></i>BT38 Inventory
             </a>
             
@@ -116,7 +116,7 @@
                             <i data-feather="bar-chart-2" class="me-1"></i>Analytics
                         </a>
                         <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="{{ url_for('routes.dashboard') }}">
+                            <li><a class="dropdown-item" href="{{ url_for('governed.governed_warehouse_page') }}">
                                 <i data-feather="home" class="me-1"></i>Dashboard
                             </a></li>
                             <li><a class="dropdown-item" href="{{ url_for('routes.analytics') }}">
