@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 import json
 
-from flask import Blueprint, jsonify, request, render_template_string, redirect, url_for
+from flask import Blueprint, jsonify, request, render_template, redirect, url_for
 try:
     from flask_login import current_user
 except Exception:
@@ -27,12 +27,12 @@ def login():
         next_url = url_for("governed.governed_warehouse_page")
 
     if request.method == "POST":
-        identity = (request.form.get("identity") or "").strip()
+        username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
 
         user = (
             db.session.query(User)
-            .filter((User.email == identity) | (User.username == identity))
+            .filter((User.email == username) | (User.username == username))
             .first()
         )
 
@@ -46,39 +46,11 @@ def login():
     else:
         error = ""
 
-    return render_template_string("""
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>BT38 Login</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body{font-family:Arial,sans-serif;background:#f8fafc;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;color:#111827}
-    .card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px;max-width:380px;width:92%;box-shadow:0 10px 30px rgba(15,23,42,.08)}
-    h1{font-size:22px;margin:0 0 6px}
-    p{color:#6b7280;margin:0 0 20px}
-    label{font-size:13px;font-weight:700;display:block;margin:14px 0 6px}
-    input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d1d5db;border-radius:10px;font-size:15px}
-    button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:10px;background:#111827;color:#fff;font-weight:700;cursor:pointer}
-    .error{background:#fee2e2;color:#991b1b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:14px}
-  </style>
-</head>
-<body>
-  <form class="card" method="post">
-    <h1>BT38 Login</h1>
-    <p>Sign in to continue to Master Stock.</p>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    <input type="hidden" name="next" value="{{ next_url }}">
-    <label>Email or username</label>
-    <input name="identity" autocomplete="username" required autofocus>
-    <label>Password</label>
-    <input name="password" type="password" autocomplete="current-password" required>
-    <button type="submit">Sign in</button>
-  </form>
-</body>
-</html>
-""", error=error, next_url=next_url)
+    return render_template(
+        "login.html",
+        error=error,
+        next_url=next_url,
+    )
 
 
 @governed_bp.get("/shutdown-proof/status")
