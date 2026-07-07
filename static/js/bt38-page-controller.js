@@ -205,3 +205,32 @@ window.bt38SetFilter = window.bt38SetFilter || function(name, value) {
   window.BT38.PageController.localFilter(pageName);
   return false;
 };
+
+window.BT38.sessionFetch = window.BT38.sessionFetch || async function(key, url, options = {}) {
+  window.BT38.state = window.BT38.state || { cache: {}, session: {} };
+  window.BT38.state.cache = window.BT38.state.cache || {};
+  window.BT38.state.cache.fetch = window.BT38.state.cache.fetch || {};
+
+  const force = options.force === true;
+  const ttlMs = options.ttlMs || 60000;
+  const now = Date.now();
+  const cached = window.BT38.state.cache.fetch[key];
+
+  if (!force && cached && (now - cached.at) < ttlMs) {
+    return cached.data;
+  }
+
+  const fetchOptions = Object.assign({}, options);
+  delete fetchOptions.force;
+  delete fetchOptions.ttlMs;
+
+  const response = await fetch(url, fetchOptions);
+  const data = await response.json();
+
+  window.BT38.state.cache.fetch[key] = {
+    at: now,
+    data
+  };
+
+  return data;
+};
