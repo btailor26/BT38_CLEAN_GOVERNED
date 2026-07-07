@@ -12,8 +12,11 @@ except Exception:
 governed_group_propagation_bp = Blueprint("governed_group_propagation", __name__)
 
 
-@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink")
-def governed_group_unlink_listing(group_id: int):
+# Disabled duplicate destructive unlink route.
+# Single unlink authority lives in governed_group_routes.py.
+# This blueprint owns propagation only.
+@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink-disabled")
+def governed_group_unlink_listing_disabled(group_id: int):
     """Governed unlink for Product Linking group rows.
 
     This is warehouse/group relationship cleanup only.
@@ -169,7 +172,7 @@ def governed_group_propagate_quantity(group_id: int):
             if hasattr(stock, "is_group_controlled"):
                 stock.is_group_controlled = True
 
-            if target_quantity is not None and not group_has_fba_authority:
+            if target_quantity is not None:
                 stock_columns = set(stock.__table__.columns.keys())
                 for col in ("sellable_quantity", "available_quantity", "quantity"):
                     if col in stock_columns:
@@ -208,7 +211,7 @@ def governed_group_propagate_quantity(group_id: int):
             })
             continue
 
-        if target_quantity is None or group_has_fba_authority:
+        if target_quantity is None:
             quantity = listing.effective_quantity
         else:
             quantity = target_quantity

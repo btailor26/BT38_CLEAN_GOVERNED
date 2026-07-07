@@ -112,6 +112,10 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
     db.session.commit()
 
     result.update({
+        "listing_id": listing.id,
+        "warehouse_stock_id": listing.warehouse_stock_id,
+        "master_product_group_id": listing.master_product_group_id,
+        "push_quantity": push_quantity,
         "ui_action_wired": True,
         "grouping_layer_ready": True,
         "audit_history_logged": True,
@@ -193,20 +197,87 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         for listing in listings
     ]
 
-    ok_count = sum(1 for item in results if item.get("ok") or item.get("success"))
+    def _is_success(item: Dict[str, Any]) -> bool:
+        return bool(item.get("ok") or item.get("success"))
+
+    def _is_fba_read_only_skip(item: Dict[str, Any]) -> bool:
+        reason = str(item.get("reason") or item.get("error") or item.get("message") or "").lower()
+        marketplace = str(item.get("marketplace") or item.get("platform") or "").lower()
+        channel = str(item.get("amazon_fulfillment_channel") or item.get("fulfillment_channel") or item.get("fulfillment") or "").upper()
+        return (
+            bool(item.get("is_fba"))
+            or item.get("push_status") == "read_only"
+            or channel in {"AFN", "FBA"}
+            or ("amazon" in marketplace and ("fba" in reason or "afn" in reason or "read-only" in reason or "read only" in reason))
+        )
+
+    success_count = sum(1 for item in results if _is_success(item))
+    skipped_count = sum(1 for item in results if (not _is_success(item)) and _is_fba_read_only_skip(item))
+    failed_count = len(results) - success_count - skipped_count
+    pushable_count = len(results) - skipped_count
+
+    group_success = failed_count == 0 and pushable_count > 0
+
+    # Report group push result back to Warehouse authority rows.
+    # Product Linking is only a shortcut; Warehouse remains the source of truth.
+    # Warehouse authority must always be resolved from the marketplace
+    # listing warehouse_stock_id values, never from the group id itself.
+    report_stock_ids = sorted({
+        int(item.get("warehouse_stock_id"))
+        for item in results
+        if item.get("warehouse_stock_id")
+    })
+
+    warehouse_rows = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.id.in_(report_stock_ids))
+        .all()
+        if report_stock_ids else []
+    )
+
+
+    for stock in warehouse_rows:
+        if hasattr(stock, "last_push_at"):
+            stock.last_push_at = datetime.utcnow()
+        if hasattr(stock, "last_push_status"):
+            stock.last_push_status = "success" if group_success else "error"
+        if hasattr(stock, "last_push_error"):
+            stock.last_push_error = None if group_success else "Group push had failed marketplace members."
+        if hasattr(stock, "last_group_push_at"):
+            stock.last_group_push_at = datetime.utcnow()
+        if hasattr(stock, "last_group_push_status"):
+            stock.last_group_push_status = "success" if group_success else "error"
+        if hasattr(stock, "last_group_push_result"):
+            stock.last_group_push_result = {
+                "group_id": group_id,
+                "pushed": success_count,
+                "skipped": skipped_count,
+                "failed": failed_count,
+                "pushable_count": pushable_count,
+                "source": source,
+            }
+
+    if warehouse_rows:
+        db.session.commit()
 
     return {
-        "success": ok_count == len(results) and bool(results),
-        "ok": ok_count == len(results) and bool(results),
+        "success": group_success,
+        "ok": group_success,
         "governed": True,
         "group_id": group_id,
         "warehouse_ids": warehouse_ids,
         "direct_group_listing_ids": direct_group_listing_ids,
         "total": len(results),
-        "ok_count": ok_count,
+        "ok_count": success_count,
+        "pushed": success_count,
+        "skipped": skipped_count,
+        "failed": failed_count,
+        "fba_read_only_skipped": skipped_count,
+        "pushable_count": pushable_count,
         "warehouse_truth_quantity_used": True,
         "warehouse_authority_resolution": True,
         "request_quantity_ignored": True,
+        "fba_read_only_does_not_fail_group": True,
         "results": results,
     }
 

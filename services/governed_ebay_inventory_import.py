@@ -21,6 +21,7 @@ import requests
 
 from app import db
 from models import Store, MarketplaceListing, Warehouse, WarehouseStock, SyncLog, SystemConfig
+from services.runtime_status_writer import set_store_runtime_status
 
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -428,6 +429,7 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
 
         db.session.commit()
 
+        set_store_runtime_status(store, "idle", last_sync=True)
         db.session.add(SyncLog(
             store_id=store.id,
             status="success",

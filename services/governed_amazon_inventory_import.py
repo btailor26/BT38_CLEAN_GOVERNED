@@ -18,6 +18,7 @@ from datetime import datetime
 
 from app import db
 from models import Store, MarketplaceListing, AmazonFBAInventory, SyncLog
+from services.runtime_status_writer import set_store_runtime_status
 from backend.adapters.amazon_sp_api_adapter import AmazonSPAPIAdapter
 
 
@@ -161,6 +162,7 @@ def run_governed_amazon_inventory_import(store_id=None):
 
             imported += 1
 
+        set_store_runtime_status(store, "idle", last_sync=True)
         db.session.add(SyncLog(
             store_id=store.id,
             status="success",
