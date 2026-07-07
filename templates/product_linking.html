@@ -1806,7 +1806,7 @@ async function linkListingToWarehouse(listingId, warehouseId, listingSku, wareho
             
             // Show success and reload
             alert(`Successfully linked ${listingSku} to ${warehouseSku}!`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + (data.error || data.message));
         }
@@ -1868,7 +1868,7 @@ async function unlinkListing(listingId, listingSku, userConfirmed = false, group
 
         if (data.success || data.ok) {
             alert(`Successfully unlinked ${listingSku}`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + (data.error || data.message));
         }
@@ -1981,7 +1981,7 @@ async function saveNewLink() {
         if (data.success) {
             bootstrap.Modal.getInstance(document.getElementById('createLinkModal')).hide();
             alert('Link created successfully!');
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + data.error);
         }
@@ -2151,7 +2151,7 @@ async function runRepair(warehouseId, warehouseSku) {
         
         if (data.success) {
             alert(`Repair complete!\n\n${data.message || 'Issues fixed successfully.'}`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Repair failed: ' + data.error);
         }
