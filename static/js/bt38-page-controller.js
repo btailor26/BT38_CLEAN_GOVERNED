@@ -133,6 +133,46 @@ window.BT38.PageController = {
     return true;
   },
 
+  autoRegisterFromDom() {
+    const root = document.querySelector("[data-bt38-page]");
+    if (!root) return false;
+
+    const pageName = root.dataset.bt38Page;
+    if (!pageName) return false;
+
+    const filterFormSelector = root.dataset.bt38FilterForm || null;
+    const tableSelector = root.dataset.bt38Table || null;
+    const rowSelector = root.dataset.bt38Row || "tbody tr";
+
+    window.BT38.PageController.register(pageName, {
+      filterFormSelector,
+      tableSelector,
+      rowSelector
+    });
+
+    if (tableSelector) {
+      window.BT38.PageController.initTableCache(pageName);
+    }
+
+    if (filterFormSelector) {
+      window.BT38.PageController.wireLocalForm(pageName);
+    }
+
+    const submitName = root.dataset.bt38SubmitName;
+    if (submitName) {
+      window[submitName] = function(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        window.BT38.PageController.localFilter(pageName);
+        return false;
+      };
+    }
+
+    return true;
+  },
+
   markDirty(pageName, reason = "unknown") {
     const page = window.BT38.pages[pageName];
     if (!page) return;
@@ -141,3 +181,10 @@ window.BT38.PageController = {
     page.lastDirtyAt = Date.now();
   }
 };
+
+
+document.addEventListener("DOMContentLoaded", function() {
+  if (window.BT38 && window.BT38.PageController) {
+    window.BT38.PageController.autoRegisterFromDom();
+  }
+});
