@@ -68,7 +68,7 @@ document.addEventListener("click", function(e) {
         <div class="col-12">
             <div class="card">
                 <div class="card-body py-3">
-                    <form method="GET" action="{{ '/product-linking' }}" class="row g-3 align-items-end">
+                    <form method="GET" action="{{ '/product-linking' }}" class="row g-3 align-items-end" id="bt38ProductLinkingFilterForm" onsubmit="return bt38ProductLinkingLocalSubmit(event)">
                         <!-- Search Box -->
                         <div class="col-md-3">
                             <label class="form-label small text-muted mb-1">Search Groups</label>
@@ -79,7 +79,7 @@ document.addEventListener("click", function(e) {
                         <!-- Platform Filter -->
                         <div class="col-md-2">
                             <label class="form-label small text-muted mb-1">Platform</label>
-                            <select class="form-select" name="platform" onchange="this.form.submit()">
+                            <select class="form-select" name="platform">
                                 <option value="">All Platforms</option>
                                 {% for platform in all_platforms %}
                                 <option value="{{ platform }}" {% if current_platform == platform %}selected{% endif %}>
@@ -92,7 +92,7 @@ document.addEventListener("click", function(e) {
                         <!-- Store Filter -->
                         <div class="col-md-3">
                             <label class="form-label small text-muted mb-1">Store</label>
-                            <select class="form-select" name="store" onchange="this.form.submit()">
+                            <select class="form-select" name="store">
                                 <option value="">All Stores</option>
                                 {% for store in all_stores %}
                                 <option value="{{ store.id }}" {% if current_store == store.id|string %}selected{% endif %}>
@@ -105,7 +105,7 @@ document.addEventListener("click", function(e) {
                         <!-- Show Linked Filter -->
                         <div class="col-md-2">
                             <label class="form-label small text-muted mb-1">Status</label>
-                            <select class="form-select" name="show_linked" onchange="this.form.submit()">
+                            <select class="form-select" name="show_linked">
                                 <option value="all" {% if current_show_linked == 'all' %}selected{% endif %}>All Products</option>
                                 <option value="linked" {% if current_show_linked == 'linked' %}selected{% endif %}>Linked Only</option>
                                 <option value="unlinked" {% if current_show_linked == 'unlinked' %}selected{% endif %}>Unlinked Only</option>
