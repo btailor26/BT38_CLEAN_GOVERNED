@@ -406,8 +406,7 @@ function bt38StoreUpdate(storeId, field, value){
 }
 
 async function bt38RunStoreShortcut(action, platform){
-  const stateRes = await fetch("/governed/settings/state");
-  const state = await stateRes.json().catch(()=>({ok:false, stores:[]}));
+  const state = await window.BT38.sessionFetch("settings-state", "/governed/settings/state", {ttlMs: 60000});
   const stores = Array.isArray(state.stores) ? state.stores : [];
 
   const target = stores.find(s => {
@@ -450,8 +449,7 @@ async function bt38GetRuntimeState(){
   bt38Log(data);
 }
 async function bt38RefreshState(){
-  const res = await fetch("/governed/settings/state");
-  const data = await res.json().catch(()=>({ok:false,error:"settings_state_non_json"}));
+  const data = await window.BT38.sessionFetch("settings-state", "/governed/settings/state", {ttlMs: 60000, force: true});
   bt38Log(data);
   if(data.config){
     const live = data.live_runtime || {};
