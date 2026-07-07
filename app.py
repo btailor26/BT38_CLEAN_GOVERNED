@@ -162,7 +162,10 @@ if IS_DEVELOPMENT:
             )
         logging.critical("⚠️  SQLITE DEV OVERRIDE ENABLED — GOVERNANCE BYPASS ACTIVE")
 
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///C:/Users/btail/_ARCHIVE_OLD_BT38/BT38/instance/bt38_ims_local.db"
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "LOCAL_SQLITE_DB",
+    "sqlite:///instance/bt38_ims_local.db"
+)
     logging.info(f"DEV MODE: Using database: {dev_db_url.split('@')[-1] if '@' in dev_db_url else 'configured'}")
 else:
     # PROD MODE: Use DATABASE_URL (should be set by Replit deployment)
@@ -507,6 +510,11 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed group routes: {exc}")
 
+try:
+    from governed_group_propagation_routes import governed_group_propagation_bp
+    app.register_blueprint(governed_group_propagation_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed group propagation routes: {exc}")
 
 try:
     from governed_runtime_visibility_routes import governed_runtime_visibility_bp
@@ -637,3 +645,28 @@ except Exception as exc:
 # =========================
 # REAL LOCAL SYNC ROUTE
 # =========================
+
+# ==============================
+
+# =========================
+# GOVERNED IMPORT ROUTE (RESTORED)
+# SINGLE SOURCE: WAREHOUSE ALIGNED
+# =========================
+
+
+@app.route("/dev/product-linking-button-test")
+def dev_product_linking_button_test():
+    rows = [
+        {"group_id": 9001, "warehouse_id": 9001, "listing_id": 9101, "sku": "VC-SC-TB-6PK", "title": "Vicco Senso Clean Comfortable Soft Tooth Brush Pack Of 6", "marketplace": "eBay", "qty": 24},
+        {"group_id": 9002, "warehouse_id": 9002, "listing_id": 9102, "sku": "PT-SHINE-150G", "title": "Pitambari Shining Powder For 6 Types Of Metals 150g", "marketplace": "Amazon", "qty": 18},
+        {"group_id": 9003, "warehouse_id": 9003, "listing_id": 9103, "sku": "MAC-LASH-026", "title": "MAC False Eyelashes 026", "marketplace": "eBay", "qty": 12},
+        {"group_id": 9004, "warehouse_id": 9004, "listing_id": 9104, "sku": "COL-EXC-TB-2PK", "title": "Colgate Extra Clean Toothbrush Twin Pack", "marketplace": "Amazon", "qty": 30},
+        {"group_id": 9005, "warehouse_id": 9005, "listing_id": 9105, "sku": "DET-ANT-500ML", "title": "Dettol Antiseptic Liquid 500ml", "marketplace": "eBay", "qty": 16},
+        {"group_id": 9006, "warehouse_id": 9006, "listing_id": 9106, "sku": "DOVE-BAR-4PK", "title": "Dove Beauty Cream Bar Soap 4 Pack", "marketplace": "Amazon", "qty": 20},
+        {"group_id": 9007, "warehouse_id": 9007, "listing_id": 9107, "sku": "VAS-ORG-250ML", "title": "Vaseline Original Petroleum Jelly 250ml", "marketplace": "eBay", "qty": 22},
+        {"group_id": 9008, "warehouse_id": 9008, "listing_id": 9108, "sku": "NIV-SOFT-200ML", "title": "Nivea Soft Moisturising Cream 200ml", "marketplace": "Amazon", "qty": 14},
+        {"group_id": 9009, "warehouse_id": 9009, "listing_id": 9109, "sku": "SEN-RP-75ML", "title": "Sensodyne Repair And Protect Toothpaste 75ml", "marketplace": "eBay", "qty": 28},
+        {"group_id": 9010, "warehouse_id": 9010, "listing_id": 9110, "sku": "PEARS-SOAP-2PK", "title": "Pears Transparent Soap Twin Pack", "marketplace": "Amazon", "qty": 26},
+    ]
+    return render_template("dev/product_linking_button_test.html", rows=rows)
+

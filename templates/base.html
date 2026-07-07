@@ -227,10 +227,10 @@
       return originalFetch(`/governed/actions/groups/${groupPush[1]}/push`, init);
     }
 
-const groupQty = url.match(/^/groups/(d+)/update-stock$/);
-if (groupQty) {
-  return originalFetch(`/governed/actions/groups/${groupQty[1]}/push`, init);
-}
+    const groupQty = url.match(/^\/groups\/(\d+)\/update-stock$/);
+    if (groupQty) {
+      return originalFetch(`/governed/groups/${groupQty[1]}/propagate-quantity`, init);
+    }
 
 
     if (legacyWriteUrl(url)) return blockedResponse(url);

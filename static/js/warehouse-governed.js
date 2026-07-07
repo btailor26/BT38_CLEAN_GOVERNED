@@ -58,6 +58,7 @@
     return {
       listingId: row?.dataset.listingId || '',
       stockId: row?.dataset.stockId || '',
+      groupId: row?.dataset.groupId || '',
       sku: row?.dataset.sku || ''
     };
   }
@@ -67,10 +68,13 @@
   // ==============================
 
   function pushListing(row) {
-    const { listingId, groupId, stockId } = getRow(row);
-    const warehouseGroupId = groupId || stockId;
-    if (warehouseGroupId) return postJson(`/governed/actions/groups/${warehouseGroupId}/push`, {}, "push");
+    const { listingId } = getRow(row);
+
+    // Original warehouse rule:
+    // marketplace icon push is listing-specific.
+    // Group push belongs to explicit group actions only.
     if (!listingId) return Promise.reject("Missing listingId");
+
     return postJson(`/governed/actions/listings/${listingId}/push`, {}, "push");
   }
   function saveQuantity(row, quantity) {
@@ -138,6 +142,66 @@
   }
 
 
+  document.addEventListener('click', async function (e) {
+    const marketBadge = e.target && e.target.closest ? e.target.closest('.bt38-marketplace-control') : null;
+    if (!marketBadge) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const row = marketBadge.closest('tr');
+    const listingId = row && row.dataset ? row.dataset.listingId : '';
+
+    if (!listingId) {
+      alert('Missing listingId');
+      return;
+    }
+
+    try {
+      await postJson(`/governed/actions/listings/${listingId}/push`, {}, 'warehouse-market-badge');
+      alert('Market badge push complete');
+    } catch (err) {
+      alert(err.message || 'Govern action failed');
+      console.error('Warehouse market badge push failed', err);
+    }
+  });
+
+
+  document.addEventListener('click', async function (e) {
+    const qtyButton = e.target && e.target.closest ? e.target.closest('.bt38-qty-action') : null;
+    if (!qtyButton) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const row = qtyButton.closest('tr');
+    if (!row) return;
+
+    const current = (qtyButton.querySelector('span') || {}).textContent || '';
+
+    const value = window.prompt('Enter new quantity', current.trim());
+    if (value === null) return;
+
+    const quantity = parseInt(value, 10);
+    if (!Number.isFinite(quantity)) {
+      alert('Invalid quantity');
+      return;
+    }
+
+    try {
+      await saveQuantity(row, quantity);
+
+      const span = qtyButton.querySelector('span');
+      if (span) span.textContent = String(quantity);
+
+      console.log('[warehouse-qty-button] quantity updated');
+    } catch (err) {
+      alert(err.message || 'Quantity update failed');
+      console.error(err);
+    }
+  });
+
+
 
   // ==============================
   // BROWSER ROW CACHE / LOCAL FILTER
@@ -180,7 +244,9 @@
   }
 
   function rowMatches(row, filters) {
-    if (filters.q && !row.text.includes(filters.q) && !row.sku.includes(filters.q)) return false;
+    if (filters.q && !row.text.includes(filters.q) && !row.sku.includes(filters.q)) {
+      return false;
+    }
 
     if (filters.marketplace !== 'all') {
       const hay = `${row.platform} ${row.marketplace}`.toLowerCase();
@@ -222,7 +288,9 @@
     });
 
     const count = document.querySelector('.bt38-table-count');
-    if (count) count.textContent = `${visible} visible in browser session`;
+    if (count) {
+      count.textContent = `${visible} visible in browser session`;
+    }
 
     return true;
   }
@@ -248,13 +316,25 @@
     });
 
     const input = form.querySelector('[name="q"]');
-    if (input) input.addEventListener('input', applyLocalWarehouseFilter);
+    if (input) {
+      input.addEventListener('input', function () {
+        applyLocalWarehouseFilter();
+      });
+    }
+
+    window.bt38SetFilter = function(name, value) {
+      const field = form.querySelector(`[name="${name}"]`);
+      if (field) field.value = value;
+      applyLocalWarehouseFilter();
+      return false;
+    };
 
     window.bt38WarehouseLocalSubmit = function(event) {
       if (event) {
         event.preventDefault();
         event.stopPropagation();
       }
+
       applyLocalWarehouseFilter();
       return false;
     };

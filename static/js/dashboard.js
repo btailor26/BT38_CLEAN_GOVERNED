@@ -136,11 +136,15 @@ class InventoryDashboard {
     }
     
     startSyncStatusUpdates() {
-        // Cost guard: no 30-second DB polling.
-        // Dashboard loads once; later updates must be webhook/user-action driven.
+        // Initial update
         this.updateSyncStatus();
+        
+        // Set up interval for periodic updates
+        this.syncStatusInterval = setInterval(() => {
+            this.updateSyncStatus();
+        }, 30000); // Update every 30 seconds
     }
-
+    
     async updateSyncStatus() {
         try {
             const stores = await api('/api/sync-status');

@@ -48,7 +48,7 @@
   </div>
 
   <!-- FILTER BAR -->
-  <form method="get" action="/warehouse" class="bt38-filter-bar bt38-filter-bar-governed" id="bt38WarehouseSearchForm">
+  <form method="get" action="/warehouse" class="bt38-filter-bar bt38-filter-bar-governed" id="bt38WarehouseSearchForm" onsubmit="return bt38WarehouseLocalSubmit(event)">
     <div class="bt38-search-wrap">
       <input
         type="text"
@@ -257,8 +257,8 @@
             </td>
 
             <td>
-              <span class="bt38-source-pill {% if item.location and 'FBA' in item.location %}readonly{% else %}editable{% endif %}">
-                {% if item.location and 'FBA' in item.location %}
+              <span class="bt38-source-pill {% if item.is_fba %}readonly{% else %}editable{% endif %}">
+                {% if item.is_fba %}
                   FBA · Read Only
                 {% else %}
                   FBM · Editable
@@ -287,23 +287,23 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
             <td>
 
               <button type="button" class="bt38-marketplace-control" onclick="bt38OpenRowAction(this)">
-                {% if item.location and 'Amazon' in item.location %}
+                {% if item.platform and 'Amazon' in item.platform %}
                   <img
                     src="{{ url_for('static', filename='img/marketplaces/amazon.png') }}"
                     class="bt38-mp-logo amazon"
                     title="Push to Amazon"
                     alt="Amazon Push"
                   >
-                {% elif item.location and 'eBay' in item.location %}
+                {% elif item.platform and 'eBay' in item.platform %}
                   <img
                     src="{{ url_for('static', filename='img/marketplaces/ebay.png') }}"
                     class="bt38-mp-logo ebay"
                     title="Push to eBay"
                     alt="eBay Push"
                   >
-                {% elif item.location and 'Shopify' in item.location %}
+                {% elif item.platform and 'Shopify' in item.platform %}
                   <span class="bt38-mp-logo shopify" title="Shopify">S</span>
-                {% elif item.location and 'TikTok' in item.location %}
+                {% elif item.platform and 'TikTok' in item.platform %}
                   <span class="bt38-mp-logo tiktok" title="TikTok">♪</span>
                 {% else %}
                   <span class="bt38-mp-logo unknown" title="Marketplace">?</span>
@@ -314,7 +314,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 
             <td>
 
-              {% if item.location and 'FBA' in item.location %}
+              {% if item.is_fba %}
                 <div class="bt38-cell-action bt38-qty-locked" aria-label="FBA quantity is read only">
                   <span>{{ item.available_quantity }}</span>
                   <small>Locked</small>
@@ -330,7 +330,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 
             <td>
 
-              {% if item.location and 'FBA' in item.location %}
+              {% if item.is_fba %}
                 <span class="bt38-status locked">
                   FBA Locked
                 </span>
@@ -1048,111 +1048,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 <!-- BT38: inline warehouse Sync All caller retired. static/js/warehouse-governed.js is the single governed warehouse shortcut authority. -->
 
 
-
-<style id="bt38-warehouse-alignment-only">
-/* Alignment only: no buttons, no routes, no JS, no data behaviour changes */
-
-.bt38-filter-bar-governed{
-  display:grid!important;
-  grid-template-columns:1.8fr 1fr 1fr 1fr 1fr!important;
-  gap:10px!important;
-  align-items:center!important;
-  margin:10px 0 8px!important;
-}
-
-.bt38-filter-bar-governed .bt38-search-wrap{
-  height:40px!important;
-  min-height:40px!important;
-  display:flex!important;
-  align-items:center!important;
-  margin:0!important;
-  background:#fff!important;
-  border:1px solid #d7dde6!important;
-  border-radius:10px!important;
-  overflow:hidden!important;
-  box-shadow:none!important;
-}
-
-.bt38-filter-bar-governed .bt38-search-wrap input[type="text"]{
-  height:40px!important;
-  min-height:40px!important;
-  border:0!important;
-  outline:0!important;
-  box-shadow:none!important;
-  flex:1!important;
-  padding:0 14px!important;
-  font-size:13px!important;
-  background:transparent!important;
-}
-
-.bt38-filter-bar-governed .bt38-search-btn{
-  height:40px!important;
-  min-height:40px!important;
-  min-width:78px!important;
-  border:0!important;
-  border-left:1px solid #e2e8f0!important;
-  border-radius:0!important;
-  background:#f8fafc!important;
-  font-size:13px!important;
-  font-weight:700!important;
-  color:#111827!important;
-}
-
-.bt38-filter-bar-governed select{
-  height:40px!important;
-  min-height:40px!important;
-  max-height:40px!important;
-  padding:0 12px!important;
-  border-radius:10px!important;
-  font-size:13px!important;
-  line-height:40px!important;
-  margin:0!important;
-}
-
-.bt38-kpi-row{
-  display:grid!important;
-  grid-template-columns:repeat(6, minmax(0, 1fr))!important;
-  gap:8px!important;
-  margin:6px 0 10px!important;
-}
-
-.bt38-kpi-card{
-  height:40px!important;
-  min-height:40px!important;
-  max-height:40px!important;
-  padding:4px 10px!important;
-  border-radius:9px!important;
-  display:grid!important;
-  grid-template-columns:auto 1fr!important;
-  grid-template-rows:13px 17px!important;
-  align-items:center!important;
-  column-gap:8px!important;
-  overflow:hidden!important;
-}
-
-.bt38-kpi-card span{
-  font-size:10px!important;
-  line-height:12px!important;
-  margin:0!important;
-  grid-column:1 / -1!important;
-}
-
-.bt38-kpi-card strong{
-  font-size:15px!important;
-  line-height:17px!important;
-  margin:0!important;
-}
-
-.bt38-kpi-card small{
-  font-size:10px!important;
-  line-height:12px!important;
-  margin:0!important;
-  white-space:nowrap!important;
-  overflow:hidden!important;
-  text-overflow:ellipsis!important;
-}
-</style>
-
 {% endblock %}
 
 <style>
@@ -1252,5 +1147,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
 <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}?v=warehouse-governed-controller"></script>
 {% endblock %}

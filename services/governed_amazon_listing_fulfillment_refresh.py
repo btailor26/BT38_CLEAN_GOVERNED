@@ -27,6 +27,7 @@ from sp_api.base import Marketplaces
 
 from extensions import db
 from models import Store, SyncLog
+from services.runtime_status_writer import set_store_runtime_status
 from services.governed_listing_refresh import refresh_governed_listing_from_snapshot
 
 
@@ -243,6 +244,7 @@ def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: in
             if pages >= int(max_pages or 3):
                 break
 
+        set_store_runtime_status(store, "idle", last_sync=True)
         db.session.add(SyncLog(
             store_id=store.id,
             status="success",
