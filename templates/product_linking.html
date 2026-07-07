@@ -1,41 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}GroupView
-<script>
-document.addEventListener("click", function(e) {
-  const target = e.target;
-  const clickable = target.closest("button, a, [onclick], .badge, td, tr");
-  if (!clickable) return;
-
-  const info = {
-    tag: clickable.tagName,
-    text: (clickable.innerText || clickable.textContent || "").trim().slice(0, 80),
-    title: clickable.getAttribute("title"),
-    onclick: clickable.getAttribute("onclick"),
-    id: clickable.id,
-    classes: clickable.className,
-    rowGroupId: clickable.closest("tr") ? clickable.closest("tr").getAttribute("data-group-id") : null,
-    rowWarehouseId: clickable.closest("tr") ? clickable.closest("tr").getAttribute("data-warehouse-id") : null
-  };
-
-  console.log("[BT38_CLICK_CAPTURE]", info);
-
-  if (
-    info.onclick ||
-    info.title ||
-    info.text.includes("Qty") ||
-    info.text.includes("Push") ||
-    info.rowGroupId
-  ) {
-    alert("BT38 CLICK CAPTURE\n" + JSON.stringify(info, null, 2));
-  }
-}, true);
-</script>
-
-{% endblock %}
+{% block title %}GroupView{% endblock %}
 
 {% block content %}
-<div class="container-fluid">
+<div class="container-fluid" data-bt38-page="productLinking" data-bt38-filter-form="#bt38ProductLinkingFilterForm" data-bt38-table="table" data-bt38-submit-name="bt38ProductLinkingLocalSubmit">
     <div class="row mb-4">
         <div class="col-12">
             <h1><i data-feather="link" class="me-2"></i>GroupView</h1>
@@ -68,7 +36,7 @@ document.addEventListener("click", function(e) {
         <div class="col-12">
             <div class="card">
                 <div class="card-body py-3">
-                    <form method="GET" action="{{ '/product-linking' }}" class="row g-3 align-items-end">
+                    <form method="GET" action="{{ '/product-linking' }}" class="row g-3 align-items-end" id="bt38ProductLinkingFilterForm" onsubmit="return bt38ProductLinkingLocalSubmit(event)">
                         <!-- Search Box -->
                         <div class="col-md-3">
                             <label class="form-label small text-muted mb-1">Search Groups</label>
@@ -79,7 +47,7 @@ document.addEventListener("click", function(e) {
                         <!-- Platform Filter -->
                         <div class="col-md-2">
                             <label class="form-label small text-muted mb-1">Platform</label>
-                            <select class="form-select" name="platform" onchange="this.form.submit()">
+                            <select class="form-select" name="platform">
                                 <option value="">All Platforms</option>
                                 {% for platform in all_platforms %}
                                 <option value="{{ platform }}" {% if current_platform == platform %}selected{% endif %}>
@@ -92,7 +60,7 @@ document.addEventListener("click", function(e) {
                         <!-- Store Filter -->
                         <div class="col-md-3">
                             <label class="form-label small text-muted mb-1">Store</label>
-                            <select class="form-select" name="store" onchange="this.form.submit()">
+                            <select class="form-select" name="store">
                                 <option value="">All Stores</option>
                                 {% for store in all_stores %}
                                 <option value="{{ store.id }}" {% if current_store == store.id|string %}selected{% endif %}>
@@ -105,7 +73,7 @@ document.addEventListener("click", function(e) {
                         <!-- Show Linked Filter -->
                         <div class="col-md-2">
                             <label class="form-label small text-muted mb-1">Status</label>
-                            <select class="form-select" name="show_linked" onchange="this.form.submit()">
+                            <select class="form-select" name="show_linked">
                                 <option value="all" {% if current_show_linked == 'all' %}selected{% endif %}>All Products</option>
                                 <option value="linked" {% if current_show_linked == 'linked' %}selected{% endif %}>Linked Only</option>
                                 <option value="unlinked" {% if current_show_linked == 'unlinked' %}selected{% endif %}>Unlinked Only</option>
@@ -1838,7 +1806,7 @@ async function linkListingToWarehouse(listingId, warehouseId, listingSku, wareho
             
             // Show success and reload
             alert(`Successfully linked ${listingSku} to ${warehouseSku}!`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + (data.error || data.message));
         }
@@ -1900,7 +1868,7 @@ async function unlinkListing(listingId, listingSku, userConfirmed = false, group
 
         if (data.success || data.ok) {
             alert(`Successfully unlinked ${listingSku}`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + (data.error || data.message));
         }
@@ -2013,7 +1981,7 @@ async function saveNewLink() {
         if (data.success) {
             bootstrap.Modal.getInstance(document.getElementById('createLinkModal')).hide();
             alert('Link created successfully!');
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Error: ' + data.error);
         }
@@ -2183,7 +2151,7 @@ async function runRepair(warehouseId, warehouseSku) {
         
         if (data.success) {
             alert(`Repair complete!\n\n${data.message || 'Issues fixed successfully.'}`);
-            window.location.reload();
+            loadProductLinkingData(productLinkingPage);
         } else {
             alert('Repair failed: ' + data.error);
         }
@@ -2251,6 +2219,12 @@ document.addEventListener('DOMContentLoaded', function() {
 </style>
 {% endblock %}
 
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
+{% endblock %}
 
 <script id="bt38GovernedLegacyTemplateQuarantine">
 (function(){

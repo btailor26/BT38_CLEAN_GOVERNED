@@ -4,7 +4,7 @@
 
 {% block content %}
 
-<div class="bt38-enterprise-stock">
+<div class="bt38-enterprise-stock" data-bt38-page="warehouse" data-bt38-filter-form="#bt38WarehouseSearchForm" data-bt38-table=".bt38-stock-table" data-bt38-submit-name="bt38WarehouseLocalSubmit">
 
   <!-- HEADER -->
   <div class="bt38-stock-header">
@@ -1148,5 +1148,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
 <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}?v=warehouse-governed-controller"></script>
 {% endblock %}
