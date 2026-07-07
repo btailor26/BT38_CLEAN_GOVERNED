@@ -188,3 +188,20 @@ document.addEventListener("DOMContentLoaded", function() {
     window.BT38.PageController.autoRegisterFromDom();
   }
 });
+
+window.bt38SetFilter = window.bt38SetFilter || function(name, value) {
+  const root = document.querySelector("[data-bt38-page]");
+  if (!root || !window.BT38 || !window.BT38.PageController) return false;
+
+  const pageName = root.dataset.bt38Page;
+  const formSelector = root.dataset.bt38FilterForm;
+  const form = formSelector ? document.querySelector(formSelector) : null;
+
+  if (form && name) {
+    const field = form.querySelector(`[name="${name}"]`);
+    if (field) field.value = value;
+  }
+
+  window.BT38.PageController.localFilter(pageName);
+  return false;
+};
