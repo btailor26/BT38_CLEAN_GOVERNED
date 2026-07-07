@@ -1,8 +1,6 @@
 {% extends "base.html" %}
 
 {% block title %}GroupView
-<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
-<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
 <script>
 document.addEventListener("click", function(e) {
   const target = e.target;
@@ -36,6 +34,8 @@ document.addEventListener("click", function(e) {
 
 {% endblock %}
 
+<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
 {% block content %}
 <div class="container-fluid">
     <div class="row mb-4">
