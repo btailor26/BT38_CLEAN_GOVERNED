@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 
 {% block title %}GroupView
+<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
 <script>
 document.addEventListener("click", function(e) {
   const target = e.target;
@@ -1125,6 +1127,26 @@ function escapeHtml(text) {
 
 // Load data when page is ready
 document.addEventListener('DOMContentLoaded', function() {
+    if (window.BT38 && window.BT38.PageController) {
+        window.BT38.PageController.register('productLinking', {
+            filterFormSelector: '#bt38ProductLinkingFilterForm',
+            tableSelector: 'table',
+            rowSelector: 'tbody tr'
+        });
+        window.BT38.PageController.initTableCache('productLinking');
+        window.BT38.PageController.wireLocalForm('productLinking');
+
+        window.bt38ProductLinkingLocalSubmit = function(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            window.BT38.PageController.localFilter('productLinking');
+            return false;
+        };
+    }
+
+
     if (asyncLoadEnabled) {
         // Small delay to ensure page is fully rendered first
         setTimeout(loadProductLinkingData, 50);
