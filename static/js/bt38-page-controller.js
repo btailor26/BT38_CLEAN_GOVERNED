@@ -44,18 +44,58 @@ window.BT38.PageController = {
     return true;
   },
 
+  getFilters(pageName) {
+    const page = window.BT38.pages[pageName];
+    if (!page || !page.filterFormSelector) return {};
+
+    const form = document.querySelector(page.filterFormSelector);
+    if (!form) return {};
+
+    const filters = {};
+    form.querySelectorAll("input[name], select[name]").forEach(field => {
+      const name = field.name;
+      const value = (field.value || "").trim().toLowerCase();
+      if (!name) return;
+      if (!value || value === "all") return;
+      if (field.type === "hidden") return;
+      filters[name] = value;
+    });
+
+    return filters;
+  },
+
+  rowMatchesFilters(row, filters) {
+    const haystack = `${row.text} ${Object.values(row.dataset).join(" ")}`.toLowerCase();
+
+    for (const [name, value] of Object.entries(filters)) {
+      if (name === "q" || name === "search") {
+        if (!haystack.includes(value)) return false;
+        continue;
+      }
+
+      const exactDatasetValue = (row.dataset[name] || "").toLowerCase();
+      const alternateDatasetValue = (row.dataset[name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] || "").toLowerCase();
+
+      if (exactDatasetValue || alternateDatasetValue) {
+        if (!exactDatasetValue.includes(value) && !alternateDatasetValue.includes(value)) return false;
+        continue;
+      }
+
+      if (!haystack.includes(value)) return false;
+    }
+
+    return true;
+  },
+
   localFilter(pageName) {
     const page = window.BT38.pages[pageName];
     if (!page || !page.ready || !page.filterFormSelector) return false;
 
-    const form = document.querySelector(page.filterFormSelector);
-    if (!form) return false;
-
-    const q = ((form.querySelector('[name="q"]') || {}).value || "").trim().toLowerCase();
+    const filters = window.BT38.PageController.getFilters(pageName);
     let visible = 0;
 
     page.rows.forEach(row => {
-      const match = !q || row.text.includes(q) || Object.values(row.dataset).join(" ").toLowerCase().includes(q);
+      const match = window.BT38.PageController.rowMatchesFilters(row, filters);
       row.el.hidden = !match;
       if (match) visible += 1;
     });
