@@ -205,26 +205,6 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     if (!warehouseActive()) return;
-
-    if (window.BT38 && window.BT38.PageController) {
-      window.BT38.PageController.register('warehouse', {
-        filterFormSelector: '#bt38WarehouseSearchForm',
-        tableSelector: '.bt38-stock-table',
-        rowSelector: 'tbody tr'
-      });
-      window.BT38.PageController.initTableCache('warehouse');
-      window.BT38.PageController.wireLocalForm('warehouse');
-
-      window.bt38WarehouseLocalSubmit = function(event) {
-        if (event) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-        window.BT38.PageController.localFilter('warehouse');
-        return false;
-      };
-    }
-
     document.querySelectorAll('.bt38-row-select').forEach(cb => {
       cb.addEventListener('change', updateActionBar);
     });
