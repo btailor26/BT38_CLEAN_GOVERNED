@@ -1,41 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}GroupView
-<script>
-document.addEventListener("click", function(e) {
-  const target = e.target;
-  const clickable = target.closest("button, a, [onclick], .badge, td, tr");
-  if (!clickable) return;
+{% block title %}GroupView{% endblock %}
 
-  const info = {
-    tag: clickable.tagName,
-    text: (clickable.innerText || clickable.textContent || "").trim().slice(0, 80),
-    title: clickable.getAttribute("title"),
-    onclick: clickable.getAttribute("onclick"),
-    id: clickable.id,
-    classes: clickable.className,
-    rowGroupId: clickable.closest("tr") ? clickable.closest("tr").getAttribute("data-group-id") : null,
-    rowWarehouseId: clickable.closest("tr") ? clickable.closest("tr").getAttribute("data-warehouse-id") : null
-  };
-
-  console.log("[BT38_CLICK_CAPTURE]", info);
-
-  if (
-    info.onclick ||
-    info.title ||
-    info.text.includes("Qty") ||
-    info.text.includes("Push") ||
-    info.rowGroupId
-  ) {
-    alert("BT38 CLICK CAPTURE\n" + JSON.stringify(info, null, 2));
-  }
-}, true);
-</script>
-
-{% endblock %}
-
-<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
-<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
 {% block content %}
 <div class="container-fluid">
     <div class="row mb-4">
@@ -2273,6 +2239,12 @@ document.addEventListener('DOMContentLoaded', function() {
 </style>
 {% endblock %}
 
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
+{% endblock %}
 
 <script id="bt38GovernedLegacyTemplateQuarantine">
 (function(){
