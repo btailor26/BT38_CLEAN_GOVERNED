@@ -1092,7 +1092,8 @@ function escapeHtml(text) {
 }
 
 // Load data when page is ready
-document.addEventListener('DOMContentLoaded', function() {    if (asyncLoadEnabled) {
+document.addEventListener('DOMContentLoaded', function() {
+    if (asyncLoadEnabled) {
         // Small delay to ensure page is fully rendered first
         setTimeout(loadProductLinkingData, 50);
     } else {
