@@ -75,8 +75,20 @@ def _runtime_status_set(key: str, value) -> None:
         _safe_error(f"runtime status persist failed key={key}", exc)
 
 
+# Cost guard:
+# Heartbeat is NOT a business event and must not wake Neon every loop.
+# Only real runtime events such as light_reconcile/full_sync should persist.
+_runtime_memory_heartbeat = None
+
 def _runtime_status_stamp(key: str) -> None:
-    _runtime_status_set(key, datetime.utcnow().isoformat() + "Z")
+    global _runtime_memory_heartbeat
+    value = datetime.utcnow().isoformat() + "Z"
+
+    if key == "heartbeat":
+        _runtime_memory_heartbeat = value
+        return
+
+    _runtime_status_set(key, value)
 
 
 def _safe_log(message: str):
