@@ -203,149 +203,27 @@
 
 
 
-  // ==============================
-  // BROWSER ROW CACHE / LOCAL FILTER
-  // ==============================
-
-  function initBrowserRowCache() {
-    window.BT38 = window.BT38 || { state: { cache: {} } };
-
-    if (typeof window.BT38.initPage === 'function') {
-      window.BT38.initPage('warehouse');
-    }
-
-    const cache = window.BT38.state.cache.warehouse = window.BT38.state.cache.warehouse || {};
-    cache.rows = Array.from(document.querySelectorAll('.bt38-stock-table tbody tr')).map(row => ({
-      el: row,
-      text: (row.textContent || '').toLowerCase(),
-      sku: (row.dataset.sku || '').toLowerCase(),
-      platform: (row.dataset.platform || '').toLowerCase(),
-      channel: (row.dataset.channel || '').toLowerCase(),
-      status: (row.dataset.status || '').toLowerCase(),
-      groupId: (row.dataset.groupId || '').toLowerCase(),
-      listingId: (row.dataset.listingId || '').toLowerCase(),
-      marketplace: (row.dataset.marketplace || '').toLowerCase()
-    }));
-
-    cache.ready = true;
-  }
-
-  function getWarehouseFilters() {
-    const form = document.getElementById('bt38WarehouseSearchForm');
-    if (!form) return {};
-
-    return {
-      q: ((form.querySelector('[name="q"]') || {}).value || '').trim().toLowerCase(),
-      marketplace: ((form.querySelector('[name="marketplace"]') || {}).value || 'all').toLowerCase(),
-      status: ((form.querySelector('[name="status"]') || {}).value || 'all').toLowerCase(),
-      group: ((form.querySelector('[name="group"]') || {}).value || 'all').toLowerCase(),
-      listingStatus: ((form.querySelector('[name="listing_status"]') || {}).value || 'all').toLowerCase()
-    };
-  }
-
-  function rowMatches(row, filters) {
-    if (filters.q && !row.text.includes(filters.q) && !row.sku.includes(filters.q)) {
-      return false;
-    }
-
-    if (filters.marketplace !== 'all') {
-      const hay = `${row.platform} ${row.marketplace}`.toLowerCase();
-      if (!hay.includes(filters.marketplace)) return false;
-    }
-
-    if (filters.status !== 'all') {
-      if (filters.status === 'active' && !row.text.includes('active')) return false;
-      if (filters.status === 'inactive' && !row.text.includes('inactive')) return false;
-      if (filters.status === 'blocked' && !row.text.includes('blocked')) return false;
-    }
-
-    if (filters.group !== 'all') {
-      const grouped = !!row.groupId;
-      if (filters.group === 'grouped' && !grouped) return false;
-      if (filters.group === 'ungrouped' && grouped) return false;
-    }
-
-    if (filters.listingStatus !== 'all') {
-      const linked = !!row.listingId;
-      if (filters.listingStatus === 'linked' && !linked) return false;
-      if (filters.listingStatus === 'unlinked' && linked) return false;
-    }
-
-    return true;
-  }
-
-  function applyLocalWarehouseFilter() {
-    const cache = window.BT38?.state?.cache?.warehouse;
-    if (!cache || !cache.ready || !Array.isArray(cache.rows)) return false;
-
-    const filters = getWarehouseFilters();
-    let visible = 0;
-
-    cache.rows.forEach(row => {
-      const match = rowMatches(row, filters);
-      row.el.hidden = !match;
-      if (match) visible += 1;
-    });
-
-    const count = document.querySelector('.bt38-table-count');
-    if (count) {
-      count.textContent = `${visible} visible in browser session`;
-    }
-
-    return true;
-  }
-
-  function wireLocalWarehouseSearch() {
-    const form = document.getElementById('bt38WarehouseSearchForm');
-    if (!form) return;
-
-    form.addEventListener('submit', function (e) {
-      if (applyLocalWarehouseFilter()) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    });
-
-    form.querySelectorAll('select').forEach(select => {
-      select.addEventListener('change', function (e) {
-        if (applyLocalWarehouseFilter()) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      });
-    });
-
-    const input = form.querySelector('[name="q"]');
-    if (input) {
-      input.addEventListener('input', function () {
-        applyLocalWarehouseFilter();
-      });
-    }
-
-    window.bt38SetFilter = function(name, value) {
-      const field = form.querySelector(`[name="${name}"]`);
-      if (field) field.value = value;
-      applyLocalWarehouseFilter();
-      return false;
-    };
-
-    window.bt38WarehouseLocalSubmit = function(event) {
-      if (event) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-
-      applyLocalWarehouseFilter();
-      return false;
-    };
-  }
-
-
   document.addEventListener('DOMContentLoaded', function () {
     if (!warehouseActive()) return;
 
-    initBrowserRowCache();
-    wireLocalWarehouseSearch();
+    if (window.BT38 && window.BT38.PageController) {
+      window.BT38.PageController.register('warehouse', {
+        filterFormSelector: '#bt38WarehouseSearchForm',
+        tableSelector: '.bt38-stock-table',
+        rowSelector: 'tbody tr'
+      });
+      window.BT38.PageController.initTableCache('warehouse');
+      window.BT38.PageController.wireLocalForm('warehouse');
+
+      window.bt38WarehouseLocalSubmit = function(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        window.BT38.PageController.localFilter('warehouse');
+        return false;
+      };
+    }
 
     document.querySelectorAll('.bt38-row-select').forEach(cb => {
       cb.addEventListener('change', updateActionBar);
