@@ -58,3 +58,18 @@ docs/
 # Tests not needed in runtime image
 tests/
 _retired_tests/
+
+# Stronger local junk ignores
+/audit
+/audit/
+/PR_DESCRIPTION.md
+/*.BEFORE_*
+/*.before*
+/*.bak
+/nul
+/idle
+/fake_db
+/fake_db/
+*.BEFORE_*
+*.before*
+*.bak
