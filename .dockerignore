@@ -1,0 +1,60 @@
+# Git / editor / OS
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Python cache / test cache
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env / virtualenv
+.venv/
+venv/
+env/
+.env
+.env.*
+*.local
+
+# Runtime/local data
+instance/
+static/uploads/
+*.db
+*.sqlite
+*.sqlite3
+fake_db/
+
+# Audit / recovery / backups
+audit/
+audit_*.txt
+*_backup*
+*_backups*/
+_bt38_backups/
+recovery_reports/
+reports/
+attached_assets/
+
+# Local one-off backup files
+*.BEFORE_*
+*.before*
+*.bak
+*.tmp
+*.log
+nul
+idle
+PR_DESCRIPTION.md
+
+# Docs not needed in runtime image
+*.md
+docs/
+
+# Tests not needed in runtime image
+tests/
+_retired_tests/
