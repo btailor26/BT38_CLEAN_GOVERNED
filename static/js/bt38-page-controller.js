@@ -121,6 +121,12 @@ window.BT38.PageController = {
     if (!form) return false;
 
     form.addEventListener("submit", function(event) {
+      // Warehouse search must search the full inventory via /warehouse?q=...
+      // Do not intercept submit; one DB read only happens when Search is pressed.
+      if (pageName === "warehouse") {
+        return true;
+      }
+
       if (window.BT38.PageController.localFilter(pageName)) {
         event.preventDefault();
         event.stopPropagation();
@@ -154,6 +160,11 @@ window.BT38.PageController = {
 
     if (submitName) {
       window[submitName] = function(event) {
+        // Warehouse search must submit to server so it can find products outside the current page.
+        if (pageName === "warehouse") {
+          return true;
+        }
+
         if (event) {
           event.preventDefault();
           event.stopPropagation();
