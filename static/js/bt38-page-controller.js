@@ -148,7 +148,7 @@ window.BT38.PageController = {
     if (!pageName) return false;
 
     const filterFormSelector = root.dataset.bt38FilterForm || null;
-    const tableSelector = root.datasetBt38Table || root.dataset.bt38Table || null;
+    const tableSelector = root.dataset.bt38Table || null;
     const rowSelector = root.dataset.bt38Row || "tbody tr";
     const submitName = root.dataset.bt38SubmitName;
 
