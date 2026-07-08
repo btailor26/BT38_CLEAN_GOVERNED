@@ -121,6 +121,7 @@ window.BT38.PageController = {
     if (!form) return false;
 
     form.addEventListener("submit", function(event) {
+      // Search/filter is page-session work only. Do not submit to server/DB.
       if (window.BT38.PageController.localFilter(pageName)) {
         event.preventDefault();
         event.stopPropagation();
@@ -154,6 +155,7 @@ window.BT38.PageController = {
 
     if (submitName) {
       window[submitName] = function(event) {
+        // Search/filter is page-session work only. Do not submit to server/DB.
         if (event) {
           event.preventDefault();
           event.stopPropagation();
