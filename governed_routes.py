@@ -453,8 +453,8 @@ def governed_settings_page():
         "read_only_mode": "false",
         "dry_run_mode": "false",
         "queue_frozen": "false",
-        "scheduler_enabled": None,
-        "sync_worker_enabled": None,
+        "scheduler_enabled": "false",
+        "sync_worker_enabled": "false",
         "push_worker_enabled": "false",
         "retry_queue_enabled": "false",
         "reconcile_15m_enabled": "false",
@@ -4122,22 +4122,6 @@ def governed_warehouse_stock_transfer_convert_to_fbm():
         except Exception:
             listing = None
 
-    # Frontend may send only warehouse_stock_id from the warehouse row.
-    # Fallback to the active listing linked to this stock so Convert to FBM
-    # actually unlocks the marketplace listing instead of only recording a transfer.
-    if listing is None:
-        listing = (
-            MarketplaceListing.query
-            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .order_by(
-                MarketplaceListing.amazon_fulfillment_channel.desc(),
-                MarketplaceListing.updated_at.desc(),
-                MarketplaceListing.id.desc(),
-            )
-            .first()
-        )
-
     if listing is not None:
         if hasattr(listing, "amazon_fulfillment_channel"):
             listing.amazon_fulfillment_channel = "MFN"
@@ -4978,33 +4962,3 @@ def governed_runtime_understanding_audit():
             ),
         },
     }), 200
-
-# ==============================
-# BT38 IMPORT SINGLE SOURCE OF TRUTH
-# Warehouse-aligned import handler
-# ==============================
-def governed_import_handler():
-    try:
-        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
-        from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
-        from services.governed_marketplace_order_import import run_governed_marketplace_order_import
-
-        amazon_result = run_governed_amazon_inventory_import()
-        ebay_result = run_governed_ebay_inventory_import()
-        order_result = run_governed_marketplace_order_import()
-
-        return {
-            "status": "success",
-            "warehouse_source": True,
-            "amazon": amazon_result,
-            "ebay": ebay_result,
-            "orders": order_result
-        }, 200
-
-    except Exception as e:
-        return {
-            "status": "failed",
-            "warehouse_source": True,
-            "error": str(e)
-        }, 500
-
