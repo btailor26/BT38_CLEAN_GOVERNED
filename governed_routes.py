@@ -1280,11 +1280,11 @@ def shutdown_proof_status():
 def governed_warehouse_page():
     """Governed Master Stock UI.
 
-    Speed-safe route:
+    Governed browser-session route:
     - no marketplace execution
     - no old routes
     - eager-loads relationships to avoid N+1 queries
-    - limits initial render size
+    - loads the relevant dataset once for browser-session filtering
     """
     from extensions import db
     from models import MarketplaceListing, WarehouseStock, Store, AmazonFBAInventory
@@ -1372,16 +1372,17 @@ def governed_warehouse_page():
             MarketplaceListing.normalized_amazon_fulfillment_channel.in_(["MFN", "FBM", "MERCHANT"]),
         )
 
+    # Design B:
+    # Load the complete relevant Warehouse dataset once.
+    # Search, filters and tabs operate from the browser-session row cache.
     total_matching_rows = listing_query.count()
-    total_pages = max(1, (total_matching_rows + row_limit - 1) // row_limit)
-    page = min(page, total_pages)
-    offset = (page - 1) * row_limit
+    total_pages = 1
+    page = 1
+    offset = 0
 
     listing_rows = (
         listing_query
         .order_by(MarketplaceListing.updated_at.desc(), MarketplaceListing.id.desc())
-        .offset(offset)
-        .limit(row_limit)
         .all()
     )
 
@@ -1508,7 +1509,6 @@ def governed_warehouse_page():
         unlinked_stock = (
             stock_query
             .order_by(WarehouseStock.updated_at.desc(), WarehouseStock.id.desc())
-            .limit(row_limit)
             .all()
         )
 
@@ -1543,8 +1543,6 @@ def governed_warehouse_page():
                 fnsku=None,
             ))
 
-            if len(rows) >= row_limit:
-                break
 
     if view == "available":
         rows = [row for row in rows if int(getattr(row, "available_quantity", 0) or 0) > 0]
