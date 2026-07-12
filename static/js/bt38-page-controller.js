@@ -17,6 +17,10 @@ window.BT38.PageController = {
       allowInitialFetch: config.allowInitialFetch === true,
       dirty: false,
       rows: [],
+      filteredRows: [],
+      currentPage: 1,
+      perPage: 15,
+      ready: false,
       config
     };
 
@@ -74,10 +78,15 @@ window.BT38.PageController = {
       }
 
       const exactDatasetValue = (row.dataset[name] || "").toLowerCase();
-      const alternateDatasetValue = (row.dataset[name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] || "").toLowerCase();
+      const alternateDatasetValue = (
+        row.dataset[name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] || ""
+      ).toLowerCase();
 
       if (exactDatasetValue || alternateDatasetValue) {
-        if (!exactDatasetValue.includes(value) && !alternateDatasetValue.includes(value)) return false;
+        if (
+          !exactDatasetValue.includes(value) &&
+          !alternateDatasetValue.includes(value)
+        ) return false;
         continue;
       }
 
@@ -87,30 +96,72 @@ window.BT38.PageController = {
     return true;
   },
 
-  localFilter(pageName) {
+  getPerPage(pageName) {
     const page = window.BT38.pages[pageName];
-    if (!page || !page.filterFormSelector) return false;
+    if (!page) return 15;
 
-    // Rebuild row cache before every filter so server-rendered or replaced rows are included.
-    if (page.tableSelector) {
-      window.BT38.PageController.initTableCache(pageName);
-    }
+    const select = document.getElementById("bt38ResultsPerPageSelect");
+    const value = Number.parseInt(select ? select.value : page.perPage, 10);
+    return [15, 25, 50, 100].includes(value) ? value : 15;
+  },
 
-    if (!page.ready) return false;
+  renderPage(pageName) {
+    const page = window.BT38.pages[pageName];
+    if (!page || !page.ready) return false;
 
-    const filters = window.BT38.PageController.getFilters(pageName);
-    let visible = 0;
+    page.perPage = window.BT38.PageController.getPerPage(pageName);
+    const total = page.filteredRows.length;
+    const totalPages = Math.max(1, Math.ceil(total / page.perPage));
+    page.currentPage = Math.min(Math.max(page.currentPage, 1), totalPages);
+
+    const start = (page.currentPage - 1) * page.perPage;
+    const end = start + page.perPage;
+    const visibleRows = new Set(page.filteredRows.slice(start, end));
 
     page.rows.forEach(row => {
-      const match = window.BT38.PageController.rowMatchesFilters(row, filters);
-      row.el.hidden = !match;
-      if (match) visible += 1;
+      row.el.hidden = !visibleRows.has(row);
     });
 
     const count = document.querySelector("[data-bt38-count], .bt38-table-count");
-    if (count) count.textContent = `${visible} visible in browser session`;
+    if (count) {
+      count.textContent = `${total} matching · showing ${total ? start + 1 : 0}-${Math.min(end, total)}`;
+    }
+
+    const status = document.querySelector(".bt38-page-status");
+    if (status) {
+      status.textContent = `Page ${page.currentPage} of ${totalPages} · ${total} total`;
+    }
+
+    const prev = document.querySelector(".bt38-page-nav .bt38-page-link:first-child");
+    const next = document.querySelector(".bt38-page-nav .bt38-page-link:last-child");
+
+    if (prev) {
+      prev.classList.toggle("disabled", page.currentPage <= 1);
+      prev.setAttribute("aria-disabled", page.currentPage <= 1 ? "true" : "false");
+    }
+
+    if (next) {
+      next.classList.toggle("disabled", page.currentPage >= totalPages);
+      next.setAttribute("aria-disabled", page.currentPage >= totalPages ? "true" : "false");
+    }
 
     return true;
+  },
+
+  localFilter(pageName, options = {}) {
+    const page = window.BT38.pages[pageName];
+    if (!page || !page.filterFormSelector || !page.ready) return false;
+
+    const filters = window.BT38.PageController.getFilters(pageName);
+    page.filteredRows = page.rows.filter(row =>
+      window.BT38.PageController.rowMatchesFilters(row, filters)
+    );
+
+    if (options.keepPage !== true) {
+      page.currentPage = 1;
+    }
+
+    return window.BT38.PageController.renderPage(pageName);
   },
 
   wireLocalForm(pageName) {
@@ -121,22 +172,79 @@ window.BT38.PageController = {
     if (!form) return false;
 
     form.addEventListener("submit", function(event) {
-      // Search/filter is page-session work only. Do not submit to server/DB.
-      if (window.BT38.PageController.localFilter(pageName)) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
+      event.preventDefault();
+      event.stopPropagation();
+      window.BT38.PageController.localFilter(pageName);
+      return false;
     });
 
     form.querySelectorAll("input, select").forEach(field => {
-      field.addEventListener("input", () => window.BT38.PageController.localFilter(pageName));
+      field.addEventListener("input", () => {
+        window.BT38.PageController.localFilter(pageName);
+      });
       field.addEventListener("change", event => {
-        if (window.BT38.PageController.localFilter(pageName)) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
+        event.preventDefault();
+        event.stopPropagation();
+        window.BT38.PageController.localFilter(pageName);
       });
     });
+
+    return true;
+  },
+
+  wireLocalPagination(pageName) {
+    const page = window.BT38.pages[pageName];
+    if (!page) return false;
+
+    const perPageSelect = document.getElementById("bt38ResultsPerPageSelect");
+    if (perPageSelect) {
+      page.perPage = window.BT38.PageController.getPerPage(pageName);
+      perPageSelect.addEventListener("change", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        page.currentPage = 1;
+        window.BT38.PageController.renderPage(pageName);
+      });
+    }
+
+    const nav = document.querySelector(".bt38-page-nav");
+    if (nav) {
+      const links = nav.querySelectorAll(".bt38-page-link");
+      const previous = links[0];
+      const next = links[links.length - 1];
+
+      if (previous) {
+        previous.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (page.currentPage > 1) {
+            page.currentPage -= 1;
+            window.BT38.PageController.renderPage(pageName);
+          }
+        });
+      }
+
+      if (next && next !== previous) {
+        next.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          const totalPages = Math.max(1, Math.ceil(page.filteredRows.length / page.perPage));
+          if (page.currentPage < totalPages) {
+            page.currentPage += 1;
+            window.BT38.PageController.renderPage(pageName);
+          }
+        });
+      }
+    }
+
+    const resultsForm = document.querySelector("#bt38ResultsPerPageBottom form");
+    if (resultsForm) {
+      resultsForm.addEventListener("submit", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      });
+    }
 
     return true;
   },
@@ -155,7 +263,6 @@ window.BT38.PageController = {
 
     if (submitName) {
       window[submitName] = function(event) {
-        // Search/filter is page-session work only. Do not submit to server/DB.
         if (event) {
           event.preventDefault();
           event.stopPropagation();
@@ -179,9 +286,11 @@ window.BT38.PageController = {
 
     if (filterFormSelector) {
       window.BT38.PageController.wireLocalForm(pageName);
+    }
 
-      // Apply any initial URL/filter values against the complete cached dataset.
-      // This does not submit the form and does not request the database again.
+    window.BT38.PageController.wireLocalPagination(pageName);
+
+    if (filterFormSelector) {
       window.BT38.PageController.localFilter(pageName);
     }
 
@@ -197,12 +306,17 @@ window.BT38.PageController = {
   }
 };
 
-
-document.addEventListener("DOMContentLoaded", function() {
+function bt38BootPageController() {
   if (window.BT38 && window.BT38.PageController) {
     window.BT38.PageController.autoRegisterFromDom();
   }
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bt38BootPageController, { once: true });
+} else {
+  bt38BootPageController();
+}
 
 window.bt38SetFilter = window.bt38SetFilter || function(name, value) {
   const root = document.querySelector("[data-bt38-page]");
