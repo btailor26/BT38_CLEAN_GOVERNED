@@ -48,7 +48,7 @@
   </div>
 
   <!-- FILTER BAR -->
-  <form method="get" action="/warehouse" class="bt38-filter-bar bt38-filter-bar-governed" id="bt38WarehouseSearchForm" onsubmit="return bt38WarehouseLocalSubmit(event)">
+  <form method="get" action="/warehouse" class="bt38-filter-bar bt38-filter-bar-governed" id="bt38WarehouseSearchForm" onsubmit="event.preventDefault(); return window.bt38WarehouseLocalSubmit ? window.bt38WarehouseLocalSubmit(event) : false;">
     <div class="bt38-search-wrap">
       <input
         type="text"
@@ -1148,6 +1148,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
-<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=bt38-page-controller"></script>
+<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=design-b-session-dataset"></script>
 <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}?v=warehouse-governed-controller"></script>
 {% endblock %}

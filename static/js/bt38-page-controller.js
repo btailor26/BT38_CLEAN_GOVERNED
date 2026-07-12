@@ -179,6 +179,10 @@ window.BT38.PageController = {
 
     if (filterFormSelector) {
       window.BT38.PageController.wireLocalForm(pageName);
+
+      // Apply any initial URL/filter values against the complete cached dataset.
+      // This does not submit the form and does not request the database again.
+      window.BT38.PageController.localFilter(pageName);
     }
 
     return true;
