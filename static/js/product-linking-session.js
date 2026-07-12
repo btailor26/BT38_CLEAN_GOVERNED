@@ -33,11 +33,11 @@
     try { allMarketplaceListings = state.listings; } catch (_) { window.allMarketplaceListings = state.listings; }
   }
 
-  async function fetchPage(page) {
+  async function fetchDataset() {
     const params = new URLSearchParams({
-      page: String(page),
-      per_page: "100",
-      limit: "100",
+      page: "1",
+      per_page: "5000",
+      limit: "5000",
       search: "",
       platform: "all",
       store: "all",
@@ -67,16 +67,10 @@
       if (container) container.classList.add("d-none");
 
       try {
-        const first = await fetchPage(1);
-        const totalPages = Math.max(1, Number.parseInt(first.total_pages || 1, 10));
-        const pages = [first];
-        for (let page = 2; page <= totalPages; page += 1) {
-          pages.push(await fetchPage(page));
-        }
-
-        state.products = uniqueById(pages.flatMap(data => data.warehouse_products || []));
-        state.unlinked = uniqueById(pages.flatMap(data => data.unlinked_listings || []));
-        state.listings = uniqueById(pages.flatMap(data => data.all_marketplace_listings || data.listings || []));
+        const data = await fetchDataset();
+        state.products = uniqueById(data.warehouse_products || []);
+        state.unlinked = uniqueById(data.unlinked_listings || []);
+        state.listings = uniqueById(data.all_marketplace_listings || data.listings || []);
         state.hydrated = true;
         state.page = 1;
         assignLegacyGlobals();
@@ -200,8 +194,8 @@
       </div>`;
   };
 
-  window.loadProductLinkingData = function () {
-    return hydrate(state.hydrated);
+  window.loadProductLinkingData = function (force) {
+    return hydrate(force === true);
   };
 
   window.filterFlatListings = function () {
