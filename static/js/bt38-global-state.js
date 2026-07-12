@@ -36,3 +36,16 @@ window.BT38.enableFetch = function() {
 window.BT38.disableFetch = function() {
   window.BT38.state.session.allowFetch = false;
 };
+
+// Product Linking uses the same browser-session structure as Warehouse.
+// Load its local controller only on that page; POST mutations remain governed.
+(function loadProductLinkingSessionController() {
+  if (!document.querySelector('[data-bt38-page="productLinking"]')) return;
+  if (document.querySelector('script[data-bt38-product-linking-session]')) return;
+
+  const script = document.createElement("script");
+  script.src = "/static/js/product-linking-session.js?v=product-linking-session-only";
+  script.async = false;
+  script.dataset.bt38ProductLinkingSession = "1";
+  document.head.appendChild(script);
+})();
