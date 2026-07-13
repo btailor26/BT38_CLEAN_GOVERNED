@@ -31,7 +31,7 @@
                 <td>{{ view.line.quantity }}</td>
                 <td>{{ view.group_id or '-' }}</td>
                 <td>{% if view.fba %}<code>{{ view.fba.seller_sku }}</code><div class="small text-muted">{{ view.fba.fnsku }}</div>{% else %}-{% endif %}</td>
-                <td>{{ view.fba.fba_available_quantity if view.fba else 0 }}</td>
+                <td>{{ view.fba.available_quantity if view.fba else 0 }}</td>
                 <td>{% if view.eligible %}<span class="badge bg-success">Eligible</span>{% else %}<span class="badge bg-danger">Not eligible</span>{% endif %}</td>
               </tr>
               {% endfor %}
