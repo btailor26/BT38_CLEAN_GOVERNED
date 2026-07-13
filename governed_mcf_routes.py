@@ -16,9 +16,10 @@ from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import (
-    AmazonFBAListing,
+    AmazonFBAInventory,
     MCFOrder,
     MCFOrderItem,
+    MarketplaceListing,
     MarketplaceOrder,
     Store,
     WarehouseStock,
@@ -43,37 +44,113 @@ def _order_lines(anchor: MarketplaceOrder) -> list[MarketplaceOrder]:
     )
 
 
-def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
-    stock = order.warehouse_stock
-    if stock is None:
-        return []
-    group_id = getattr(stock, "master_product_group_id", None)
-    if not group_id:
-        return [stock.id]
+def _amazon_store_ids() -> list[int]:
     return [
-        row.id for row in (
+        int(store.id)
+        for store in (
+            Store.query
+            .filter(Store.is_active == True)  # noqa: E712
+            .all()
+        )
+        if "amazon" in str(store.platform or "").lower()
+    ]
+
+
+def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
+    """
+    MCF only applies to an explicitly linked Product Linking group.
+
+    Ungrouped and non-FBA warehouse stock must never enter the MCF path.
+    """
+    stock = order.warehouse_stock
+    if stock is None or not stock.master_product_group_id:
+        return []
+
+    return [
+        int(row.id)
+        for row in (
             WarehouseStock.query
-            .filter(WarehouseStock.master_product_group_id == int(group_id))
+            .filter(
+                WarehouseStock.master_product_group_id
+                == int(stock.master_product_group_id)
+            )
             .all()
         )
     ]
 
 
-def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAListing | None:
+def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
+    """
+    Resolve the canonical Amazon FBA inventory row through the existing links:
+
+    MarketplaceOrder
+      -> WarehouseStock
+      -> Product Linking group
+      -> Amazon MarketplaceListing
+      -> AmazonFBAInventory
+    """
     stock_ids = _group_stock_ids(order)
     if not stock_ids:
         return None
-    return (
-        AmazonFBAListing.query
+
+    amazon_store_ids = _amazon_store_ids()
+    if not amazon_store_ids:
+        return None
+
+    amazon_listings = (
+        MarketplaceListing.query
         .filter(
-            AmazonFBAListing.warehouse_stock_id.in_(stock_ids),
-            AmazonFBAListing.is_active == True,  # noqa: E712
-            AmazonFBAListing.mcf_enabled == True,  # noqa: E712
+            MarketplaceListing.store_id.in_(amazon_store_ids),
+            MarketplaceListing.warehouse_stock_id.in_(stock_ids),
+            MarketplaceListing.is_active == True,  # noqa: E712
         )
+        .all()
+    )
+
+    seller_skus = {
+        str(listing.external_sku or "").strip()
+        for listing in amazon_listings
+        if str(listing.external_sku or "").strip()
+    }
+
+    fnskus = {
+        str(listing.fnsku or "").strip()
+        for listing in amazon_listings
+        if str(listing.fnsku or "").strip()
+    }
+
+    if not seller_skus and not fnskus:
+        return None
+
+    query = AmazonFBAInventory.query.filter(
+        AmazonFBAInventory.store_id.in_(amazon_store_ids),
+        AmazonFBAInventory.is_active == True,  # noqa: E712
+        AmazonFBAInventory.is_archived == False,  # noqa: E712
+        AmazonFBAInventory.mcf_enabled == True,  # noqa: E712
+    )
+
+    if seller_skus and fnskus:
+        query = query.filter(
+            db.or_(
+                AmazonFBAInventory.seller_sku.in_(seller_skus),
+                AmazonFBAInventory.fnsku.in_(fnskus),
+            )
+        )
+    elif seller_skus:
+        query = query.filter(
+            AmazonFBAInventory.seller_sku.in_(seller_skus)
+        )
+    else:
+        query = query.filter(
+            AmazonFBAInventory.fnsku.in_(fnskus)
+        )
+
+    return (
+        query
         .order_by(
-            AmazonFBAListing.fba_available_quantity.desc(),
-            AmazonFBAListing.updated_at.desc(),
-            AmazonFBAListing.id.desc(),
+            AmazonFBAInventory.available_quantity.desc(),
+            AmazonFBAInventory.updated_at.desc(),
+            AmazonFBAInventory.id.desc(),
         )
         .first()
     )
@@ -86,25 +163,39 @@ def _line_view(line: MarketplaceOrder) -> dict:
         "line": line,
         "group_id": group_id,
         "fba": fba,
-        "eligible": bool(fba and (fba.fba_available_quantity or 0) >= (line.quantity or 0)),
+        "eligible": bool(
+            fba
+            and int(fba.available_quantity or 0)
+            >= int(line.quantity or 0)
+        ),
     }
 
 
 def _bulk_orders(limit: int = 100) -> list[dict]:
-    """Hydrate the MCF list with bounded bulk reads and no per-row SQL."""
+    """
+    Load only linked FBA-group orders.
+
+    Non-FBA groups and ungrouped orders are excluded before rendering.
+    """
     seed_rows = (
         MarketplaceOrder.query
-        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
+        .order_by(
+            MarketplaceOrder.created_at.desc(),
+            MarketplaceOrder.id.desc(),
+        )
         .limit(max(1, min(int(limit or 100), 250)))
         .all()
     )
+
     keys = []
     seen = set()
+
     for row in seed_rows:
         key = (row.store_id, row.marketplace_order_id)
         if key not in seen:
             seen.add(key)
             keys.append(key)
+
     if not keys:
         return []
 
@@ -113,115 +204,69 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         .options(
             selectinload(MarketplaceOrder.store),
             selectinload(MarketplaceOrder.mcf_order),
+            selectinload(MarketplaceOrder.warehouse_stock),
         )
-        .filter(tuple_(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id).in_(keys))
-        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id)
+        .filter(
+            tuple_(
+                MarketplaceOrder.store_id,
+                MarketplaceOrder.marketplace_order_id,
+            ).in_(keys)
+        )
+        .order_by(
+            MarketplaceOrder.created_at.desc(),
+            MarketplaceOrder.id,
+        )
         .all()
     )
 
     lines_by_key = defaultdict(list)
-    stock_ids = set()
-    mcf_ids = set()
+
     for line in lines:
-        lines_by_key[(line.store_id, line.marketplace_order_id)].append(line)
-        if line.warehouse_stock_id:
-            stock_ids.add(int(line.warehouse_stock_id))
-        if line.mcf_order_id:
-            mcf_ids.add(int(line.mcf_order_id))
-
-    stocks = (
-        WarehouseStock.query
-        .filter(WarehouseStock.id.in_(stock_ids))
-        .all()
-        if stock_ids else []
-    )
-    stock_by_id = {row.id: row for row in stocks}
-    group_ids = {
-        int(row.master_product_group_id)
-        for row in stocks
-        if row.master_product_group_id
-    }
-
-    group_members = (
-        WarehouseStock.query
-        .filter(WarehouseStock.master_product_group_id.in_(group_ids))
-        .all()
-        if group_ids else []
-    )
-    group_stock_ids = defaultdict(set)
-    for row in group_members:
-        if row.master_product_group_id:
-            group_stock_ids[int(row.master_product_group_id)].add(int(row.id))
-
-    candidate_stock_ids = set(stock_ids)
-    for ids in group_stock_ids.values():
-        candidate_stock_ids.update(ids)
-
-    fba_rows = (
-        AmazonFBAListing.query
-        .filter(
-            AmazonFBAListing.warehouse_stock_id.in_(candidate_stock_ids),
-            AmazonFBAListing.is_active == True,  # noqa: E712
-            AmazonFBAListing.mcf_enabled == True,  # noqa: E712
-        )
-        .order_by(
-            AmazonFBAListing.fba_available_quantity.desc(),
-            AmazonFBAListing.updated_at.desc(),
-            AmazonFBAListing.id.desc(),
-        )
-        .all()
-        if candidate_stock_ids else []
-    )
-    fba_by_stock = defaultdict(list)
-    for row in fba_rows:
-        if row.warehouse_stock_id:
-            fba_by_stock[int(row.warehouse_stock_id)].append(row)
-
-    mcf_by_id = {
-        row.id: row for row in (
-            MCFOrder.query.filter(MCFOrder.id.in_(mcf_ids)).all()
-            if mcf_ids else []
-        )
-    }
+        lines_by_key[
+            (line.store_id, line.marketplace_order_id)
+        ].append(line)
 
     orders = []
+
     for key in keys:
         order_lines = lines_by_key.get(key, [])
         if not order_lines:
             continue
 
-        views = []
-        for line in order_lines:
-            stock = stock_by_id.get(int(line.warehouse_stock_id)) if line.warehouse_stock_id else None
-            group_id = int(stock.master_product_group_id) if stock and stock.master_product_group_id else None
-            eligible_stock_ids = (
-                group_stock_ids.get(group_id, {int(stock.id)})
-                if stock else set()
-            )
-            candidates = [
-                fba
-                for stock_id in eligible_stock_ids
-                for fba in fba_by_stock.get(int(stock_id), [])
-            ]
-            fba = candidates[0] if candidates else None
-            views.append({
-                "line": line,
-                "group_id": group_id,
-                "fba": fba,
-                "eligible": bool(fba and (fba.fba_available_quantity or 0) >= (line.quantity or 0)),
-            })
+        views = [_line_view(line) for line in order_lines]
 
         mcf = next(
-            (mcf_by_id.get(int(line.mcf_order_id)) for line in order_lines if line.mcf_order_id),
+            (
+                line.mcf_order
+                for line in order_lines
+                if line.mcf_order_id
+            ),
             None,
         )
-        eligible = bool(views) and all(view["eligible"] for view in views)
-        state = (
-            "ready" if eligible and not mcf
-            else "submitted" if mcf and mcf.status in {"submitted", "processing", "completed"}
-            else "failed" if mcf and mcf.status == "failed"
-            else "not_eligible"
+
+        eligible = bool(views) and all(
+            view["eligible"] for view in views
         )
+
+        # Existing MCF orders remain visible for status/tracking.
+        # New orders only appear when every line resolves to linked FBA truth.
+        if not eligible and not mcf:
+            continue
+
+        state = (
+            "ready"
+            if eligible and not mcf
+            else "submitted"
+            if mcf and mcf.status in {
+                "submitted",
+                "processing",
+                "completed",
+            }
+            else "failed"
+            if mcf and mcf.status == "failed"
+            else "submitted"
+        )
+
         orders.append({
             "anchor": order_lines[0],
             "lines": order_lines,
@@ -229,7 +274,11 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
             "eligible": eligible,
             "mcf": mcf,
             "state": state,
-            "group_ids": sorted({view["group_id"] for view in views if view["group_id"]}),
+            "group_ids": sorted({
+                view["group_id"]
+                for view in views
+                if view["group_id"]
+            }),
         })
 
     return orders
@@ -383,7 +432,7 @@ def send_order_to_mcf(order_id: int):
         db.session.add(MCFOrderItem(
             mcf_order_id=mcf.id,
             source_sku=line.sku,
-            fba_listing_id=fba.id,
+            fba_listing_id=None,
             fba_sku=fba.seller_sku,
             asin=fba.asin,
             fnsku=fba.fnsku,

@@ -24,8 +24,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from app import db
 from models import (
-    MCFOrder, MCFOrderItem, MarketplaceOrder, AmazonFBAListing,
-    Store, WarehouseStock, OrderFees, ListingMarginConfig
+    MCFOrder, MCFOrderItem, MarketplaceOrder, AmazonFBAInventory,
+    MarketplaceListing, Store, WarehouseStock, OrderFees,
+    ListingMarginConfig
 )
 from amazon_rest_api import AmazonRestAPIClient
 
@@ -163,50 +164,152 @@ class MCFService:
     def __init__(self):
         self.fee_calculator = MCFFeeCalculator()
     
-    def find_fba_listing_for_sku(self, sku: str, store_id: int = None) -> Optional[AmazonFBAListing]:
+    def find_fba_listing_for_sku(
+        self,
+        sku: str,
+        store_id: int = None,
+    ) -> Optional[AmazonFBAInventory]:
         """
-        Find FBA listing linked to a warehouse SKU.
-        
-        Looks for AmazonFBAListing connected to the same warehouse_stock as the source SKU.
+        Resolve FBA through the existing Product Linking group.
+
+        Non-grouped and non-FBA stock is never eligible for MCF.
         """
-        warehouse_stock = WarehouseStock.query.filter_by(sku=sku).first()
-        if not warehouse_stock:
-            logger.warning(f"No warehouse stock found for SKU: {sku}")
-            return None
-        
-        query = AmazonFBAListing.query.filter_by(
-            warehouse_stock_id=warehouse_stock.id,
-            is_active=True,
-            mcf_enabled=True
+        warehouse_stock = (
+            WarehouseStock.query
+            .filter_by(sku=sku)
+            .first()
         )
-        
+
+        if (
+            warehouse_stock is None
+            or not warehouse_stock.master_product_group_id
+        ):
+            return None
+
+        group_members = (
+            WarehouseStock.query
+            .filter(
+                WarehouseStock.master_product_group_id
+                == int(warehouse_stock.master_product_group_id)
+            )
+            .all()
+        )
+
+        stock_ids = [int(row.id) for row in group_members]
+
+        amazon_stores = [
+            store
+            for store in Store.query.filter(
+                Store.is_active == True  # noqa: E712
+            ).all()
+            if "amazon" in str(store.platform or "").lower()
+        ]
+
+        amazon_store_ids = [int(store.id) for store in amazon_stores]
+
         if store_id:
-            query = query.filter_by(store_id=store_id)
-        
-        return query.first()
-    
-    def check_fba_availability(self, sku: str, quantity: int) -> Tuple[bool, str, Optional[AmazonFBAListing]]:
-        """
-        Check if an SKU has sufficient FBA inventory for MCF fulfillment.
-        
-        Returns:
-            Tuple of (available, message, fba_listing)
-        """
-        fba_listing = self.find_fba_listing_for_sku(sku)
-        
-        if not fba_listing:
-            return False, f"No MCF-enabled FBA listing found for SKU: {sku}", None
-        
-        if not fba_listing.mcf_enabled:
-            return False, f"MCF is disabled for FBA listing: {fba_listing.seller_sku}", fba_listing
-        
-        available_qty = fba_listing.fba_available_quantity or 0
-        
-        if available_qty < quantity:
-            return False, f"Insufficient FBA inventory: {available_qty} available, {quantity} needed", fba_listing
-        
-        return True, f"FBA inventory available: {available_qty}", fba_listing
-    
+            amazon_store_ids = [
+                value
+                for value in amazon_store_ids
+                if value == int(store_id)
+            ]
+
+        if not amazon_store_ids:
+            return None
+
+        listings = (
+            MarketplaceListing.query
+            .filter(
+                MarketplaceListing.store_id.in_(amazon_store_ids),
+                MarketplaceListing.warehouse_stock_id.in_(stock_ids),
+                MarketplaceListing.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+
+        seller_skus = {
+            str(listing.external_sku or "").strip()
+            for listing in listings
+            if str(listing.external_sku or "").strip()
+        }
+
+        fnskus = {
+            str(listing.fnsku or "").strip()
+            for listing in listings
+            if str(listing.fnsku or "").strip()
+        }
+
+        if not seller_skus and not fnskus:
+            return None
+
+        query = AmazonFBAInventory.query.filter(
+            AmazonFBAInventory.store_id.in_(amazon_store_ids),
+            AmazonFBAInventory.is_active == True,  # noqa: E712
+            AmazonFBAInventory.is_archived == False,  # noqa: E712
+            AmazonFBAInventory.mcf_enabled == True,  # noqa: E712
+        )
+
+        if seller_skus and fnskus:
+            query = query.filter(
+                db.or_(
+                    AmazonFBAInventory.seller_sku.in_(seller_skus),
+                    AmazonFBAInventory.fnsku.in_(fnskus),
+                )
+            )
+        elif seller_skus:
+            query = query.filter(
+                AmazonFBAInventory.seller_sku.in_(seller_skus)
+            )
+        else:
+            query = query.filter(
+                AmazonFBAInventory.fnsku.in_(fnskus)
+            )
+
+        return (
+            query
+            .order_by(
+                AmazonFBAInventory.available_quantity.desc(),
+                AmazonFBAInventory.updated_at.desc(),
+                AmazonFBAInventory.id.desc(),
+            )
+            .first()
+        )
+
+    def check_fba_availability(
+        self,
+        sku: str,
+        quantity: int,
+    ) -> Tuple[bool, str, Optional[AmazonFBAInventory]]:
+        fba_inventory = self.find_fba_listing_for_sku(sku)
+
+        if not fba_inventory:
+            return (
+                False,
+                f"No linked FBA inventory found for SKU: {sku}",
+                None,
+            )
+
+        available_qty = int(
+            fba_inventory.available_quantity or 0
+        )
+
+        if available_qty < int(quantity or 0):
+            return (
+                False,
+                (
+                    "Insufficient FBA inventory: "
+                    f"{available_qty} available, {quantity} needed"
+                ),
+                fba_inventory,
+            )
+
+        return (
+            True,
+            f"FBA inventory available: {available_qty}",
+            fba_inventory,
+        )
+
+
     def get_mcf_estimate(self, items: List[Dict], shipping_speed: str = 'Standard',
                         destination_country: str = 'GB') -> Dict:
         """
@@ -354,7 +457,7 @@ class MCFService:
                 mcf_item = MCFOrderItem(
                     mcf_order_id=mcf_order.id,
                     source_sku=sku,
-                    fba_listing_id=fba_listing.id,
+                    fba_listing_id=None,
                     fba_sku=fba_listing.seller_sku,
                     asin=fba_listing.asin,
                     fnsku=fba_listing.fnsku,
