@@ -1,7 +1,7 @@
 """Governed Amazon MCF execution using the MCF order's selected FBA store."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import json
@@ -134,6 +134,63 @@ def _bind_source_lines(mcf_order: MCFOrder) -> list[MarketplaceOrder]:
     return lines
 
 
+def _shipping_speed_category(value: str | None) -> str:
+    """
+    Amazon expects the documented enum casing, not an upper-case variant.
+    """
+    normalized = str(value or "Standard").strip().lower()
+
+    return {
+        "standard": "Standard",
+        "expedited": "Expedited",
+        "priority": "Priority",
+    }.get(normalized, "Standard")
+
+
+def _amazon_visibility_pending(
+    mcf_order: MCFOrder,
+    error: Exception,
+) -> bool:
+    """
+    CreateFulfillmentOrder may be accepted before GetFulfillmentOrder can see
+    the merchant order ID. Treat that short propagation period as pending.
+    """
+    message = str(error)
+
+    visibility_error = (
+        "InvalidInput" in message
+        and "Unable to get order info" in message
+    )
+
+    if not visibility_error:
+        return False
+
+    status = str(mcf_order.status or "").lower()
+    amazon_status = str(
+        mcf_order.amazon_status or ""
+    ).upper()
+
+    if status not in {"submitted", "processing"}:
+        return False
+
+    if amazon_status != "RECEIVED":
+        return False
+
+    submitted_at = (
+        mcf_order.amazon_status_updated_at
+        or mcf_order.updated_at
+        or mcf_order.created_at
+    )
+
+    if submitted_at is None:
+        return False
+
+    return (
+        datetime.utcnow() - submitted_at
+        <= timedelta(minutes=30)
+    )
+
+
 def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
     try:
         _bind_source_lines(mcf_order)
@@ -154,7 +211,9 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
             "displayableOrderId": mcf_order.displayable_order_id,
             "displayableOrderDate": mcf_order.created_at.isoformat() + "Z",
             "displayableOrderComment": mcf_order.displayable_comment or "",
-            "shippingSpeedCategory": str(mcf_order.shipping_speed or "Standard").upper(),
+            "shippingSpeedCategory": _shipping_speed_category(
+                mcf_order.shipping_speed
+            ),
             "destinationAddress": {
                 "name": mcf_order.destination_name or "Customer",
                 "addressLine1": mcf_order.destination_address_line1 or "",
@@ -226,8 +285,38 @@ def refresh_mcf_status(mcf_order: MCFOrder) -> tuple[bool, dict[str, Any]]:
                 or {}
             )
         except Exception as exc:
+            if _amazon_visibility_pending(
+                mcf_order,
+                exc,
+            ):
+                return True, {
+                    "status": (
+                        mcf_order.amazon_status
+                        or "RECEIVED"
+                    ),
+                    "carrier": mcf_order.carrier,
+                    "tracking_number": (
+                        mcf_order.tracking_number
+                    ),
+                    "ship_date": (
+                        mcf_order.ship_date.isoformat()
+                        if mcf_order.ship_date
+                        else None
+                    ),
+                    "pending_visibility": True,
+                    "message": (
+                        "Amazon accepted the MCF order "
+                        "but it is not visible in status "
+                        "lookup yet."
+                    ),
+                }
+
             return False, {"error": str(exc)}
-        fulfillment_order = payload.get("fulfillmentOrder") or {}
+
+        fulfillment_order = (
+            payload.get("fulfillmentOrder")
+            or {}
+        )
         mcf_order.amazon_status = fulfillment_order.get("fulfillmentOrderStatus") or mcf_order.amazon_status
         mcf_order.amazon_status_updated_at = datetime.utcnow()
 
