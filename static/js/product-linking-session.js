@@ -1,6 +1,6 @@
 // Product Linking browser-session controller.
 // Read-only browsing hydrates once, then search/filter/pagination/modal search stay local.
-// POST mutations remain governed and may rehydrate after a real change.
+// POST mutations remain governed and rehydrate only after a real change.
 (function () {
   "use strict";
 
@@ -25,6 +25,10 @@
       if (!seen.has(key)) seen.set(key, item);
     });
     return Array.from(seen.values());
+  }
+
+  function sameId(left, right) {
+    return left != null && right != null && String(left) === String(right);
   }
 
   function assignLegacyGlobals() {
@@ -84,6 +88,7 @@
         if (errorBox) errorBox.classList.remove("d-none");
         const message = document.getElementById("warehouseErrorMessage");
         if (message) message.textContent = error.message || "Failed to load product groups.";
+        throw error;
       } finally {
         state.hydrating = null;
       }
@@ -170,6 +175,31 @@
     if (typeof feather !== "undefined") feather.replace();
   }
 
+  function mappingExists(listingId, warehouseId) {
+    return state.products.some(product => {
+      const productMatchesWarehouse = [
+        product.id,
+        product.warehouse_stock_id,
+        product.stock_id
+      ].some(value => sameId(value, warehouseId));
+
+      if (!productMatchesWarehouse) return false;
+
+      return (product.listings || []).some(listing => [
+        listing.id,
+        listing.listing_id,
+        listing.marketplace_listing_id
+      ].some(value => sameId(value, listingId)));
+    });
+  }
+
+  function closeOpenModals() {
+    document.querySelectorAll(".modal.show").forEach(modal => {
+      const instance = window.bootstrap?.Modal?.getInstance(modal);
+      if (instance) instance.hide();
+    });
+  }
+
   window.bt38ProductLinkingSetPage = function (page) {
     state.page = Number.parseInt(page || 1, 10) || 1;
     render();
@@ -222,6 +252,49 @@
     ].filter(Boolean).join(" ").toLowerCase().includes(search));
     if (typeof renderWarehouseInModal === "function") {
       renderWarehouseInModal(products, currentListingId, search);
+    }
+  };
+
+  window.linkListingToWarehouse = async function (listingId, warehouseId, listingSku, warehouseSku, userConfirmed = false) {
+    try {
+      const response = await fetch("/governed/product-linking/link-listing-to-warehouse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          listing_id: listingId,
+          warehouse_id: warehouseId,
+          user_confirmed: userConfirmed
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.requires_confirmation) {
+        const confirmMsg = `This will add "${listingSku}" to the group for warehouse SKU "${data.warehouse_sku || warehouseSku}".\n\n` +
+          `The group currently has ${data.existing_members || 0} linked listing(s).\n\n` +
+          "All listings in this group will share the same quantity. Continue?";
+
+        if (window.confirm(confirmMsg)) {
+          return window.linkListingToWarehouse(listingId, warehouseId, listingSku, warehouseSku, true);
+        }
+        return;
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+      }
+
+      await hydrate(true);
+
+      if (!mappingExists(listingId, warehouseId)) {
+        throw new Error("The server returned success, but the saved relationship could not be verified after refresh.");
+      }
+
+      closeOpenModals();
+      window.alert(`Successfully linked ${listingSku} to ${warehouseSku}.`);
+    } catch (error) {
+      console.error("[ProductLinkingSession] verified link failed", error);
+      window.alert(`Link failed: ${error.message || error}`);
     }
   };
 
