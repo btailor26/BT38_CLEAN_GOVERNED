@@ -94,6 +94,11 @@ def upsert_governed_marketplace_order_line(
     carrier: str | None = None,
     tracking_number: str | None = None,
     shipped_at: datetime | None = None,
+    ship_to_name: str | None = None,
+    ship_to_address: str | None = None,
+    ship_to_city: str | None = None,
+    ship_to_postcode: str | None = None,
+    ship_to_country: str | None = None,
 ) -> dict[str, Any]:
     sku = _text(sku)
     order_id = _text(marketplace_order_id)
@@ -144,6 +149,26 @@ def upsert_governed_marketplace_order_line(
     order.carrier = carrier or order.carrier
     order.tracking_number = tracking_number or order.tracking_number
     order.shipped_at = shipped_at or order.shipped_at
+
+    # Delivery data is required for Amazon MCF. Preserve existing values when
+    # marketplace payloads omit a field on later reads.
+    resolved_name = _text(ship_to_name)
+    resolved_address = _text(ship_to_address)
+    resolved_city = _text(ship_to_city)
+    resolved_postcode = _text(ship_to_postcode)
+    resolved_country = _text(ship_to_country).upper()[:2]
+
+    if resolved_name:
+        order.ship_to_name = resolved_name
+    if resolved_address:
+        order.ship_to_address = resolved_address
+    if resolved_city:
+        order.ship_to_city = resolved_city
+    if resolved_postcode:
+        order.ship_to_postcode = resolved_postcode
+    if resolved_country:
+        order.ship_to_country = resolved_country
+
     order.updated_at = datetime.utcnow()
 
     db.session.flush()
@@ -278,6 +303,26 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
             status = "order"
             shipped_at = _parse_ebay_datetime(order.get("lastModifiedDate"))
 
+        # eBay Fulfillment API exposes the delivery contact under the order's
+        # fulfillment start instruction. Store it once on every line so any
+        # line may act as the MCF order anchor.
+        instructions = order.get("fulfillmentStartInstructions") or []
+        instruction = instructions[0] if instructions else {}
+        shipping_step = instruction.get("shippingStep") or {}
+        ship_to = shipping_step.get("shipTo") or {}
+        contact_address = ship_to.get("contactAddress") or {}
+
+        address_parts = [
+            _text(contact_address.get("addressLine1")),
+            _text(contact_address.get("addressLine2")),
+        ]
+        delivery_address = ", ".join(part for part in address_parts if part)
+
+        delivery_name = _text(ship_to.get("fullName"))
+        delivery_city = _text(contact_address.get("city"))
+        delivery_postcode = _text(contact_address.get("postalCode"))
+        delivery_country = _text(contact_address.get("countryCode")).upper()[:2]
+
         for item in order.get("lineItems") or []:
             sku = _text(item.get("sku")) or _text(item.get("legacyItemId"))
             line_id = _text(item.get("lineItemId")) or f"{order_id}:{sku}"
@@ -298,6 +343,11 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 fulfillment_type="FBM",
                 status=status,
                 shipped_at=shipped_at,
+                ship_to_name=delivery_name,
+                ship_to_address=delivery_address,
+                ship_to_city=delivery_city,
+                ship_to_postcode=delivery_postcode,
+                ship_to_country=delivery_country,
             )
 
             line_results.append(result)
