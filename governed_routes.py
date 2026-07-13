@@ -2037,7 +2037,7 @@ def governed_product_linking_data_compat():
     except Exception:
         page = 1
 
-    per_page = max(1, min(per_page, 100))
+    per_page = max(1, min(per_page, 5000))
     page = max(1, page)
     offset = (page - 1) * per_page
 
