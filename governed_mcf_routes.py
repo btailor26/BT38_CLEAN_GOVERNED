@@ -5,11 +5,14 @@ POST actions and the existing runtime push guard.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 import re
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy import tuple_
+from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import (
@@ -87,6 +90,151 @@ def _line_view(line: MarketplaceOrder) -> dict:
     }
 
 
+def _bulk_orders(limit: int = 100) -> list[dict]:
+    """Hydrate the MCF list with bounded bulk reads and no per-row SQL."""
+    seed_rows = (
+        MarketplaceOrder.query
+        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
+        .limit(max(1, min(int(limit or 100), 250)))
+        .all()
+    )
+    keys = []
+    seen = set()
+    for row in seed_rows:
+        key = (row.store_id, row.marketplace_order_id)
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if not keys:
+        return []
+
+    lines = (
+        MarketplaceOrder.query
+        .options(
+            selectinload(MarketplaceOrder.store),
+            selectinload(MarketplaceOrder.mcf_order),
+        )
+        .filter(tuple_(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id).in_(keys))
+        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id)
+        .all()
+    )
+
+    lines_by_key = defaultdict(list)
+    stock_ids = set()
+    mcf_ids = set()
+    for line in lines:
+        lines_by_key[(line.store_id, line.marketplace_order_id)].append(line)
+        if line.warehouse_stock_id:
+            stock_ids.add(int(line.warehouse_stock_id))
+        if line.mcf_order_id:
+            mcf_ids.add(int(line.mcf_order_id))
+
+    stocks = (
+        WarehouseStock.query
+        .filter(WarehouseStock.id.in_(stock_ids))
+        .all()
+        if stock_ids else []
+    )
+    stock_by_id = {row.id: row for row in stocks}
+    group_ids = {
+        int(row.master_product_group_id)
+        for row in stocks
+        if row.master_product_group_id
+    }
+
+    group_members = (
+        WarehouseStock.query
+        .filter(WarehouseStock.master_product_group_id.in_(group_ids))
+        .all()
+        if group_ids else []
+    )
+    group_stock_ids = defaultdict(set)
+    for row in group_members:
+        if row.master_product_group_id:
+            group_stock_ids[int(row.master_product_group_id)].add(int(row.id))
+
+    candidate_stock_ids = set(stock_ids)
+    for ids in group_stock_ids.values():
+        candidate_stock_ids.update(ids)
+
+    fba_rows = (
+        AmazonFBAListing.query
+        .filter(
+            AmazonFBAListing.warehouse_stock_id.in_(candidate_stock_ids),
+            AmazonFBAListing.is_active == True,  # noqa: E712
+            AmazonFBAListing.mcf_enabled == True,  # noqa: E712
+        )
+        .order_by(
+            AmazonFBAListing.fba_available_quantity.desc(),
+            AmazonFBAListing.updated_at.desc(),
+            AmazonFBAListing.id.desc(),
+        )
+        .all()
+        if candidate_stock_ids else []
+    )
+    fba_by_stock = defaultdict(list)
+    for row in fba_rows:
+        if row.warehouse_stock_id:
+            fba_by_stock[int(row.warehouse_stock_id)].append(row)
+
+    mcf_by_id = {
+        row.id: row for row in (
+            MCFOrder.query.filter(MCFOrder.id.in_(mcf_ids)).all()
+            if mcf_ids else []
+        )
+    }
+
+    orders = []
+    for key in keys:
+        order_lines = lines_by_key.get(key, [])
+        if not order_lines:
+            continue
+
+        views = []
+        for line in order_lines:
+            stock = stock_by_id.get(int(line.warehouse_stock_id)) if line.warehouse_stock_id else None
+            group_id = int(stock.master_product_group_id) if stock and stock.master_product_group_id else None
+            eligible_stock_ids = (
+                group_stock_ids.get(group_id, {int(stock.id)})
+                if stock else set()
+            )
+            candidates = [
+                fba
+                for stock_id in eligible_stock_ids
+                for fba in fba_by_stock.get(int(stock_id), [])
+            ]
+            fba = candidates[0] if candidates else None
+            views.append({
+                "line": line,
+                "group_id": group_id,
+                "fba": fba,
+                "eligible": bool(fba and (fba.fba_available_quantity or 0) >= (line.quantity or 0)),
+            })
+
+        mcf = next(
+            (mcf_by_id.get(int(line.mcf_order_id)) for line in order_lines if line.mcf_order_id),
+            None,
+        )
+        eligible = bool(views) and all(view["eligible"] for view in views)
+        state = (
+            "ready" if eligible and not mcf
+            else "submitted" if mcf and mcf.status in {"submitted", "processing", "completed"}
+            else "failed" if mcf and mcf.status == "failed"
+            else "not_eligible"
+        )
+        orders.append({
+            "anchor": order_lines[0],
+            "lines": order_lines,
+            "views": views,
+            "eligible": eligible,
+            "mcf": mcf,
+            "state": state,
+            "group_ids": sorted({view["group_id"] for view in views if view["group_id"]}),
+        })
+
+    return orders
+
+
 def _source_is_ebay(order: MarketplaceOrder) -> bool:
     return bool(order.store and "ebay" in str(order.store.platform or "").lower())
 
@@ -118,40 +266,8 @@ def _safe_seller_fulfillment_id(order: MarketplaceOrder) -> str:
 @governed_mcf_bp.get("/orders-mcf")
 @login_required
 def orders_mcf_page():
-    status_filter = str(request.args.get("status") or "").strip().lower()
-    query = MarketplaceOrder.query.order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
-    rows = query.limit(250).all()
-
-    seen = set()
-    orders = []
-    for row in rows:
-        key = (row.store_id, row.marketplace_order_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        lines = _order_lines(row)
-        views = [_line_view(line) for line in lines]
-        eligible = bool(views) and all(view["eligible"] for view in views)
-        mcf = next((line.mcf_order for line in lines if line.mcf_order_id), None)
-        state = (
-            "ready" if eligible and not mcf
-            else "submitted" if mcf and mcf.status in {"submitted", "processing", "completed"}
-            else "failed" if mcf and mcf.status == "failed"
-            else "not_eligible"
-        )
-        if status_filter and state != status_filter:
-            continue
-        orders.append({
-            "anchor": row,
-            "lines": lines,
-            "views": views,
-            "eligible": eligible,
-            "mcf": mcf,
-            "state": state,
-            "group_ids": sorted({view["group_id"] for view in views if view["group_id"]}),
-        })
-
-    return render_template("mcf_orders.html", orders=orders, status_filter=status_filter)
+    orders = _bulk_orders(limit=100)
+    return render_template("mcf_orders.html", orders=orders)
 
 
 @governed_mcf_bp.get("/orders-mcf/<int:order_id>")

@@ -11,25 +11,38 @@
 
 <div class="card mb-4">
   <div class="card-body">
-    <form method="get" class="row g-3 align-items-end">
+    <div class="row g-3 align-items-end">
       <div class="col-md-4">
-        <label class="form-label">Status</label>
-        <select name="status" class="form-select" onchange="this.form.submit()">
-          <option value="" {% if not status_filter %}selected{% endif %}>All orders</option>
-          <option value="ready" {% if status_filter == 'ready' %}selected{% endif %}>Ready for MCF</option>
-          <option value="submitted" {% if status_filter == 'submitted' %}selected{% endif %}>Submitted / processing</option>
-          <option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>Failed</option>
-          <option value="not_eligible" {% if status_filter == 'not_eligible' %}selected{% endif %}>Not eligible</option>
+        <label class="form-label" for="mcf-status-filter">Status</label>
+        <select id="mcf-status-filter" class="form-select">
+          <option value="">All orders</option>
+          <option value="ready">Ready for MCF</option>
+          <option value="submitted">Submitted / processing</option>
+          <option value="failed">Failed</option>
+          <option value="not_eligible">Not eligible</option>
         </select>
       </div>
-    </form>
+      <div class="col-md-4">
+        <label class="form-label" for="mcf-search">Search</label>
+        <input id="mcf-search" class="form-control" type="search" placeholder="Order, SKU, store or group">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="mcf-page-size">Rows</label>
+        <select id="mcf-page-size" class="form-select">
+          <option value="15" selected>15</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
   </div>
 </div>
 
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center">
     <strong>Marketplace orders</strong>
-    <span class="badge bg-primary">{{ orders|length }}</span>
+    <span id="mcf-visible-count" class="badge bg-primary">{{ orders|length }}</span>
   </div>
   <div class="card-body p-0">
     <div class="table-responsive">
@@ -45,9 +58,11 @@
             <th class="text-end">Action</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="mcf-orders-body">
           {% for row in orders %}
-          <tr>
+          <tr class="mcf-order-row"
+              data-state="{{ row.state }}"
+              data-search="{{ ([row.anchor.marketplace_order_id, row.anchor.store.name if row.anchor.store else '', row.group_ids|join(' ')] + (row.lines|map(attribute='sku')|list))|join(' ')|lower }}">
             <td>
               <strong>{{ row.anchor.marketplace_order_id }}</strong>
               <div class="small text-muted">{{ row.anchor.created_at.strftime('%d %b %Y %H:%M') if row.anchor.created_at else '' }}</div>
@@ -85,17 +100,65 @@
               {% endif %}
             </td>
             <td class="text-end">
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
-                Review
-              </a>
+              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">Review</a>
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="7" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+          <tr id="mcf-empty-row"><td colspan="7" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
           {% endfor %}
+          <tr id="mcf-no-match-row" class="d-none"><td colspan="7" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
         </tbody>
       </table>
     </div>
   </div>
+  <div class="card-footer d-flex justify-content-between align-items-center">
+    <button id="mcf-prev" class="btn btn-sm btn-outline-secondary" type="button">Previous</button>
+    <span id="mcf-page-label" class="small text-muted">Page 1</span>
+    <button id="mcf-next" class="btn btn-sm btn-outline-secondary" type="button">Next</button>
+  </div>
 </div>
+
+<script>
+(() => {
+  const rows = Array.from(document.querySelectorAll('.mcf-order-row'));
+  const status = document.getElementById('mcf-status-filter');
+  const search = document.getElementById('mcf-search');
+  const size = document.getElementById('mcf-page-size');
+  const count = document.getElementById('mcf-visible-count');
+  const prev = document.getElementById('mcf-prev');
+  const next = document.getElementById('mcf-next');
+  const label = document.getElementById('mcf-page-label');
+  const noMatch = document.getElementById('mcf-no-match-row');
+  let page = 1;
+
+  function render() {
+    const wantedStatus = status.value;
+    const wantedSearch = search.value.trim().toLowerCase();
+    const pageSize = Number.parseInt(size.value, 10) || 15;
+    const filtered = rows.filter((row) => {
+      const stateMatches = !wantedStatus || row.dataset.state === wantedStatus;
+      const searchMatches = !wantedSearch || (row.dataset.search || '').includes(wantedSearch);
+      return stateMatches && searchMatches;
+    });
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    page = Math.min(page, pages);
+    const start = (page - 1) * pageSize;
+    const visible = new Set(filtered.slice(start, start + pageSize));
+    rows.forEach((row) => row.classList.toggle('d-none', !visible.has(row)));
+    noMatch.classList.toggle('d-none', filtered.length !== 0);
+    count.textContent = String(filtered.length);
+    label.textContent = `Page ${page} of ${pages}`;
+    prev.disabled = page <= 1;
+    next.disabled = page >= pages;
+  }
+
+  [status, search, size].forEach((control) => control.addEventListener('input', () => {
+    page = 1;
+    render();
+  }));
+  prev.addEventListener('click', () => { if (page > 1) { page -= 1; render(); } });
+  next.addEventListener('click', () => { page += 1; render(); });
+  render();
+})();
+</script>
 {% endblock %}
