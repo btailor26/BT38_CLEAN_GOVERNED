@@ -6,7 +6,7 @@ from typing import Any
 
 from extensions import db
 from amazon_rest_api import AmazonRestAPIClient
-from models import MCFOrder
+from models import MCFOrder, MarketplaceOrder
 
 UK_MARKETPLACE_ID = "A1F83G8C2ARO7P"
 
@@ -21,8 +21,29 @@ def _client(mcf_order: MCFOrder) -> AmazonRestAPIClient:
     return AmazonRestAPIClient(credentials, UK_MARKETPLACE_ID)
 
 
+def _bind_source_lines(mcf_order: MCFOrder) -> list[MarketplaceOrder]:
+    lines = (
+        MarketplaceOrder.query
+        .filter(
+            MarketplaceOrder.store_id == mcf_order.source_store_id,
+            MarketplaceOrder.marketplace_order_id == mcf_order.source_order_id,
+        )
+        .all()
+    )
+    for line in lines:
+        if line.mcf_order_id and line.mcf_order_id != mcf_order.id:
+            raise RuntimeError(f"source_order_already_bound_to_mcf:{line.mcf_order_id}")
+        line.mcf_order_id = mcf_order.id
+        line.fulfillment_type = "FBA"
+        line.status = "mcf_pending_submission"
+        line.processed_at = datetime.utcnow()
+    db.session.commit()
+    return lines
+
+
 def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
     try:
+        _bind_source_lines(mcf_order)
         items_payload = [
             {
                 "sellerSku": item.fba_sku,
@@ -62,6 +83,9 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
             mcf_order.status = "failed"
             mcf_order.last_error = error
             mcf_order.retry_count = (mcf_order.retry_count or 0) + 1
+            for line in mcf_order.marketplace_orders.all():
+                line.status = "mcf_submission_failed"
+                line.error_message = error
             db.session.commit()
             return False, f"Failed to submit to Amazon: {error}"
 
@@ -69,6 +93,9 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
         mcf_order.amazon_status = "RECEIVED"
         mcf_order.amazon_status_updated_at = datetime.utcnow()
         mcf_order.last_error = None
+        for line in mcf_order.marketplace_orders.all():
+            line.status = "mcf_accepted"
+            line.error_message = None
         db.session.commit()
         return True, "MCF order submitted to Amazon successfully"
     except Exception as exc:
