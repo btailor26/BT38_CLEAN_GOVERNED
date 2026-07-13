@@ -511,10 +511,33 @@ def send_order_to_mcf(order_id: int):
         return redirect(url_for("governed_mcf.orders_mcf_page"))
 
     lines = _order_lines(anchor)
-    existing = next((line.mcf_order for line in lines if line.mcf_order_id), None)
-    if existing:
-        flash(f"Order already has MCF reference {existing.seller_fulfillment_order_id}.", "warning")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+    existing = next(
+        (
+            line.mcf_order
+            for line in lines
+            if line.mcf_order_id
+        ),
+        None,
+    )
+
+    retry_existing = bool(
+        existing
+        and str(existing.status or "").lower()
+        == "failed"
+    )
+
+    if existing and not retry_existing:
+        flash(
+            "Order already has MCF reference "
+            f"{existing.seller_fulfillment_order_id}.",
+            "warning",
+        )
+        return redirect(
+            url_for(
+                "governed_mcf.order_mcf_detail_page",
+                order_id=anchor.id,
+            )
+        )
 
     if not _source_is_ebay(anchor):
         flash("The first governed MCF path currently accepts eBay source orders only.", "danger")
@@ -558,64 +581,150 @@ def send_order_to_mcf(order_id: int):
     if speed not in {"Standard", "Expedited", "Priority"}:
         speed = "Standard"
 
-    mcf = MCFOrder(
-        source_order_id=anchor.marketplace_order_id,
-        source_channel="eBay",
-        source_store_id=anchor.store_id,
-        fba_store_id=fba_store.id,
-        seller_fulfillment_order_id=_safe_seller_fulfillment_id(anchor),
-        displayable_order_id=(anchor.marketplace_order_id or "")[:50],
-        displayable_comment=f"eBay order {anchor.marketplace_order_id}",
-        destination_name=address["name"],
-        destination_address_line1=address["address_line1"],
-        destination_address_line2=address["address_line2"],
-        destination_city=address["city"],
-        destination_state=address["state"],
-        destination_postcode=address["postcode"],
-        destination_country=address["country"],
-        destination_phone=address["phone"],
-        shipping_speed=speed,
-        status="pending",
-        order_total=sum((line.line_total or 0) for line in lines),
-        platform_fees=sum((line.platform_fee or 0) for line in lines),
-        currency="GBP",
-        created_by_id=getattr(current_user, "id", None),
-    )
-    db.session.add(mcf)
-    db.session.flush()
-
     service = MCFService()
-    fee_items = []
-    total_product_cost = 0.0
-    for view in views:
-        line = view["line"]
-        fba = view["fba"]
-        fee = service.fee_calculator.calculate_item_fee(line.quantity or 1, speed, 0.3)
-        db.session.add(MCFOrderItem(
-            mcf_order_id=mcf.id,
-            source_sku=line.sku,
-            fba_listing_id=None,
-            fba_sku=fba.seller_sku,
-            asin=fba.asin,
-            fnsku=fba.fnsku,
-            quantity=line.quantity or 1,
-            unit_price=line.unit_price or 0,
-            product_cost=line.product_cost or 0,
-            mcf_fulfillment_fee=fee["total_fee"],
-            mcf_first_unit_fee=fee["first_unit_fee"],
-            mcf_additional_unit_fee=fee["additional_unit_fee"],
-            status="pending",
-        ))
-        fee_items.append({"quantity": line.quantity or 1, "weight_kg": 0.3})
-        total_product_cost += (line.product_cost or 0) * (line.quantity or 1)
 
-    order_fee = service.fee_calculator.calculate_order_fee(fee_items, speed)
-    mcf.mcf_per_shipment_fee = order_fee["per_shipment_fee"]
-    mcf.mcf_fulfillment_fee = order_fee["fulfillment_fee"]
-    mcf.total_mcf_fee = order_fee["total_fee"]
-    mcf.product_cost = total_product_cost
-    mcf.calculate_totals()
-    db.session.commit()
+    if retry_existing:
+        mcf = existing
+
+        mcf.fba_store_id = fba_store.id
+        mcf.destination_name = address["name"]
+        mcf.destination_address_line1 = (
+            address["address_line1"]
+        )
+        mcf.destination_address_line2 = (
+            address["address_line2"]
+        )
+        mcf.destination_city = address["city"]
+        mcf.destination_state = address["state"]
+        mcf.destination_postcode = address["postcode"]
+        mcf.destination_country = address["country"]
+        mcf.destination_phone = address["phone"]
+        mcf.shipping_speed = speed
+        mcf.status = "pending"
+        mcf.last_error = None
+
+        for item in mcf.items.all():
+            item.status = "pending"
+
+        db.session.commit()
+    else:
+        mcf = MCFOrder(
+            source_order_id=anchor.marketplace_order_id,
+            source_channel="eBay",
+            source_store_id=anchor.store_id,
+            fba_store_id=fba_store.id,
+            seller_fulfillment_order_id=(
+                _safe_seller_fulfillment_id(anchor)
+            ),
+            displayable_order_id=(
+                anchor.marketplace_order_id or ""
+            )[:50],
+            displayable_comment=(
+                f"eBay order "
+                f"{anchor.marketplace_order_id}"
+            ),
+            destination_name=address["name"],
+            destination_address_line1=(
+                address["address_line1"]
+            ),
+            destination_address_line2=(
+                address["address_line2"]
+            ),
+            destination_city=address["city"],
+            destination_state=address["state"],
+            destination_postcode=address["postcode"],
+            destination_country=address["country"],
+            destination_phone=address["phone"],
+            shipping_speed=speed,
+            status="pending",
+            order_total=sum(
+                (line.line_total or 0)
+                for line in lines
+            ),
+            platform_fees=sum(
+                (line.platform_fee or 0)
+                for line in lines
+            ),
+            currency="GBP",
+            created_by_id=getattr(
+                current_user,
+                "id",
+                None,
+            ),
+        )
+
+        db.session.add(mcf)
+        db.session.flush()
+
+        fee_items = []
+        total_product_cost = 0.0
+
+        for view in views:
+            line = view["line"]
+            fba = view["fba"]
+
+            fee = (
+                service.fee_calculator
+                .calculate_item_fee(
+                    line.quantity or 1,
+                    speed,
+                    0.3,
+                )
+            )
+
+            db.session.add(
+                MCFOrderItem(
+                    mcf_order_id=mcf.id,
+                    source_sku=line.sku,
+                    fba_listing_id=None,
+                    fba_sku=fba.seller_sku,
+                    asin=fba.asin,
+                    fnsku=fba.fnsku,
+                    quantity=line.quantity or 1,
+                    unit_price=line.unit_price or 0,
+                    product_cost=line.product_cost or 0,
+                    mcf_fulfillment_fee=(
+                        fee["total_fee"]
+                    ),
+                    mcf_first_unit_fee=(
+                        fee["first_unit_fee"]
+                    ),
+                    mcf_additional_unit_fee=(
+                        fee["additional_unit_fee"]
+                    ),
+                    status="pending",
+                )
+            )
+
+            fee_items.append({
+                "quantity": line.quantity or 1,
+                "weight_kg": 0.3,
+            })
+
+            total_product_cost += (
+                (line.product_cost or 0)
+                * (line.quantity or 1)
+            )
+
+        order_fee = (
+            service.fee_calculator
+            .calculate_order_fee(
+                fee_items,
+                speed,
+            )
+        )
+
+        mcf.mcf_per_shipment_fee = (
+            order_fee["per_shipment_fee"]
+        )
+        mcf.mcf_fulfillment_fee = (
+            order_fee["fulfillment_fee"]
+        )
+        mcf.total_mcf_fee = order_fee["total_fee"]
+        mcf.product_cost = total_product_cost
+        mcf.calculate_totals()
+
+        db.session.commit()
 
     submitted, message = service.submit_mcf_to_amazon(mcf)
     if not submitted:

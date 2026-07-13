@@ -4,21 +4,114 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import json
+import os
+
+from sp_api.api import FulfillmentOutbound
+from sp_api.base import Marketplaces
+
 from extensions import db
-from amazon_rest_api import AmazonRestAPIClient
 from models import MCFOrder, MarketplaceOrder
 
 UK_MARKETPLACE_ID = "A1F83G8C2ARO7P"
 
 
-def _client(mcf_order: MCFOrder) -> AmazonRestAPIClient:
+def _credentials_for_store(store) -> dict[str, str]:
+    """
+    Use the same Store.api_key and environment credential path as the existing
+    governed Amazon importer.
+    """
+    raw = store.api_key or {}
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+
+    credentials = {
+        "refresh_token": (
+            raw.get("refresh_token")
+            or os.getenv("AMAZON_REFRESH_TOKEN")
+            or os.getenv("SP_API_REFRESH_TOKEN")
+        ),
+        "lwa_app_id": (
+            raw.get("lwa_app_id")
+            or raw.get("lwa_client_id")
+            or raw.get("client_id")
+            or os.getenv("AMAZON_LWA_CLIENT_ID")
+            or os.getenv("AMAZON_LWA_APP_ID")
+            or os.getenv("SP_API_LWA_CLIENT_ID")
+        ),
+        "lwa_client_secret": (
+            raw.get("lwa_client_secret")
+            or raw.get("client_secret")
+            or os.getenv("AMAZON_LWA_CLIENT_SECRET")
+            or os.getenv("SP_API_LWA_CLIENT_SECRET")
+        ),
+    }
+
+    aws_access_key = (
+        raw.get("aws_access_key")
+        or raw.get("aws_access_key_id")
+        or os.getenv("AMAZON_AWS_ACCESS_KEY_ID")
+        or os.getenv("SP_API_AWS_ACCESS_KEY_ID")
+    )
+
+    aws_secret_key = (
+        raw.get("aws_secret_key")
+        or raw.get("aws_secret_access_key")
+        or os.getenv("AMAZON_AWS_SECRET_ACCESS_KEY")
+        or os.getenv("SP_API_AWS_SECRET_ACCESS_KEY")
+    )
+
+    role_arn = (
+        raw.get("role_arn")
+        or raw.get("aws_user_arn")
+        or os.getenv("AMAZON_AWS_ROLE_ARN")
+        or os.getenv("SP_API_ROLE_ARN")
+    )
+
+    if aws_access_key:
+        credentials["aws_access_key"] = aws_access_key
+
+    if aws_secret_key:
+        credentials["aws_secret_key"] = aws_secret_key
+
+    if role_arn:
+        credentials["role_arn"] = role_arn
+
+    missing = [
+        key
+        for key in (
+            "refresh_token",
+            "lwa_app_id",
+            "lwa_client_secret",
+        )
+        if not credentials.get(key)
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "mcf_fba_store_credentials_missing:"
+            + ",".join(missing)
+        )
+
+    return credentials
+
+
+def _client(mcf_order: MCFOrder) -> FulfillmentOutbound:
     store = mcf_order.fba_store
+
     if store is None or not store.is_active:
-        raise RuntimeError("mcf_fba_store_missing_or_inactive")
-    credentials = store.get_amazon_credentials()
-    if not credentials:
-        raise RuntimeError("mcf_fba_store_credentials_missing")
-    return AmazonRestAPIClient(credentials, UK_MARKETPLACE_ID)
+        raise RuntimeError(
+            "mcf_fba_store_missing_or_inactive"
+        )
+
+    return FulfillmentOutbound(
+        marketplace=Marketplaces.UK,
+        credentials=_credentials_for_store(store),
+    )
 
 
 def _bind_source_lines(mcf_order: MCFOrder) -> list[MarketplaceOrder]:
@@ -74,20 +167,31 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
             },
             "items": items_payload,
         }
-        success, _data, error = _client(mcf_order)._make_request(
-            "POST",
-            "/fba/outbound/2020-07-01/fulfillmentOrders",
-            json_data=payload,
-        )
-        if not success:
+        try:
+            response = _client(
+                mcf_order
+            ).create_fulfillment_order(**payload)
+
+            response_payload = (
+                getattr(response, "payload", None)
+                or {}
+            )
+        except Exception as exc:
+            error = str(exc)
             mcf_order.status = "failed"
             mcf_order.last_error = error
-            mcf_order.retry_count = (mcf_order.retry_count or 0) + 1
+            mcf_order.retry_count = (
+                mcf_order.retry_count or 0
+            ) + 1
+
             for line in mcf_order.marketplace_orders.all():
                 line.status = "mcf_submission_failed"
                 line.error_message = error
+
             db.session.commit()
-            return False, f"Failed to submit to Amazon: {error}"
+            return False, (
+                f"Failed to submit to Amazon: {error}"
+            )
 
         mcf_order.status = "submitted"
         mcf_order.amazon_status = "RECEIVED"
@@ -108,14 +212,21 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
 
 def refresh_mcf_status(mcf_order: MCFOrder) -> tuple[bool, dict[str, Any]]:
     try:
-        success, data, error = _client(mcf_order)._make_request(
-            "GET",
-            f"/fba/outbound/2020-07-01/fulfillmentOrders/{mcf_order.seller_fulfillment_order_id}",
-        )
-        if not success:
-            return False, {"error": error}
+        try:
+            response = _client(
+                mcf_order
+            ).get_fulfillment_order(
+                sellerFulfillmentOrderId=(
+                    mcf_order.seller_fulfillment_order_id
+                )
+            )
 
-        payload = data or {}
+            payload = (
+                getattr(response, "payload", None)
+                or {}
+            )
+        except Exception as exc:
+            return False, {"error": str(exc)}
         fulfillment_order = payload.get("fulfillmentOrder") or {}
         mcf_order.amazon_status = fulfillment_order.get("fulfillmentOrderStatus") or mcf_order.amazon_status
         mcf_order.amazon_status_updated_at = datetime.utcnow()
