@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Orders / MCF{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h1 class="h3 mb-1"><i data-feather="truck" class="me-2"></i>Orders / MCF</h1>
+    <p class="text-muted mb-0">Review eBay orders linked to Amazon FBA groups and send them through the governed MCF path.</p>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="get" class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">Status</label>
+        <select name="status" class="form-select" onchange="this.form.submit()">
+          <option value="" {% if not status_filter %}selected{% endif %}>All orders</option>
+          <option value="ready" {% if status_filter == 'ready' %}selected{% endif %}>Ready for MCF</option>
+          <option value="submitted" {% if status_filter == 'submitted' %}selected{% endif %}>Submitted / processing</option>
+          <option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>Failed</option>
+          <option value="not_eligible" {% if status_filter == 'not_eligible' %}selected{% endif %}>Not eligible</option>
+        </select>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Marketplace orders</strong>
+    <span class="badge bg-primary">{{ orders|length }}</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>Order</th>
+            <th>Store</th>
+            <th>Items</th>
+            <th>Group</th>
+            <th>MCF readiness</th>
+            <th>MCF status</th>
+            <th class="text-end">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in orders %}
+          <tr>
+            <td>
+              <strong>{{ row.anchor.marketplace_order_id }}</strong>
+              <div class="small text-muted">{{ row.anchor.created_at.strftime('%d %b %Y %H:%M') if row.anchor.created_at else '' }}</div>
+            </td>
+            <td>{{ row.anchor.store.name if row.anchor.store else 'Unknown' }}</td>
+            <td>
+              {% for line in row.lines %}
+                <div><code>{{ line.sku }}</code> × {{ line.quantity }}</div>
+              {% endfor %}
+            </td>
+            <td>
+              {% if row.group_ids %}
+                {% for group_id in row.group_ids %}<span class="badge bg-secondary me-1">{{ group_id }}</span>{% endfor %}
+              {% else %}
+                <span class="text-muted">Not grouped</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.eligible %}
+                <span class="badge bg-success">Ready for MCF</span>
+              {% else %}
+                <span class="badge bg-secondary">Not eligible</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.mcf %}
+                <span class="badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
+                  {{ row.mcf.amazon_status or row.mcf.status }}
+                </span>
+                {% if row.mcf.tracking_number %}
+                  <div class="small mt-1">{{ row.mcf.carrier or 'Carrier' }} · {{ row.mcf.tracking_number }}</div>
+                {% endif %}
+              {% else %}
+                <span class="text-muted">Not submitted</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
+                Review
+              </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

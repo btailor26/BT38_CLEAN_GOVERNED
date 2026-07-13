@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}MCF Order {{ anchor.marketplace_order_id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <div class="small mb-1"><a href="{{ url_for('governed_mcf.orders_mcf_page') }}">Orders / MCF</a></div>
+    <h1 class="h3 mb-1">{{ anchor.marketplace_order_id }}</h1>
+    <p class="text-muted mb-0">{{ anchor.store.name if anchor.store else 'Unknown store' }}</p>
+  </div>
+  {% if mcf %}
+  <form method="post" action="{{ url_for('governed_mcf.refresh_mcf_order', order_id=anchor.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-outline-primary" type="submit"><i data-feather="refresh-cw" class="me-1"></i>Refresh Amazon status</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card mb-4">
+      <div class="card-header"><strong>Order lines and FBA resolution</strong></div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead><tr><th>Source SKU</th><th>Qty</th><th>Group</th><th>FBA SKU</th><th>AFN available</th><th>Status</th></tr></thead>
+            <tbody>
+              {% for view in views %}
+              <tr>
+                <td><code>{{ view.line.sku }}</code></td>
+                <td>{{ view.line.quantity }}</td>
+                <td>{{ view.group_id or '-' }}</td>
+                <td>{% if view.fba %}<code>{{ view.fba.seller_sku }}</code><div class="small text-muted">{{ view.fba.fnsku }}</div>{% else %}-{% endif %}</td>
+                <td>{{ view.fba.fba_available_quantity if view.fba else 0 }}</td>
+                <td>{% if view.eligible %}<span class="badge bg-success">Eligible</span>{% else %}<span class="badge bg-danger">Not eligible</span>{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    {% if not mcf %}
+    <div class="card">
+      <div class="card-header"><strong>Manual MCF send details</strong></div>
+      <div class="card-body">
+        <div class="alert alert-info">
+          Amazon acceptance will immediately trigger eBay dispatch. Carrier and tracking will be added to the same eBay order when Amazon issues them.
+        </div>
+        <form method="post" action="{{ url_for('governed_mcf.send_order_to_mcf', order_id=anchor.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="row g-3">
+            <div class="col-md-6"><label class="form-label">Recipient name</label><input class="form-control" name="name" value="{{ anchor.ship_to_name or '' }}" required></div>
+            <div class="col-md-6"><label class="form-label">Phone</label><input class="form-control" name="phone"></div>
+            <div class="col-12"><label class="form-label">Address line 1</label><input class="form-control" name="address_line1" value="{{ anchor.ship_to_address or '' }}" required></div>
+            <div class="col-12"><label class="form-label">Address line 2</label><input class="form-control" name="address_line2"></div>
+            <div class="col-md-4"><label class="form-label">City</label><input class="form-control" name="city" value="{{ anchor.ship_to_city or '' }}" required></div>
+            <div class="col-md-4"><label class="form-label">County / state</label><input class="form-control" name="state"></div>
+            <div class="col-md-2"><label class="form-label">Postcode</label><input class="form-control" name="postcode" value="{{ anchor.ship_to_postcode or '' }}" required></div>
+            <div class="col-md-2"><label class="form-label">Country</label><input class="form-control" name="country" value="{{ anchor.ship_to_country or 'GB' }}" maxlength="2" required></div>
+            <div class="col-md-4">
+              <label class="form-label">Shipping speed</label>
+              <select class="form-select" name="shipping_speed">
+                <option value="Standard">Standard</option>
+                <option value="Expedited">Expedited</option>
+                <option value="Priority">Priority</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary" type="submit" {% if not eligible %}disabled{% endif %} onclick="return confirm('Send this order to Amazon MCF and mark eBay dispatched after Amazon accepts it?')">
+                <i data-feather="send" class="me-1"></i>Send to Amazon MCF
+              </button>
+              {% if not eligible %}<span class="text-danger ms-2">All lines must resolve to FBA stock first.</span>{% endif %}
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card mb-4">
+      <div class="card-header"><strong>Source order</strong></div>
+      <div class="card-body">
+        <div class="d-flex justify-content-between mb-2"><span>Status</span><strong>{{ anchor.status }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Fulfilment</span><strong>{{ anchor.fulfillment_type }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Dispatched</span><strong>{{ anchor.shipped_at.strftime('%d %b %Y %H:%M') if anchor.shipped_at else 'No' }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Carrier</span><strong>{{ anchor.carrier or 'Pending' }}</strong></div>
+        <div class="d-flex justify-content-between"><span>Tracking</span><strong>{{ anchor.tracking_number or 'Pending' }}</strong></div>
+        {% if anchor.error_message %}<div class="alert alert-danger mt-3 mb-0">{{ anchor.error_message }}</div>{% endif %}
+      </div>
+    </div>
+
+    {% if mcf %}
+    <div class="card">
+      <div class="card-header"><strong>Amazon MCF</strong></div>
+      <div class="card-body">
+        <div class="small text-muted">Seller fulfilment ID</div><code>{{ mcf.seller_fulfillment_order_id }}</code>
+        <hr>
+        <div class="d-flex justify-content-between mb-2"><span>BT38 status</span><strong>{{ mcf.status }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Amazon status</span><strong>{{ mcf.amazon_status or 'Pending' }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Speed</span><strong>{{ mcf.shipping_speed }}</strong></div>
+        <div class="d-flex justify-content-between mb-2"><span>Carrier</span><strong>{{ mcf.carrier or 'Pending' }}</strong></div>
+        <div class="d-flex justify-content-between"><span>Tracking</span><strong>{{ mcf.tracking_number or 'Pending' }}</strong></div>
+        {% if mcf.last_error %}<div class="alert alert-danger mt-3 mb-0">{{ mcf.last_error }}</div>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
