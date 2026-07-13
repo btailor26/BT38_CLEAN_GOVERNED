@@ -348,7 +348,7 @@ class MCFService:
                 'available': available,
                 'message': message,
                 'fba_sku': fba_listing.seller_sku if fba_listing else None,
-                'fba_available_qty': fba_listing.fba_available_quantity if fba_listing else 0
+                'fba_available_qty': fba_listing.available_quantity if fba_listing else 0
             }
             
             if available and fba_listing:
@@ -717,7 +717,7 @@ class OrderFulfillmentRouter:
         available, message, fba_listing = self.mcf_service.check_fba_availability(sku, quantity)
         
         if available:
-            return 'FBA', f"FBA inventory available ({fba_listing.fba_available_quantity} units)"
+            return 'FBA', f"FBA inventory available ({fba_listing.available_quantity} units)"
         
         warehouse_stock = WarehouseStock.query.filter_by(sku=sku).first()
         if warehouse_stock and warehouse_stock.sellable_quantity >= quantity:

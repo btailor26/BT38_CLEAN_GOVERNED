@@ -173,9 +173,8 @@ def _line_view(line: MarketplaceOrder) -> dict:
 
 def _bulk_orders(limit: int = 100) -> list[dict]:
     """
-    Load only linked FBA-group orders.
-
-    Non-FBA groups and ungrouped orders are excluded before rendering.
+    Bulk-load only orders whose complete linked group resolves to canonical FBA
+    inventory. Search, filtering and paging remain browser-local.
     """
     seed_rows = (
         MarketplaceOrder.query
@@ -220,11 +219,124 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
     )
 
     lines_by_key = defaultdict(list)
+    group_ids = set()
 
     for line in lines:
         lines_by_key[
             (line.store_id, line.marketplace_order_id)
         ].append(line)
+
+        stock = line.warehouse_stock
+        if stock and stock.master_product_group_id:
+            group_ids.add(int(stock.master_product_group_id))
+
+    group_members = (
+        WarehouseStock.query
+        .filter(
+            WarehouseStock.master_product_group_id.in_(group_ids)
+        )
+        .all()
+        if group_ids else []
+    )
+
+    stock_ids_by_group = defaultdict(set)
+
+    for stock in group_members:
+        if stock.master_product_group_id:
+            stock_ids_by_group[
+                int(stock.master_product_group_id)
+            ].add(int(stock.id))
+
+    all_group_stock_ids = {
+        stock_id
+        for values in stock_ids_by_group.values()
+        for stock_id in values
+    }
+
+    amazon_store_ids = _amazon_store_ids()
+
+    amazon_listings = (
+        MarketplaceListing.query
+        .filter(
+            MarketplaceListing.store_id.in_(amazon_store_ids),
+            MarketplaceListing.warehouse_stock_id.in_(
+                all_group_stock_ids
+            ),
+            MarketplaceListing.is_active == True,  # noqa: E712
+        )
+        .all()
+        if amazon_store_ids and all_group_stock_ids else []
+    )
+
+    listing_skus_by_stock = defaultdict(set)
+    listing_fnskus_by_stock = defaultdict(set)
+
+    for listing in amazon_listings:
+        stock_id = int(listing.warehouse_stock_id)
+
+        seller_sku = str(listing.external_sku or "").strip()
+        fnsku = str(listing.fnsku or "").strip()
+
+        if seller_sku:
+            listing_skus_by_stock[stock_id].add(seller_sku)
+        if fnsku:
+            listing_fnskus_by_stock[stock_id].add(fnsku)
+
+    all_seller_skus = {
+        sku
+        for values in listing_skus_by_stock.values()
+        for sku in values
+    }
+
+    all_fnskus = {
+        fnsku
+        for values in listing_fnskus_by_stock.values()
+        for fnsku in values
+    }
+
+    inventory_rows = []
+
+    if amazon_store_ids and (all_seller_skus or all_fnskus):
+        inventory_query = AmazonFBAInventory.query.filter(
+            AmazonFBAInventory.store_id.in_(amazon_store_ids),
+            AmazonFBAInventory.is_active == True,  # noqa: E712
+            AmazonFBAInventory.is_archived == False,  # noqa: E712
+            AmazonFBAInventory.mcf_enabled == True,  # noqa: E712
+        )
+
+        if all_seller_skus and all_fnskus:
+            inventory_query = inventory_query.filter(
+                db.or_(
+                    AmazonFBAInventory.seller_sku.in_(
+                        all_seller_skus
+                    ),
+                    AmazonFBAInventory.fnsku.in_(all_fnskus),
+                )
+            )
+        elif all_seller_skus:
+            inventory_query = inventory_query.filter(
+                AmazonFBAInventory.seller_sku.in_(
+                    all_seller_skus
+                )
+            )
+        else:
+            inventory_query = inventory_query.filter(
+                AmazonFBAInventory.fnsku.in_(all_fnskus)
+            )
+
+        inventory_rows = inventory_query.all()
+
+    inventory_by_sku = defaultdict(list)
+    inventory_by_fnsku = defaultdict(list)
+
+    for inventory in inventory_rows:
+        seller_sku = str(inventory.seller_sku or "").strip()
+        fnsku = str(inventory.fnsku or "").strip()
+
+        if seller_sku:
+            inventory_by_sku[seller_sku].append(inventory)
+        if fnsku:
+            inventory_by_fnsku[fnsku].append(inventory)
 
     orders = []
 
@@ -233,7 +345,64 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         if not order_lines:
             continue
 
-        views = [_line_view(line) for line in order_lines]
+        views = []
+
+        for line in order_lines:
+            stock = line.warehouse_stock
+            group_id = (
+                int(stock.master_product_group_id)
+                if stock and stock.master_product_group_id
+                else None
+            )
+
+            candidates = []
+
+            if group_id:
+                for stock_id in stock_ids_by_group.get(
+                    group_id,
+                    set(),
+                ):
+                    for seller_sku in listing_skus_by_stock.get(
+                        stock_id,
+                        set(),
+                    ):
+                        candidates.extend(
+                            inventory_by_sku.get(seller_sku, [])
+                        )
+
+                    for fnsku in listing_fnskus_by_stock.get(
+                        stock_id,
+                        set(),
+                    ):
+                        candidates.extend(
+                            inventory_by_fnsku.get(fnsku, [])
+                        )
+
+            candidates = sorted(
+                {
+                    int(row.id): row
+                    for row in candidates
+                }.values(),
+                key=lambda row: (
+                    int(row.available_quantity or 0),
+                    row.updated_at or datetime.min,
+                    int(row.id or 0),
+                ),
+                reverse=True,
+            )
+
+            fba = candidates[0] if candidates else None
+
+            views.append({
+                "line": line,
+                "group_id": group_id,
+                "fba": fba,
+                "eligible": bool(
+                    fba
+                    and int(fba.available_quantity or 0)
+                    >= int(line.quantity or 0)
+                ),
+            })
 
         mcf = next(
             (
@@ -248,20 +417,13 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
             view["eligible"] for view in views
         )
 
-        # Existing MCF orders remain visible for status/tracking.
-        # New orders only appear when every line resolves to linked FBA truth.
+        # Non-FBA and partially resolved groups never appear as new MCF work.
         if not eligible and not mcf:
             continue
 
         state = (
             "ready"
             if eligible and not mcf
-            else "submitted"
-            if mcf and mcf.status in {
-                "submitted",
-                "processing",
-                "completed",
-            }
             else "failed"
             if mcf and mcf.status == "failed"
             else "submitted"
