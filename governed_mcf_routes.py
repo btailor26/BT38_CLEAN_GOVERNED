@@ -19,6 +19,7 @@ from models import (
     AmazonFBAListing,
     MCFOrder,
     MCFOrderItem,
+    MarketplaceListing,
     MarketplaceOrder,
     Store,
     WarehouseStock,
@@ -59,24 +60,93 @@ def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
     ]
 
 
-def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAListing | None:
-    stock_ids = _group_stock_ids(order)
-    if not stock_ids:
-        return None
-    return (
+def _amazon_store_ids() -> list[int]:
+    return [
+        int(row.id)
+        for row in (
+            Store.query
+            .filter(Store.is_active == True)  # noqa: E712
+            .filter(Store.platform.in_(["AmazonFBA", "amazon_fba", "Amazon", "amazon"]))
+            .all()
+        )
+    ]
+
+
+def _fba_candidates_for_stock_ids(stock_ids: list[int] | set[int]) -> list[AmazonFBAListing]:
+    """
+    Resolve FBA through both supported relationships:
+
+    1. AmazonFBAListing.warehouse_stock_id directly references a group member.
+    2. An Amazon MarketplaceListing references a group member and its external
+       SKU identifies the AmazonFBAListing seller SKU.
+
+    Product Linking remains the relationship authority; this function only reads
+    the existing links.
+    """
+    resolved_stock_ids = {int(value) for value in stock_ids if value}
+    if not resolved_stock_ids:
+        return []
+
+    direct_rows = (
         AmazonFBAListing.query
         .filter(
-            AmazonFBAListing.warehouse_stock_id.in_(stock_ids),
+            AmazonFBAListing.warehouse_stock_id.in_(resolved_stock_ids),
             AmazonFBAListing.is_active == True,  # noqa: E712
             AmazonFBAListing.mcf_enabled == True,  # noqa: E712
         )
-        .order_by(
-            AmazonFBAListing.fba_available_quantity.desc(),
-            AmazonFBAListing.updated_at.desc(),
-            AmazonFBAListing.id.desc(),
-        )
-        .first()
+        .all()
     )
+
+    amazon_store_ids = _amazon_store_ids()
+    seller_skus = set()
+
+    if amazon_store_ids:
+        marketplace_rows = (
+            MarketplaceListing.query
+            .filter(
+                MarketplaceListing.store_id.in_(amazon_store_ids),
+                MarketplaceListing.warehouse_stock_id.in_(resolved_stock_ids),
+                MarketplaceListing.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+
+        seller_skus = {
+            str(row.external_sku or "").strip()
+            for row in marketplace_rows
+            if str(row.external_sku or "").strip()
+        }
+
+    bridged_rows = (
+        AmazonFBAListing.query
+        .filter(
+            AmazonFBAListing.seller_sku.in_(seller_skus),
+            AmazonFBAListing.is_active == True,  # noqa: E712
+            AmazonFBAListing.mcf_enabled == True,  # noqa: E712
+        )
+        .all()
+        if seller_skus else []
+    )
+
+    rows_by_id = {
+        int(row.id): row
+        for row in [*direct_rows, *bridged_rows]
+    }
+
+    return sorted(
+        rows_by_id.values(),
+        key=lambda row: (
+            int(row.fba_available_quantity or 0),
+            row.updated_at or datetime.min,
+            int(row.id or 0),
+        ),
+        reverse=True,
+    )
+
+
+def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAListing | None:
+    candidates = _fba_candidates_for_stock_ids(_group_stock_ids(order))
+    return candidates[0] if candidates else None
 
 
 def _line_view(line: MarketplaceOrder) -> dict:
@@ -157,25 +227,38 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
     for ids in group_stock_ids.values():
         candidate_stock_ids.update(ids)
 
-    fba_rows = (
-        AmazonFBAListing.query
-        .filter(
-            AmazonFBAListing.warehouse_stock_id.in_(candidate_stock_ids),
-            AmazonFBAListing.is_active == True,  # noqa: E712
-            AmazonFBAListing.mcf_enabled == True,  # noqa: E712
-        )
-        .order_by(
-            AmazonFBAListing.fba_available_quantity.desc(),
-            AmazonFBAListing.updated_at.desc(),
-            AmazonFBAListing.id.desc(),
-        )
-        .all()
-        if candidate_stock_ids else []
-    )
+    fba_rows = _fba_candidates_for_stock_ids(candidate_stock_ids)
+
     fba_by_stock = defaultdict(list)
     for row in fba_rows:
         if row.warehouse_stock_id:
             fba_by_stock[int(row.warehouse_stock_id)].append(row)
+
+    # Build the same MarketplaceListing SKU bridge for browser-list hydration.
+    fba_by_seller_sku = defaultdict(list)
+    for row in fba_rows:
+        seller_sku = str(row.seller_sku or "").strip()
+        if seller_sku:
+            fba_by_seller_sku[seller_sku].append(row)
+
+    amazon_store_ids = _amazon_store_ids()
+    marketplace_skus_by_stock = defaultdict(set)
+
+    if amazon_store_ids and candidate_stock_ids:
+        marketplace_rows = (
+            MarketplaceListing.query
+            .filter(
+                MarketplaceListing.store_id.in_(amazon_store_ids),
+                MarketplaceListing.warehouse_stock_id.in_(candidate_stock_ids),
+                MarketplaceListing.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+
+        for row in marketplace_rows:
+            external_sku = str(row.external_sku or "").strip()
+            if row.warehouse_stock_id and external_sku:
+                marketplace_skus_by_stock[int(row.warehouse_stock_id)].add(external_sku)
 
     mcf_by_id = {
         row.id: row for row in (
@@ -198,11 +281,24 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
                 group_stock_ids.get(group_id, {int(stock.id)})
                 if stock else set()
             )
-            candidates = [
-                fba
-                for stock_id in eligible_stock_ids
-                for fba in fba_by_stock.get(int(stock_id), [])
-            ]
+            candidates = []
+
+            for stock_id in eligible_stock_ids:
+                candidates.extend(fba_by_stock.get(int(stock_id), []))
+
+                for seller_sku in marketplace_skus_by_stock.get(int(stock_id), set()):
+                    candidates.extend(fba_by_seller_sku.get(seller_sku, []))
+
+            candidates = sorted(
+                {int(row.id): row for row in candidates}.values(),
+                key=lambda row: (
+                    int(row.fba_available_quantity or 0),
+                    row.updated_at or datetime.min,
+                    int(row.id or 0),
+                ),
+                reverse=True,
+            )
+
             fba = candidates[0] if candidates else None
             views.append({
                 "line": line,
