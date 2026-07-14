@@ -3570,6 +3570,77 @@ def governed_disabled_action(action: str = ""):
             if getattr(group_listing, "warehouse_stock_id", None):
                 target_stock_ids.add(int(group_listing.warehouse_stock_id))
 
+        # A listing may historically point at the wrong warehouse row while its
+        # canonical Amazon FBA inventory remains attached to a separate row.
+        # Collect those related warehouse rows now so one physical product does
+        # not render as a grouped row plus a leftover unlinked row.
+        grouped_skus = {
+            str(getattr(item, "external_sku", "") or "").strip()
+            for item in group_listings_for_authority
+            if str(getattr(item, "external_sku", "") or "").strip()
+        }
+        grouped_fnskus = {
+            str(getattr(item, "fnsku", "") or "").strip()
+            for item in group_listings_for_authority
+            if str(getattr(item, "fnsku", "") or "").strip()
+        }
+
+        from models import AmazonFBAInventory
+
+        amazon_store_ids = {
+            int(item.store_id)
+            for item in group_listings_for_authority
+            if getattr(item, "store_id", None)
+            and "amazon" in str(
+                item.store.platform
+                if item.store
+                else ""
+            ).strip().lower()
+        }
+
+        fba_identity_filters = []
+
+        if grouped_skus:
+            fba_identity_filters.append(
+                AmazonFBAInventory.seller_sku.in_(
+                    list(grouped_skus)
+                )
+            )
+
+        if grouped_fnskus:
+            fba_identity_filters.append(
+                AmazonFBAInventory.fnsku.in_(
+                    list(grouped_fnskus)
+                )
+            )
+
+        if fba_identity_filters and amazon_store_ids:
+            from sqlalchemy import or_
+
+            matching_fba_stock_ids = (
+                db.session.query(
+                    AmazonFBAInventory.warehouse_stock_id
+                )
+                .filter(
+                    AmazonFBAInventory.store_id.in_(
+                        list(amazon_store_ids)
+                    ),
+                    AmazonFBAInventory.is_active == True,  # noqa: E712
+                    AmazonFBAInventory.is_archived == False,  # noqa: E712
+                    AmazonFBAInventory.warehouse_stock_id.isnot(
+                        None
+                    ),
+                    or_(*fba_identity_filters),
+                )
+                .distinct()
+                .all()
+            )
+
+            target_stock_ids.update(
+                int(row[0])
+                for row in matching_fba_stock_ids
+            )
+
         attached_listings = (
             db.session.query(MarketplaceListing)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
