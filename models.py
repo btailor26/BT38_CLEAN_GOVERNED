@@ -2247,6 +2247,16 @@ class MarketplaceOrder(db.Model):
     ship_to_city = db.Column(db.String(100))
     ship_to_postcode = db.Column(db.String(20))
     ship_to_country = db.Column(db.String(2), default='GB')
+    ship_to_email = db.Column(db.String(320))
+    ship_to_phone = db.Column(db.String(50))
+
+    # MCF queue visibility only. This never deletes the marketplace order,
+    # MCF record, dispatch state, tracking or stock history.
+    mcf_queue_hidden = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+    )
     
     # Tracking
     carrier = db.Column(db.String(50))
@@ -2316,6 +2326,9 @@ class MarketplaceOrder(db.Model):
             'ship_to_name': self.ship_to_name,
             'ship_to_city': self.ship_to_city,
             'ship_to_country': self.ship_to_country,
+            'ship_to_email': self.ship_to_email,
+            'ship_to_phone': self.ship_to_phone,
+            'mcf_queue_hidden': bool(self.mcf_queue_hidden),
             'carrier': self.carrier,
             'tracking_number': self.tracking_number,
             'shipped_at': self.shipped_at.isoformat() if self.shipped_at else None,

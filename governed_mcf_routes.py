@@ -376,6 +376,14 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         if not _source_is_non_amazon_marketplace(anchor):
             continue
 
+        # Persistent queue cleanup. The marketplace order and any linked MCF
+        # record remain untouched and available for audit/tracking.
+        if any(
+            bool(line.mcf_queue_hidden)
+            for line in order_lines
+        ):
+            continue
+
         views = []
 
         for line in order_lines:
@@ -512,6 +520,64 @@ def orders_mcf_page():
     return render_template("mcf_orders.html", orders=orders)
 
 
+@governed_mcf_bp.post(
+    "/governed/orders-mcf/remove-selected"
+)
+@login_required
+def remove_selected_mcf_orders():
+    raw_ids = request.form.getlist("order_ids")
+    order_ids = []
+
+    for value in raw_ids[:100]:
+        try:
+            order_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not order_ids:
+        flash("Select at least one order.", "warning")
+        return redirect(
+            url_for("governed_mcf.orders_mcf_page")
+        )
+
+    anchors = (
+        MarketplaceOrder.query
+        .filter(MarketplaceOrder.id.in_(order_ids))
+        .all()
+    )
+
+    removed_orders = 0
+    seen_keys = set()
+
+    for anchor in anchors:
+        key = (
+            anchor.store_id,
+            anchor.marketplace_order_id,
+        )
+
+        if key in seen_keys:
+            continue
+
+        seen_keys.add(key)
+
+        for line in _order_lines(anchor):
+            line.mcf_queue_hidden = True
+
+        removed_orders += 1
+
+    db.session.commit()
+
+    flash(
+        f"Removed {removed_orders} order(s) from the MCF queue. "
+        "Marketplace orders and MCF records were not deleted.",
+        "success",
+    )
+
+    return redirect(
+        url_for("governed_mcf.orders_mcf_page")
+    )
+
+
 @governed_mcf_bp.get("/orders-mcf/<int:order_id>")
 @login_required
 def order_mcf_detail_page(order_id: int):
@@ -600,13 +666,34 @@ def send_order_to_mcf(order_id: int):
         "city": str(request.form.get("city") or anchor.ship_to_city or "").strip(),
         "state": str(request.form.get("state") or "").strip(),
         "postcode": str(request.form.get("postcode") or anchor.ship_to_postcode or "").strip(),
-        "country": str(request.form.get("country") or anchor.ship_to_country or "GB").strip().upper(),
-        "phone": str(request.form.get("phone") or "").strip(),
+        "country": str(
+            request.form.get("country")
+            or anchor.ship_to_country
+            or "GB"
+        ).strip().upper(),
+        "email": str(
+            request.form.get("email")
+            or anchor.ship_to_email
+            or ""
+        ).strip(),
+        "phone": str(
+            request.form.get("phone")
+            or anchor.ship_to_phone
+            or ""
+        ).strip(),
     }
     missing = [key for key in ("name", "address_line1", "city", "postcode", "country") if not address[key]]
     if missing:
         flash(f"Complete the delivery address before sending: {', '.join(missing)}.", "danger")
         return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+
+    # Preserve any reviewed/manual contact corrections on every line of the
+    # source marketplace order.
+    for line in lines:
+        if address["email"]:
+            line.ship_to_email = address["email"]
+        if address["phone"]:
+            line.ship_to_phone = address["phone"]
 
     speed = str(request.form.get("shipping_speed") or "Standard").strip().title()
     if speed not in {"Standard", "Expedited", "Priority"}:
