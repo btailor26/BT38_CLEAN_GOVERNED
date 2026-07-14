@@ -39,16 +39,37 @@
   </div>
 </div>
 
+<form id="mcf-remove-form"
+      method="post"
+      action="{{ url_for('governed_mcf.remove_selected_mcf_orders') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center">
     <strong>Marketplace orders</strong>
-    <span id="mcf-visible-count" class="badge bg-primary">{{ orders|length }}</span>
+    <div class="d-flex align-items-center gap-2">
+      <span id="mcf-visible-count"
+            class="badge bg-primary">{{ orders|length }}</span>
+      <button id="mcf-remove-selected"
+              class="btn btn-sm btn-outline-danger"
+              type="submit"
+              disabled
+              onclick="return confirm('Remove the selected orders from the MCF queue? Marketplace orders and Amazon MCF records will not be deleted.')">
+        Delete selected
+      </button>
+    </div>
   </div>
   <div class="card-body p-0">
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead class="table-dark">
           <tr>
+            <th style="width: 42px;">
+              <input id="mcf-select-all"
+                     class="form-check-input"
+                     type="checkbox"
+                     aria-label="Select visible orders">
+            </th>
             <th>Order</th>
             <th>Store</th>
             <th>Items</th>
@@ -63,6 +84,13 @@
           <tr class="mcf-order-row"
               data-state="{{ row.state }}"
               data-search="{{ ([row.anchor.marketplace_order_id, row.anchor.store.name if row.anchor.store else '', row.group_ids|join(' ')] + (row.lines|map(attribute='sku')|list))|join(' ')|lower }}">
+            <td>
+              <input class="form-check-input mcf-order-select"
+                     type="checkbox"
+                     name="order_ids"
+                     value="{{ row.anchor.id }}"
+                     aria-label="Select order {{ row.anchor.marketplace_order_id }}">
+            </td>
             <td>
               <strong>{{ row.anchor.marketplace_order_id }}</strong>
               <div class="small text-muted">{{ row.anchor.created_at.strftime('%d %b %Y %H:%M') if row.anchor.created_at else '' }}</div>
@@ -104,9 +132,9 @@
             </td>
           </tr>
           {% else %}
-          <tr id="mcf-empty-row"><td colspan="7" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
+          <tr id="mcf-empty-row"><td colspan="8" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
           {% endfor %}
-          <tr id="mcf-no-match-row" class="d-none"><td colspan="7" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+          <tr id="mcf-no-match-row" class="d-none"><td colspan="8" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
         </tbody>
       </table>
     </div>
@@ -117,6 +145,7 @@
     <button id="mcf-next" class="btn btn-sm btn-outline-secondary" type="button">Next</button>
   </div>
 </div>
+</form>
 
 <script>
 (() => {
@@ -129,7 +158,38 @@
   const next = document.getElementById('mcf-next');
   const label = document.getElementById('mcf-page-label');
   const noMatch = document.getElementById('mcf-no-match-row');
+  const selectAll = document.getElementById('mcf-select-all');
+  const removeButton = document.getElementById('mcf-remove-selected');
+  const selections = Array.from(
+    document.querySelectorAll('.mcf-order-select')
+  );
   let page = 1;
+
+  function updateSelectionState() {
+    const selected = selections.filter(
+      (checkbox) => checkbox.checked
+    );
+
+    removeButton.disabled = selected.length === 0;
+
+    const visibleSelections = selections.filter(
+      (checkbox) => !checkbox.closest('tr').classList.contains('d-none')
+    );
+
+    selectAll.checked = (
+      visibleSelections.length > 0
+      && visibleSelections.every(
+        (checkbox) => checkbox.checked
+      )
+    );
+
+    selectAll.indeterminate = (
+      visibleSelections.some(
+        (checkbox) => checkbox.checked
+      )
+      && !selectAll.checked
+    );
+  }
 
   function render() {
     const wantedStatus = status.value;
@@ -150,7 +210,25 @@
     label.textContent = `Page ${page} of ${pages}`;
     prev.disabled = page <= 1;
     next.disabled = page >= pages;
+    updateSelectionState();
   }
+
+  selectAll.addEventListener('change', () => {
+    selections.forEach((checkbox) => {
+      const row = checkbox.closest('tr');
+      if (!row.classList.contains('d-none')) {
+        checkbox.checked = selectAll.checked;
+      }
+    });
+    updateSelectionState();
+  });
+
+  selections.forEach((checkbox) => {
+    checkbox.addEventListener(
+      'change',
+      updateSelectionState,
+    );
+  });
 
   [status, search, size].forEach((control) => control.addEventListener('input', () => {
     page = 1;

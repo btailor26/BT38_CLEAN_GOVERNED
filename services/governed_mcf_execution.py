@@ -226,6 +226,21 @@ def submit_mcf_order(mcf_order: MCFOrder) -> tuple[bool, str]:
             },
             "items": items_payload,
         }
+
+        source_email = next(
+            (
+                str(line.ship_to_email or "").strip()
+                for line in mcf_order.marketplace_orders.all()
+                if str(line.ship_to_email or "").strip()
+            ),
+            "",
+        )
+
+        if source_email:
+            payload["notificationEmails"] = [
+                source_email
+            ]
+
         try:
             response = _client(
                 mcf_order
