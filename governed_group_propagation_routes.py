@@ -156,6 +156,23 @@ def governed_group_propagate_quantity(group_id: int):
 
     warehouse_rows = []
 
+    # Every Warehouse row already belonging to this group participates in
+    # the same authority path. A listing may historically point at only one
+    # child row, but the group must still expose one shared Warehouse quantity.
+    group_stock_ids = {
+        int(stock_id)
+        for (stock_id,) in (
+            db.session.query(WarehouseStock.id)
+            .filter(
+                WarehouseStock.master_product_group_id
+                == group_id
+            )
+            .all()
+        )
+    }
+
+    target_warehouse_stock_ids.update(group_stock_ids)
+
     if target_warehouse_stock_ids:
         attached_listings = (
             db.session.query(MarketplaceListing)
@@ -194,21 +211,9 @@ def governed_group_propagate_quantity(group_id: int):
     # For an FBA-led group, AmazonFBAInventory is the read-only input.
     # Copy that quantity into Warehouse once, then Warehouse pushes the
     # same value to every non-FBA marketplace listing.
-    if target_quantity is None and group_has_fba_authority:
-        group_stock_ids = {
-            int(stock.id)
-            for stock in (
-                db.session.query(WarehouseStock)
-                .filter(
-                    WarehouseStock.master_product_group_id
-                    == group_id
-                )
-                .all()
-            )
-        }
-
-        target_warehouse_stock_ids.update(group_stock_ids)
-
+    if group_has_fba_authority:
+        # FBA/AFN is the only quantity source for an FBA-led group.
+        # Ignore any listing-local or caller-supplied quantity.
         fba_truth = (
             db.session.query(AmazonFBAInventory)
             .filter(
@@ -295,10 +300,24 @@ def governed_group_propagate_quantity(group_id: int):
         classification = _classify_listing(listing)
         if classification["skip"]:
             skipped += 1
+
+            # Read-only marketplace sources are not failures. Record the
+            # classification clearly and never send a marketplace action.
+            if classification["is_fba"]:
+                listing.last_push_at = datetime.utcnow()
+                listing.last_push_status = "read_only"
+                listing.last_push_error = None
+                listing.push_attempts = 0
+                listing.consecutive_failures = 0
+
             results.append({
                 "listing_id": listing.id,
                 "sku": listing.external_sku,
-                "status": "skipped",
+                "status": (
+                    "read_only"
+                    if classification["is_fba"]
+                    else "skipped"
+                ),
                 "reason": classification["reason"],
                 "is_fba": classification["is_fba"],
                 "is_pushable": False,
