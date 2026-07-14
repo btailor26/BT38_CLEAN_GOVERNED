@@ -102,7 +102,13 @@ def governed_group_propagate_quantity(group_id: int):
     """
     from extensions import db
     from governed_execution import AMAZON_FBM_LIVE_APPROVAL_TYPE, submit_governed_marketplace_action
-    from models import MarketplaceListing, MasterProductGroup, SyncLog, WarehouseStock
+    from models import (
+        AmazonFBAInventory,
+        MarketplaceListing,
+        MasterProductGroup,
+        SyncLog,
+        WarehouseStock,
+    )
     from sqlalchemy import or_
 
     body = dict(request.get_json(silent=True) or {})
@@ -148,37 +154,125 @@ def governed_group_propagate_quantity(group_id: int):
         if bool(getattr(listing, "is_fba", False)) or ("amazon" in platform and channel not in ("MFN", "FBM", "MERCHANT")):
             group_has_fba_authority = True
 
+    warehouse_rows = []
+
     if target_warehouse_stock_ids:
         attached_listings = (
             db.session.query(MarketplaceListing)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id.in_(target_warehouse_stock_ids))
+            .filter(
+                MarketplaceListing.warehouse_stock_id.in_(
+                    target_warehouse_stock_ids
+                )
+            )
             .all()
         )
 
         for listing in attached_listings:
-            if getattr(listing, "master_product_group_id", None) != group_id:
+            if (
+                getattr(
+                    listing,
+                    "master_product_group_id",
+                    None,
+                )
+                != group_id
+            ):
                 listing.master_product_group_id = group_id
 
         warehouse_rows = (
             db.session.query(WarehouseStock)
-            .filter(WarehouseStock.id.in_(target_warehouse_stock_ids))
+            .filter(
+                WarehouseStock.id.in_(
+                    target_warehouse_stock_ids
+                )
+            )
             .all()
         )
 
-        for stock in warehouse_rows:
-            if hasattr(stock, "master_product_group_id"):
-                stock.master_product_group_id = group_id
-            if hasattr(stock, "is_group_controlled"):
-                stock.is_group_controlled = True
+    # Product Linking is only a shortcut into Warehouse authority.
+    #
+    # For an FBA-led group, AmazonFBAInventory is the read-only input.
+    # Copy that quantity into Warehouse once, then Warehouse pushes the
+    # same value to every non-FBA marketplace listing.
+    if target_quantity is None and group_has_fba_authority:
+        group_stock_ids = {
+            int(stock.id)
+            for stock in (
+                db.session.query(WarehouseStock)
+                .filter(
+                    WarehouseStock.master_product_group_id
+                    == group_id
+                )
+                .all()
+            )
+        }
 
-            if target_quantity is not None:
-                stock_columns = set(stock.__table__.columns.keys())
-                for col in ("sellable_quantity", "available_quantity", "quantity"):
-                    if col in stock_columns:
-                        setattr(stock, col, target_quantity)
+        target_warehouse_stock_ids.update(group_stock_ids)
 
-        db.session.flush()
+        fba_truth = (
+            db.session.query(AmazonFBAInventory)
+            .filter(
+                AmazonFBAInventory.warehouse_stock_id.in_(
+                    list(group_stock_ids)
+                ),
+                AmazonFBAInventory.is_active == True,  # noqa: E712
+                AmazonFBAInventory.is_archived == False,  # noqa: E712
+            )
+            .order_by(
+                AmazonFBAInventory.updated_at.desc(),
+                AmazonFBAInventory.id.desc(),
+            )
+            .first()
+        )
+
+        if fba_truth is None:
+            return jsonify(
+                _blocked(
+                    "FBA-led group has no active Amazon FBA "
+                    "inventory truth.",
+                    group_id=group_id,
+                )
+            ), 409
+
+        target_quantity = int(
+            fba_truth.available_quantity or 0
+        )
+
+        warehouse_rows = (
+            db.session.query(WarehouseStock)
+            .filter(
+                WarehouseStock.id.in_(
+                    list(target_warehouse_stock_ids)
+                )
+            )
+            .all()
+        )
+
+    for stock in warehouse_rows:
+        if hasattr(stock, "master_product_group_id"):
+            stock.master_product_group_id = group_id
+
+        if hasattr(stock, "is_group_controlled"):
+            stock.is_group_controlled = True
+
+        if target_quantity is not None:
+            stock_columns = set(
+                stock.__table__.columns.keys()
+            )
+
+            for col in (
+                "sellable_quantity",
+                "available_quantity",
+                "quantity",
+            ):
+                if col in stock_columns:
+                    setattr(
+                        stock,
+                        col,
+                        target_quantity,
+                    )
+
+    db.session.flush()
 
     listing_filters = [MarketplaceListing.master_product_group_id == group_id]
     if target_warehouse_stock_ids:
@@ -211,10 +305,19 @@ def governed_group_propagate_quantity(group_id: int):
             })
             continue
 
+        # Every pushable group child receives one Warehouse truth
+        # quantity. Listing-local marketplace quantities must never
+        # become a second authority.
         if target_quantity is None:
-            quantity = listing.effective_quantity
-        else:
-            quantity = target_quantity
+            return jsonify(
+                _blocked(
+                    "Warehouse group quantity could not be resolved.",
+                    group_id=group_id,
+                    listing_id=listing.id,
+                )
+            ), 409
+
+        quantity = target_quantity
 
         sku = (listing.external_sku or (listing.warehouse_stock.sku if listing.warehouse_stock else "") or "").strip()
         marketplace = classification["marketplace"]
