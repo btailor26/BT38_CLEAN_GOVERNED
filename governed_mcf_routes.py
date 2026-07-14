@@ -171,10 +171,33 @@ def _line_view(line: MarketplaceOrder) -> dict:
     }
 
 
+def _source_is_non_amazon_marketplace(
+    order: MarketplaceOrder,
+) -> bool:
+    """
+    Amazon-origin orders must never enter Amazon MCF again.
+
+    MCF work is only for orders received from an external/non-Amazon
+    marketplace whose linked Product Linking group resolves to canonical
+    Amazon FBA inventory.
+    """
+    store = order.store
+
+    if store is None:
+        return False
+
+    platform = str(store.platform or "").strip().lower()
+
+    return bool(platform) and "amazon" not in platform
+
+
 def _bulk_orders(limit: int = 100) -> list[dict]:
     """
-    Bulk-load only orders whose complete linked group resolves to canonical FBA
-    inventory. Search, filtering and paging remain browser-local.
+    Bulk-load external marketplace orders only when their complete linked group
+    resolves to canonical, MCF-enabled Amazon FBA inventory.
+
+    Amazon-origin orders are already within Amazon fulfilment and must never be
+    presented as new MCF work. Search, filtering and paging remain browser-local.
     """
     seed_rows = (
         MarketplaceOrder.query
@@ -345,6 +368,14 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         if not order_lines:
             continue
 
+        anchor = order_lines[0]
+
+        # MCF is only for external/non-Amazon marketplace sales. Amazon orders
+        # must not be sent back into Amazon through MCF, even when their SKU is
+        # linked to an FBA-backed Product Linking group.
+        if not _source_is_non_amazon_marketplace(anchor):
+            continue
+
         views = []
 
         for line in order_lines:
@@ -430,7 +461,7 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         )
 
         orders.append({
-            "anchor": order_lines[0],
+            "anchor": anchor,
             "lines": order_lines,
             "views": views,
             "eligible": eligible,
