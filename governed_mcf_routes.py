@@ -584,7 +584,9 @@ def order_mcf_detail_page(order_id: int):
     anchor = db.session.get(MarketplaceOrder, order_id)
     if anchor is None:
         flash("Order not found.", "danger")
-        return redirect(url_for("governed_mcf.orders_mcf_page"))
+        return redirect(
+            url_for("governed_mcf.orders_mcf_page")
+        )
 
     lines = _order_lines(anchor)
     views = [_line_view(line) for line in lines]
@@ -638,7 +640,12 @@ def send_order_to_mcf(order_id: int):
 
     if not _source_is_ebay(anchor):
         flash("The first governed MCF path currently accepts eBay source orders only.", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        return redirect(
+            url_for(
+                "governed_mcf.order_mcf_detail_page",
+                order_id=anchor.id,
+            )
+        )
 
     fba_store = _active_fba_store()
     if fba_store is None:
@@ -876,6 +883,29 @@ def send_order_to_mcf(order_id: int):
 @governed_mcf_bp.post("/governed/orders-mcf/<int:order_id>/refresh")
 @login_required
 def refresh_mcf_order(order_id: int):
+    return_to_list = (
+        str(request.form.get("return_to") or "").strip().lower()
+        == "list"
+    )
+
+    def _refresh_redirect(anchor_id: int | None = None):
+        if return_to_list:
+            return redirect(
+                url_for("governed_mcf.orders_mcf_page")
+            )
+
+        if anchor_id is not None:
+            return redirect(
+                url_for(
+                    "governed_mcf.order_mcf_detail_page",
+                    order_id=anchor_id,
+                )
+            )
+
+        return redirect(
+            url_for("governed_mcf.orders_mcf_page")
+        )
+
     anchor = db.session.get(MarketplaceOrder, order_id)
     if anchor is None or not anchor.mcf_order:
         flash("No MCF order is linked to this order.", "danger")
@@ -886,7 +916,7 @@ def refresh_mcf_order(order_id: int):
     success, result = service.get_mcf_order_status(mcf)
     if not success:
         flash(f"Amazon MCF status refresh failed: {result.get('error')}", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        return _refresh_redirect(anchor.id)
 
     lines = _order_lines(anchor)
     if mcf.tracking_number:

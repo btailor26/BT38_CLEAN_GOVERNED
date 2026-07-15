@@ -37,6 +37,46 @@ window.BT38.disableFetch = function() {
   window.BT38.state.session.allowFetch = false;
 };
 
+// Shared browser-session state for all BT38 pages.
+// UI state belongs in sessionStorage, not in the database.
+window.BT38.getPageSession = function(pageName, defaults = {}) {
+  const key = `bt38:page:${pageName}`;
+
+  try {
+    const stored = window.sessionStorage.getItem(key);
+    return {
+      ...defaults,
+      ...(stored ? JSON.parse(stored) : {})
+    };
+  } catch (error) {
+    console.warn("[BT38 PAGE SESSION READ FAILED]", pageName, error);
+    return { ...defaults };
+  }
+};
+
+window.BT38.setPageSession = function(pageName, values = {}) {
+  const key = `bt38:page:${pageName}`;
+
+  try {
+    const current = window.BT38.getPageSession(pageName, {});
+    const next = {
+      ...current,
+      ...values
+    };
+
+    window.sessionStorage.setItem(
+      key,
+      JSON.stringify(next)
+    );
+
+    window.BT38.state.cache[pageName] = next;
+    return next;
+  } catch (error) {
+    console.warn("[BT38 PAGE SESSION WRITE FAILED]", pageName, error);
+    return values;
+  }
+};
+
 // Product Linking uses the same browser-session structure as Warehouse.
 // The existing template still defines a legacy server-driven loader. Replace it
 // immediately before DOMContentLoaded so it cannot issue page-by-page reads.
