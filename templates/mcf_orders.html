@@ -76,6 +76,7 @@
             <th>Group</th>
             <th>MCF readiness</th>
             <th>MCF status</th>
+            <th>Refresh</th>
             <th class="text-end">Action</th>
           </tr>
         </thead>
@@ -127,14 +128,30 @@
                 <span class="text-muted">Not submitted</span>
               {% endif %}
             </td>
+            <td>
+              {% if row.mcf and row.mcf.status != 'failed' %}
+                <button class="btn btn-sm btn-outline-secondary"
+                        type="submit"
+                        formmethod="post"
+                        formaction="{{ url_for('governed_mcf.refresh_mcf_order', order_id=row.anchor.id) }}"
+                        title="Refresh Amazon MCF status and update source marketplace tracking">
+                  <i data-feather="refresh-cw" class="me-1"></i>Refresh
+                </button>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
             <td class="text-end">
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">Review</a>
+              <a class="btn btn-sm btn-outline-primary"
+                 href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
+                Review
+              </a>
             </td>
           </tr>
           {% else %}
-          <tr id="mcf-empty-row"><td colspan="8" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
+          <tr id="mcf-empty-row"><td colspan="9" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
           {% endfor %}
-          <tr id="mcf-no-match-row" class="d-none"><td colspan="8" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+          <tr id="mcf-no-match-row" class="d-none"><td colspan="9" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
         </tbody>
       </table>
     </div>
