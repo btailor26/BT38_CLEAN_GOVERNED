@@ -943,4 +943,4 @@ def refresh_mcf_order(order_id: int):
     else:
         flash(f"Amazon status updated to {mcf.amazon_status or mcf.status}; tracking is not available yet.", "info")
 
-    return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+    return _refresh_redirect(anchor.id)
