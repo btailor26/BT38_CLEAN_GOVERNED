@@ -136,23 +136,15 @@ class InventoryDashboard {
     }
     
     startSyncStatusUpdates() {
-        // Cost guard: no 30-second DB polling.
-        // Dashboard loads once; later updates must be webhook/user-action driven.
-        this.updateSyncStatus();
+        // Disabled until the dashboard is rebuilt.
+        // No automatic sync-status request on page load.
     }
 
     async updateSyncStatus() {
-        try {
-            const stores = await api('/api/sync-status');
-            this.displaySyncStatus(stores);
-            this.updateLastRefreshTime();
-            
-        } catch (error) {
-            console.error('Error updating sync status:', error);
-            this.showSyncError();
-        }
+        // Disabled: prevents /api/sync-status database calls.
+        return;
     }
-    
+
     displaySyncStatus(stores) {
         const statusElement = document.getElementById('sync-status');
         if (!statusElement || !stores || stores.length === 0) {
