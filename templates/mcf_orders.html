@@ -76,7 +76,6 @@
             <th>Group</th>
             <th>MCF readiness</th>
             <th>MCF status</th>
-            <th>Refresh</th>
             <th class="text-end">Action</th>
           </tr>
         </thead>
@@ -128,9 +127,9 @@
                 <span class="text-muted">Not submitted</span>
               {% endif %}
             </td>
-            <td>
+            <td class="text-end">
               {% if row.mcf and row.mcf.status != 'failed' %}
-                <button class="btn btn-sm btn-outline-secondary"
+                <button class="btn btn-sm btn-outline-primary"
                         type="submit"
                         name="return_to"
                         value="list"
@@ -140,20 +139,17 @@
                   <i data-feather="refresh-cw" class="me-1"></i>Refresh
                 </button>
               {% else %}
-                <span class="text-muted">—</span>
+                <a class="btn btn-sm btn-outline-primary"
+                   href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
+                  Review
+                </a>
               {% endif %}
-            </td>
-            <td class="text-end">
-              <a class="btn btn-sm btn-outline-primary"
-                 href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
-                Review
-              </a>
             </td>
           </tr>
           {% else %}
-          <tr id="mcf-empty-row"><td colspan="9" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
+          <tr id="mcf-empty-row"><td colspan="8" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
           {% endfor %}
-          <tr id="mcf-no-match-row" class="d-none"><td colspan="9" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+          <tr id="mcf-no-match-row" class="d-none"><td colspan="8" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
         </tbody>
       </table>
     </div>
