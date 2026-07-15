@@ -132,6 +132,8 @@
               {% if row.mcf and row.mcf.status != 'failed' %}
                 <button class="btn btn-sm btn-outline-secondary"
                         type="submit"
+                        name="return_to"
+                        value="list"
                         formmethod="post"
                         formaction="{{ url_for('governed_mcf.refresh_mcf_order', order_id=row.anchor.id) }}"
                         title="Refresh Amazon MCF status and update source marketplace tracking">
@@ -180,7 +182,44 @@
   const selections = Array.from(
     document.querySelectorAll('.mcf-order-select')
   );
-  let page = 1;
+
+  const pageName = 'mcfOrders';
+  const defaults = {
+    status: '',
+    search: '',
+    pageSize: '15',
+    page: 1
+  };
+
+  const pageState = (
+    window.BT38
+    && typeof window.BT38.getPageSession === 'function'
+  )
+    ? window.BT38.getPageSession(pageName, defaults)
+    : defaults;
+
+  status.value = pageState.status || '';
+  search.value = pageState.search || '';
+  size.value = String(pageState.pageSize || '15');
+
+  let page = Math.max(
+    1,
+    Number.parseInt(pageState.page, 10) || 1
+  );
+
+  function savePageState() {
+    if (
+      window.BT38
+      && typeof window.BT38.setPageSession === 'function'
+    ) {
+      window.BT38.setPageSession(pageName, {
+        status: status.value,
+        search: search.value,
+        pageSize: size.value,
+        page
+      });
+    }
+  }
 
   function updateSelectionState() {
     const selected = selections.filter(
@@ -228,6 +267,7 @@
     prev.disabled = page <= 1;
     next.disabled = page >= pages;
     updateSelectionState();
+    savePageState();
   }
 
   selectAll.addEventListener('change', () => {
