@@ -44,7 +44,21 @@ window.BT38.PageController = {
       dataset: Object.assign({}, row.dataset)
     }));
 
+    page.filteredRows = page.rows.slice();
     page.ready = true;
+    return true;
+  },
+
+  refreshTableCache(pageName, options = {}) {
+    const refreshed = window.BT38.PageController.initTableCache(pageName);
+    if (!refreshed) return false;
+
+    if (options.applyFilters !== false) {
+      return window.BT38.PageController.localFilter(pageName, {
+        keepPage: options.keepPage === true
+      });
+    }
+
     return true;
   },
 
@@ -189,6 +203,24 @@ window.BT38.PageController = {
       });
     });
 
+    if (pageName === "productLinking") {
+      const clearLink = form.querySelector('a[href="/product-linking"]');
+      if (clearLink) {
+        clearLink.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          form.querySelectorAll("input[name], select[name]").forEach(field => {
+            if (field.tagName === "SELECT") {
+              field.value = field.querySelector('option[value="all"]') ? "all" : "";
+            } else {
+              field.value = "";
+            }
+          });
+          window.BT38.PageController.localFilter(pageName);
+        });
+      }
+    }
+
     return true;
   },
 
@@ -249,6 +281,30 @@ window.BT38.PageController = {
     return true;
   },
 
+  wireAsyncTableRefresh(pageName) {
+    if (pageName !== "productLinking") return false;
+
+    const container = document.getElementById("warehouseDataContainer");
+    if (!container) return false;
+
+    let refreshTimer = null;
+    const refresh = () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        window.BT38.PageController.refreshTableCache(pageName);
+      }, 0);
+    };
+
+    const observer = new MutationObserver(refresh);
+    observer.observe(container, {
+      childList: true,
+      subtree: true
+    });
+
+    refresh();
+    return true;
+  },
+
   autoRegisterFromDom() {
     const root = document.querySelector("[data-bt38-page]");
     if (!root) return false;
@@ -289,6 +345,7 @@ window.BT38.PageController = {
     }
 
     window.BT38.PageController.wireLocalPagination(pageName);
+    window.BT38.PageController.wireAsyncTableRefresh(pageName);
 
     if (filterFormSelector) {
       window.BT38.PageController.localFilter(pageName);
