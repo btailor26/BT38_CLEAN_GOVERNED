@@ -333,16 +333,6 @@ window.BT38.PageController = {
   wireAsyncTableRefresh(pageName) {
     if (pageName !== "productLinking") return false;
 
-    // Product Linking loads one complete browser working set. Search and
-    // pagination then stay inside the browser and do not query Fly/Neon again.
-    try {
-      if (typeof productLinkingPerPage !== "undefined") {
-        productLinkingPerPage = 5000;
-      }
-    } catch (error) {
-      console.warn("[BT38] Product Linking working-set size was not available", error);
-    }
-
     const container = document.getElementById("warehouseDataContainer");
     if (!container) return false;
 
@@ -427,6 +417,27 @@ window.BT38.PageController = {
     page.lastDirtyAt = Date.now();
   }
 };
+
+function bt38ConfigureProductLinkingWorkingSet() {
+  const root = document.querySelector('[data-bt38-page="productLinking"]');
+  if (!root) return false;
+
+  // The inline Product Linking loader is already defined when this controller
+  // is loaded. Set its first request to one complete browser working set before
+  // DOMContentLoaded starts the async fetch.
+  try {
+    if (typeof productLinkingPerPage !== "undefined") {
+      productLinkingPerPage = 5000;
+      return true;
+    }
+  } catch (error) {
+    console.warn("[BT38] Product Linking working-set size was not available", error);
+  }
+
+  return false;
+}
+
+bt38ConfigureProductLinkingWorkingSet();
 
 function bt38BootPageController() {
   if (window.BT38 && window.BT38.PageController) {
