@@ -8,12 +8,15 @@ def controller_source():
     return CONTROLLER.read_text(encoding="utf-8")
 
 
-def test_product_linking_loads_one_complete_browser_working_set():
+def test_product_linking_loads_one_complete_browser_working_set_before_fetch():
     controller = controller_source()
 
-    assert 'pageName !== "productLinking"' in controller
+    assert 'function bt38ConfigureProductLinkingWorkingSet()' in controller
     assert 'productLinkingPerPage = 5000' in controller
-    assert 'Product Linking loads one complete browser working set' in controller
+    assert 'bt38ConfigureProductLinkingWorkingSet();' in controller
+    assert controller.index('bt38ConfigureProductLinkingWorkingSet();') < controller.index(
+        'document.addEventListener("DOMContentLoaded", bt38BootPageController'
+    )
 
 
 def test_product_linking_async_render_rebuilds_cache_once():
