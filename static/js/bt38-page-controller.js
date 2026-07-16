@@ -19,7 +19,7 @@ window.BT38.PageController = {
       rows: [],
       filteredRows: [],
       currentPage: 1,
-      perPage: 15,
+      perPage: pageName === "productLinking" ? 25 : 15,
       ready: false,
       config
     };
@@ -44,7 +44,21 @@ window.BT38.PageController = {
       dataset: Object.assign({}, row.dataset)
     }));
 
+    page.filteredRows = page.rows.slice();
     page.ready = true;
+    return true;
+  },
+
+  refreshTableCache(pageName, options = {}) {
+    const refreshed = window.BT38.PageController.initTableCache(pageName);
+    if (!refreshed) return false;
+
+    if (options.applyFilters !== false) {
+      return window.BT38.PageController.localFilter(pageName, {
+        keepPage: options.keepPage === true
+      });
+    }
+
     return true;
   },
 
@@ -99,10 +113,47 @@ window.BT38.PageController = {
   getPerPage(pageName) {
     const page = window.BT38.pages[pageName];
     if (!page) return 15;
+    if (pageName === "productLinking") return 25;
 
     const select = document.getElementById("bt38ResultsPerPageSelect");
     const value = Number.parseInt(select ? select.value : page.perPage, 10);
     return [15, 25, 50, 100].includes(value) ? value : 15;
+  },
+
+  renderProductLinkingPagination(pageName, total, totalPages, start, end) {
+    const page = window.BT38.pages[pageName];
+    const nav = document.querySelector('[aria-label="Product linking pagination"]');
+    if (!page || !nav) return false;
+
+    const previousPage = Math.max(1, page.currentPage - 1);
+    const nextPage = Math.min(totalPages, page.currentPage + 1);
+    const firstDisabled = page.currentPage <= 1 ? "disabled" : "";
+    const lastDisabled = page.currentPage >= totalPages ? "disabled" : "";
+
+    nav.innerHTML = `
+      <button type="button" class="btn btn-outline-secondary" data-bt38-local-page="1" ${firstDisabled}>First</button>
+      <button type="button" class="btn btn-outline-secondary" data-bt38-local-page="${previousPage}" ${firstDisabled}>← Prev</button>
+      <button type="button" class="btn btn-primary" disabled>Page ${page.currentPage} of ${totalPages}</button>
+      <button type="button" class="btn btn-outline-secondary" data-bt38-local-page="${nextPage}" ${lastDisabled}>Next →</button>
+      <button type="button" class="btn btn-outline-secondary" data-bt38-local-page="${totalPages}" ${lastDisabled}>Last</button>
+    `;
+
+    nav.querySelectorAll("[data-bt38-local-page]").forEach(button => {
+      button.addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const targetPage = Number.parseInt(button.dataset.bt38LocalPage || "1", 10);
+        page.currentPage = Math.min(Math.max(targetPage, 1), totalPages);
+        window.BT38.PageController.renderPage(pageName);
+      });
+    });
+
+    const summary = nav.closest(".d-flex")?.querySelector("small");
+    if (summary) {
+      summary.textContent = `Showing ${total ? start + 1 : 0} to ${Math.min(end, total)} of ${total} warehouse products`;
+    }
+
+    return true;
   },
 
   renderPage(pageName) {
@@ -130,6 +181,17 @@ window.BT38.PageController = {
     const status = document.querySelector(".bt38-page-status");
     if (status) {
       status.textContent = `Page ${page.currentPage} of ${totalPages} · ${total} total`;
+    }
+
+    if (pageName === "productLinking") {
+      window.BT38.PageController.renderProductLinkingPagination(
+        pageName,
+        total,
+        totalPages,
+        start,
+        end
+      );
+      return true;
     }
 
     const prev = document.querySelector(".bt38-page-nav .bt38-page-link:first-child");
@@ -189,12 +251,31 @@ window.BT38.PageController = {
       });
     });
 
+    if (pageName === "productLinking") {
+      const clearLink = form.querySelector('a[href="/product-linking"]');
+      if (clearLink) {
+        clearLink.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          form.querySelectorAll("input[name], select[name]").forEach(field => {
+            if (field.tagName === "SELECT") {
+              field.value = field.querySelector('option[value="all"]') ? "all" : "";
+            } else {
+              field.value = "";
+            }
+          });
+          window.BT38.PageController.localFilter(pageName);
+        });
+      }
+    }
+
     return true;
   },
 
   wireLocalPagination(pageName) {
     const page = window.BT38.pages[pageName];
     if (!page) return false;
+    if (pageName === "productLinking") return true;
 
     const perPageSelect = document.getElementById("bt38ResultsPerPageSelect");
     if (perPageSelect) {
@@ -249,6 +330,36 @@ window.BT38.PageController = {
     return true;
   },
 
+  wireAsyncTableRefresh(pageName) {
+    if (pageName !== "productLinking") return false;
+
+    const container = document.getElementById("warehouseDataContainer");
+    if (!container) return false;
+
+    let observer = null;
+    const refreshWhenReady = () => {
+      const table = container.querySelector("table");
+      const rows = table ? table.querySelectorAll("tbody tr") : [];
+      if (!table || rows.length === 0) return false;
+
+      window.BT38.PageController.refreshTableCache(pageName);
+      if (observer) observer.disconnect();
+      return true;
+    };
+
+    if (refreshWhenReady()) return true;
+
+    observer = new MutationObserver(() => {
+      refreshWhenReady();
+    });
+    observer.observe(container, {
+      childList: true,
+      subtree: true
+    });
+
+    return true;
+  },
+
   autoRegisterFromDom() {
     const root = document.querySelector("[data-bt38-page]");
     if (!root) return false;
@@ -289,6 +400,7 @@ window.BT38.PageController = {
     }
 
     window.BT38.PageController.wireLocalPagination(pageName);
+    window.BT38.PageController.wireAsyncTableRefresh(pageName);
 
     if (filterFormSelector) {
       window.BT38.PageController.localFilter(pageName);
@@ -305,6 +417,27 @@ window.BT38.PageController = {
     page.lastDirtyAt = Date.now();
   }
 };
+
+function bt38ConfigureProductLinkingWorkingSet() {
+  const root = document.querySelector('[data-bt38-page="productLinking"]');
+  if (!root) return false;
+
+  // The inline Product Linking loader is already defined when this controller
+  // is loaded. Set its first request to one complete browser working set before
+  // DOMContentLoaded starts the async fetch.
+  try {
+    if (typeof productLinkingPerPage !== "undefined") {
+      productLinkingPerPage = 5000;
+      return true;
+    }
+  } catch (error) {
+    console.warn("[BT38] Product Linking working-set size was not available", error);
+  }
+
+  return false;
+}
+
+bt38ConfigureProductLinkingWorkingSet();
 
 function bt38BootPageController() {
   if (window.BT38 && window.BT38.PageController) {
