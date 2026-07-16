@@ -1,17 +1,50 @@
 from pathlib import Path
 
 
-def test_product_linking_async_render_rebuilds_local_cache():
-    controller = Path("static/js/bt38-page-controller.js").read_text(encoding="utf-8")
+CONTROLLER = Path("static/js/bt38-page-controller.js")
 
-    assert 'wireAsyncTableRefresh(pageName)' in controller
-    assert 'new MutationObserver(refresh)' in controller
+
+def controller_source():
+    return CONTROLLER.read_text(encoding="utf-8")
+
+
+def test_product_linking_loads_one_complete_browser_working_set():
+    controller = controller_source()
+
+    assert 'pageName !== "productLinking"' in controller
+    assert 'productLinkingPerPage = 5000' in controller
+    assert 'Product Linking loads one complete browser working set' in controller
+
+
+def test_product_linking_async_render_rebuilds_cache_once():
+    controller = controller_source()
+
+    assert 'const refreshWhenReady = () =>' in controller
+    assert 'new MutationObserver(() =>' in controller
+    assert 'observer.disconnect()' in controller
     assert 'refreshTableCache(pageName)' in controller
 
 
-def test_product_linking_clear_stays_local():
-    controller = Path("static/js/bt38-page-controller.js").read_text(encoding="utf-8")
+def test_product_linking_search_and_clear_stay_local():
+    controller = controller_source()
 
-    assert 'pageName === "productLinking"' in controller
+    assert 'window.BT38.PageController.localFilter(pageName)' in controller
     assert 'a[href="/product-linking"]' in controller
     assert 'event.preventDefault()' in controller
+    assert 'data-bt38-local-page' in controller
+
+
+def test_product_linking_keeps_local_pagination():
+    controller = controller_source()
+
+    assert 'renderProductLinkingPagination(' in controller
+    assert 'pageName === "productLinking"' in controller
+    assert 'page.currentPage = Math.min(Math.max(targetPage, 1), totalPages)' in controller
+
+
+def test_product_linking_fix_does_not_add_backend_or_marketplace_calls():
+    controller = controller_source()
+
+    assert '/governed/product-linking/data' not in controller
+    assert '/warehouse' not in controller
+    assert '/api/sync-status' not in controller
