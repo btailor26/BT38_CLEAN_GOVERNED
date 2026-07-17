@@ -4209,8 +4209,9 @@ _BT38_EXPLICIT_GROUP_RELATIONSHIP_POST_PATHS = (
     r"^/governed/groups/\d+/link-listing$",
     r"^/governed/groups/\d+/unlink$",
 
-    # Product Linking user-selected link action.
+    # Product Linking user-selected relationship actions.
     r"^/governed/product-linking/link-listing-to-warehouse$",
+    r"^/governed/product-linking/merge-warehouse-group$",
 )
 
 

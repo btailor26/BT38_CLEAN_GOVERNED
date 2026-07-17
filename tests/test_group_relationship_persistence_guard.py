@@ -26,6 +26,7 @@ def app():
         "/governed/groups/45/link-listing",
         "/governed/groups/45/unlink",
         "/governed/product-linking/link-listing-to-warehouse",
+        "/governed/product-linking/merge-warehouse-group",
     ],
 )
 def test_explicit_user_post_relationship_actions_are_allowed(app, path):
