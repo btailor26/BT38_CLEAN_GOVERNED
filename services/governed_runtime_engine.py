@@ -358,42 +358,83 @@ def _engine_loop(app):
     _safe_log("Engine loop started")
 
     while True:
+        sleep_seconds = 30
+
         try:
             with app.app_context():
-                if not _config_on("runtime_engine_started", False):
-                    _runtime_status_set("engine_started", "true")
-                    _runtime_status_stamp("engine_started_at")
-                _runtime_status_stamp("heartbeat")
-                if _config_on("read_only_mode", False):
-                    _safe_log("Runtime paused: read_only_mode ON")
-                    time.sleep(60)
-                    continue
+                from extensions import db
 
-                now = datetime.utcnow()
+                try:
+                    if not _config_on("runtime_engine_started", False):
+                        _runtime_status_set("engine_started", "true")
+                        _runtime_status_stamp("engine_started_at")
 
-                if _last_light_reconcile is None or (now - _last_light_reconcile).total_seconds() >= LIGHT_RECONCILE_SECONDS:
-                    if _config_on("scheduler_enabled", True) and _config_on("reconcile_15m_enabled", True):
-                        if _has_pending_notification_work():
-                            _run_light_reconcile_cycle()
-                        else:
-                            _last_light_reconcile = now
-                            _runtime_status_stamp("last_light_reconcile")
-                            _safe_log("15-minute reconcile slept: no pending webhook/notification work")
+                    _runtime_status_stamp("heartbeat")
+
+                    if _config_on("read_only_mode", False):
+                        _safe_log("Runtime paused: read_only_mode ON")
+                        sleep_seconds = 60
                     else:
-                        _safe_log("15-minute reconcile skipped by fuse box")
-                        _last_light_reconcile = now
+                        now = datetime.utcnow()
 
-                if _last_full_sync is None or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS:
-                    if _config_on("sync_enabled", True) and _config_on("sync_worker_enabled", True):
-                        _run_full_sync_cycle()
-                    else:
-                        _safe_log("8-hour full cycle skipped by fuse box")
-                        _last_full_sync = now
+                        if (
+                            _last_light_reconcile is None
+                            or (
+                                now - _last_light_reconcile
+                            ).total_seconds() >= LIGHT_RECONCILE_SECONDS
+                        ):
+                            if (
+                                _config_on("scheduler_enabled", True)
+                                and _config_on("reconcile_15m_enabled", True)
+                            ):
+                                if _has_pending_notification_work():
+                                    _run_light_reconcile_cycle()
+                                else:
+                                    _last_light_reconcile = now
+                                    _runtime_status_stamp(
+                                        "last_light_reconcile"
+                                    )
+                                    _safe_log(
+                                        "15-minute reconcile slept: "
+                                        "no pending webhook/notification work"
+                                    )
+                            else:
+                                _safe_log(
+                                    "15-minute reconcile skipped by fuse box"
+                                )
+                                _last_light_reconcile = now
+
+                        if (
+                            _last_full_sync is None
+                            or (
+                                now - _last_full_sync
+                            ).total_seconds() >= FULL_SYNC_SECONDS
+                        ):
+                            if (
+                                _config_on("sync_enabled", True)
+                                and _config_on("sync_worker_enabled", True)
+                            ):
+                                _run_full_sync_cycle()
+                            else:
+                                _safe_log(
+                                    "8-hour full cycle skipped by fuse box"
+                                )
+                                _last_full_sync = now
+
+                except Exception:
+                    db.session.rollback()
+                    raise
+                finally:
+                    # A permanent background thread must release its
+                    # scoped SQLAlchemy session after every iteration.
+                    db.session.remove()
 
         except Exception as exc:
             _safe_error("Engine loop error", exc)
 
-        time.sleep(30)
+        # Never sleep while holding Flask app or database context.
+        time.sleep(sleep_seconds)
+
 
 
 def _acquire_runtime_owner_lock() -> bool:
