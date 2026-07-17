@@ -68,6 +68,9 @@
                 <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/product-linking">
                     <i data-feather="link-2" class="me-2"></i>Product Linking
                 </a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed_mcf.orders_mcf_page') }}">
+                    <i data-feather="truck" class="me-2"></i>Orders / MCF
+                </a>
                 <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/stores">
                     <i data-feather="git-merge" class="me-2"></i>Stores
                 </a>
@@ -227,10 +230,10 @@
       return originalFetch(`/governed/actions/groups/${groupPush[1]}/push`, init);
     }
 
-const groupQty = url.match(/^/groups/(d+)/update-stock$/);
-if (groupQty) {
-  return originalFetch(`/governed/actions/groups/${groupQty[1]}/push`, init);
-}
+    const groupQty = url.match(/^\/groups\/(\d+)\/update-stock$/);
+    if (groupQty) {
+      return originalFetch(`/governed/groups/${groupQty[1]}/propagate-quantity`, init);
+    }
 
 
     if (legacyWriteUrl(url)) return blockedResponse(url);

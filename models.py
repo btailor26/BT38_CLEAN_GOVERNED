@@ -2247,6 +2247,16 @@ class MarketplaceOrder(db.Model):
     ship_to_city = db.Column(db.String(100))
     ship_to_postcode = db.Column(db.String(20))
     ship_to_country = db.Column(db.String(2), default='GB')
+    ship_to_email = db.Column(db.String(320))
+    ship_to_phone = db.Column(db.String(50))
+
+    # MCF queue visibility only. This never deletes the marketplace order,
+    # MCF record, dispatch state, tracking or stock history.
+    mcf_queue_hidden = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+    )
     
     # Tracking
     carrier = db.Column(db.String(50))
@@ -2316,6 +2326,9 @@ class MarketplaceOrder(db.Model):
             'ship_to_name': self.ship_to_name,
             'ship_to_city': self.ship_to_city,
             'ship_to_country': self.ship_to_country,
+            'ship_to_email': self.ship_to_email,
+            'ship_to_phone': self.ship_to_phone,
+            'mcf_queue_hidden': bool(self.mcf_queue_hidden),
             'carrier': self.carrier,
             'tracking_number': self.tracking_number,
             'shipped_at': self.shipped_at.isoformat() if self.shipped_at else None,
@@ -4165,3 +4178,121 @@ class CanonicalOrderLine(db.Model):
             'posted_at': self.posted_at.isoformat() if self.posted_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
+
+# =============================================================================
+# BT38 PERMANENT GROUP RELATIONSHIP PERSISTENCE GUARD
+# =============================================================================
+#
+# Canonical contract: Group 45.
+#
+# Once a persistent MarketplaceListing or WarehouseStock relationship has been
+# saved, automatic code may never change it. Deployments, startup, imports,
+# hydration, reconciliation, webhooks, workers, page loads and searches are
+# operational paths, not relationship owners.
+#
+# Only an explicit user POST action may link, unlink or move a relationship.
+# =============================================================================
+
+from flask import has_request_context as _bt38_has_request_context
+from flask import request as _bt38_request
+from sqlalchemy import event as _bt38_sa_event
+from sqlalchemy import inspect as _bt38_sa_inspect
+from sqlalchemy.orm.attributes import NO_VALUE as _BT38_NO_VALUE
+
+
+_BT38_EXPLICIT_GROUP_RELATIONSHIP_POST_PATHS = (
+    # Create a group and explicitly attach the selected record.
+    r"^/governed/groups/create$",
+
+    # Explicit group relationship actions.
+    r"^/governed/groups/\d+/link-stock$",
+    r"^/governed/groups/\d+/link-listing$",
+    r"^/governed/groups/\d+/unlink$",
+
+    # Product Linking user-selected relationship actions.
+    r"^/governed/product-linking/link-listing-to-warehouse$",
+    r"^/governed/product-linking/merge-warehouse-group$",
+)
+
+
+def _bt38_is_explicit_group_relationship_user_action() -> bool:
+    """
+    Return True only for an explicit user POST relationship action.
+
+    Merely running inside a Flask request is not enough. Page GETs, searches,
+    runtime-state calls, webhook intake, sync and propagation routes remain
+    blocked from changing saved relationships.
+    """
+    if not _bt38_has_request_context():
+        return False
+
+    if str(_bt38_request.method or "").upper() != "POST":
+        return False
+
+    import re as _bt38_re
+
+    path = str(_bt38_request.path or "")
+
+    return any(
+        _bt38_re.fullmatch(pattern, path)
+        for pattern in _BT38_EXPLICIT_GROUP_RELATIONSHIP_POST_PATHS
+    )
+
+
+def _bt38_guard_saved_group_relationship(
+    target,
+    value,
+    oldvalue,
+    initiator,
+):
+    """
+    Reject automatic changes to an already-persisted relationship field.
+
+    Initial inserts are allowed. Assigning the same value is allowed.
+    Persistent relationship changes require an approved explicit POST route.
+    """
+    if oldvalue is _BT38_NO_VALUE:
+        return value
+
+    if oldvalue == value:
+        return value
+
+    state = _bt38_sa_inspect(target)
+
+    # New objects may receive their initial relationship before first commit.
+    if not state.persistent:
+        return value
+
+    if _bt38_is_explicit_group_relationship_user_action():
+        return value
+
+    field_name = getattr(initiator, "key", "unknown_relationship_field")
+
+    raise RuntimeError(
+        "BT38_GROUP_RELATIONSHIP_LOCKED: "
+        f"{target.__class__.__name__}.{field_name} "
+        f"cannot change from {oldvalue!r} to {value!r} "
+        "outside an explicit user link/unlink action. "
+        "Saved group relationships follow the Group 45 persistence contract."
+    )
+
+
+def _bt38_register_group_relationship_guards() -> None:
+    protected_attributes = (
+        MarketplaceListing.warehouse_stock_id,
+        MarketplaceListing.master_product_group_id,
+        WarehouseStock.master_product_group_id,
+        WarehouseStock.is_group_controlled,
+    )
+
+    for attribute in protected_attributes:
+        _bt38_sa_event.listen(
+            attribute,
+            "set",
+            _bt38_guard_saved_group_relationship,
+            retval=True,
+            active_history=True,
+        )
+
+
+_bt38_register_group_relationship_guards()

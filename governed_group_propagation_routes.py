@@ -12,8 +12,11 @@ except Exception:
 governed_group_propagation_bp = Blueprint("governed_group_propagation", __name__)
 
 
-@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink")
-def governed_group_unlink_listing(group_id: int):
+# Disabled duplicate destructive unlink route.
+# Single unlink authority lives in governed_group_routes.py.
+# This blueprint owns propagation only.
+@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink-disabled")
+def governed_group_unlink_listing_disabled(group_id: int):
     """Governed unlink for Product Linking group rows.
 
     This is warehouse/group relationship cleanup only.
@@ -99,7 +102,13 @@ def governed_group_propagate_quantity(group_id: int):
     """
     from extensions import db
     from governed_execution import AMAZON_FBM_LIVE_APPROVAL_TYPE, submit_governed_marketplace_action
-    from models import MarketplaceListing, MasterProductGroup, SyncLog, WarehouseStock
+    from models import (
+        AmazonFBAInventory,
+        MarketplaceListing,
+        MasterProductGroup,
+        SyncLog,
+        WarehouseStock,
+    )
     from sqlalchemy import or_
 
     body = dict(request.get_json(silent=True) or {})
@@ -145,37 +154,157 @@ def governed_group_propagate_quantity(group_id: int):
         if bool(getattr(listing, "is_fba", False)) or ("amazon" in platform and channel not in ("MFN", "FBM", "MERCHANT")):
             group_has_fba_authority = True
 
+    warehouse_rows = []
+
+    # Every Warehouse row already belonging to this group participates in
+    # the same authority path. A listing may historically point at only one
+    # child row, but the group must still expose one shared Warehouse quantity.
+    group_stock_ids = {
+        int(stock_id)
+        for (stock_id,) in (
+            db.session.query(WarehouseStock.id)
+            .filter(
+                WarehouseStock.master_product_group_id
+                == group_id
+            )
+            .all()
+        )
+    }
+
+    target_warehouse_stock_ids.update(group_stock_ids)
+
     if target_warehouse_stock_ids:
         attached_listings = (
             db.session.query(MarketplaceListing)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id.in_(target_warehouse_stock_ids))
+            .filter(
+                MarketplaceListing.warehouse_stock_id.in_(
+                    target_warehouse_stock_ids
+                )
+            )
             .all()
         )
 
         for listing in attached_listings:
-            if getattr(listing, "master_product_group_id", None) != group_id:
-                listing.master_product_group_id = group_id
+            saved_listing_group_id = getattr(
+                listing,
+                "master_product_group_id",
+                None,
+            )
+
+            if saved_listing_group_id != group_id:
+                return jsonify(
+                    _blocked(
+                        "Quantity propagation cannot create or repair "
+                        "marketplace listing relationships. Link the listing "
+                        "explicitly in Product Linking first.",
+                        group_id=group_id,
+                        listing_id=listing.id,
+                        saved_group_id=saved_listing_group_id,
+                    )
+                ), 409
 
         warehouse_rows = (
             db.session.query(WarehouseStock)
-            .filter(WarehouseStock.id.in_(target_warehouse_stock_ids))
+            .filter(
+                WarehouseStock.id.in_(
+                    target_warehouse_stock_ids
+                )
+            )
             .all()
         )
 
-        for stock in warehouse_rows:
-            if hasattr(stock, "master_product_group_id"):
-                stock.master_product_group_id = group_id
-            if hasattr(stock, "is_group_controlled"):
-                stock.is_group_controlled = True
+    # Product Linking is only a shortcut into Warehouse authority.
+    #
+    # For an FBA-led group, AmazonFBAInventory is the read-only input.
+    # Copy that quantity into Warehouse once, then Warehouse pushes the
+    # same value to every non-FBA marketplace listing.
+    if group_has_fba_authority:
+        # FBA/AFN is the only quantity source for an FBA-led group.
+        # Ignore any listing-local or caller-supplied quantity.
+        fba_truth = (
+            db.session.query(AmazonFBAInventory)
+            .filter(
+                AmazonFBAInventory.warehouse_stock_id.in_(
+                    list(group_stock_ids)
+                ),
+                AmazonFBAInventory.is_active == True,  # noqa: E712
+                AmazonFBAInventory.is_archived == False,  # noqa: E712
+            )
+            .order_by(
+                AmazonFBAInventory.updated_at.desc(),
+                AmazonFBAInventory.id.desc(),
+            )
+            .first()
+        )
 
-            if target_quantity is not None and not group_has_fba_authority:
-                stock_columns = set(stock.__table__.columns.keys())
-                for col in ("sellable_quantity", "available_quantity", "quantity"):
-                    if col in stock_columns:
-                        setattr(stock, col, target_quantity)
+        if fba_truth is None:
+            return jsonify(
+                _blocked(
+                    "FBA-led group has no active Amazon FBA "
+                    "inventory truth.",
+                    group_id=group_id,
+                )
+            ), 409
 
-        db.session.flush()
+        target_quantity = int(
+            fba_truth.available_quantity or 0
+        )
+
+        warehouse_rows = (
+            db.session.query(WarehouseStock)
+            .filter(
+                WarehouseStock.id.in_(
+                    list(target_warehouse_stock_ids)
+                )
+            )
+            .all()
+        )
+
+    for stock in warehouse_rows:
+        saved_stock_group_id = getattr(
+            stock,
+            "master_product_group_id",
+            None,
+        )
+        saved_group_controlled = bool(
+            getattr(stock, "is_group_controlled", False)
+        )
+
+        if (
+            saved_stock_group_id != group_id
+            or not saved_group_controlled
+        ):
+            return jsonify(
+                _blocked(
+                    "Quantity propagation cannot create or repair Warehouse "
+                    "group relationships. Link the Warehouse row explicitly "
+                    "in Product Linking first.",
+                    group_id=group_id,
+                    warehouse_stock_id=stock.id,
+                    saved_group_id=saved_stock_group_id,
+                    saved_is_group_controlled=saved_group_controlled,
+                )
+            ), 409
+
+        if target_quantity is not None:
+            stock_columns = set(
+                stock.__table__.columns.keys()
+            )
+
+            for col in (
+                "sellable_quantity",
+                "available_quantity",
+                "quantity",
+            ):
+                if col in stock_columns:
+                    setattr(
+                        stock,
+                        col,
+                        target_quantity,
+                    )
+
+    db.session.flush()
 
     listing_filters = [MarketplaceListing.master_product_group_id == group_id]
     if target_warehouse_stock_ids:
@@ -198,20 +327,43 @@ def governed_group_propagate_quantity(group_id: int):
         classification = _classify_listing(listing)
         if classification["skip"]:
             skipped += 1
+
+            # Read-only marketplace sources are not failures. Record the
+            # classification clearly and never send a marketplace action.
+            if classification["is_fba"]:
+                listing.last_push_at = datetime.utcnow()
+                listing.last_push_status = "read_only"
+                listing.last_push_error = None
+                listing.push_attempts = 0
+                listing.consecutive_failures = 0
+
             results.append({
                 "listing_id": listing.id,
                 "sku": listing.external_sku,
-                "status": "skipped",
+                "status": (
+                    "read_only"
+                    if classification["is_fba"]
+                    else "skipped"
+                ),
                 "reason": classification["reason"],
                 "is_fba": classification["is_fba"],
                 "is_pushable": False,
             })
             continue
 
-        if target_quantity is None or group_has_fba_authority:
-            quantity = listing.effective_quantity
-        else:
-            quantity = target_quantity
+        # Every pushable group child receives one Warehouse truth
+        # quantity. Listing-local marketplace quantities must never
+        # become a second authority.
+        if target_quantity is None:
+            return jsonify(
+                _blocked(
+                    "Warehouse group quantity could not be resolved.",
+                    group_id=group_id,
+                    listing_id=listing.id,
+                )
+            ), 409
+
+        quantity = target_quantity
 
         sku = (listing.external_sku or (listing.warehouse_stock.sku if listing.warehouse_stock else "") or "").strip()
         marketplace = classification["marketplace"]

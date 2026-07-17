@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-# ================= GOVERNED EXECUTION LAYER =================
-from services.governed_import_gate import governed_import_allowed
-from services.governed_execution_gate import governed_execution_allowed
-# =============================================================
-
-
 from datetime import datetime
 from types import SimpleNamespace
 import json
@@ -146,9 +140,6 @@ def governed_dashboard_page():
         a = (action_type or "").lower()
 
         if "ebay" in p:
-            if not _bt38_config_on("webhook_ebay_enabled"):
-                return log_shortcut("blocked", "eBay import disabled via settings")
-
             if "dispatch" in a or "order" in a:
                 return "https://www.ebay.co.uk/sh/ord"
             if "message" in a or "buyer" in a:
@@ -156,14 +147,12 @@ def governed_dashboard_page():
             return "https://www.ebay.co.uk/sh/overview"
 
         if "amazon" in p:
-            if not _bt38_config_on("webhook_amazon_enabled"):
-                return log_shortcut("blocked", "Amazon import disabled via settings")
-
             if "dispatch" in a or "order" in a:
                 return "https://sellercentral.amazon.co.uk/orders-v3"
             if "message" in a or "buyer" in a:
                 return "https://sellercentral.amazon.co.uk/messaging"
             return "https://sellercentral.amazon.co.uk/home"
+
         return "/dashboard"
 
     def _human_title(platform: str, event_type: str) -> tuple[str, str]:
@@ -464,8 +453,8 @@ def governed_settings_page():
         "read_only_mode": "false",
         "dry_run_mode": "false",
         "queue_frozen": "false",
-        "scheduler_enabled": "false",
-        "sync_worker_enabled": "false",
+        "scheduler_enabled": None,
+        "sync_worker_enabled": None,
         "push_worker_enabled": "false",
         "retry_queue_enabled": "false",
         "reconcile_15m_enabled": "false",
@@ -550,125 +539,21 @@ def governed_groups_page():
     return render_template("groups.html")
 
 
-def _collapse_product_linking_group_rows(context):
-    """Product Linking display only.
-
-    Shows grouped products as one source row with child marketplace members underneath.
-    No database changes. No relinking. No push engine changes. Warehouse page is unchanged.
-    """
-    warehouse_items = context.get("warehouse_items")
-    rows = list(getattr(warehouse_items, "items", []) or [])
-
-    collapsed = []
-    seen_group_ids = set()
-
-    def member_score(member, authority_stock_sku):
-        sku = str(member.get("sku") or "").strip()
-        platform = str(member.get("platform") or "").lower()
-        stock_sku = str(authority_stock_sku or "").strip()
-
-        # FBA always stays top because FBA is the stock/quantity authority.
-        if member.get("is_fba"):
-            return 100
-
-        # Stock transferred from FBA but now FBM keeps the FBA-prefixed Amazon source row.
-        if "amazon" in platform and sku.upper().startswith("FBA-"):
-            return 90
-
-        # For normal FBM/eBay groups, the marketplace SKU matching warehouse stock is the source row.
-        if stock_sku and sku == stock_sku:
-            return 80
-
-        return 10
-
-    def select_source_member(row, linked):
-        authority_stock_sku = getattr(row, "authority_stock_sku", None)
-        if not linked:
-            return None
-
-        return sorted(
-            linked,
-            key=lambda item: (
-                member_score(item, authority_stock_sku),
-                int(item.get("listing_id") or 0),
-            ),
-            reverse=True,
-        )[0]
-
-    for row in rows:
-        group_id = getattr(row, "master_product_group_id", None)
-        linked = list(getattr(row, "linked_group_listings", []) or [])
-
-        if group_id and len(linked) > 1:
-            key = int(group_id)
-            if key in seen_group_ids:
-                continue
-
-            seen_group_ids.add(key)
-            source = select_source_member(row, linked)
-
-            if source:
-                row.marketplace_listing_id = source.get("listing_id")
-                row.sku = source.get("sku") or row.sku
-                row.external_sku = source.get("sku") or getattr(row, "external_sku", None)
-                row.title = source.get("title") or getattr(row, "title", None)
-                row.product_name = source.get("title") or getattr(row, "product_name", None)
-                row.store_name = source.get("store_name") or getattr(row, "store_name", None)
-                row.platform = source.get("platform") or getattr(row, "platform", None)
-                row.external_listing_id = source.get("external_listing_id")
-                row.fnsku = source.get("fnsku")
-                row.price = source.get("price") or getattr(row, "price", 0)
-
-                source_platform = str(source.get("platform") or "")
-                source_fulfillment = str(source.get("fulfillment") or "").upper()
-                source_is_amazon = "amazon" in source_platform.lower()
-                source_is_fba = bool(source.get("is_fba"))
-                source_is_fbm = bool(source.get("is_fbm"))
-
-                row.is_fba = source_is_fba
-                row.is_fbm = source_is_fbm
-                row.mcf_group_source = source_is_fba
-                row.is_group_controlled = True
-                row.location = (
-                    f"{source_platform} FBA"
-                    if source_is_amazon and source_is_fba
-                    else f"{source_platform} FBM"
-                    if source_is_amazon
-                    else source_platform
-                )
-
-                if source.get("stock_sellable_quantity") is not None:
-                    row.available_quantity = int(source.get("stock_sellable_quantity") or 0)
-
-            row.group_member_count = len(linked)
-            collapsed.append(row)
-            continue
-
-        collapsed.append(row)
-
-    if warehouse_items is not None:
-        warehouse_items.items = collapsed
-        warehouse_items.visible = len(collapsed)
-        warehouse_items.total = len(collapsed)
-
-    return context
-
-
 @governed_bp.get("/product-linking")
 def governed_product_linking_page():
-    context = _collapse_product_linking_group_rows(_build_warehouse_items_context())
-    context.update({
-        "unlinked_listings": [],
-        "unlinked_by_platform": {},
-        "all_marketplace_listings": [],
-        "all_stores": [],
-        "current_search": context["search_query"],
-        "current_platform": context["marketplace_filter"] or "all",
-        "current_store": "all",
-        "current_show_linked": context["listing_status_filter"] or "all",
-        "async_load": True,
-    })
-    return render_template("product_linking.html", **context)
+    return render_template(
+        "product_linking.html",
+        warehouse_products=[],
+        unlinked_listings=[],
+        unlinked_by_platform={},
+        all_marketplace_listings=[],
+        all_stores=[],
+        current_search="",
+        current_platform="all",
+        current_store="all",
+        current_show_linked="all",
+        async_load=True
+    )
 
 
 @governed_bp.get("/inventory")
@@ -1390,8 +1275,17 @@ def shutdown_proof_status():
     })
 
 
-def _build_warehouse_items_context():
-    """Build the governed warehouse data feed shared by /warehouse and /product-linking."""
+@governed_bp.get("/warehouse")
+@login_required
+def governed_warehouse_page():
+    """Governed Master Stock UI.
+
+    Governed browser-session route:
+    - no marketplace execution
+    - no old routes
+    - eager-loads relationships to avoid N+1 queries
+    - loads the relevant dataset once for browser-session filtering
+    """
     from extensions import db
     from models import MarketplaceListing, WarehouseStock, Store, AmazonFBAInventory
     from sqlalchemy import or_
@@ -1478,67 +1372,22 @@ def _build_warehouse_items_context():
             MarketplaceListing.normalized_amazon_fulfillment_channel.in_(["MFN", "FBM", "MERCHANT"]),
         )
 
+    # Design B:
+    # Load the complete relevant Warehouse dataset once.
+    # Search, filters and tabs operate from the browser-session row cache.
     total_matching_rows = listing_query.count()
-    total_pages = max(1, (total_matching_rows + row_limit - 1) // row_limit)
-    page = min(page, total_pages)
-    offset = (page - 1) * row_limit
+    total_pages = 1
+    page = 1
+    offset = 0
 
     listing_rows = (
         listing_query
         .order_by(MarketplaceListing.updated_at.desc(), MarketplaceListing.id.desc())
-        .offset(offset)
-        .limit(row_limit)
         .all()
     )
 
     rows = []
     linked_stock_ids = set()
-
-    group_ids_for_rows = {
-        int(x.master_product_group_id)
-        for x in listing_rows
-        if getattr(x, "master_product_group_id", None)
-    }
-
-    group_members_by_group_id = {}
-    if group_ids_for_rows:
-        group_member_rows = (
-            db.session.query(MarketplaceListing)
-            .options(joinedload(MarketplaceListing.store))
-            .filter(MarketplaceListing.master_product_group_id.in_(list(group_ids_for_rows)))
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .all()
-        )
-
-        for member in group_member_rows:
-            store = getattr(member, "store", None)
-            gid = int(member.master_product_group_id)
-            member_platform = store.platform if store else ""
-            member_channel = str(
-                getattr(member, "normalized_amazon_fulfillment_channel", None)
-                or getattr(member, "amazon_fulfillment_channel", None)
-                or ""
-            ).upper()
-            member_is_amazon = "amazon" in str(member_platform).lower()
-            member_is_fba = bool(member_is_amazon and member_channel not in ("MFN", "FBM", "MERCHANT"))
-            member_stock = getattr(member, "warehouse_stock", None)
-
-            group_members_by_group_id.setdefault(gid, []).append({
-                "listing_id": member.id,
-                "sku": member.external_sku,
-                "title": member.title,
-                "store_name": store.name if store else "",
-                "platform": member_platform,
-                "warehouse_stock_id": member.warehouse_stock_id,
-                "external_listing_id": member.external_listing_id,
-                "fnsku": member.fnsku,
-                "price": member.price,
-                "fulfillment": member_channel,
-                "is_fba": member_is_fba,
-                "is_fbm": bool(member_is_amazon and member_channel in ("MFN", "FBM", "MERCHANT")),
-                "stock_sku": getattr(member_stock, "sku", None),
-                "stock_sellable_quantity": getattr(member_stock, "sellable_quantity", None),
-            })
 
     for listing in listing_rows:
         stock = listing.warehouse_stock
@@ -1636,11 +1485,6 @@ def _build_warehouse_items_context():
             external_sku=listing.external_sku,
             asin=listing.asin,
             fnsku=listing.fnsku,
-            authority_stock_sku=stock.sku if stock else None,
-            linked_group_listings=group_members_by_group_id.get(
-                int(listing.master_product_group_id),
-                []
-            ) if getattr(listing, "master_product_group_id", None) else [],
         ))
 
     if len(rows) < row_limit:
@@ -1665,7 +1509,6 @@ def _build_warehouse_items_context():
         unlinked_stock = (
             stock_query
             .order_by(WarehouseStock.updated_at.desc(), WarehouseStock.id.desc())
-            .limit(row_limit)
             .all()
         )
 
@@ -1698,15 +1541,8 @@ def _build_warehouse_items_context():
                 external_sku=None,
                 asin=None,
                 fnsku=None,
-                authority_stock_sku=stock.sku,
-                linked_group_listings=group_members_by_group_id.get(
-                    int(stock.master_product_group_id),
-                    []
-                ) if getattr(stock, "master_product_group_id", None) else [],
             ))
 
-            if len(rows) >= row_limit:
-                break
 
     if view == "available":
         rows = [row for row in rows if int(getattr(row, "available_quantity", 0) or 0) > 0]
@@ -1767,41 +1603,21 @@ def _build_warehouse_items_context():
         next_page=min(total_pages, page + 1),
     )
 
-    return {
-        "warehouse_items": warehouse_items,
-        "stats": stats,
-        "search_query": q,
-        "active_view": view,
-        "per_page": row_limit,
-        "page": page,
-        "pagination": pagination,
-        "marketplace_filter": marketplace_filter,
-        "status_filter": status_filter,
-        "group_filter": group_filter,
-        "listing_status_filter": listing_status_filter,
-    }
-
-
-@governed_bp.get("/warehouse")
-@login_required
-def governed_warehouse_page():
-    """Governed Master Stock UI.
-
-    Speed-safe route:
-    - no marketplace execution
-    - no old routes
-    - eager-loads relationships to avoid N+1 queries
-    - limits initial render size
-    """
-    context = _build_warehouse_items_context()
-
-    html = render_template("warehouse.html", **context)
-    return _patch_warehouse_phase1_ui(
-        html,
-        context["stats"],
-        context["search_query"],
-        context["active_view"],
+    html = render_template(
+        "warehouse.html",
+        warehouse_items=warehouse_items,
+        stats=stats,
+        search_query=q,
+        active_view=view,
+        per_page=row_limit,
+        page=page,
+        pagination=pagination,
+        marketplace_filter=marketplace_filter,
+        status_filter=status_filter,
+        group_filter=group_filter,
+        listing_status_filter=listing_status_filter,
     )
+    return _patch_warehouse_phase1_ui(html, stats, q, view)
 
 
 @governed_bp.post("/governed/actions/sku/dry-run")
@@ -2221,7 +2037,7 @@ def governed_product_linking_data_compat():
     except Exception:
         page = 1
 
-    per_page = max(1, min(per_page, 100))
+    per_page = max(1, min(per_page, 5000))
     page = max(1, page)
     offset = (page - 1) * per_page
 
@@ -3252,9 +3068,6 @@ def governed_store_import_shortcut(store_id):
     platform = str(store.platform or "").strip().lower()
 
     if "amazon" in platform:
-        if not _bt38_config_on("webhook_amazon_enabled"):
-            return log_shortcut("blocked", "Amazon import disabled via settings")
-
         from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
 
         result = run_governed_amazon_inventory_import(store_id=store.id)
@@ -3283,9 +3096,6 @@ def governed_store_import_shortcut(store_id):
         ), 200
 
     if "ebay" in platform:
-        if not _bt38_config_on("webhook_ebay_enabled"):
-            return log_shortcut("blocked", "eBay import disabled via settings")
-
         from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
 
         result = run_governed_ebay_inventory_import(store_id=store.id)
@@ -3344,6 +3154,166 @@ def governed_store_import_shortcut(store_id):
 
 
 @governed_bp.post("/governed/amazon/inventory/import")
+def governed_amazon_inventory_import():
+    """
+    Governed Amazon inventory import control point.
+
+    Runtime rule:
+    - This endpoint is a governed runtime import lane.
+    - It must not require an interactive admin/operator role.
+    - Fuse-box/settings still control whether the store/import is enabled.
+    - AFN/FBA writes to AmazonFBAInventory only.
+    """
+    from flask import jsonify, request
+    try:
+        from models import Store
+
+        body = request.get_json(silent=True) or {}
+        store_id = body.get("store_id") or request.args.get("store_id")
+        store = None
+
+        if store_id:
+            store = Store.query.get(int(store_id))
+        else:
+            store = (
+                Store.query
+                .filter(Store.platform.ilike("%amazon%"), Store.is_active == True)  # noqa: E712
+                .order_by(Store.id)
+                .first()
+            )
+
+        if not store:
+            return jsonify(
+                ok=False,
+                success=False,
+                governed=True,
+                error="amazon_store_not_found",
+                message="No active Amazon store found for governed import.",
+            ), 404
+
+        if not bool(getattr(store, "fba_import_enabled", False)):
+            return jsonify(
+                ok=False,
+                success=False,
+                governed=True,
+                execution_blocked=True,
+                reason="FBA import is disabled for this Amazon store.",
+                store_id=getattr(store, "id", None),
+                fuse_box_checked=True,
+            ), 200
+
+        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
+        result = run_governed_amazon_inventory_import(store_id=getattr(store, "id", None))
+
+        if isinstance(result, dict):
+            result.update({
+                "ok": bool(result.get("success", True)),
+                "governed": True,
+                "runtime_import": True,
+                "manual_role_required": False,
+                "store_id": getattr(store, "id", None),
+                "fuse_box_checked": True,
+            })
+            return jsonify(_governed_json_safe(result)), 200
+
+        return jsonify(
+            ok=True,
+            success=True,
+            governed=True,
+            runtime_import=True,
+            manual_role_required=False,
+            result=result,
+        ), 200
+
+    except Exception as exc:
+        return jsonify(
+            ok=False,
+            success=False,
+            governed=True,
+            error="amazon_import_failed",
+            message=str(exc),
+            instruction="Amazon import failed before completing. Check Amazon SP-API client wiring/credentials.",
+        ), 500
+
+
+@governed_bp.post("/governed/ebay/inventory/import")
+def governed_ebay_inventory_import():
+    """Governed eBay import control point.
+
+    Phase status:
+    - Fuse-box controlled.
+    - Store-aware.
+    - No legacy importer, worker, queue, or scheduler is called here.
+    - Real eBay import must be added later behind this route only.
+    """
+    from flask import jsonify, request
+    from models import Store
+    from services.runtime_action_guard import is_runtime_action_allowed
+
+    body = request.get_json(silent=True) or {}
+    store_id = body.get("store_id") or request.args.get("store_id")
+
+    store = None
+    if store_id:
+        store = Store.query.get(int(store_id))
+    else:
+        store = (
+            Store.query
+            .filter(Store.platform.ilike("%ebay%"))
+            .order_by(Store.is_active.desc(), Store.id.asc())
+            .first()
+        )
+
+    guard = is_runtime_action_allowed(
+        store,
+        action_type="import",
+        manual=True,
+        context={"source": "governed_ebay_inventory_import"},
+    )
+
+    if not guard.get("allowed"):
+        return jsonify(
+            ok=False,
+            success=False,
+            governed=True,
+            marketplace="ebay",
+            import_started=False,
+            execution_started=False,
+            reason=guard.get("reason"),
+            guard=guard,
+        ), 200
+
+    from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
+
+    try:
+        result = run_governed_ebay_inventory_import(
+            store_id=getattr(store, "id", None)
+        )
+
+        if isinstance(result, dict):
+            return jsonify(_governed_json_safe(result)), 200
+
+        return jsonify(
+            ok=True,
+            success=True,
+            governed=True,
+            marketplace="ebay",
+            result=result,
+        ), 200
+
+    except Exception as exc:
+        return jsonify(
+            ok=False,
+            success=False,
+            governed=True,
+            marketplace="ebay",
+            error="ebay_import_failed",
+            message=str(exc),
+            instruction="eBay governed variation import failed.",
+        ), 500
+
+
+@governed_bp.route("/governed/webhooks/ebay", methods=["GET", "POST"])
 def governed_webhook_ebay_ingest():
     """Compatibility route: eBay webhook uses the single governed webhook intake."""
     return governed_marketplace_webhook_intake("ebay")
@@ -3524,8 +3494,8 @@ def governed_disabled_action(action: str = ""):
         group = ensure_group_for_stock(stock)
         db.session.commit()
 
-        # PROPAGATION MODULE DISABLED
-        raise Exception("LEGACY_PROPAGATION_DISABLED")
+        from governed_group_propagation_routes import governed_group_propagate_quantity
+        return governed_group_propagate_quantity(group.id)
 
     if action == "link-listing-to-warehouse" and request.method == "POST":
         listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
@@ -3599,6 +3569,77 @@ def governed_disabled_action(action: str = ""):
         for group_listing in group_listings_for_authority:
             if getattr(group_listing, "warehouse_stock_id", None):
                 target_stock_ids.add(int(group_listing.warehouse_stock_id))
+
+        # A listing may historically point at the wrong warehouse row while its
+        # canonical Amazon FBA inventory remains attached to a separate row.
+        # Collect those related warehouse rows now so one physical product does
+        # not render as a grouped row plus a leftover unlinked row.
+        grouped_skus = {
+            str(getattr(item, "external_sku", "") or "").strip()
+            for item in group_listings_for_authority
+            if str(getattr(item, "external_sku", "") or "").strip()
+        }
+        grouped_fnskus = {
+            str(getattr(item, "fnsku", "") or "").strip()
+            for item in group_listings_for_authority
+            if str(getattr(item, "fnsku", "") or "").strip()
+        }
+
+        from models import AmazonFBAInventory
+
+        amazon_store_ids = {
+            int(item.store_id)
+            for item in group_listings_for_authority
+            if getattr(item, "store_id", None)
+            and "amazon" in str(
+                item.store.platform
+                if item.store
+                else ""
+            ).strip().lower()
+        }
+
+        fba_identity_filters = []
+
+        if grouped_skus:
+            fba_identity_filters.append(
+                AmazonFBAInventory.seller_sku.in_(
+                    list(grouped_skus)
+                )
+            )
+
+        if grouped_fnskus:
+            fba_identity_filters.append(
+                AmazonFBAInventory.fnsku.in_(
+                    list(grouped_fnskus)
+                )
+            )
+
+        if fba_identity_filters and amazon_store_ids:
+            from sqlalchemy import or_
+
+            matching_fba_stock_ids = (
+                db.session.query(
+                    AmazonFBAInventory.warehouse_stock_id
+                )
+                .filter(
+                    AmazonFBAInventory.store_id.in_(
+                        list(amazon_store_ids)
+                    ),
+                    AmazonFBAInventory.is_active == True,  # noqa: E712
+                    AmazonFBAInventory.is_archived == False,  # noqa: E712
+                    AmazonFBAInventory.warehouse_stock_id.isnot(
+                        None
+                    ),
+                    or_(*fba_identity_filters),
+                )
+                .distinct()
+                .all()
+            )
+
+            target_stock_ids.update(
+                int(row[0])
+                for row in matching_fba_stock_ids
+            )
 
         attached_listings = (
             db.session.query(MarketplaceListing)
@@ -4149,6 +4190,22 @@ def governed_warehouse_stock_transfer_convert_to_fbm():
             listing = db.session.get(MarketplaceListing, int(listing_id))
         except Exception:
             listing = None
+
+    # Frontend may send only warehouse_stock_id from the warehouse row.
+    # Fallback to the active listing linked to this stock so Convert to FBM
+    # actually unlocks the marketplace listing instead of only recording a transfer.
+    if listing is None:
+        listing = (
+            MarketplaceListing.query
+            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+            .filter(MarketplaceListing.is_active == True)  # noqa: E712
+            .order_by(
+                MarketplaceListing.amazon_fulfillment_channel.desc(),
+                MarketplaceListing.updated_at.desc(),
+                MarketplaceListing.id.desc(),
+            )
+            .first()
+        )
 
     if listing is not None:
         if hasattr(listing, "amazon_fulfillment_channel"):
@@ -4990,3 +5047,33 @@ def governed_runtime_understanding_audit():
             ),
         },
     }), 200
+
+# ==============================
+# BT38 IMPORT SINGLE SOURCE OF TRUTH
+# Warehouse-aligned import handler
+# ==============================
+def governed_import_handler():
+    try:
+        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
+        from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
+        from services.governed_marketplace_order_import import run_governed_marketplace_order_import
+
+        amazon_result = run_governed_amazon_inventory_import()
+        ebay_result = run_governed_ebay_inventory_import()
+        order_result = run_governed_marketplace_order_import()
+
+        return {
+            "status": "success",
+            "warehouse_source": True,
+            "amazon": amazon_result,
+            "ebay": ebay_result,
+            "orders": order_result
+        }, 200
+
+    except Exception as e:
+        return {
+            "status": "failed",
+            "warehouse_source": True,
+            "error": str(e)
+        }, 500
+

@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}Orders / MCF{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h1 class="h3 mb-1"><i data-feather="truck" class="me-2"></i>Orders / MCF</h1>
+    <p class="text-muted mb-0">Review eBay orders linked to Amazon FBA groups and send them through the governed MCF path.</p>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label" for="mcf-status-filter">Status</label>
+        <select id="mcf-status-filter" class="form-select">
+          <option value="">All orders</option>
+          <option value="ready">Ready for MCF</option>
+          <option value="submitted">Submitted / processing</option>
+          <option value="failed">Failed</option>
+          <option value="not_eligible">Not eligible</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="mcf-search">Search</label>
+        <input id="mcf-search" class="form-control" type="search" placeholder="Order, SKU, store or group">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="mcf-page-size">Rows</label>
+        <select id="mcf-page-size" class="form-select">
+          <option value="15" selected>15</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<form id="mcf-remove-form"
+      method="post"
+      action="{{ url_for('governed_mcf.remove_selected_mcf_orders') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <strong>Marketplace orders</strong>
+    <div class="d-flex align-items-center gap-2">
+      <span id="mcf-visible-count"
+            class="badge bg-primary">{{ orders|length }}</span>
+      <button id="mcf-remove-selected"
+              class="btn btn-sm btn-outline-danger"
+              type="submit"
+              disabled
+              onclick="return confirm('Remove the selected orders from the MCF queue? Marketplace orders and Amazon MCF records will not be deleted.')">
+        Delete selected
+      </button>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th style="width: 42px;">
+              <input id="mcf-select-all"
+                     class="form-check-input"
+                     type="checkbox"
+                     aria-label="Select visible orders">
+            </th>
+            <th>Order</th>
+            <th>Store</th>
+            <th>Items</th>
+            <th>Group</th>
+            <th>MCF readiness</th>
+            <th>MCF status</th>
+            <th class="text-end">Action</th>
+          </tr>
+        </thead>
+        <tbody id="mcf-orders-body">
+          {% for row in orders %}
+          <tr class="mcf-order-row"
+              data-state="{{ row.state }}"
+              data-search="{{ ([row.anchor.marketplace_order_id, row.anchor.store.name if row.anchor.store else '', row.group_ids|join(' ')] + (row.lines|map(attribute='sku')|list))|join(' ')|lower }}">
+            <td>
+              <input class="form-check-input mcf-order-select"
+                     type="checkbox"
+                     name="order_ids"
+                     value="{{ row.anchor.id }}"
+                     aria-label="Select order {{ row.anchor.marketplace_order_id }}">
+            </td>
+            <td>
+              <strong>{{ row.anchor.marketplace_order_id }}</strong>
+              <div class="small text-muted">{{ row.anchor.created_at.strftime('%d %b %Y %H:%M') if row.anchor.created_at else '' }}</div>
+            </td>
+            <td>{{ row.anchor.store.name if row.anchor.store else 'Unknown' }}</td>
+            <td>
+              {% for line in row.lines %}
+                <div><code>{{ line.sku }}</code> × {{ line.quantity }}</div>
+              {% endfor %}
+            </td>
+            <td>
+              {% if row.group_ids %}
+                {% for group_id in row.group_ids %}<span class="badge bg-secondary me-1">{{ group_id }}</span>{% endfor %}
+              {% else %}
+                <span class="text-muted">Not grouped</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.eligible %}
+                <span class="badge bg-success">Ready for MCF</span>
+              {% else %}
+                <span class="badge bg-secondary">Not eligible</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.mcf %}
+                <span class="badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
+                  {{ row.mcf.amazon_status or row.mcf.status }}
+                </span>
+                {% if row.mcf.tracking_number %}
+                  <div class="small mt-1">{{ row.mcf.carrier or 'Carrier' }} · {{ row.mcf.tracking_number }}</div>
+                {% endif %}
+              {% else %}
+                <span class="text-muted">Not submitted</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              {% if row.mcf and row.mcf.status != 'failed' %}
+                <button class="btn btn-sm btn-outline-secondary me-2"
+                        type="submit"
+                        name="return_to"
+                        value="list"
+                        formmethod="post"
+                        formaction="{{ url_for('governed_mcf.refresh_mcf_order', order_id=row.anchor.id) }}"
+                        title="Refresh Amazon MCF status and update source marketplace tracking">
+                  <i data-feather="refresh-cw" class="me-1"></i>Refresh
+                </button>
+              {% endif %}
+
+              <a class="btn btn-sm btn-outline-primary"
+                 href="{{ url_for('governed_mcf.order_mcf_detail_page', order_id=row.anchor.id) }}">
+                Review
+              </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr id="mcf-empty-row"><td colspan="8" class="text-center text-muted py-5">No marketplace orders are available.</td></tr>
+          {% endfor %}
+          <tr id="mcf-no-match-row" class="d-none"><td colspan="8" class="text-center text-muted py-5">No marketplace orders match this filter.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card-footer d-flex justify-content-between align-items-center">
+    <button id="mcf-prev" class="btn btn-sm btn-outline-secondary" type="button">Previous</button>
+    <span id="mcf-page-label" class="small text-muted">Page 1</span>
+    <button id="mcf-next" class="btn btn-sm btn-outline-secondary" type="button">Next</button>
+  </div>
+</div>
+</form>
+
+<script>
+(() => {
+  const rows = Array.from(document.querySelectorAll('.mcf-order-row'));
+  const status = document.getElementById('mcf-status-filter');
+  const search = document.getElementById('mcf-search');
+  const size = document.getElementById('mcf-page-size');
+  const count = document.getElementById('mcf-visible-count');
+  const prev = document.getElementById('mcf-prev');
+  const next = document.getElementById('mcf-next');
+  const label = document.getElementById('mcf-page-label');
+  const noMatch = document.getElementById('mcf-no-match-row');
+  const selectAll = document.getElementById('mcf-select-all');
+  const removeButton = document.getElementById('mcf-remove-selected');
+  const selections = Array.from(
+    document.querySelectorAll('.mcf-order-select')
+  );
+
+  const pageName = 'mcfOrders';
+  const defaults = {
+    status: '',
+    search: '',
+    pageSize: '15',
+    page: 1
+  };
+
+  const pageState = (
+    window.BT38
+    && typeof window.BT38.getPageSession === 'function'
+  )
+    ? window.BT38.getPageSession(pageName, defaults)
+    : defaults;
+
+  status.value = pageState.status || '';
+  search.value = pageState.search || '';
+  size.value = String(pageState.pageSize || '15');
+
+  let page = Math.max(
+    1,
+    Number.parseInt(pageState.page, 10) || 1
+  );
+
+  function savePageState() {
+    if (
+      window.BT38
+      && typeof window.BT38.setPageSession === 'function'
+    ) {
+      window.BT38.setPageSession(pageName, {
+        status: status.value,
+        search: search.value,
+        pageSize: size.value,
+        page
+      });
+    }
+  }
+
+  function updateSelectionState() {
+    const selected = selections.filter(
+      (checkbox) => checkbox.checked
+    );
+
+    removeButton.disabled = selected.length === 0;
+
+    const visibleSelections = selections.filter(
+      (checkbox) => !checkbox.closest('tr').classList.contains('d-none')
+    );
+
+    selectAll.checked = (
+      visibleSelections.length > 0
+      && visibleSelections.every(
+        (checkbox) => checkbox.checked
+      )
+    );
+
+    selectAll.indeterminate = (
+      visibleSelections.some(
+        (checkbox) => checkbox.checked
+      )
+      && !selectAll.checked
+    );
+  }
+
+  function render() {
+    const wantedStatus = status.value;
+    const wantedSearch = search.value.trim().toLowerCase();
+    const pageSize = Number.parseInt(size.value, 10) || 15;
+    const filtered = rows.filter((row) => {
+      const stateMatches = !wantedStatus || row.dataset.state === wantedStatus;
+      const searchMatches = !wantedSearch || (row.dataset.search || '').includes(wantedSearch);
+      return stateMatches && searchMatches;
+    });
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    page = Math.min(page, pages);
+    const start = (page - 1) * pageSize;
+    const visible = new Set(filtered.slice(start, start + pageSize));
+    rows.forEach((row) => row.classList.toggle('d-none', !visible.has(row)));
+    noMatch.classList.toggle('d-none', filtered.length !== 0);
+    count.textContent = String(filtered.length);
+    label.textContent = `Page ${page} of ${pages}`;
+    prev.disabled = page <= 1;
+    next.disabled = page >= pages;
+    updateSelectionState();
+    savePageState();
+  }
+
+  selectAll.addEventListener('change', () => {
+    selections.forEach((checkbox) => {
+      const row = checkbox.closest('tr');
+      if (!row.classList.contains('d-none')) {
+        checkbox.checked = selectAll.checked;
+      }
+    });
+    updateSelectionState();
+  });
+
+  selections.forEach((checkbox) => {
+    checkbox.addEventListener(
+      'change',
+      updateSelectionState,
+    );
+  });
+
+  [status, search, size].forEach((control) => control.addEventListener('input', () => {
+    page = 1;
+    render();
+  }));
+  prev.addEventListener('click', () => { if (page > 1) { page -= 1; render(); } });
+  next.addEventListener('click', () => { page += 1; render(); });
+  render();
+})();
+</script>
+{% endblock %}

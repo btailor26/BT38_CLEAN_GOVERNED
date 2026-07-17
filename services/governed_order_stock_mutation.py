@@ -99,8 +99,17 @@ def _line_type(line: Any) -> str:
 
 def is_sale(line: Any) -> bool:
     value = _line_type(line)
+
+    # Imported FBM marketplace orders arrive as "pending".
+    # Once linked to warehouse stock they should reduce stock.
+    if value == "pending":
+        fulfillment = _text(getattr(line, "fulfillment_type", None)).upper()
+        if fulfillment == "FBM":
+            return True
+
     if not value:
         return True
+
     return any(token in value for token in SALE_TYPES)
 
 
@@ -204,6 +213,16 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
     stock.available_quantity = after_available
     stock.updated_at = datetime.utcnow()
 
+    # Mark marketplace order line as processed after the stock ledger mutation.
+    if hasattr(line, "status"):
+        line.status = "processed"
+    if hasattr(line, "processed_at"):
+        line.processed_at = datetime.utcnow()
+    if hasattr(line, "error_message"):
+        line.error_message = None
+    if hasattr(line, "updated_at"):
+        line.updated_at = datetime.utcnow()
+
     # Mark linked listings dirty for governed reconcile/push, but do not push here.
     linked = (
         MarketplaceListing.query
@@ -291,6 +310,9 @@ def mutate_recent_marketplace_order_lines(limit: int = 100, source: str = "gover
 
     candidates = (
         MarketplaceOrder.query
+        .filter(MarketplaceOrder.status == "pending")
+        .filter(MarketplaceOrder.fulfillment_type == "FBM")
+        .filter(MarketplaceOrder.warehouse_stock_id.isnot(None))
         .order_by(MarketplaceOrder.id.desc())
         .limit(limit)
         .all()

@@ -270,20 +270,22 @@ def _run_light_reconcile_cycle():
         }
 
     order_stock_bridge = None
-    # Safety lock:
-    # Do not automatically mutate warehouse stock from recent marketplace orders
-    # inside the 15-minute runtime loop.
-    #
-    # Reason:
-    # The bridge reads the latest MarketplaceOrder rows and can reduce
-    # WarehouseStock.available_quantity. That is too risky for an automatic
-    # background cycle until strict new/unprocessed/order-date rules are proven.
-    order_stock_bridge = {
-        "success": True,
-        "skipped": True,
-        "reason": "automatic_order_stock_mutation_enabled",
-        "source": f"{source}_order_stock_bridge",
-    }
+    try:
+        from services.governed_order_stock_mutation import (
+            mutate_recent_marketplace_order_lines,
+        )
+
+        order_stock_bridge = mutate_recent_marketplace_order_lines(
+            limit=100,
+            source=f"{source}_order_stock_bridge",
+        )
+    except Exception as exc:
+        _safe_error("15-minute order stock bridge failed", exc)
+        order_stock_bridge = {
+            "success": False,
+            "error": str(exc),
+            "source": f"{source}_order_stock_bridge",
+        }
 
     _last_light_reconcile = datetime.utcnow()
     _runtime_status_stamp("last_light_reconcile")
@@ -310,6 +312,46 @@ def _run_full_sync_cycle():
     _safe_log("8-hour full cycle import refresh complete")
 
 
+def _has_pending_notification_work() -> bool:
+    """
+    15-minute reconcile should not hammer marketplace/order import when there is
+    no webhook/notification work to verify.
+    """
+    try:
+        from datetime import timedelta
+        from models import SystemLog
+
+        cutoff = datetime.utcnow() - timedelta(minutes=20)
+
+        notification_count = (
+            SystemLog.query
+            .filter(SystemLog.created_at >= cutoff)
+            .filter(SystemLog.log_type.in_([
+                "marketplace_webhook",
+                "governed_webhook_execution",
+            ]))
+            .count()
+        )
+
+        if notification_count > 0:
+            return True
+
+        from models import MarketplaceOrder
+
+        pending_fbm_count = (
+            MarketplaceOrder.query
+            .filter(MarketplaceOrder.status == "pending")
+            .filter(MarketplaceOrder.fulfillment_type == "FBM")
+            .filter(MarketplaceOrder.warehouse_stock_id.isnot(None))
+            .count()
+        )
+
+        return pending_fbm_count > 0
+    except Exception as exc:
+        _safe_error("notification work check failed", exc)
+        return False
+
+
 def _engine_loop(app):
     global _last_full_sync, _last_light_reconcile
 
@@ -331,7 +373,12 @@ def _engine_loop(app):
 
                 if _last_light_reconcile is None or (now - _last_light_reconcile).total_seconds() >= LIGHT_RECONCILE_SECONDS:
                     if _config_on("scheduler_enabled", True) and _config_on("reconcile_15m_enabled", True):
-                        _run_light_reconcile_cycle()
+                        if _has_pending_notification_work():
+                            _run_light_reconcile_cycle()
+                        else:
+                            _last_light_reconcile = now
+                            _runtime_status_stamp("last_light_reconcile")
+                            _safe_log("15-minute reconcile slept: no pending webhook/notification work")
                     else:
                         _safe_log("15-minute reconcile skipped by fuse box")
                         _last_light_reconcile = now
@@ -428,16 +475,61 @@ def start_governed_runtime_engine(app):
         return False
 
 
+def _persisted_runtime_truth():
+    """
+    Multi-worker safe runtime truth.
+
+    Gunicorn workers have separate memory, so _started only tells the truth
+    for the worker that owns the runtime thread. Persisted heartbeat is the
+    shared production truth.
+    """
+    try:
+        from datetime import datetime
+        from models import SystemConfig
+
+        def get_value(key):
+            row = SystemConfig.query.filter_by(key=key).first()
+            return str(row.value).strip() if row and row.value is not None else None
+
+        started = _truthy(get_value("runtime_engine_started"), False)
+        heartbeat_raw = get_value("runtime_heartbeat")
+        started_at = get_value("runtime_engine_started_at")
+
+        heartbeat_fresh = False
+        if heartbeat_raw:
+            hb = heartbeat_raw.replace("Z", "")
+            heartbeat_at = datetime.fromisoformat(hb)
+            heartbeat_fresh = (datetime.utcnow() - heartbeat_at).total_seconds() <= 120
+
+        return {
+            "persisted_engine_started": started,
+            "persisted_heartbeat": heartbeat_raw,
+            "persisted_started_at": started_at,
+            "persisted_runtime_live": bool(started and heartbeat_fresh),
+        }
+    except Exception as exc:
+        _safe_error("persisted runtime truth read failed", exc)
+        return {
+            "persisted_engine_started": False,
+            "persisted_heartbeat": None,
+            "persisted_started_at": None,
+            "persisted_runtime_live": False,
+        }
+
+
 def get_governed_runtime_status():
     now = datetime.utcnow()
+    persisted = _persisted_runtime_truth()
+    engine_live = bool(_started or persisted.get("persisted_runtime_live"))
+
     return {
-        "engine_started": bool(_started),
-        "runtime_mode": "AUTOMATED GOVERNED" if _started else "MANUAL GOVERNED",
-        "execution_mode": "AUTOMATED + MANUAL GOVERNED" if _started else "MANUAL ONLY",
-        "workers_running": bool(_started),
-        "schedulers_running": bool(_started),
-        "queue_consumers_running": bool(_started),
-        "started_at": _started_at.isoformat() if _started_at else None,
+        "engine_started": engine_live,
+        "runtime_mode": "AUTOMATED GOVERNED" if engine_live else "MANUAL GOVERNED",
+        "execution_mode": "AUTOMATED + MANUAL GOVERNED" if engine_live else "MANUAL ONLY",
+        "workers_running": engine_live,
+        "schedulers_running": engine_live,
+        "queue_consumers_running": engine_live,
+        "started_at": _started_at.isoformat() if _started_at else persisted.get("persisted_started_at"),
         "last_full_sync": _last_full_sync.isoformat() if _last_full_sync else None,
         "last_light_reconcile": _last_light_reconcile.isoformat() if _last_light_reconcile else None,
         "last_marketplace_import": _last_marketplace_import.isoformat() if _last_marketplace_import else None,
@@ -446,4 +538,7 @@ def get_governed_runtime_status():
         "next_full_sync_seconds": max(0, FULL_SYNC_SECONDS - int((now - _last_full_sync).total_seconds())) if _last_full_sync else 0,
         "next_light_reconcile_seconds": max(0, LIGHT_RECONCILE_SECONDS - int((now - _last_light_reconcile).total_seconds())) if _last_light_reconcile else 0,
         "last_error": _last_error,
+        "runtime_heartbeat": persisted.get("persisted_heartbeat"),
+        "runtime_status_source": "memory_or_persisted_heartbeat",
     }
+
