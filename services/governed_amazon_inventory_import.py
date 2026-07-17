@@ -8,10 +8,10 @@ Rules:
 - FBA/AFN is read-only.
 - Do not create MarketplaceListing rows.
 - Do not create WarehouseStock rows.
-- Do not mutate warehouse stock.
-- Do not mutate groups.
+- Do not mutate warehouse stock quantities.
 - Do not delete or archive existing listings.
-- Existing listing/warehouse/transfer authority remains separate.
+- Preserve an already-governed warehouse/group relationship when Amazon catalogue
+  identity changes or an active listing replaces an older inactive row.
 """
 
 from datetime import datetime
@@ -38,36 +38,111 @@ def _normalise_channel(value):
     return "UNKNOWN"
 
 
-def _find_existing_listing(store, sku, asin=None, fnsku=None):
+def _identity_query(store, sku, asin=None, fnsku=None):
+    """Return Amazon listing rows matching a stable catalogue identity."""
     sku = _clean(sku)
     asin = _clean(asin)
     fnsku = _clean(fnsku)
 
-    query = (
-        db.session.query(MarketplaceListing)
-        .filter(MarketplaceListing.store_id == store.id)
-        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+    base = db.session.query(MarketplaceListing).filter(
+        MarketplaceListing.store_id == store.id
     )
 
     if sku:
-        listing = query.filter(MarketplaceListing.external_sku == sku).first()
-        if listing:
-            return listing
+        rows = base.filter(MarketplaceListing.external_sku == sku).all()
+        if rows:
+            return rows
 
     if fnsku:
-        listing = query.filter(
+        rows = base.filter(
             (MarketplaceListing.external_listing_id == fnsku)
             | (MarketplaceListing.fnsku == fnsku)
-        ).first()
-        if listing:
-            return listing
+        ).all()
+        if rows:
+            return rows
 
     if asin:
-        listing = query.filter(MarketplaceListing.asin == asin).first()
-        if listing:
-            return listing
+        return base.filter(MarketplaceListing.asin == asin).all()
 
-    return None
+    return []
+
+
+def _find_existing_listing(store, sku, asin=None, fnsku=None):
+    rows = _identity_query(store, sku=sku, asin=asin, fnsku=fnsku)
+    active = [row for row in rows if bool(getattr(row, "is_active", False))]
+
+    if not active:
+        return None
+
+    return sorted(
+        active,
+        key=lambda row: (
+            0 if getattr(row, "warehouse_stock_id", None) else 1,
+            0 if getattr(row, "master_product_group_id", None) else 1,
+            -(int(getattr(row, "id", 0) or 0)),
+        ),
+    )[0]
+
+
+def _find_relationship_source(store, sku, asin=None, fnsku=None, exclude_id=None):
+    """Find a saved relationship without reactivating an old catalogue row."""
+    candidates = _identity_query(store, sku=sku, asin=asin, fnsku=fnsku)
+    linked = [
+        row
+        for row in candidates
+        if int(getattr(row, "id", 0) or 0) != int(exclude_id or 0)
+        and (
+            getattr(row, "warehouse_stock_id", None)
+            or getattr(row, "master_product_group_id", None)
+        )
+    ]
+
+    if not linked:
+        return None
+
+    return sorted(
+        linked,
+        key=lambda row: (
+            0 if bool(getattr(row, "is_active", False)) else 1,
+            0 if getattr(row, "warehouse_stock_id", None) else 1,
+            0 if getattr(row, "master_product_group_id", None) else 1,
+            -(int(getattr(row, "id", 0) or 0)),
+        ),
+    )[0]
+
+
+def _preserve_relationship(existing_listing, source_listing, inventory_row):
+    """Carry forward relationship identity only; never alter marketplace state."""
+    preserved = False
+
+    if existing_listing is not None and source_listing is not None:
+        if (
+            not getattr(existing_listing, "warehouse_stock_id", None)
+            and getattr(source_listing, "warehouse_stock_id", None)
+        ):
+            existing_listing.warehouse_stock_id = source_listing.warehouse_stock_id
+            preserved = True
+
+        if (
+            not getattr(existing_listing, "master_product_group_id", None)
+            and getattr(source_listing, "master_product_group_id", None)
+        ):
+            existing_listing.master_product_group_id = source_listing.master_product_group_id
+            preserved = True
+
+    relationship_listing = existing_listing or source_listing
+
+    if (
+        inventory_row is not None
+        and relationship_listing is not None
+        and hasattr(inventory_row, "warehouse_stock_id")
+        and not getattr(inventory_row, "warehouse_stock_id", None)
+        and getattr(relationship_listing, "warehouse_stock_id", None)
+    ):
+        inventory_row.warehouse_stock_id = relationship_listing.warehouse_stock_id
+        preserved = True
+
+    return preserved
 
 
 def run_governed_amazon_inventory_import(store_id=None):
@@ -88,6 +163,7 @@ def run_governed_amazon_inventory_import(store_id=None):
 
         imported = 0
         linked_existing_listings = 0
+        preserved_relationships = 0
         unlinked_fba_truth_rows = 0
         afn_rows = 0
         mfn_rows_seen = 0
@@ -118,7 +194,6 @@ def run_governed_amazon_inventory_import(store_id=None):
 
             if hasattr(inv, "store_id"):
                 inv.store_id = store.id
-
             inv.available_quantity = qty
             inv.reserved_quantity = reserved
             inv.inbound_quantity = inbound
@@ -143,10 +218,21 @@ def run_governed_amazon_inventory_import(store_id=None):
                 fnsku=fnsku,
             )
 
+            relationship_source = _find_relationship_source(
+                store,
+                sku=sku,
+                asin=asin,
+                fnsku=fnsku,
+                exclude_id=getattr(existing_listing, "id", None),
+            )
+
+            if _preserve_relationship(existing_listing, relationship_source, inv):
+                preserved_relationships += 1
+
             if existing_listing:
                 linked_existing_listings += 1
 
-                # Visibility/cache only. No warehouse mutation.
+                # Visibility/cache only. No warehouse quantity mutation.
                 if hasattr(existing_listing, "asin") and asin:
                     existing_listing.asin = asin
                 if hasattr(existing_listing, "fnsku") and fnsku:
@@ -158,7 +244,11 @@ def run_governed_amazon_inventory_import(store_id=None):
                 if hasattr(existing_listing, "updated_at"):
                     existing_listing.updated_at = datetime.utcnow()
             else:
-                unlinked_fba_truth_rows += 1
+                if not (
+                    relationship_source
+                    and getattr(relationship_source, "warehouse_stock_id", None)
+                ):
+                    unlinked_fba_truth_rows += 1
 
             imported += 1
 
@@ -172,6 +262,7 @@ def run_governed_amazon_inventory_import(store_id=None):
                 f"imported={imported} "
                 f"fba_truth_rows={imported} "
                 f"linked_existing_listings={linked_existing_listings} "
+                f"preserved_relationships={preserved_relationships} "
                 f"unlinked_fba_truth_rows={unlinked_fba_truth_rows} "
                 f"afn_rows={afn_rows} "
                 f"mfn_rows_seen={mfn_rows_seen} "
@@ -186,6 +277,7 @@ def run_governed_amazon_inventory_import(store_id=None):
             "imported": imported,
             "fba_truth_rows": imported,
             "linked_existing_listings": linked_existing_listings,
+            "preserved_relationships": preserved_relationships,
             "unlinked_fba_truth_rows": unlinked_fba_truth_rows,
             "afn_rows": afn_rows,
             "mfn_rows_seen": mfn_rows_seen,

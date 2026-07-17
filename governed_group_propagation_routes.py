@@ -186,15 +186,23 @@ def governed_group_propagate_quantity(group_id: int):
         )
 
         for listing in attached_listings:
-            if (
-                getattr(
-                    listing,
-                    "master_product_group_id",
-                    None,
-                )
-                != group_id
-            ):
-                listing.master_product_group_id = group_id
+            saved_listing_group_id = getattr(
+                listing,
+                "master_product_group_id",
+                None,
+            )
+
+            if saved_listing_group_id != group_id:
+                return jsonify(
+                    _blocked(
+                        "Quantity propagation cannot create or repair "
+                        "marketplace listing relationships. Link the listing "
+                        "explicitly in Product Linking first.",
+                        group_id=group_id,
+                        listing_id=listing.id,
+                        saved_group_id=saved_listing_group_id,
+                    )
+                ), 409
 
         warehouse_rows = (
             db.session.query(WarehouseStock)
@@ -254,11 +262,30 @@ def governed_group_propagate_quantity(group_id: int):
         )
 
     for stock in warehouse_rows:
-        if hasattr(stock, "master_product_group_id"):
-            stock.master_product_group_id = group_id
+        saved_stock_group_id = getattr(
+            stock,
+            "master_product_group_id",
+            None,
+        )
+        saved_group_controlled = bool(
+            getattr(stock, "is_group_controlled", False)
+        )
 
-        if hasattr(stock, "is_group_controlled"):
-            stock.is_group_controlled = True
+        if (
+            saved_stock_group_id != group_id
+            or not saved_group_controlled
+        ):
+            return jsonify(
+                _blocked(
+                    "Quantity propagation cannot create or repair Warehouse "
+                    "group relationships. Link the Warehouse row explicitly "
+                    "in Product Linking first.",
+                    group_id=group_id,
+                    warehouse_stock_id=stock.id,
+                    saved_group_id=saved_stock_group_id,
+                    saved_is_group_controlled=saved_group_controlled,
+                )
+            ), 409
 
         if target_quantity is not None:
             stock_columns = set(
