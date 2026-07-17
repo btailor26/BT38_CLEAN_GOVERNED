@@ -82,6 +82,7 @@
         <tbody id="mcf-orders-body">
           {% for row in orders %}
           <tr class="mcf-order-row"
+              data-order-id="{{ row.anchor.id }}"
               data-state="{{ row.state }}"
               data-search="{{ ([row.anchor.marketplace_order_id, row.anchor.store.name if row.anchor.store else '', row.group_ids|join(' ')] + (row.lines|map(attribute='sku')|list))|join(' ')|lower }}">
             <td>
@@ -115,28 +116,28 @@
                 <span class="badge bg-secondary">Not eligible</span>
               {% endif %}
             </td>
-            <td>
+            <td class="mcf-status-cell">
               {% if row.mcf %}
-                <span class="badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
+                <span class="mcf-status-badge badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
                   {{ row.mcf.amazon_status or row.mcf.status }}
                 </span>
-                {% if row.mcf.tracking_number %}
-                  <div class="small mt-1">{{ row.mcf.carrier or 'Carrier' }} · {{ row.mcf.tracking_number }}</div>
-                {% endif %}
+                <div class="mcf-tracking small mt-1{% if not row.mcf.tracking_number %} d-none{% endif %}">
+                  {% if row.mcf.tracking_number %}
+                    {{ row.mcf.carrier or 'Carrier' }} · {{ row.mcf.tracking_number }}
+                  {% endif %}
+                </div>
               {% else %}
                 <span class="text-muted">Not submitted</span>
               {% endif %}
             </td>
             <td class="text-end">
               {% if row.mcf and row.mcf.status != 'failed' %}
-                <button class="btn btn-sm btn-outline-secondary me-2"
-                        type="submit"
-                        name="return_to"
-                        value="list"
-                        formmethod="post"
-                        formaction="{{ url_for('governed_mcf.refresh_mcf_order', order_id=row.anchor.id) }}"
+                <button class="mcf-refresh-button btn btn-sm btn-outline-secondary me-2"
+                        type="button"
+                        data-refresh-url="{{ url_for('governed_mcf.refresh_mcf_order', order_id=row.anchor.id) }}"
                         title="Refresh Amazon MCF status and update source marketplace tracking">
-                  <i data-feather="refresh-cw" class="me-1"></i>Refresh
+                  <i data-feather="refresh-cw" class="me-1"></i>
+                  <span class="mcf-refresh-label">Refresh</span>
                 </button>
               {% endif %}
 
@@ -281,6 +282,127 @@
       'change',
       updateSelectionState,
     );
+  });
+
+  document.querySelectorAll('.mcf-refresh-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const row = button.closest('.mcf-order-row');
+      const label = button.querySelector('.mcf-refresh-label');
+      const icon = button.querySelector('[data-feather]');
+      const refreshUrl = button.dataset.refreshUrl;
+
+      if (!row || !refreshUrl || button.disabled) {
+        return;
+      }
+
+      const originalLabel = label ? label.textContent : 'Refresh';
+      button.disabled = true;
+
+      if (label) {
+        label.textContent = 'Refreshing…';
+      }
+
+      if (icon) {
+        icon.classList.add('mcf-refresh-spinning');
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('return_to', 'list');
+
+        const csrfToken = document.querySelector(
+          '#mcf-remove-form input[name="csrf_token"]'
+        );
+
+        if (csrfToken && csrfToken.value) {
+          formData.append('csrf_token', csrfToken.value);
+        }
+
+        const response = await fetch(refreshUrl, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+          },
+          body: formData
+        });
+
+        let data;
+
+        try {
+          data = await response.json();
+        } catch (error) {
+          throw new Error(
+            `MCF refresh returned HTTP ${response.status}`
+          );
+        }
+
+        const statusCell = row.querySelector('.mcf-status-cell');
+        const statusBadge = row.querySelector('.mcf-status-badge');
+        const tracking = row.querySelector('.mcf-tracking');
+
+        if (statusCell && statusBadge && data.amazon_status) {
+          statusBadge.textContent = data.amazon_status;
+          statusBadge.className = 'mcf-status-badge badge';
+
+          if (data.mcf_status === 'failed') {
+            statusBadge.classList.add('bg-danger');
+          } else if (data.mcf_status === 'completed') {
+            statusBadge.classList.add('bg-success');
+          } else {
+            statusBadge.classList.add('bg-info', 'text-dark');
+          }
+        }
+
+        if (tracking) {
+          if (data.tracking_number) {
+            tracking.textContent = (
+              `${data.carrier || 'Carrier'} · `
+              + data.tracking_number
+            );
+            tracking.classList.remove('d-none');
+          } else {
+            tracking.textContent = '';
+            tracking.classList.add('d-none');
+          }
+        }
+
+        if (data.state) {
+          row.dataset.state = data.state;
+        }
+
+        render();
+
+        if (!response.ok || !data.success) {
+          throw new Error(
+            data.message
+            || data.error
+            || `MCF refresh failed with HTTP ${response.status}`
+          );
+        }
+
+        window.alert(data.message || 'Amazon MCF status updated.');
+      } catch (error) {
+        console.error('[MCF row refresh failed]', error);
+        window.alert(
+          `MCF refresh failed: ${error.message || error}`
+        );
+      } finally {
+        button.disabled = false;
+
+        if (label) {
+          label.textContent = originalLabel;
+        }
+
+        if (icon) {
+          icon.classList.remove('mcf-refresh-spinning');
+        }
+
+        if (typeof feather !== 'undefined') {
+          feather.replace();
+        }
+      }
+    });
   });
 
   [status, search, size].forEach((control) => control.addEventListener('input', () => {
