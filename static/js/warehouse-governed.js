@@ -142,7 +142,6 @@
   }
 
 
-  document.addEventListener('click', async function (e) {
   // ==============================
   // BROWSER ROW CACHE / LOCAL FILTER
   // ==============================
@@ -265,6 +264,7 @@
   }
 
 
+  document.addEventListener('click', async function (e) {
     const marketBadge = e.target && e.target.closest ? e.target.closest('.bt38-marketplace-control') : null;
     if (!marketBadge) return;
 
