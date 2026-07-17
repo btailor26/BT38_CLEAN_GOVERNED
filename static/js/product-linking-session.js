@@ -284,11 +284,29 @@
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      await hydrate(true);
+      const product = state.products.find(item =>
+        [item.id, item.warehouse_stock_id, item.stock_id]
+          .some(value => sameId(value, warehouseId))
+      );
 
-      if (!mappingExists(listingId, warehouseId)) {
-        throw new Error("The server returned success, but the saved relationship could not be verified after refresh.");
+      if (product) {
+        product.listings = product.listings || [];
+
+        if (!product.listings.some(listing =>
+          [listing.id, listing.listing_id, listing.marketplace_listing_id]
+            .some(value => sameId(value, listingId))
+        )) {
+          product.listings.push({
+            id: listingId,
+            listing_id: listingId
+          });
+        }
+
+        product.linked_count = product.listings.length;
       }
+
+      assignLegacyGlobals();
+      render();
 
       closeOpenModals();
       window.alert(`Successfully linked ${listingSku} to ${warehouseSku}.`);

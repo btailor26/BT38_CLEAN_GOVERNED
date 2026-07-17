@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime
 import re
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import tuple_
 from sqlalchemy.orm import selectinload
@@ -887,6 +887,10 @@ def refresh_mcf_order(order_id: int):
         str(request.form.get("return_to") or "").strip().lower()
         == "list"
     )
+    wants_json = (
+        request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or request.accept_mimetypes.best == "application/json"
+    )
 
     def _refresh_redirect(anchor_id: int | None = None):
         if return_to_list:
@@ -906,41 +910,162 @@ def refresh_mcf_order(order_id: int):
             url_for("governed_mcf.orders_mcf_page")
         )
 
+    def _json_payload(
+        *,
+        success: bool,
+        message: str,
+        anchor=None,
+        mcf=None,
+        error: str | None = None,
+    ):
+        payload = {
+            "success": success,
+            "message": message,
+            "error": error,
+            "order_id": getattr(anchor, "id", order_id),
+        }
+
+        if mcf is not None:
+            local_status = str(mcf.status or "").strip().lower()
+            payload.update({
+                "mcf_status": local_status,
+                "amazon_status": (
+                    mcf.amazon_status
+                    or mcf.status
+                    or "Pending"
+                ),
+                "carrier": mcf.carrier or "",
+                "tracking_number": mcf.tracking_number or "",
+                "state": (
+                    "failed"
+                    if local_status == "failed"
+                    else "submitted"
+                ),
+            })
+
+        return payload
+
     anchor = db.session.get(MarketplaceOrder, order_id)
+
     if anchor is None or not anchor.mcf_order:
-        flash("No MCF order is linked to this order.", "danger")
-        return redirect(url_for("governed_mcf.orders_mcf_page"))
+        message = "No MCF order is linked to this order."
+
+        if wants_json:
+            return jsonify(_json_payload(
+                success=False,
+                message=message,
+                anchor=anchor,
+                error="mcf_order_not_found",
+            )), 404
+
+        flash(message, "danger")
+        return redirect(
+            url_for("governed_mcf.orders_mcf_page")
+        )
 
     mcf = anchor.mcf_order
     service = MCFService()
     success, result = service.get_mcf_order_status(mcf)
+
     if not success:
-        flash(f"Amazon MCF status refresh failed: {result.get('error')}", "danger")
+        error = str(result.get("error") or "Unknown Amazon MCF error")
+        message = f"Amazon MCF status refresh failed: {error}"
+
+        if wants_json:
+            return jsonify(_json_payload(
+                success=False,
+                message=message,
+                anchor=anchor,
+                mcf=mcf,
+                error=error,
+            )), 502
+
+        flash(message, "danger")
         return _refresh_redirect(anchor.id)
 
     lines = _order_lines(anchor)
+    response_success = True
+    response_error = None
+
     if mcf.tracking_number:
-        ebay_guard = _guard(anchor.store, "mcf_tracking_ebay_enrichment")
+        ebay_guard = _guard(
+            anchor.store,
+            "mcf_tracking_ebay_enrichment",
+        )
+
         if not ebay_guard.get("allowed"):
-            flash(f"Tracking received, but eBay update is blocked: {ebay_guard.get('reason')}", "warning")
+            response_message = (
+                "Tracking received, but eBay update is blocked: "
+                f"{ebay_guard.get('reason')}"
+            )
+
+            if not wants_json:
+                flash(response_message, "warning")
         else:
-            dispatch = complete_sale(anchor, carrier=mcf.carrier or "Other", tracking_number=mcf.tracking_number)
+            dispatch = complete_sale(
+                anchor,
+                carrier=mcf.carrier or "Other",
+                tracking_number=mcf.tracking_number,
+            )
+
             if dispatch.get("success"):
                 for line in lines:
                     line.carrier = mcf.carrier
                     line.tracking_number = mcf.tracking_number
-                    line.shipped_at = anchor.shipped_at or datetime.utcnow()
+                    line.shipped_at = (
+                        anchor.shipped_at
+                        or datetime.utcnow()
+                    )
                     line.status = "mcf_tracking_updated"
                     line.error_message = None
+
                 db.session.commit()
-                flash("Amazon tracking was added to the existing eBay dispatch.", "success")
+
+                response_message = (
+                    "Amazon tracking was added to the existing "
+                    "eBay dispatch."
+                )
+
+                if not wants_json:
+                    flash(response_message, "success")
             else:
+                response_success = False
+                response_error = str(
+                    dispatch.get("error")
+                    or "Unknown eBay tracking update error"
+                )
+                response_message = (
+                    "Amazon tracking received, but eBay update failed: "
+                    f"{response_error}"
+                )
+
                 for line in lines:
                     line.status = "mcf_tracking_update_failed"
-                    line.error_message = dispatch.get("error")
+                    line.error_message = response_error
+
                 db.session.commit()
-                flash(f"Amazon tracking received, but eBay update failed: {dispatch.get('error')}", "danger")
+
+                if not wants_json:
+                    flash(response_message, "danger")
     else:
-        flash(f"Amazon status updated to {mcf.amazon_status or mcf.status}; tracking is not available yet.", "info")
+        response_message = (
+            "Amazon status updated to "
+            f"{mcf.amazon_status or mcf.status}; "
+            "tracking is not available yet."
+        )
+
+        if not wants_json:
+            flash(response_message, "info")
+
+    if wants_json:
+        status_code = 200 if response_success else 502
+
+        return jsonify(_json_payload(
+            success=response_success,
+            message=response_message,
+            anchor=anchor,
+            mcf=mcf,
+            error=response_error,
+        )), status_code
 
     return _refresh_redirect(anchor.id)
