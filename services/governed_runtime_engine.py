@@ -2,10 +2,12 @@
 BT38 GOVERNED RUNTIME ENGINE
 
 Runtime contract:
-- Webhooks perform immediate targeted work in their governed route.
-- A webhook may arm one 15-minute verification for its exact identifiers.
-- The verification never imports recent orders, scans warehouse rows, lists all
-  marketplace records, or starts marketplace hydration.
+- Webhooks perform immediate targeted work through the existing governed path.
+- The existing webhook push arms one 15-minute verification for its exact
+  Warehouse and marketplace-listing identities.
+- Verification checks only those rows and reuses the existing governed push path
+  when those exact rows are not aligned.
+- No recent-order, Warehouse, group, listing, or marketplace-wide scan is allowed.
 - No webhook means no database access.
 - Full marketplace hydration is manual/recovery only.
 - Amazon FBA remains read-only.
@@ -60,6 +62,13 @@ def _clean(value):
     return value or None
 
 
+def _safe_int(value, default=None):
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _safe_log(message: str):
     logging.info("[GOVERNED_RUNTIME_ENGINE] %s", message)
 
@@ -76,11 +85,10 @@ def _normalise_webhook_event(source, event=None, **identifiers):
 
     event_type = _clean(raw.get("event_type") or raw.get("type"))
     marketplace = _clean(raw.get("marketplace") or raw.get("platform"))
-    store_id = raw.get("store_id")
-    try:
-        store_id = int(store_id) if store_id is not None else None
-    except (TypeError, ValueError):
-        store_id = None
+    store_id = _safe_int(raw.get("store_id"))
+    warehouse_stock_id = _safe_int(raw.get("warehouse_stock_id"))
+    group_id = _safe_int(raw.get("group_id") or raw.get("master_product_group_id"))
+    expected_quantity = _safe_int(raw.get("expected_quantity"))
 
     seller_sku = _clean(raw.get("seller_sku") or raw.get("sku"))
     listing_id = _clean(
@@ -96,9 +104,26 @@ def _normalise_webhook_event(source, event=None, **identifiers):
     asin = _clean(raw.get("asin"))
     fnsku = _clean(raw.get("fnsku") or raw.get("fnSku"))
 
+    listing_ids = []
+    for value in list(raw.get("listing_ids") or []):
+        parsed = _safe_int(value)
+        if parsed is not None:
+            listing_ids.append(parsed)
+    listing_ids = sorted(set(listing_ids))
+
     scope_present = bool(
         store_id is not None
-        and any((seller_sku, listing_id, order_id, asin, fnsku))
+        and any(
+            (
+                seller_sku,
+                listing_id,
+                order_id,
+                asin,
+                fnsku,
+                warehouse_stock_id,
+                listing_ids,
+            )
+        )
     )
 
     return {
@@ -108,9 +133,13 @@ def _normalise_webhook_event(source, event=None, **identifiers):
         "store_id": store_id,
         "seller_sku": seller_sku,
         "listing_id": listing_id,
+        "listing_ids": listing_ids,
         "order_id": order_id,
         "asin": asin,
         "fnsku": fnsku,
+        "warehouse_stock_id": warehouse_stock_id,
+        "group_id": group_id,
+        "expected_quantity": expected_quantity,
         "payload": raw.get("payload"),
         "received_at": datetime.utcnow(),
         "verify_after": datetime.utcnow() + timedelta(seconds=LIGHT_RECONCILE_SECONDS),
@@ -126,19 +155,17 @@ def _event_key(event):
         event.get("store_id"),
         event.get("seller_sku"),
         event.get("listing_id"),
+        tuple(event.get("listing_ids") or []),
         event.get("order_id"),
         event.get("asin"),
         event.get("fnsku"),
+        event.get("warehouse_stock_id"),
+        event.get("group_id"),
     )
 
 
 def notify_governed_runtime_work(source: str = "webhook", event=None, **identifiers):
-    """Arm a 15-minute verification for one exact webhook scope.
-
-    Backward-compatible source-only calls are accepted, but they are recorded as
-    unscoped and will be skipped without SQL. Webhook handlers should provide at
-    least store_id plus order_id, seller_sku, listing_id, asin, or fnsku.
-    """
+    """Arm a 15-minute verification for one exact webhook scope."""
     global _last_event_at, _last_event_source
 
     item = _normalise_webhook_event(source, event=event, **identifiers)
@@ -149,10 +176,9 @@ def notify_governed_runtime_work(source: str = "webhook", event=None, **identifi
         key = _event_key(item)
         for queued in _pending_events:
             if _event_key(queued) == key:
-                # Keep one verification per affected identity and move its due
-                # time forward when duplicate notifications arrive.
                 queued["verify_after"] = item["verify_after"]
                 queued["payload"] = item.get("payload") or queued.get("payload")
+                queued["expected_quantity"] = item.get("expected_quantity")
                 break
         else:
             _pending_events.append(item)
@@ -401,7 +427,7 @@ def _verify_exact_listing(event):
 
 
 def _verify_webhook_event(event):
-    """Verify only the exact identity supplied by the webhook."""
+    """Verify only the exact identity and alignment supplied by the webhook."""
     if not event.get("scope_present"):
         return {
             "verified": False,
@@ -410,15 +436,22 @@ def _verify_webhook_event(event):
             "database_touched": False,
         }
 
-    event_type = str(event.get("event_type") or "").lower()
-    marketplace = str(event.get("marketplace") or "").lower()
+    if event.get("warehouse_stock_id") and event.get("listing_ids"):
+        from services.governed_webhook_alignment import (
+            verify_existing_webhook_alignment,
+        )
 
-    if event.get("order_id") or "order" in event_type:
-        result = _verify_exact_order(event)
-    elif "fba" in event_type or "afn" in event_type or marketplace == "amazon_fba":
-        result = _verify_exact_fba(event)
+        result = verify_existing_webhook_alignment(event)
     else:
-        result = _verify_exact_listing(event)
+        event_type = str(event.get("event_type") or "").lower()
+        marketplace = str(event.get("marketplace") or "").lower()
+
+        if event.get("order_id") or "order" in event_type:
+            result = _verify_exact_order(event)
+        elif "fba" in event_type or "afn" in event_type or marketplace == "amazon_fba":
+            result = _verify_exact_fba(event)
+        else:
+            result = _verify_exact_listing(event)
 
     return {
         **result,
@@ -469,6 +502,7 @@ def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
         "source": source,
         "events_received": len(events),
         "events_verified": sum(1 for item in results if item.get("verified")),
+        "events_aligned": sum(1 for item in results if item.get("aligned")),
         "full_scan_started": False,
         "recent_order_import_started": False,
         "order_stock_bridge_started": False,
@@ -477,7 +511,7 @@ def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
         "results": results,
     }
     _safe_log(
-        "15-minute webhook verification complete "
+        "15-minute webhook alignment verification complete "
         f"events={len(events)} verified={_last_verification_result['events_verified']}"
     )
     return _last_verification_result
