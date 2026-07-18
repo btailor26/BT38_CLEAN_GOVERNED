@@ -8,12 +8,91 @@ Rules:
 - group push resolves listings first
 - service owns shared listing push logic
 - routes must not be imported by services
+- existing webhook pushes queue exact affected rows for the 15-minute alignment check
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List
+
+
+def _is_webhook_push_source(source: str) -> bool:
+    value = str(source or "").strip().lower()
+    return bool(
+        value.startswith("webhook_")
+        and "15m_retry" not in value
+        and "group_notification" not in value
+    )
+
+
+def _queue_exact_webhook_verification(*, listing, stock, source: str) -> None:
+    if not _is_webhook_push_source(source):
+        return
+
+    try:
+        from services.governed_runtime_engine import notify_governed_runtime_work
+
+        notify_governed_runtime_work(
+            "marketplace_webhook_push",
+            store_id=getattr(listing, "store_id", None),
+            marketplace=getattr(
+                getattr(listing, "store", None),
+                "platform",
+                None,
+            ),
+            event_type="inventory_alignment",
+            seller_sku=getattr(listing, "external_sku", None),
+            listing_id=getattr(listing, "external_listing_id", None),
+            listing_ids=[getattr(listing, "id", None)],
+            warehouse_stock_id=getattr(stock, "id", None),
+            group_id=getattr(stock, "master_product_group_id", None),
+            expected_quantity=getattr(listing, "effective_quantity", None),
+        )
+    except Exception:
+        # The push has already followed the governed path. A process-local
+        # verification signal must never turn a completed push into a failure.
+        return
+
+
+def _queue_exact_group_webhook_verifications(*, listings, warehouse_rows, group_id: int, source: str) -> None:
+    value = str(source or "").strip().lower()
+    if not value.startswith("webhook_") or "15m_retry" in value:
+        return
+
+    try:
+        from services.governed_runtime_engine import notify_governed_runtime_work
+
+        stock_by_id = {int(stock.id): stock for stock in warehouse_rows}
+        listings_by_stock = {}
+        for listing in listings:
+            stock_id = getattr(listing, "warehouse_stock_id", None)
+            if stock_id is None:
+                continue
+            listings_by_stock.setdefault(int(stock_id), []).append(listing)
+
+        for stock_id, members in listings_by_stock.items():
+            stock = stock_by_id.get(stock_id)
+            if stock is None or not members:
+                continue
+            first = members[0]
+            notify_governed_runtime_work(
+                "marketplace_webhook_group_push",
+                store_id=getattr(first, "store_id", None),
+                marketplace=getattr(
+                    getattr(first, "store", None),
+                    "platform",
+                    None,
+                ),
+                event_type="group_inventory_alignment",
+                seller_sku=getattr(first, "external_sku", None),
+                listing_ids=[int(item.id) for item in members],
+                warehouse_stock_id=stock_id,
+                group_id=int(group_id),
+                expected_quantity=getattr(first, "effective_quantity", None),
+            )
+    except Exception:
+        return
 
 
 def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_user=None) -> Dict[str, Any]:
@@ -110,6 +189,12 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         created_at=datetime.utcnow(),
     ))
     db.session.commit()
+
+    _queue_exact_webhook_verification(
+        listing=listing,
+        stock=listing.warehouse_stock,
+        source=source,
+    )
 
     result.update({
         "listing_id": listing.id,
@@ -235,7 +320,6 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         if report_stock_ids else []
     )
 
-
     for stock in warehouse_rows:
         if hasattr(stock, "last_push_at"):
             stock.last_push_at = datetime.utcnow()
@@ -259,6 +343,13 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
 
     if warehouse_rows:
         db.session.commit()
+
+    _queue_exact_group_webhook_verifications(
+        listings=listings,
+        warehouse_rows=warehouse_rows,
+        group_id=group_id,
+        source=source,
+    )
 
     return {
         "success": group_success,
