@@ -1,11 +1,19 @@
 // Product Linking browser-session controller.
-// Read-only browsing hydrates once, then search/filter/pagination/modal search stay local.
-// POST mutations remain governed and rehydrate only after a real change.
+// The full governed working set is read at most once every 24 hours per browser.
+// Search, filters, pagination and modal search remain local. Governed mutations
+// refresh only the affected Warehouse record and merge it into the saved snapshot.
 (function () {
   "use strict";
 
   const root = document.querySelector('[data-bt38-page="productLinking"]');
   if (!root) return;
+
+  const CACHE_DB_NAME = "bt38-browser-cache";
+  const CACHE_STORE_NAME = "snapshots";
+  const CACHE_KEY = "product-linking-v2";
+  const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  const FULL_DATASET_LIMIT = 5000;
+  const TARGETED_DATASET_LIMIT = 25;
 
   const state = {
     hydrated: false,
@@ -13,6 +21,7 @@
     products: [],
     unlinked: [],
     listings: [],
+    fullLoadedAt: 0,
     page: 1,
     perPage: 25,
     filtered: []
@@ -31,18 +40,94 @@
     return left != null && right != null && String(left) === String(right);
   }
 
+  function productIdentity(product) {
+    return String(product?.id ?? product?.warehouse_stock_id ?? product?.stock_id ?? "");
+  }
+
   function assignLegacyGlobals() {
     try { allWarehouseProducts = state.products; } catch (_) { window.allWarehouseProducts = state.products; }
     try { allUnlinkedListings = state.unlinked; } catch (_) { window.allUnlinkedListings = state.unlinked; }
     try { allMarketplaceListings = state.listings; } catch (_) { window.allMarketplaceListings = state.listings; }
   }
 
-  async function fetchDataset() {
+  function openCacheDatabase() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        resolve(null);
+        return;
+      }
+      const request = window.indexedDB.open(CACHE_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(CACHE_STORE_NAME)) {
+          database.createObjectStore(CACHE_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Unable to open Product Linking cache"));
+    });
+  }
+
+  async function readSnapshot() {
+    try {
+      const database = await openCacheDatabase();
+      if (!database) return null;
+      return await new Promise((resolve, reject) => {
+        const transaction = database.transaction(CACHE_STORE_NAME, "readonly");
+        const request = transaction.objectStore(CACHE_STORE_NAME).get(CACHE_KEY);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error("Unable to read Product Linking cache"));
+        transaction.oncomplete = () => database.close();
+      });
+    } catch (error) {
+      console.warn("[ProductLinkingSession] cache read unavailable", error);
+      return null;
+    }
+  }
+
+  async function writeSnapshot() {
+    const snapshot = {
+      fullLoadedAt: state.fullLoadedAt,
+      products: state.products,
+      unlinked: state.unlinked,
+      listings: state.listings
+    };
+    try {
+      const database = await openCacheDatabase();
+      if (!database) return;
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
+        transaction.objectStore(CACHE_STORE_NAME).put(snapshot, CACHE_KEY);
+        transaction.oncomplete = () => { database.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error || new Error("Unable to save Product Linking cache"));
+      });
+    } catch (error) {
+      console.warn("[ProductLinkingSession] cache write unavailable", error);
+    }
+  }
+
+  function snapshotIsFresh(snapshot) {
+    const loadedAt = Number(snapshot?.fullLoadedAt || 0);
+    return loadedAt > 0 && (Date.now() - loadedAt) < CACHE_TTL_MS;
+  }
+
+  function applySnapshot(snapshot) {
+    state.products = uniqueById(snapshot?.products || []);
+    state.unlinked = uniqueById(snapshot?.unlinked || []);
+    state.listings = uniqueById(snapshot?.listings || []);
+    state.fullLoadedAt = Number(snapshot?.fullLoadedAt || 0);
+    state.hydrated = true;
+    assignLegacyGlobals();
+  }
+
+  async function fetchDataset(search, limit) {
+    const targeted = Boolean(String(search || "").trim());
+    const rowLimit = targeted ? TARGETED_DATASET_LIMIT : (limit || FULL_DATASET_LIMIT);
     const params = new URLSearchParams({
       page: "1",
-      per_page: "5000",
-      limit: "5000",
-      search: "",
+      per_page: String(rowLimit),
+      limit: String(rowLimit),
+      search: String(search || "").trim(),
       platform: "all",
       store: "all",
       show_linked: "all",
@@ -55,8 +140,36 @@
     return data;
   }
 
-  async function hydrate(force) {
-    if (state.hydrated && !force) {
+  async function fetchFullSnapshot() {
+    const data = await fetchDataset("", FULL_DATASET_LIMIT);
+    state.products = uniqueById(data.warehouse_products || []);
+    state.unlinked = uniqueById(data.unlinked_listings || []);
+    state.listings = uniqueById(data.all_marketplace_listings || data.listings || []);
+    state.fullLoadedAt = Date.now();
+    state.hydrated = true;
+    state.page = 1;
+    assignLegacyGlobals();
+    await writeSnapshot();
+  }
+
+  async function fetchFullSnapshotOnceDaily() {
+    const work = async () => {
+      const latest = await readSnapshot();
+      if (snapshotIsFresh(latest)) {
+        applySnapshot(latest);
+        return;
+      }
+      await fetchFullSnapshot();
+    };
+
+    if (navigator.locks?.request) {
+      return navigator.locks.request("bt38-product-linking-daily-snapshot", { mode: "exclusive" }, work);
+    }
+    return work();
+  }
+
+  async function hydrate() {
+    if (state.hydrated) {
       render();
       return;
     }
@@ -71,15 +184,10 @@
       if (container) container.classList.add("d-none");
 
       try {
-        const data = await fetchDataset();
-        state.products = uniqueById(data.warehouse_products || []);
-        state.unlinked = uniqueById(data.unlinked_listings || []);
-        state.listings = uniqueById(data.all_marketplace_listings || data.listings || []);
-        state.hydrated = true;
-        state.page = 1;
-        assignLegacyGlobals();
+        const cached = await readSnapshot();
+        if (snapshotIsFresh(cached)) applySnapshot(cached);
+        else await fetchFullSnapshotOnceDaily();
         render();
-
         if (loading) loading.classList.add("d-none");
         if (container) container.classList.remove("d-none");
       } catch (error) {
@@ -97,6 +205,39 @@
     return state.hydrating;
   }
 
+  function mergeTargetedData(data, listingId) {
+    const changedProducts = uniqueById(data.warehouse_products || []);
+    const changedIds = new Set(changedProducts.map(productIdentity).filter(Boolean));
+    state.products = state.products
+      .filter(product => !changedIds.has(productIdentity(product)))
+      .concat(changedProducts);
+
+    const returnedUnlinked = uniqueById(data.unlinked_listings || []);
+    state.unlinked = state.unlinked
+      .filter(listing => !sameId(listing.id ?? listing.listing_id, listingId))
+      .concat(returnedUnlinked.filter(listing => !state.unlinked.some(existing => sameId(existing.id, listing.id))));
+
+    const returnedListings = uniqueById(data.all_marketplace_listings || data.listings || []);
+    if (returnedListings.length) {
+      const returnedIds = new Set(returnedListings.map(item => String(item.id ?? item.listing_id ?? "")));
+      state.listings = state.listings
+        .filter(item => !returnedIds.has(String(item.id ?? item.listing_id ?? "")))
+        .concat(returnedListings);
+    }
+
+    assignLegacyGlobals();
+    render();
+    return writeSnapshot();
+  }
+
+  async function refreshAffectedRecord(identity) {
+    const search = String(identity?.warehouseSku || identity?.listingSku || identity?.warehouseId || "").trim();
+    if (!search) throw new Error("Affected Product Linking record could not be identified");
+    const data = await fetchDataset(search, TARGETED_DATASET_LIMIT);
+    await mergeTargetedData(data, identity?.listingId);
+    return data;
+  }
+
   function getFilters() {
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (!form) return { search: "", platform: "", store: "", showLinked: "all" };
@@ -111,33 +252,18 @@
   function productMatches(product, filters) {
     const listings = product.listings || [];
     const haystack = [
-      product.sku,
-      product.name,
-      product.group_name,
-      product.barcode,
-      product.master_product_group_id,
+      product.sku, product.name, product.group_name, product.barcode, product.master_product_group_id,
       ...listings.flatMap(listing => [
-        listing.external_sku,
-        listing.sku,
-        listing.title,
-        listing.external_listing_id,
-        listing.external_id,
-        listing.asin,
-        listing.fnsku,
-        listing.platform,
-        listing.store_name
+        listing.external_sku, listing.sku, listing.title, listing.external_listing_id,
+        listing.external_id, listing.asin, listing.fnsku, listing.platform, listing.store_name
       ])
     ].filter(Boolean).join(" ").toLowerCase();
 
     if (filters.search && !haystack.includes(filters.search)) return false;
-    if (filters.platform && filters.platform !== "all") {
-      const matchesPlatform = listings.some(listing => String(listing.platform || "").toLowerCase().includes(filters.platform));
-      if (!matchesPlatform) return false;
-    }
-    if (filters.store && filters.store !== "all") {
-      const matchesStore = listings.some(listing => String(listing.store_id || "").toLowerCase() === filters.store);
-      if (!matchesStore) return false;
-    }
+    if (filters.platform && filters.platform !== "all" &&
+        !listings.some(listing => String(listing.platform || "").toLowerCase().includes(filters.platform))) return false;
+    if (filters.store && filters.store !== "all" &&
+        !listings.some(listing => String(listing.store_id || "").toLowerCase() === filters.store)) return false;
 
     const linkedCount = Number.parseInt(product.linked_count || listings.length || 0, 10);
     if (filters.showLinked === "linked" && linkedCount <= 0) return false;
@@ -158,14 +284,9 @@
       productLinkingPage = state.page;
       productLinkingPerPage = state.perPage;
       productLinkingPagination = {
-        page: state.page,
-        per_page: state.perPage,
-        total_stock: state.filtered.length,
-        total_pages: totalPages,
-        has_prev: state.page > 1,
-        has_next: state.page < totalPages,
-        prev_page: Math.max(1, state.page - 1),
-        next_page: Math.min(totalPages, state.page + 1)
+        page: state.page, per_page: state.perPage, total_stock: state.filtered.length,
+        total_pages: totalPages, has_prev: state.page > 1, has_next: state.page < totalPages,
+        prev_page: Math.max(1, state.page - 1), next_page: Math.min(totalPages, state.page + 1)
       };
     } catch (_) {}
 
@@ -177,19 +298,11 @@
 
   function mappingExists(listingId, warehouseId) {
     return state.products.some(product => {
-      const productMatchesWarehouse = [
-        product.id,
-        product.warehouse_stock_id,
-        product.stock_id
-      ].some(value => sameId(value, warehouseId));
-
+      const productMatchesWarehouse = [product.id, product.warehouse_stock_id, product.stock_id]
+        .some(value => sameId(value, warehouseId));
       if (!productMatchesWarehouse) return false;
-
-      return (product.listings || []).some(listing => [
-        listing.id,
-        listing.listing_id,
-        listing.marketplace_listing_id
-      ].some(value => sameId(value, listingId)));
+      return (product.listings || []).some(listing => [listing.id, listing.listing_id, listing.marketplace_listing_id]
+        .some(value => sameId(value, listingId)));
     });
   }
 
@@ -224,20 +337,18 @@
       </div>`;
   };
 
-  window.loadProductLinkingData = function (force) {
-    return hydrate(force === true);
+  // Page reloads and legacy force=true calls never trigger another full read inside
+  // the 24-hour window. A governed mutation must call the targeted record refresh.
+  window.loadProductLinkingData = function () {
+    return hydrate();
   };
+  window.bt38RefreshProductLinkingRecord = refreshAffectedRecord;
 
   window.filterFlatListings = function () {
     const search = String(document.getElementById("modalListingSearch")?.value || "").trim().toLowerCase();
     const linkable = typeof getLinkableListings === "function" ? getLinkableListings(currentWarehouseId) : state.unlinked;
     const filtered = !search ? linkable : linkable.filter(listing => [
-      listing.external_sku,
-      listing.sku,
-      listing.title,
-      listing.external_listing_id,
-      listing.external_id,
-      listing.asin
+      listing.external_sku, listing.sku, listing.title, listing.external_listing_id, listing.external_id, listing.asin
     ].filter(Boolean).join(" ").toLowerCase().includes(search));
     if (typeof renderFlatListings === "function") renderFlatListings(filtered);
   };
@@ -245,14 +356,9 @@
   window.searchWarehouseForLinking = function () {
     const search = String(document.getElementById("modalWarehouseSearch")?.value || "").trim().toLowerCase();
     const products = !search ? state.products : state.products.filter(product => [
-      product.sku,
-      product.name,
-      product.group_name,
-      product.barcode
+      product.sku, product.name, product.group_name, product.barcode
     ].filter(Boolean).join(" ").toLowerCase().includes(search));
-    if (typeof renderWarehouseInModal === "function") {
-      renderWarehouseInModal(products, currentListingId, search);
-    }
+    if (typeof renderWarehouseInModal === "function") renderWarehouseInModal(products, currentListingId, search);
   };
 
   window.linkListingToWarehouse = async function (listingId, warehouseId, listingSku, warehouseSku, userConfirmed = false) {
@@ -260,20 +366,14 @@
       const response = await fetch("/governed/product-linking/link-listing-to-warehouse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          listing_id: listingId,
-          warehouse_id: warehouseId,
-          user_confirmed: userConfirmed
-        })
+        body: JSON.stringify({ listing_id: listingId, warehouse_id: warehouseId, user_confirmed: userConfirmed })
       });
-
       const data = await response.json();
 
       if (data.requires_confirmation) {
         const confirmMsg = `This will add "${listingSku}" to the group for warehouse SKU "${data.warehouse_sku || warehouseSku}".\n\n` +
           `The group currently has ${data.existing_members || 0} linked listing(s).\n\n` +
           "All listings in this group will share the same quantity. Continue?";
-
         if (window.confirm(confirmMsg)) {
           return window.linkListingToWarehouse(listingId, warehouseId, listingSku, warehouseSku, true);
         }
@@ -284,10 +384,9 @@
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      await hydrate(true);
-
+      await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku });
       if (!mappingExists(listingId, warehouseId)) {
-        throw new Error("The server returned success, but the saved relationship could not be verified after refresh.");
+        throw new Error("The server returned success, but the affected relationship could not be verified.");
       }
 
       closeOpenModals();
@@ -333,7 +432,7 @@
 
   function boot() {
     wire();
-    hydrate(false);
+    hydrate();
   }
 
   if (document.readyState === "loading") {

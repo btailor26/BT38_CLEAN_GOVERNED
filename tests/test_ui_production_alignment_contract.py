@@ -24,15 +24,26 @@ def test_product_linking_has_one_authoritative_session_controller():
     assert "window.filterFlatListings = function" in session
 
 
-def test_product_linking_session_hydrates_complete_data_then_paginates_locally():
+def test_product_linking_session_uses_daily_snapshot_then_paginates_locally():
     source = _source(PRODUCT_LINKING_SESSION)
 
-    assert 'per_page: "5000"' in source
-    assert 'limit: "5000"' in source
+    assert "FULL_DATASET_LIMIT = 5000" in source
+    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
+    assert "fetchFullSnapshotOnceDaily" in source
+    assert "window.indexedDB.open" in source
     assert "state.filtered = state.products.filter" in source
     assert "state.filtered.slice(start, start + state.perPage)" in source
     assert "state.perPage: 25" not in source
     assert "perPage: 25" in source
+
+
+def test_product_linking_changes_refresh_only_affected_record():
+    source = _source(PRODUCT_LINKING_SESSION)
+
+    assert "TARGETED_DATASET_LIMIT = 25" in source
+    assert "async function refreshAffectedRecord(identity)" in source
+    assert "await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku })" in source
+    assert "await hydrate(true)" not in source
 
 
 def test_shared_page_controller_searches_cached_rows_then_paginates_locally():
