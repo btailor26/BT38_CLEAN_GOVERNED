@@ -1,15 +1,14 @@
 """
 BT38 GOVERNED RUNTIME ENGINE
 
-Event-driven runtime contract:
-- Webhooks perform immediate, targeted work in their own governed path.
-- The runtime engine performs no recurring database heartbeat writes.
-- The 15-minute safety cadence does not query or write the database when no
-  in-memory notification has been raised.
-- Full marketplace hydration remains available manually and can be enabled as
-  an explicit recovery cycle with ENABLE_GOVERNED_8H_HYDRATION=true.
+Runtime contract:
+- Webhooks perform immediate targeted work in their governed route.
+- A webhook may arm one 15-minute verification for its exact identifiers.
+- The verification never imports recent orders, scans warehouse rows, lists all
+  marketplace records, or starts marketplace hydration.
+- No webhook means no database access.
+- Full marketplace hydration is manual/recovery only.
 - Amazon FBA remains read-only.
-- No webhook or automation path pushes directly.
 """
 
 from __future__ import annotations
@@ -17,7 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 
 _started = False
 _started_at = None
@@ -37,19 +37,27 @@ _last_ebay_import = None
 _last_error = None
 _last_event_at = None
 _last_event_source = None
+_last_verification_result = None
 
 FULL_SYNC_SECONDS = 8 * 60 * 60
 LIGHT_RECONCILE_SECONDS = 15 * 60
 
-# Pure in-memory signal. Waiting on this event does not touch Neon.
+# Process-memory only. These objects never touch Neon while idle.
 _pending_notification_event = threading.Event()
 _stop_event = threading.Event()
+_pending_events = deque()
+_pending_events_lock = threading.Lock()
 
 
 def _truthy(value, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _clean(value):
+    value = str(value or "").strip()
+    return value or None
 
 
 def _safe_log(message: str):
@@ -62,25 +70,102 @@ def _safe_error(message: str, exc: Exception):
     logging.exception("[GOVERNED_RUNTIME_ENGINE] %s", _last_error)
 
 
-def notify_governed_runtime_work(source: str = "webhook") -> None:
-    """Raise an in-memory notification for the governed safety cycle.
+def _normalise_webhook_event(source, event=None, **identifiers):
+    raw = dict(event or {})
+    raw.update({key: value for key, value in identifiers.items() if value is not None})
 
-    This function is intentionally database-free. Webhook handlers may call it
-    after receiving an event. The next runtime wake processes the order-only
-    safety path once and then returns to sleep.
+    event_type = _clean(raw.get("event_type") or raw.get("type"))
+    marketplace = _clean(raw.get("marketplace") or raw.get("platform"))
+    store_id = raw.get("store_id")
+    try:
+        store_id = int(store_id) if store_id is not None else None
+    except (TypeError, ValueError):
+        store_id = None
+
+    seller_sku = _clean(raw.get("seller_sku") or raw.get("sku"))
+    listing_id = _clean(
+        raw.get("listing_id")
+        or raw.get("external_listing_id")
+        or raw.get("item_id")
+    )
+    order_id = _clean(
+        raw.get("order_id")
+        or raw.get("external_order_id")
+        or raw.get("amazon_order_id")
+    )
+    asin = _clean(raw.get("asin"))
+    fnsku = _clean(raw.get("fnsku") or raw.get("fnSku"))
+
+    scope_present = bool(
+        store_id is not None
+        and any((seller_sku, listing_id, order_id, asin, fnsku))
+    )
+
+    return {
+        "source": _clean(source) or "webhook",
+        "event_type": event_type,
+        "marketplace": marketplace,
+        "store_id": store_id,
+        "seller_sku": seller_sku,
+        "listing_id": listing_id,
+        "order_id": order_id,
+        "asin": asin,
+        "fnsku": fnsku,
+        "payload": raw.get("payload"),
+        "received_at": datetime.utcnow(),
+        "verify_after": datetime.utcnow() + timedelta(seconds=LIGHT_RECONCILE_SECONDS),
+        "scope_present": scope_present,
+    }
+
+
+def _event_key(event):
+    return (
+        event.get("source"),
+        event.get("event_type"),
+        event.get("marketplace"),
+        event.get("store_id"),
+        event.get("seller_sku"),
+        event.get("listing_id"),
+        event.get("order_id"),
+        event.get("asin"),
+        event.get("fnsku"),
+    )
+
+
+def notify_governed_runtime_work(source: str = "webhook", event=None, **identifiers):
+    """Arm a 15-minute verification for one exact webhook scope.
+
+    Backward-compatible source-only calls are accepted, but they are recorded as
+    unscoped and will be skipped without SQL. Webhook handlers should provide at
+    least store_id plus order_id, seller_sku, listing_id, asin, or fnsku.
     """
     global _last_event_at, _last_event_source
-    _last_event_at = datetime.utcnow()
-    _last_event_source = str(source or "webhook")
+
+    item = _normalise_webhook_event(source, event=event, **identifiers)
+    _last_event_at = item["received_at"]
+    _last_event_source = item["source"]
+
+    with _pending_events_lock:
+        key = _event_key(item)
+        for queued in _pending_events:
+            if _event_key(queued) == key:
+                # Keep one verification per affected identity and move its due
+                # time forward when duplicate notifications arrive.
+                queued["verify_after"] = item["verify_after"]
+                queued["payload"] = item.get("payload") or queued.get("payload")
+                break
+        else:
+            _pending_events.append(item)
+
     _pending_notification_event.set()
+    return {
+        "queued": True,
+        "scoped": item["scope_present"],
+        "verify_after": item["verify_after"].isoformat(),
+    }
 
 
 def _config_on_for_explicit_work(key: str, default: bool = False) -> bool:
-    """Read a fuse only when real work has already been requested.
-
-    It must never be called from an idle polling loop. This preserves settings
-    compatibility without keeping Neon awake.
-    """
     try:
         from models import SystemConfig
 
@@ -94,13 +179,10 @@ def _config_on_for_explicit_work(key: str, default: bool = False) -> bool:
 
 def _import_fuses_on() -> bool:
     if not _config_on_for_explicit_work("import_enabled", True):
-        _safe_log("marketplace import skipped: import_enabled OFF")
         return False
     if not _config_on_for_explicit_work("runtime_import_enabled", True):
-        _safe_log("marketplace import skipped: runtime_import_enabled OFF")
         return False
     if not _config_on_for_explicit_work("marketplace_import_enabled", True):
-        _safe_log("marketplace import skipped: marketplace_import_enabled OFF")
         return False
     return True
 
@@ -121,11 +203,7 @@ def run_governed_marketplace_import_refresh(
     store_id=None,
     source="governed_runtime_engine",
 ):
-    """Run explicit marketplace hydration.
-
-    This function is retained for manual refreshes and optional recovery work.
-    It is not called by the idle 15-minute safety cadence.
-    """
+    """Explicit full hydration for initial connection/manual recovery only."""
     global _last_marketplace_import, _last_fba_import, _last_ebay_import
 
     if not _import_fuses_on():
@@ -139,19 +217,16 @@ def run_governed_marketplace_import_refresh(
 
     results = []
     stores = _stores_for_marketplace_import()
-
     if store_id:
         stores = [store for store in stores if int(store.id) == int(store_id)]
 
     for store in stores:
         platform = str(store.platform or "").strip().lower()
-
         try:
             if "amazon" in platform:
                 if not bool(getattr(store, "fba_import_enabled", False)):
                     results.append({
                         "store_id": store.id,
-                        "store": store.name,
                         "platform": store.platform,
                         "skipped": True,
                         "reason": "fba_import_disabled",
@@ -165,18 +240,19 @@ def run_governed_marketplace_import_refresh(
                     run_governed_amazon_listing_fulfillment_refresh,
                 )
 
-                result = run_governed_amazon_inventory_import(store_id=store.id)
+                result = run_governed_amazon_inventory_import(
+                    store_id=store.id,
+                    full_refresh=True,
+                    source=source,
+                )
                 listing_fulfillment = run_governed_amazon_listing_fulfillment_refresh(
                     store_id=store.id,
                     max_pages=2,
                 )
                 _last_fba_import = datetime.utcnow()
-
                 results.append({
                     "store_id": store.id,
-                    "store": store.name,
                     "platform": store.platform,
-                    "import_type": "amazon_fba_read_only_plus_listing_fulfillment",
                     "success": True,
                     "result": result,
                     "listing_fulfillment": listing_fulfillment,
@@ -190,12 +266,9 @@ def run_governed_marketplace_import_refresh(
 
                 result = run_governed_ebay_inventory_import(store_id=store.id)
                 _last_ebay_import = datetime.utcnow()
-
                 results.append({
                     "store_id": store.id,
-                    "store": store.name,
                     "platform": store.platform,
-                    "import_type": "ebay_variation_hydration",
                     "success": True,
                     "result": result,
                 })
@@ -203,27 +276,20 @@ def run_governed_marketplace_import_refresh(
 
             results.append({
                 "store_id": store.id,
-                "store": store.name,
                 "platform": store.platform,
                 "skipped": True,
                 "reason": "unsupported_marketplace_import",
             })
-
         except Exception as exc:
-            _safe_error(
-                f"marketplace hydration failed store_id={getattr(store, 'id', None)}",
-                exc,
-            )
+            _safe_error(f"marketplace hydration failed store_id={store.id}", exc)
             results.append({
-                "store_id": getattr(store, "id", None),
-                "store": getattr(store, "name", None),
-                "platform": getattr(store, "platform", None),
+                "store_id": store.id,
+                "platform": store.platform,
                 "success": False,
                 "error": str(exc),
             })
 
     _last_marketplace_import = datetime.utcnow()
-
     return {
         "success": True,
         "governed": True,
@@ -231,129 +297,237 @@ def run_governed_marketplace_import_refresh(
         "import_only": True,
         "push_started": False,
         "sync_started": False,
-        "order_import_started": False,
-        "order_stock_bridge_started": False,
         "results": results,
     }
 
 
-def _run_light_reconcile_cycle(source="light_reconcile_event"):
-    """Run order-only verification after a real notification.
+def _first_existing_attribute(model, names):
+    for name in names:
+        if hasattr(model, name):
+            return getattr(model, name), name
+    return None, None
 
-    No marketplace inventory hydration occurs here.
-    """
-    global _last_light_reconcile
 
-    order_import = None
-    try:
-        from services.governed_marketplace_order_import import (
-            run_governed_marketplace_order_import,
-        )
+def _verify_exact_order(event):
+    from models import MarketplaceOrder
 
-        order_import = run_governed_marketplace_order_import(
-            source=f"{source}_order_import",
-        )
-    except Exception as exc:
-        _safe_error("event marketplace order import failed", exc)
-        order_import = {
-            "success": False,
-            "error": str(exc),
-        }
-
-    order_stock_bridge = None
-    try:
-        from services.governed_order_stock_mutation import (
-            mutate_recent_marketplace_order_lines,
-        )
-
-        order_stock_bridge = mutate_recent_marketplace_order_lines(
-            limit=100,
-            source=f"{source}_order_stock_bridge",
-        )
-    except Exception as exc:
-        _safe_error("event order stock bridge failed", exc)
-        order_stock_bridge = {
-            "success": False,
-            "error": str(exc),
-            "source": f"{source}_order_stock_bridge",
-        }
-
-    _last_light_reconcile = datetime.utcnow()
-    _safe_log(
-        "event-driven light reconcile complete "
-        f"order_import={order_import} order_stock_bridge={order_stock_bridge}"
+    order_column, order_field = _first_existing_attribute(
+        MarketplaceOrder,
+        ("external_order_id", "marketplace_order_id", "amazon_order_id", "order_id"),
     )
+    if order_column is None or not event.get("order_id"):
+        return {"verified": False, "reason": "exact_order_identity_unavailable"}
+
+    query = MarketplaceOrder.query.filter(order_column == event["order_id"])
+    if hasattr(MarketplaceOrder, "store_id"):
+        query = query.filter(MarketplaceOrder.store_id == event["store_id"])
+
+    row = query.first()
+    return {
+        "verified": row is not None,
+        "object": "MarketplaceOrder",
+        "identity_field": order_field,
+        "identity": event["order_id"],
+        "rows_examined_max": 1,
+    }
+
+
+def _verify_exact_fba(event):
+    from models import AmazonFBAInventory
+
+    query = AmazonFBAInventory.query
+    identity = None
+    identity_field = None
+
+    for field, value in (
+        ("seller_sku", event.get("seller_sku")),
+        ("fnsku", event.get("fnsku")),
+        ("asin", event.get("asin")),
+    ):
+        if value and hasattr(AmazonFBAInventory, field):
+            query = query.filter(getattr(AmazonFBAInventory, field) == value)
+            identity = value
+            identity_field = field
+            break
+
+    if identity is None:
+        return {"verified": False, "reason": "exact_fba_identity_unavailable"}
+    if hasattr(AmazonFBAInventory, "store_id"):
+        query = query.filter(AmazonFBAInventory.store_id == event["store_id"])
+
+    row = query.first()
+    return {
+        "verified": row is not None,
+        "object": "AmazonFBAInventory",
+        "identity_field": identity_field,
+        "identity": identity,
+        "rows_examined_max": 1,
+    }
+
+
+def _verify_exact_listing(event):
+    from models import MarketplaceListing
+
+    query = MarketplaceListing.query.filter(
+        MarketplaceListing.store_id == event["store_id"]
+    )
+    identity = None
+    identity_field = None
+
+    candidates = (
+        ("external_sku", event.get("seller_sku")),
+        ("external_listing_id", event.get("listing_id")),
+        ("fnsku", event.get("fnsku")),
+        ("asin", event.get("asin")),
+    )
+    for field, value in candidates:
+        if value and hasattr(MarketplaceListing, field):
+            query = query.filter(getattr(MarketplaceListing, field) == value)
+            identity = value
+            identity_field = field
+            break
+
+    if identity is None:
+        return {"verified": False, "reason": "exact_listing_identity_unavailable"}
+
+    row = query.first()
+    return {
+        "verified": row is not None,
+        "object": "MarketplaceListing",
+        "identity_field": identity_field,
+        "identity": identity,
+        "rows_examined_max": 1,
+    }
+
+
+def _verify_webhook_event(event):
+    """Verify only the exact identity supplied by the webhook."""
+    if not event.get("scope_present"):
+        return {
+            "verified": False,
+            "skipped": True,
+            "reason": "webhook_scope_required",
+            "database_touched": False,
+        }
+
+    event_type = str(event.get("event_type") or "").lower()
+    marketplace = str(event.get("marketplace") or "").lower()
+
+    if event.get("order_id") or "order" in event_type:
+        result = _verify_exact_order(event)
+    elif "fba" in event_type or "afn" in event_type or marketplace == "amazon_fba":
+        result = _verify_exact_fba(event)
+    else:
+        result = _verify_exact_listing(event)
 
     return {
+        **result,
+        "source": event.get("source"),
+        "store_id": event.get("store_id"),
+        "full_scan_started": False,
+        "recent_order_import_started": False,
+        "warehouse_scan_started": False,
+        "marketplace_hydration_started": False,
+    }
+
+
+def _pop_due_events(now=None):
+    now = now or datetime.utcnow()
+    due = []
+    with _pending_events_lock:
+        remaining = deque()
+        while _pending_events:
+            event = _pending_events.popleft()
+            if event["verify_after"] <= now:
+                due.append(event)
+            else:
+                remaining.append(event)
+        _pending_events.extend(remaining)
+        if not _pending_events:
+            _pending_notification_event.clear()
+    return due
+
+
+def _seconds_until_next_due(default=LIGHT_RECONCILE_SECONDS):
+    with _pending_events_lock:
+        if not _pending_events:
+            return default
+        due_at = min(event["verify_after"] for event in _pending_events)
+    return max(0.0, (due_at - datetime.utcnow()).total_seconds())
+
+
+def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
+    """Verify only webhook-provided identities; never perform broad imports."""
+    global _last_light_reconcile, _last_verification_result
+
+    events = list(events or [])
+    results = [_verify_webhook_event(event) for event in events]
+    _last_light_reconcile = datetime.utcnow()
+    _last_verification_result = {
         "success": True,
         "governed": True,
         "source": source,
-        "marketplace_import_refresh_started": False,
-        "order_import": order_import,
-        "order_stock_bridge": order_stock_bridge,
+        "events_received": len(events),
+        "events_verified": sum(1 for item in results if item.get("verified")),
+        "full_scan_started": False,
+        "recent_order_import_started": False,
+        "order_stock_bridge_started": False,
+        "warehouse_scan_started": False,
+        "marketplace_hydration_started": False,
+        "results": results,
     }
+    _safe_log(
+        "15-minute webhook verification complete "
+        f"events={len(events)} verified={_last_verification_result['events_verified']}"
+    )
+    return _last_verification_result
 
 
 def _run_full_sync_cycle():
     global _last_full_sync
-
     run_governed_marketplace_import_refresh(source="full_sync_8h_recovery")
     _last_full_sync = datetime.utcnow()
-    _safe_log("8-hour recovery hydration complete")
 
 
 def _engine_loop(app):
-    """Wait without database activity until an event or optional recovery cycle.
-
-    threading.Event.wait() blocks in memory. A timeout wake performs no SQL and
-    no timestamp persistence when no notification exists.
-    """
+    """Sleep in memory; verify queued webhook identities when their 15m timer is due."""
     global _last_full_sync
 
-    _safe_log("Event-driven engine loop started")
+    _safe_log("Webhook-scoped runtime loop started")
     hydration_enabled = _truthy(
         os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
         False,
     )
-    next_hydration_at = datetime.utcnow()
 
     while not _stop_event.is_set():
-        signalled = _pending_notification_event.wait(timeout=LIGHT_RECONCILE_SECONDS)
+        timeout = _seconds_until_next_due()
+        _pending_notification_event.wait(timeout=timeout)
 
         if _stop_event.is_set():
             break
 
+        due_events = _pop_due_events()
         try:
-            with app.app_context():
-                if signalled:
-                    _pending_notification_event.clear()
-                    _run_light_reconcile_cycle(
-                        source=f"event_{_last_event_source or 'webhook'}",
-                    )
+            if due_events:
+                with app.app_context():
+                    _run_light_reconcile_cycle(events=due_events)
 
-                if hydration_enabled:
-                    now = datetime.utcnow()
-                    hydration_due = (
-                        _last_full_sync is None
-                        or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS
-                    )
-                    if hydration_due and now >= next_hydration_at:
+            if hydration_enabled:
+                now = datetime.utcnow()
+                if (
+                    _last_full_sync is None
+                    or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS
+                ):
+                    with app.app_context():
                         _run_full_sync_cycle()
-                        next_hydration_at = now
-
-                if not signalled and not hydration_enabled:
-                    _safe_log("15-minute safety wake slept: no event, no database work")
-
         except Exception as exc:
             _safe_error("Engine loop error", exc)
 
-    _safe_log("Event-driven engine loop stopped")
+    _safe_log("Webhook-scoped runtime loop stopped")
 
 
 def _acquire_runtime_owner_lock() -> bool:
-    """Ensure one OS process owns the governed runtime thread."""
     global _runtime_lock_handle
-
     if _runtime_lock_handle is not None:
         return True
 
@@ -365,54 +539,33 @@ def _acquire_runtime_owner_lock() -> bool:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             handle.close()
-            _safe_log("Governed runtime engine already owned by another process")
             return False
 
         handle.seek(0)
         handle.truncate()
-        handle.write(
-            f"pid={os.getpid()} started_at={datetime.utcnow().isoformat()}Z\n"
-        )
+        handle.write(f"pid={os.getpid()} started_at={datetime.utcnow().isoformat()}Z\n")
         handle.flush()
-
         _runtime_lock_handle = handle
-        _safe_log(
-            f"Governed runtime owner lock acquired path={_RUNTIME_LOCK_PATH}"
-        )
         return True
-
     except Exception as exc:
         _safe_error("Governed runtime owner lock failed", exc)
         return False
 
 
 def start_governed_runtime_engine(app):
-    """Start the event-driven governed runtime engine once."""
     global _started, _started_at
 
     with _status_lock:
         if _started:
             return False
-
-        enabled = _truthy(
-            os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"),
-            True,
-        )
-        if not enabled:
-            _safe_log("ENABLE_GOVERNED_RUNTIME_ENGINE is OFF")
+        if not _truthy(os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"), True):
             return False
-
         if not _acquire_runtime_owner_lock():
             return False
-
         _started = True
         _started_at = datetime.utcnow()
 
     try:
-        _safe_log(
-            "Governed runtime is event-driven; idle safety wakes do not touch DB"
-        )
-
         thread = threading.Thread(
             target=_engine_loop,
             args=(app,),
@@ -420,7 +573,6 @@ def start_governed_runtime_engine(app):
             name="BT38GovernedRuntimeEngine",
         )
         thread.start()
-        _safe_log("Governed runtime engine started")
         return True
     except Exception as exc:
         _safe_error("Governed runtime engine failed to start", exc)
@@ -428,9 +580,14 @@ def start_governed_runtime_engine(app):
 
 
 def get_governed_runtime_status():
-    """Return process-local runtime status without querying Neon."""
     now = datetime.utcnow()
     engine_live = bool(_started)
+    with _pending_events_lock:
+        pending_count = len(_pending_events)
+        next_due = min(
+            (event["verify_after"] for event in _pending_events),
+            default=None,
+        )
 
     return {
         "engine_started": engine_live,
@@ -445,30 +602,26 @@ def get_governed_runtime_status():
             _last_light_reconcile.isoformat() if _last_light_reconcile else None
         ),
         "last_marketplace_import": (
-            _last_marketplace_import.isoformat()
-            if _last_marketplace_import
-            else None
+            _last_marketplace_import.isoformat() if _last_marketplace_import else None
         ),
         "last_fba_import": _last_fba_import.isoformat() if _last_fba_import else None,
-        "last_ebay_import": (
-            _last_ebay_import.isoformat() if _last_ebay_import else None
-        ),
+        "last_ebay_import": _last_ebay_import.isoformat() if _last_ebay_import else None,
         "next_full_sync_seconds": (
-            max(
-                0,
-                FULL_SYNC_SECONDS
-                - int((now - _last_full_sync).total_seconds()),
-            )
+            max(0, FULL_SYNC_SECONDS - int((now - _last_full_sync).total_seconds()))
             if _last_full_sync
             else 0
         ),
-        "next_light_reconcile_seconds": 0,
+        "next_light_reconcile_seconds": (
+            max(0, int((next_due - now).total_seconds())) if next_due else 0
+        ),
         "last_error": _last_error,
         "runtime_heartbeat": None,
         "runtime_status_source": "process_memory",
-        "pending_notification": _pending_notification_event.is_set(),
+        "pending_notification": pending_count > 0,
+        "pending_webhook_verifications": pending_count,
         "last_event_at": _last_event_at.isoformat() if _last_event_at else None,
         "last_event_source": _last_event_source,
+        "last_verification_result": _last_verification_result,
         "automatic_8h_hydration_enabled": _truthy(
             os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
             False,
