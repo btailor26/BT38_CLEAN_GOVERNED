@@ -20,13 +20,14 @@ def test_shared_controller_explicitly_skips_product_linking():
     assert "wireAsyncProductLinking" not in source
 
 
-def test_product_linking_session_loads_one_complete_working_set():
+def test_product_linking_session_loads_full_working_set_only_once_daily():
     source = _source(SESSION_CONTROLLER)
 
-    assert 'per_page: "5000"' in source
-    assert 'limit: "5000"' in source
+    assert "FULL_DATASET_LIMIT = 5000" in source
+    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
     assert 'fetch(`/governed/product-linking/data?' in source
-    assert "state.hydrated && !force" in source
+    assert "fetchFullSnapshotOnceDaily" in source
+    assert "snapshotIsFresh" in source
     assert "if (state.hydrating) return state.hydrating" in source
 
 
@@ -51,9 +52,11 @@ def test_product_linking_modal_searches_use_cached_arrays():
     assert "/governed/product-linking/search-warehouse" not in source
 
 
-def test_mutations_remain_governed_and_rehydrate_after_change():
+def test_mutations_remain_governed_and_refresh_only_affected_record():
     source = _source(SESSION_CONTROLLER)
 
     assert 'fetch("/governed/product-linking/link-listing-to-warehouse"' in source
-    assert "await hydrate(true)" in source
+    assert "await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku })" in source
+    assert "TARGETED_DATASET_LIMIT = 25" in source
+    assert "await hydrate(true)" not in source
     assert "mappingExists(listingId, warehouseId)" in source
