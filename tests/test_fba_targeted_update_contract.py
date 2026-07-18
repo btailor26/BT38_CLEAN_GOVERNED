@@ -54,3 +54,38 @@ def test_full_fba_refresh_requires_explicit_true_flag():
     assert "if full_refresh:" in source
     assert "rows = AmazonSPAPIAdapter(store).get_inventory()" in source
     assert '"full_scan_started": bool(full_refresh)' in source
+
+
+def test_unchanged_fba_event_exits_without_database_write():
+    source = _source()
+    tree = ast.parse(source)
+    apply_row = ast.get_source_segment(source, _function(tree, "_apply_inventory_row"))
+    event = ast.get_source_segment(source, _function(tree, "apply_governed_amazon_fba_event"))
+
+    assert "_inventory_unchanged(" in apply_row
+    assert "_listing_cache_unchanged(" in apply_row
+    assert '"reason": "unchanged"' in apply_row
+    assert '"rows_updated": 0' in event
+    assert "db.session.rollback()" in event
+
+
+def test_fba_event_never_repairs_product_linking_relationships():
+    source = _source()
+
+    assert "_preserve_relationship" not in source
+    assert "_find_relationship_source" not in source
+    assert "existing_listing.warehouse_stock_id =" not in source
+    assert "existing_listing.master_product_group_id =" not in source
+    assert "inventory_row.warehouse_stock_id =" not in source
+    assert '"relationship_mutation": False' in source
+
+
+def test_targeted_listing_resolution_is_identity_scoped():
+    source = _source()
+    tree = ast.parse(source)
+    function_source = ast.get_source_segment(source, _function(tree, "_find_existing_listing"))
+
+    assert "MarketplaceListing.store_id == store.id" in function_source
+    assert "MarketplaceListing.external_sku == sku" in function_source
+    assert ".first()" in function_source
+    assert ".all()" not in function_source
