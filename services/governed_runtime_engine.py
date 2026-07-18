@@ -1,14 +1,15 @@
 """
 BT38 GOVERNED RUNTIME ENGINE
 
-One governed automation starter:
-- Light reconcile cadence: 15 minutes
-- Full refresh cadence: 8 hours
-- Import/hydration runs before sync/push decisions
-- Amazon FBA remains read-only
-- eBay variations are imported into DB as searchable marketplace rows
-- Webhooks may trigger import refresh only
-- No webhook or automation path pushes directly
+Event-driven runtime contract:
+- Webhooks perform immediate, targeted work in their own governed path.
+- The runtime engine performs no recurring database heartbeat writes.
+- The 15-minute safety cadence does not query or write the database when no
+  in-memory notification has been raised.
+- Full marketplace hydration remains available manually and can be enabled as
+  an explicit recovery cycle with ENABLE_GOVERNED_8H_HYDRATION=true.
+- Amazon FBA remains read-only.
+- No webhook or automation path pushes directly.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from datetime import datetime
 
 _started = False
@@ -35,48 +35,21 @@ _last_marketplace_import = None
 _last_fba_import = None
 _last_ebay_import = None
 _last_error = None
+_last_event_at = None
+_last_event_source = None
 
 FULL_SYNC_SECONDS = 8 * 60 * 60
 LIGHT_RECONCILE_SECONDS = 15 * 60
+
+# Pure in-memory signal. Waiting on this event does not touch Neon.
+_pending_notification_event = threading.Event()
+_stop_event = threading.Event()
 
 
 def _truthy(value, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-
-def _config_on(key: str, default: bool = False) -> bool:
-    try:
-        from models import SystemConfig
-
-        row = SystemConfig.query.filter_by(key=key).first()
-        if not row:
-            return default
-        return _truthy(row.value, default)
-    except Exception:
-        return default
-
-
-def _runtime_status_set(key: str, value) -> None:
-    try:
-        from extensions import db
-        from models import SystemConfig
-
-        full_key = f"runtime_{key}"
-        row = SystemConfig.query.filter_by(key=full_key).first()
-        if row is None:
-            row = SystemConfig(key=full_key, value=str(value))
-            db.session.add(row)
-        else:
-            row.value = str(value)
-        db.session.commit()
-    except Exception as exc:
-        _safe_error(f"runtime status persist failed key={key}", exc)
-
-
-def _runtime_status_stamp(key: str) -> None:
-    _runtime_status_set(key, datetime.utcnow().isoformat() + "Z")
 
 
 def _safe_log(message: str):
@@ -89,14 +62,44 @@ def _safe_error(message: str, exc: Exception):
     logging.exception("[GOVERNED_RUNTIME_ENGINE] %s", _last_error)
 
 
+def notify_governed_runtime_work(source: str = "webhook") -> None:
+    """Raise an in-memory notification for the governed safety cycle.
+
+    This function is intentionally database-free. Webhook handlers may call it
+    after receiving an event. The next runtime wake processes the order-only
+    safety path once and then returns to sleep.
+    """
+    global _last_event_at, _last_event_source
+    _last_event_at = datetime.utcnow()
+    _last_event_source = str(source or "webhook")
+    _pending_notification_event.set()
+
+
+def _config_on_for_explicit_work(key: str, default: bool = False) -> bool:
+    """Read a fuse only when real work has already been requested.
+
+    It must never be called from an idle polling loop. This preserves settings
+    compatibility without keeping Neon awake.
+    """
+    try:
+        from models import SystemConfig
+
+        row = SystemConfig.query.filter_by(key=key).first()
+        if not row:
+            return default
+        return _truthy(row.value, default)
+    except Exception:
+        return default
+
+
 def _import_fuses_on() -> bool:
-    if not _config_on("import_enabled", True):
+    if not _config_on_for_explicit_work("import_enabled", True):
         _safe_log("marketplace import skipped: import_enabled OFF")
         return False
-    if not _config_on("runtime_import_enabled", True):
+    if not _config_on_for_explicit_work("runtime_import_enabled", True):
         _safe_log("marketplace import skipped: runtime_import_enabled OFF")
         return False
-    if not _config_on("marketplace_import_enabled", True):
+    if not _config_on_for_explicit_work("marketplace_import_enabled", True):
         _safe_log("marketplace import skipped: marketplace_import_enabled OFF")
         return False
     return True
@@ -114,21 +117,14 @@ def _stores_for_marketplace_import():
     )
 
 
-def run_governed_marketplace_import_refresh(store_id=None, source="governed_runtime_engine"):
-    """
-    Hydration/reconciliation path only.
+def run_governed_marketplace_import_refresh(
+    store_id=None,
+    source="governed_runtime_engine",
+):
+    """Run explicit marketplace hydration.
 
-    This path is for the 8-hour full sync:
-    - Amazon FBA/AFN inventory import
-    - Amazon listing fulfilment refresh
-    - eBay inventory / variation hydration
-
-    It must not import orders.
-    It must not mutate warehouse stock from orders.
-    It must not run the order stock bridge.
-
-    Order verification belongs to the 15-minute light reconcile path.
-    Immediate event processing belongs to webhook execution.
+    This function is retained for manual refreshes and optional recovery work.
+    It is not called by the idle 15-minute safety cadence.
     """
     global _last_marketplace_import, _last_fba_import, _last_ebay_import
 
@@ -145,7 +141,7 @@ def run_governed_marketplace_import_refresh(store_id=None, source="governed_runt
     stores = _stores_for_marketplace_import()
 
     if store_id:
-        stores = [s for s in stores if int(s.id) == int(store_id)]
+        stores = [store for store in stores if int(store.id) == int(store_id)]
 
     for store in stores:
         platform = str(store.platform or "").strip().lower()
@@ -162,7 +158,9 @@ def run_governed_marketplace_import_refresh(store_id=None, source="governed_runt
                     })
                     continue
 
-                from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
+                from services.governed_amazon_inventory_import import (
+                    run_governed_amazon_inventory_import,
+                )
                 from services.governed_amazon_listing_fulfillment_refresh import (
                     run_governed_amazon_listing_fulfillment_refresh,
                 )
@@ -186,7 +184,9 @@ def run_governed_marketplace_import_refresh(store_id=None, source="governed_runt
                 continue
 
             if "ebay" in platform:
-                from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
+                from services.governed_ebay_inventory_import import (
+                    run_governed_ebay_inventory_import,
+                )
 
                 result = run_governed_ebay_inventory_import(store_id=store.id)
                 _last_ebay_import = datetime.utcnow()
@@ -210,7 +210,10 @@ def run_governed_marketplace_import_refresh(store_id=None, source="governed_runt
             })
 
         except Exception as exc:
-            _safe_error(f"marketplace hydration failed store_id={getattr(store, 'id', None)}", exc)
+            _safe_error(
+                f"marketplace hydration failed store_id={getattr(store, 'id', None)}",
+                exc,
+            )
             results.append({
                 "store_id": getattr(store, "id", None),
                 "store": getattr(store, "name", None),
@@ -234,11 +237,12 @@ def run_governed_marketplace_import_refresh(store_id=None, source="governed_runt
     }
 
 
+def _run_light_reconcile_cycle(source="light_reconcile_event"):
+    """Run order-only verification after a real notification.
 
-def _run_light_reconcile_cycle():
+    No marketplace inventory hydration occurs here.
+    """
     global _last_light_reconcile
-
-    source = "light_reconcile_15m"
 
     order_import = None
     try:
@@ -249,9 +253,8 @@ def _run_light_reconcile_cycle():
         order_import = run_governed_marketplace_order_import(
             source=f"{source}_order_import",
         )
-
     except Exception as exc:
-        _safe_error("15-minute marketplace order import failed", exc)
+        _safe_error("event marketplace order import failed", exc)
         order_import = {
             "success": False,
             "error": str(exc),
@@ -268,7 +271,7 @@ def _run_light_reconcile_cycle():
             source=f"{source}_order_stock_bridge",
         )
     except Exception as exc:
-        _safe_error("15-minute order stock bridge failed", exc)
+        _safe_error("event order stock bridge failed", exc)
         order_stock_bridge = {
             "success": False,
             "error": str(exc),
@@ -276,9 +279,8 @@ def _run_light_reconcile_cycle():
         }
 
     _last_light_reconcile = datetime.utcnow()
-    _runtime_status_stamp("last_light_reconcile")
     _safe_log(
-        f"15-minute light reconcile order-only complete "
+        "event-driven light reconcile complete "
         f"order_import={order_import} order_stock_bridge={order_stock_bridge}"
     )
 
@@ -291,107 +293,65 @@ def _run_light_reconcile_cycle():
         "order_stock_bridge": order_stock_bridge,
     }
 
+
 def _run_full_sync_cycle():
     global _last_full_sync
 
-    run_governed_marketplace_import_refresh(source="full_sync_8h_import_first")
+    run_governed_marketplace_import_refresh(source="full_sync_8h_recovery")
     _last_full_sync = datetime.utcnow()
-    _runtime_status_stamp("last_full_sync")
-    _safe_log("8-hour full cycle import refresh complete")
-
-
-def _has_pending_notification_work() -> bool:
-    """
-    15-minute reconcile should not hammer marketplace/order import when there is
-    no webhook/notification work to verify.
-    """
-    try:
-        from datetime import timedelta
-        from models import SystemLog
-
-        cutoff = datetime.utcnow() - timedelta(minutes=20)
-
-        notification_count = (
-            SystemLog.query
-            .filter(SystemLog.created_at >= cutoff)
-            .filter(SystemLog.log_type.in_([
-                "marketplace_webhook",
-                "governed_webhook_execution",
-            ]))
-            .count()
-        )
-
-        if notification_count > 0:
-            return True
-
-        from models import MarketplaceOrder
-
-        pending_fbm_count = (
-            MarketplaceOrder.query
-            .filter(MarketplaceOrder.status == "pending")
-            .filter(MarketplaceOrder.fulfillment_type == "FBM")
-            .filter(MarketplaceOrder.warehouse_stock_id.isnot(None))
-            .count()
-        )
-
-        return pending_fbm_count > 0
-    except Exception as exc:
-        _safe_error("notification work check failed", exc)
-        return False
+    _safe_log("8-hour recovery hydration complete")
 
 
 def _engine_loop(app):
-    global _last_full_sync, _last_light_reconcile
+    """Wait without database activity until an event or optional recovery cycle.
 
-    _safe_log("Engine loop started")
+    threading.Event.wait() blocks in memory. A timeout wake performs no SQL and
+    no timestamp persistence when no notification exists.
+    """
+    global _last_full_sync
 
-    while True:
+    _safe_log("Event-driven engine loop started")
+    hydration_enabled = _truthy(
+        os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
+        False,
+    )
+    next_hydration_at = datetime.utcnow()
+
+    while not _stop_event.is_set():
+        signalled = _pending_notification_event.wait(timeout=LIGHT_RECONCILE_SECONDS)
+
+        if _stop_event.is_set():
+            break
+
         try:
             with app.app_context():
-                if not _config_on("runtime_engine_started", False):
-                    _runtime_status_set("engine_started", "true")
-                    _runtime_status_stamp("engine_started_at")
-                _runtime_status_stamp("heartbeat")
-                if _config_on("read_only_mode", False):
-                    _safe_log("Runtime paused: read_only_mode ON")
-                    time.sleep(60)
-                    continue
+                if signalled:
+                    _pending_notification_event.clear()
+                    _run_light_reconcile_cycle(
+                        source=f"event_{_last_event_source or 'webhook'}",
+                    )
 
-                now = datetime.utcnow()
-
-                if _last_light_reconcile is None or (now - _last_light_reconcile).total_seconds() >= LIGHT_RECONCILE_SECONDS:
-                    if _config_on("scheduler_enabled", True) and _config_on("reconcile_15m_enabled", True):
-                        if _has_pending_notification_work():
-                            _run_light_reconcile_cycle()
-                        else:
-                            _last_light_reconcile = now
-                            _runtime_status_stamp("last_light_reconcile")
-                            _safe_log("15-minute reconcile slept: no pending webhook/notification work")
-                    else:
-                        _safe_log("15-minute reconcile skipped by fuse box")
-                        _last_light_reconcile = now
-
-                if _last_full_sync is None or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS:
-                    if _config_on("sync_enabled", True) and _config_on("sync_worker_enabled", True):
+                if hydration_enabled:
+                    now = datetime.utcnow()
+                    hydration_due = (
+                        _last_full_sync is None
+                        or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS
+                    )
+                    if hydration_due and now >= next_hydration_at:
                         _run_full_sync_cycle()
-                    else:
-                        _safe_log("8-hour full cycle skipped by fuse box")
-                        _last_full_sync = now
+                        next_hydration_at = now
+
+                if not signalled and not hydration_enabled:
+                    _safe_log("15-minute safety wake slept: no event, no database work")
 
         except Exception as exc:
             _safe_error("Engine loop error", exc)
 
-        time.sleep(30)
+    _safe_log("Event-driven engine loop stopped")
 
 
 def _acquire_runtime_owner_lock() -> bool:
-    """
-    Ensures only one OS process owns the governed runtime engine.
-
-    Gunicorn may run multiple web workers.
-    One-off audit scripts may import app.py.
-    Neither should create duplicate governed runtime engines.
-    """
+    """Ensure one OS process owns the governed runtime thread."""
     global _runtime_lock_handle
 
     if _runtime_lock_handle is not None:
@@ -410,11 +370,15 @@ def _acquire_runtime_owner_lock() -> bool:
 
         handle.seek(0)
         handle.truncate()
-        handle.write(f"pid={os.getpid()} started_at={datetime.utcnow().isoformat()}Z\n")
+        handle.write(
+            f"pid={os.getpid()} started_at={datetime.utcnow().isoformat()}Z\n"
+        )
         handle.flush()
 
         _runtime_lock_handle = handle
-        _safe_log(f"Governed runtime owner lock acquired path={_RUNTIME_LOCK_PATH}")
+        _safe_log(
+            f"Governed runtime owner lock acquired path={_RUNTIME_LOCK_PATH}"
+        )
         return True
 
     except Exception as exc:
@@ -423,19 +387,17 @@ def _acquire_runtime_owner_lock() -> bool:
 
 
 def start_governed_runtime_engine(app):
-    """
-    Starts the governed runtime engine once per process.
-
-    This does not bypass fuse settings.
-    This does not create a second marketplace authority.
-    """
+    """Start the event-driven governed runtime engine once."""
     global _started, _started_at
 
     with _status_lock:
         if _started:
             return False
 
-        enabled = _truthy(os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"), True)
+        enabled = _truthy(
+            os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"),
+            True,
+        )
         if not enabled:
             _safe_log("ENABLE_GOVERNED_RUNTIME_ENGINE is OFF")
             return False
@@ -447,7 +409,9 @@ def start_governed_runtime_engine(app):
         _started_at = datetime.utcnow()
 
     try:
-        _safe_log("Governed runtime owns 15-minute reconcile and 8-hour hydration; legacy dispatcher not started")
+        _safe_log(
+            "Governed runtime is event-driven; idle safety wakes do not touch DB"
+        )
 
         thread = threading.Thread(
             target=_engine_loop,
@@ -463,70 +427,51 @@ def start_governed_runtime_engine(app):
         return False
 
 
-def _persisted_runtime_truth():
-    """
-    Multi-worker safe runtime truth.
-
-    Gunicorn workers have separate memory, so _started only tells the truth
-    for the worker that owns the runtime thread. Persisted heartbeat is the
-    shared production truth.
-    """
-    try:
-        from datetime import datetime
-        from models import SystemConfig
-
-        def get_value(key):
-            row = SystemConfig.query.filter_by(key=key).first()
-            return str(row.value).strip() if row and row.value is not None else None
-
-        started = _truthy(get_value("runtime_engine_started"), False)
-        heartbeat_raw = get_value("runtime_heartbeat")
-        started_at = get_value("runtime_engine_started_at")
-
-        heartbeat_fresh = False
-        if heartbeat_raw:
-            hb = heartbeat_raw.replace("Z", "")
-            heartbeat_at = datetime.fromisoformat(hb)
-            heartbeat_fresh = (datetime.utcnow() - heartbeat_at).total_seconds() <= 120
-
-        return {
-            "persisted_engine_started": started,
-            "persisted_heartbeat": heartbeat_raw,
-            "persisted_started_at": started_at,
-            "persisted_runtime_live": bool(started and heartbeat_fresh),
-        }
-    except Exception as exc:
-        _safe_error("persisted runtime truth read failed", exc)
-        return {
-            "persisted_engine_started": False,
-            "persisted_heartbeat": None,
-            "persisted_started_at": None,
-            "persisted_runtime_live": False,
-        }
-
-
 def get_governed_runtime_status():
+    """Return process-local runtime status without querying Neon."""
     now = datetime.utcnow()
-    persisted = _persisted_runtime_truth()
-    engine_live = bool(_started or persisted.get("persisted_runtime_live"))
+    engine_live = bool(_started)
 
     return {
         "engine_started": engine_live,
-        "runtime_mode": "AUTOMATED GOVERNED" if engine_live else "MANUAL GOVERNED",
-        "execution_mode": "AUTOMATED + MANUAL GOVERNED" if engine_live else "MANUAL ONLY",
+        "runtime_mode": "EVENT-DRIVEN GOVERNED" if engine_live else "MANUAL GOVERNED",
+        "execution_mode": "EVENT + MANUAL GOVERNED" if engine_live else "MANUAL ONLY",
         "workers_running": engine_live,
         "schedulers_running": engine_live,
         "queue_consumers_running": engine_live,
-        "started_at": _started_at.isoformat() if _started_at else persisted.get("persisted_started_at"),
+        "started_at": _started_at.isoformat() if _started_at else None,
         "last_full_sync": _last_full_sync.isoformat() if _last_full_sync else None,
-        "last_light_reconcile": _last_light_reconcile.isoformat() if _last_light_reconcile else None,
-        "last_marketplace_import": _last_marketplace_import.isoformat() if _last_marketplace_import else None,
+        "last_light_reconcile": (
+            _last_light_reconcile.isoformat() if _last_light_reconcile else None
+        ),
+        "last_marketplace_import": (
+            _last_marketplace_import.isoformat()
+            if _last_marketplace_import
+            else None
+        ),
         "last_fba_import": _last_fba_import.isoformat() if _last_fba_import else None,
-        "last_ebay_import": _last_ebay_import.isoformat() if _last_ebay_import else None,
-        "next_full_sync_seconds": max(0, FULL_SYNC_SECONDS - int((now - _last_full_sync).total_seconds())) if _last_full_sync else 0,
-        "next_light_reconcile_seconds": max(0, LIGHT_RECONCILE_SECONDS - int((now - _last_light_reconcile).total_seconds())) if _last_light_reconcile else 0,
+        "last_ebay_import": (
+            _last_ebay_import.isoformat() if _last_ebay_import else None
+        ),
+        "next_full_sync_seconds": (
+            max(
+                0,
+                FULL_SYNC_SECONDS
+                - int((now - _last_full_sync).total_seconds()),
+            )
+            if _last_full_sync
+            else 0
+        ),
+        "next_light_reconcile_seconds": 0,
         "last_error": _last_error,
-        "runtime_heartbeat": persisted.get("persisted_heartbeat"),
-        "runtime_status_source": "memory_or_persisted_heartbeat",
+        "runtime_heartbeat": None,
+        "runtime_status_source": "process_memory",
+        "pending_notification": _pending_notification_event.is_set(),
+        "last_event_at": _last_event_at.isoformat() if _last_event_at else None,
+        "last_event_source": _last_event_source,
+        "automatic_8h_hydration_enabled": _truthy(
+            os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
+            False,
+        ),
+        "idle_db_activity": False,
     }
-
