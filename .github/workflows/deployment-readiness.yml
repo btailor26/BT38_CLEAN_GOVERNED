@@ -64,4 +64,5 @@ jobs:
             tests/test_runtime_deployment_contract.py \
             tests/test_fba_targeted_update_contract.py \
             tests/test_webhook_scoped_reconcile_contract.py \
-            tests/test_webhook_push_alignment_contract.py
+            tests/test_webhook_push_alignment_contract.py \
+            tests/test_ui_production_alignment_contract.py
