@@ -1,0 +1,60 @@
+name: Deployment Readiness
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  deployment-readiness:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv sync --frozen --no-dev
+
+      - name: Compile production entry points and changed runtime
+        run: |
+          uv run python -m py_compile \
+            main.py \
+            app.py \
+            models.py \
+            governed_routes.py \
+            governed_group_routes.py \
+            governed_group_propagation_routes.py \
+            governed_runtime_visibility_routes.py \
+            services/governed_runtime_engine.py \
+            services/governed_ebay_inventory_import.py \
+            services/governed_amazon_inventory_import.py \
+            services/governed_marketplace_order_import.py \
+            services/governed_order_stock_mutation.py
+
+      - name: Verify deterministic production build inputs
+        run: |
+          test -f Dockerfile
+          test -f fly.toml
+          test -f pyproject.toml
+          test -f uv.lock
+          grep -q 'uv sync --frozen --no-dev' Dockerfile
+          grep -q 'main:app' Dockerfile
+          grep -q 'app = "bt38-prod"' fly.toml
+
+      - name: Run runtime deployment contract
+        run: |
+          uv run python -m pytest -q tests/test_runtime_deployment_contract.py
