@@ -8,15 +8,15 @@ Normal-operation contract:
 - Full FBA hydration is allowed only when the caller explicitly passes
   full_refresh=True for initial connection or operator recovery.
 - Do not create MarketplaceListing or WarehouseStock rows.
-- Do not mutate warehouse stock quantities.
+- Do not mutate warehouse stock quantities or Product Linking relationships.
 """
 
 from datetime import datetime
 
 from app import db
-from models import Store, MarketplaceListing, AmazonFBAInventory, SyncLog
-from services.runtime_status_writer import set_store_runtime_status
+from models import AmazonFBAInventory, MarketplaceListing, Store, SyncLog
 from backend.adapters.amazon_sp_api_adapter import AmazonSPAPIAdapter
+from services.runtime_status_writer import set_store_runtime_status
 
 
 def _clean(value):
@@ -32,109 +32,6 @@ def _normalise_channel(value):
     return "UNKNOWN"
 
 
-def _identity_query(store, sku, asin=None, fnsku=None):
-    """Query only rows matching the changed Amazon catalogue identity."""
-    sku = _clean(sku)
-    asin = _clean(asin)
-    fnsku = _clean(fnsku)
-
-    base = db.session.query(MarketplaceListing).filter(
-        MarketplaceListing.store_id == store.id
-    )
-
-    if sku:
-        rows = base.filter(MarketplaceListing.external_sku == sku).all()
-        if rows:
-            return rows
-
-    if fnsku:
-        rows = base.filter(
-            (MarketplaceListing.external_listing_id == fnsku)
-            | (MarketplaceListing.fnsku == fnsku)
-        ).all()
-        if rows:
-            return rows
-
-    if asin:
-        return base.filter(MarketplaceListing.asin == asin).all()
-
-    return []
-
-
-def _find_existing_listing(store, sku, asin=None, fnsku=None):
-    rows = _identity_query(store, sku=sku, asin=asin, fnsku=fnsku)
-    active = [row for row in rows if bool(getattr(row, "is_active", False))]
-    if not active:
-        return None
-
-    return sorted(
-        active,
-        key=lambda row: (
-            0 if getattr(row, "warehouse_stock_id", None) else 1,
-            0 if getattr(row, "master_product_group_id", None) else 1,
-            -(int(getattr(row, "id", 0) or 0)),
-        ),
-    )[0]
-
-
-def _find_relationship_source(store, sku, asin=None, fnsku=None, exclude_id=None):
-    candidates = _identity_query(store, sku=sku, asin=asin, fnsku=fnsku)
-    linked = [
-        row
-        for row in candidates
-        if int(getattr(row, "id", 0) or 0) != int(exclude_id or 0)
-        and (
-            getattr(row, "warehouse_stock_id", None)
-            or getattr(row, "master_product_group_id", None)
-        )
-    ]
-    if not linked:
-        return None
-
-    return sorted(
-        linked,
-        key=lambda row: (
-            0 if bool(getattr(row, "is_active", False)) else 1,
-            0 if getattr(row, "warehouse_stock_id", None) else 1,
-            0 if getattr(row, "master_product_group_id", None) else 1,
-            -(int(getattr(row, "id", 0) or 0)),
-        ),
-    )[0]
-
-
-def _preserve_relationship(existing_listing, source_listing, inventory_row):
-    """Carry forward relationship identity without changing warehouse quantity."""
-    preserved = False
-
-    if existing_listing is not None and source_listing is not None:
-        if (
-            not getattr(existing_listing, "warehouse_stock_id", None)
-            and getattr(source_listing, "warehouse_stock_id", None)
-        ):
-            existing_listing.warehouse_stock_id = source_listing.warehouse_stock_id
-            preserved = True
-
-        if (
-            not getattr(existing_listing, "master_product_group_id", None)
-            and getattr(source_listing, "master_product_group_id", None)
-        ):
-            existing_listing.master_product_group_id = source_listing.master_product_group_id
-            preserved = True
-
-    relationship_listing = existing_listing or source_listing
-    if (
-        inventory_row is not None
-        and relationship_listing is not None
-        and hasattr(inventory_row, "warehouse_stock_id")
-        and not getattr(inventory_row, "warehouse_stock_id", None)
-        and getattr(relationship_listing, "warehouse_stock_id", None)
-    ):
-        inventory_row.warehouse_stock_id = relationship_listing.warehouse_stock_id
-        preserved = True
-
-    return preserved
-
-
 def _normalise_event_row(payload):
     """Accept adapter rows or Amazon notification-style field names."""
     payload = dict(payload or {})
@@ -143,21 +40,17 @@ def _normalise_event_row(payload):
     def _qty(*keys):
         for key in keys:
             value = payload.get(key)
-            if value is not None:
-                return int(value or 0)
-            value = details.get(key)
-            if value is not None:
-                if isinstance(value, dict):
-                    return int(value.get("totalReservedQuantity") or 0)
-                return int(value or 0)
+            if value is None:
+                value = details.get(key)
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                value = value.get("totalReservedQuantity") or 0
+            return int(value or 0)
         return 0
 
     return {
-        "seller_sku": (
-            payload.get("seller_sku")
-            or payload.get("sellerSku")
-            or payload.get("sku")
-        ),
+        "seller_sku": payload.get("seller_sku") or payload.get("sellerSku") or payload.get("sku"),
         "asin": payload.get("asin"),
         "fnsku": payload.get("fnsku") or payload.get("fnSku"),
         "fulfillment_channel": (
@@ -165,25 +58,84 @@ def _normalise_event_row(payload):
             or payload.get("fulfillmentChannel")
             or "AFN"
         ),
-        "available_quantity": _qty(
-            "available_quantity",
-            "fulfillableQuantity",
-            "totalQuantity",
-        ),
-        "reserved_quantity": _qty(
-            "reserved_quantity",
-            "reservedQuantity",
-        ),
+        "available_quantity": _qty("available_quantity", "fulfillableQuantity", "totalQuantity"),
+        "reserved_quantity": _qty("reserved_quantity", "reservedQuantity"),
         "inbound_quantity": _qty("inbound_quantity"),
     }
 
 
+def _find_existing_listing(store, sku, asin=None, fnsku=None):
+    """Resolve only the affected listing identity; never scan unrelated listings."""
+    base = db.session.query(MarketplaceListing).filter(
+        MarketplaceListing.store_id == store.id,
+        MarketplaceListing.is_active == True,  # noqa: E712
+    )
+
+    if sku:
+        listing = base.filter(MarketplaceListing.external_sku == sku).order_by(
+            MarketplaceListing.id.desc()
+        ).first()
+        if listing:
+            return listing
+
+    if fnsku:
+        listing = base.filter(
+            (MarketplaceListing.external_listing_id == fnsku)
+            | (MarketplaceListing.fnsku == fnsku)
+        ).order_by(MarketplaceListing.id.desc()).first()
+        if listing:
+            return listing
+
+    if asin:
+        return base.filter(MarketplaceListing.asin == asin).order_by(
+            MarketplaceListing.id.desc()
+        ).first()
+
+    return None
+
+
+def _same_value(obj, field, expected):
+    if not hasattr(obj, field):
+        return True
+    current = getattr(obj, field, None)
+    if expected is None:
+        return current in (None, "")
+    return current == expected
+
+
+def _inventory_unchanged(inv, *, store_id, asin, fnsku, qty, reserved, inbound):
+    if inv is None:
+        return False
+    checks = [
+        _same_value(inv, "store_id", store_id),
+        _same_value(inv, "available_quantity", qty),
+        _same_value(inv, "reserved_quantity", reserved),
+        _same_value(inv, "inbound_quantity", inbound),
+        _same_value(inv, "asin", asin or None),
+        _same_value(inv, "fnsku", fnsku or None),
+        _same_value(inv, "is_archived", False),
+        _same_value(inv, "last_sync_status", "success"),
+    ]
+    return all(checks)
+
+
+def _listing_cache_unchanged(listing, *, asin, fnsku, qty):
+    if listing is None:
+        return True
+    checks = [
+        _same_value(listing, "asin", asin or getattr(listing, "asin", None)),
+        _same_value(listing, "fnsku", fnsku or getattr(listing, "fnsku", None)),
+        _same_value(listing, "last_marketplace_qty", qty),
+    ]
+    return all(checks)
+
+
 def _apply_inventory_row(store, raw_row):
-    """Update exactly one FBA inventory identity and its linked listing cache."""
+    """Update one FBA identity; unchanged events perform no writes."""
     row = _normalise_event_row(raw_row)
     sku = _clean(row.get("seller_sku"))
     if not sku:
-        return {"updated": False, "reason": "seller_sku_required"}
+        return {"updated": False, "changed": False, "reason": "seller_sku_required"}
 
     asin = _clean(row.get("asin"))
     fnsku = _clean(row.get("fnsku"))
@@ -191,7 +143,6 @@ def _apply_inventory_row(store, raw_row):
     qty = int(row.get("available_quantity") or 0)
     reserved = int(row.get("reserved_quantity") or 0)
     inbound = int(row.get("inbound_quantity") or 0)
-    now = datetime.utcnow()
 
     inv_query = db.session.query(AmazonFBAInventory).filter(
         AmazonFBAInventory.seller_sku == sku
@@ -200,7 +151,35 @@ def _apply_inventory_row(store, raw_row):
         inv_query = inv_query.filter(AmazonFBAInventory.store_id == store.id)
     inv = inv_query.first()
 
-    if not inv:
+    listing = _find_existing_listing(store, sku=sku, asin=asin, fnsku=fnsku)
+
+    if _inventory_unchanged(
+        inv,
+        store_id=store.id,
+        asin=asin,
+        fnsku=fnsku,
+        qty=qty,
+        reserved=reserved,
+        inbound=inbound,
+    ) and _listing_cache_unchanged(listing, asin=asin, fnsku=fnsku, qty=qty):
+        return {
+            "updated": False,
+            "changed": False,
+            "reason": "unchanged",
+            "seller_sku": sku,
+            "asin": asin or None,
+            "fnsku": fnsku or None,
+            "channel": channel,
+            "available_quantity": qty,
+            "linked_existing_listing": bool(listing),
+            "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
+            "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
+            "warehouse_mutation": False,
+            "relationship_mutation": False,
+        }
+
+    now = datetime.utcnow()
+    if inv is None:
         inv = AmazonFBAInventory(seller_sku=sku)
         db.session.add(inv)
 
@@ -216,47 +195,32 @@ def _apply_inventory_row(store, raw_row):
     inv.last_sync_status = "success"
     inv.updated_at = now
 
-    existing_listing = _find_existing_listing(
-        store,
-        sku=sku,
-        asin=asin,
-        fnsku=fnsku,
-    )
-    relationship_source = _find_relationship_source(
-        store,
-        sku=sku,
-        asin=asin,
-        fnsku=fnsku,
-        exclude_id=getattr(existing_listing, "id", None),
-    )
-    relationship_preserved = _preserve_relationship(
-        existing_listing,
-        relationship_source,
-        inv,
-    )
-
-    if existing_listing:
-        if hasattr(existing_listing, "asin") and asin:
-            existing_listing.asin = asin
-        if hasattr(existing_listing, "fnsku") and fnsku:
-            existing_listing.fnsku = fnsku
-        if hasattr(existing_listing, "last_marketplace_qty"):
-            existing_listing.last_marketplace_qty = qty
-        if hasattr(existing_listing, "last_synced_at"):
-            existing_listing.last_synced_at = now
-        if hasattr(existing_listing, "updated_at"):
-            existing_listing.updated_at = now
+    if listing:
+        if hasattr(listing, "asin") and asin and getattr(listing, "asin", None) != asin:
+            listing.asin = asin
+        if hasattr(listing, "fnsku") and fnsku and getattr(listing, "fnsku", None) != fnsku:
+            listing.fnsku = fnsku
+        if hasattr(listing, "last_marketplace_qty") and getattr(listing, "last_marketplace_qty", None) != qty:
+            listing.last_marketplace_qty = qty
+        if hasattr(listing, "last_synced_at"):
+            listing.last_synced_at = now
+        if hasattr(listing, "updated_at"):
+            listing.updated_at = now
 
     return {
         "updated": True,
+        "changed": True,
         "seller_sku": sku,
         "asin": asin or None,
         "fnsku": fnsku or None,
         "channel": channel,
         "available_quantity": qty,
-        "linked_existing_listing": bool(existing_listing),
-        "relationship_preserved": bool(relationship_preserved),
+        "linked_existing_listing": bool(listing),
+        "listing_id": getattr(listing, "id", None) if listing else None,
+        "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
+        "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
         "warehouse_mutation": False,
+        "relationship_mutation": False,
     }
 
 
@@ -275,7 +239,7 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
         return {"success": False, "reason": "amazon_store_not_found"}
 
     result = _apply_inventory_row(store, payload)
-    if not result.get("updated"):
+    if result.get("reason") == "seller_sku_required":
         db.session.rollback()
         return {
             "success": False,
@@ -283,6 +247,22 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
             "source": source,
             "full_scan_started": False,
             **result,
+        }
+
+    if not result.get("updated"):
+        db.session.rollback()
+        return {
+            "success": True,
+            "governed": True,
+            "source": source,
+            "targeted": True,
+            "rows_received": 1,
+            "rows_updated": 0,
+            "unchanged": True,
+            "full_scan_started": False,
+            "warehouse_mutation": False,
+            "relationship_mutation": False,
+            "result": result,
         }
 
     db.session.commit()
@@ -293,8 +273,10 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
         "targeted": True,
         "rows_received": 1,
         "rows_updated": 1,
+        "unchanged": False,
         "full_scan_started": False,
         "warehouse_mutation": False,
+        "relationship_mutation": False,
         "result": result,
     }
 
@@ -332,21 +314,24 @@ def run_governed_amazon_inventory_import(
         if full_refresh:
             rows = AmazonSPAPIAdapter(store).get_inventory()
 
-        updated_rows = []
+        changed_rows = []
+        unchanged_rows = []
         for row in rows:
             result = _apply_inventory_row(store, row)
             if result.get("updated"):
-                updated_rows.append(result)
+                changed_rows.append(result)
+            elif result.get("reason") == "unchanged":
+                unchanged_rows.append(result)
 
         if full_refresh:
             set_store_runtime_status(store, "idle", last_sync=True)
             db.session.add(SyncLog(
                 store_id=store.id,
                 status="success",
-                items_synced=len(updated_rows),
+                items_synced=len(changed_rows),
                 message=(
                     "governed_amazon_fba_explicit_full_refresh "
-                    f"updated={len(updated_rows)} source={source}"
+                    f"updated={len(changed_rows)} unchanged={len(unchanged_rows)} source={source}"
                 ),
                 created_at=datetime.utcnow(),
             ))
@@ -357,12 +342,18 @@ def run_governed_amazon_inventory_import(
             "targeted": not full_refresh,
             "full_refresh": bool(full_refresh),
             "rows_received": len(rows),
-            "rows_updated": len(updated_rows),
-            "updated_skus": [item["seller_sku"] for item in updated_rows],
+            "rows_updated": len(changed_rows),
+            "rows_unchanged": len(unchanged_rows),
+            "updated_skus": [item["seller_sku"] for item in changed_rows],
             "warehouse_mutation": False,
+            "relationship_mutation": False,
         })
 
-    db.session.commit()
+    if any(item["rows_updated"] for item in results) or full_refresh:
+        db.session.commit()
+    else:
+        db.session.rollback()
+
     return {
         "success": True,
         "governed": True,
@@ -371,6 +362,7 @@ def run_governed_amazon_inventory_import(
         "targeted": not full_refresh,
         "full_scan_started": bool(full_refresh),
         "warehouse_mutation": False,
+        "relationship_mutation": False,
         "created_marketplace_listings": 0,
         "created_warehouse_stock": 0,
         "results": results,
