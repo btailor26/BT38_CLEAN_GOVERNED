@@ -55,6 +55,8 @@ jobs:
           grep -q 'main:app' Dockerfile
           grep -q 'app = "bt38-prod"' fly.toml
 
-      - name: Run runtime deployment contract
+      - name: Run deployment contracts
         run: |
-          uv run python -m pytest -q tests/test_runtime_deployment_contract.py
+          uv run python -m pytest -q \
+            tests/test_runtime_deployment_contract.py \
+            tests/test_fba_targeted_update_contract.py
