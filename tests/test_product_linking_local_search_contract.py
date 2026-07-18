@@ -1,53 +1,59 @@
 from pathlib import Path
 
 
-CONTROLLER = Path("static/js/bt38-page-controller.js")
+SHARED_CONTROLLER = Path("static/js/bt38-page-controller.js")
+SESSION_CONTROLLER = Path("static/js/product-linking-session.js")
 
 
-def controller_source():
-    return CONTROLLER.read_text(encoding="utf-8")
+def _source(path):
+    return path.read_text(encoding="utf-8")
 
 
-def test_product_linking_loads_one_complete_browser_working_set_before_fetch():
-    controller = controller_source()
+def test_shared_controller_explicitly_skips_product_linking():
+    source = _source(SHARED_CONTROLLER)
 
-    assert 'function bt38ConfigureProductLinkingWorkingSet()' in controller
-    assert 'productLinkingPerPage = 5000' in controller
-    assert 'bt38ConfigureProductLinkingWorkingSet();' in controller
-    assert controller.index('bt38ConfigureProductLinkingWorkingSet();') < controller.index(
-        'document.addEventListener("DOMContentLoaded", bt38BootPageController'
-    )
-
-
-def test_product_linking_async_render_rebuilds_cache_once():
-    controller = controller_source()
-
-    assert 'const refreshWhenReady = () =>' in controller
-    assert 'new MutationObserver(() =>' in controller
-    assert 'observer.disconnect()' in controller
-    assert 'refreshTableCache(pageName)' in controller
+    assert 'root.dataset.bt38Page === "productLinking"' in source
+    assert 'owner: "product-linking-session.js"' in source
+    assert "return;" in source
+    assert "window.searchWarehouseForLinking = function" not in source
+    assert "productLinkingPerPage = 5000" not in source
+    assert "wireAsyncProductLinking" not in source
 
 
-def test_product_linking_search_and_clear_stay_local():
-    controller = controller_source()
+def test_product_linking_session_loads_one_complete_working_set():
+    source = _source(SESSION_CONTROLLER)
 
-    assert 'window.BT38.PageController.localFilter(pageName)' in controller
-    assert 'a[href="/product-linking"]' in controller
-    assert 'event.preventDefault()' in controller
-    assert 'data-bt38-local-page' in controller
-
-
-def test_product_linking_keeps_local_pagination():
-    controller = controller_source()
-
-    assert 'renderProductLinkingPagination(' in controller
-    assert 'pageName === "productLinking"' in controller
-    assert 'page.currentPage = Math.min(Math.max(targetPage, 1), totalPages)' in controller
+    assert 'per_page: "5000"' in source
+    assert 'limit: "5000"' in source
+    assert 'fetch(`/governed/product-linking/data?' in source
+    assert "state.hydrated && !force" in source
+    assert "if (state.hydrating) return state.hydrating" in source
 
 
-def test_product_linking_fix_does_not_add_backend_or_marketplace_calls():
-    controller = controller_source()
+def test_product_linking_search_and_pagination_are_local():
+    source = _source(SESSION_CONTROLLER)
 
-    assert '/governed/product-linking/data' not in controller
-    assert '/warehouse' not in controller
-    assert '/api/sync-status' not in controller
+    assert "state.filtered = state.products.filter" in source
+    assert "state.filtered.slice(start, start + state.perPage)" in source
+    assert "state.page = 1" in source
+    assert "window.bt38ProductLinkingSetPage" in source
+    assert "window.renderProductLinkingPagination" in source
+
+
+def test_product_linking_modal_searches_use_cached_arrays():
+    source = _source(SESSION_CONTROLLER)
+
+    assert "window.filterFlatListings = function" in source
+    assert "window.searchWarehouseForLinking = function" in source
+    assert "state.products.filter" in source
+    assert "getLinkableListings(currentWarehouseId)" in source
+    assert "/governed/product-linking/search-all-listings" not in source
+    assert "/governed/product-linking/search-warehouse" not in source
+
+
+def test_mutations_remain_governed_and_rehydrate_after_change():
+    source = _source(SESSION_CONTROLLER)
+
+    assert 'fetch("/governed/product-linking/link-listing-to-warehouse"' in source
+    assert "await hydrate(true)" in source
+    assert "mappingExists(listingId, warehouseId)" in source
