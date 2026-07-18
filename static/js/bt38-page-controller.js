@@ -1,5 +1,6 @@
 // BT38 production-aligned browser page controller.
-// Initial HTML may come from the server. Search, filters and modal lookup stay in memory.
+// Each operational page loads its complete working set once, then search,
+// filters and pagination stay in browser memory.
 
 window.BT38 = window.BT38 || {};
 window.BT38.pages = window.BT38.pages || {};
@@ -195,6 +196,23 @@ window.BT38.pages = window.BT38.pages || {};
     });
   }
 
+  function configureCompleteWorkingSets() {
+    const root = currentRoot();
+    if (!root) return;
+
+    // Product Linking has an asynchronous server loader. Set its first and only
+    // read to the complete working set before DOMContentLoaded starts it.
+    if (root.dataset.bt38Page === "productLinking") {
+      try {
+        if (typeof productLinkingPerPage !== "undefined") {
+          productLinkingPerPage = 5000;
+        }
+      } catch (error) {
+        console.warn("[BT38] Product Linking working set was not available", error);
+      }
+    }
+  }
+
   function wireAsyncProductLinking(page) {
     const container = document.getElementById("warehouseDataContainer");
     if (!container) return;
@@ -343,6 +361,9 @@ window.BT38.pages = window.BT38.pages || {};
     const root = currentRoot();
     return root ? filter(root.dataset.bt38Page, false) : false;
   };
+
+  // Configure asynchronous pages before their DOMContentLoaded loaders run.
+  configureCompleteWorkingSets();
 
   document.addEventListener("DOMContentLoaded", () => {
     controller.autoRegisterFromDom();
