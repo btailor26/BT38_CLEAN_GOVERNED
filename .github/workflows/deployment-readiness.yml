@@ -40,6 +40,9 @@ jobs:
             governed_group_propagation_routes.py \
             governed_runtime_visibility_routes.py \
             services/governed_runtime_engine.py \
+            services/governed_webhook_execution.py \
+            services/governed_webhook_alignment.py \
+            services/governed_push_execution.py \
             services/governed_ebay_inventory_import.py \
             services/governed_amazon_inventory_import.py \
             services/governed_marketplace_order_import.py \
@@ -60,4 +63,5 @@ jobs:
           uv run python -m pytest -q \
             tests/test_runtime_deployment_contract.py \
             tests/test_fba_targeted_update_contract.py \
-            tests/test_webhook_scoped_reconcile_contract.py
+            tests/test_webhook_scoped_reconcile_contract.py \
+            tests/test_webhook_push_alignment_contract.py
