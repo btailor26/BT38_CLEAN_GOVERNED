@@ -257,7 +257,11 @@ def _upsert_listing(
         )
         db.session.add(listing)
 
-    listing.warehouse_stock_id = stock.id
+    # Marketplace imports may create an initial relationship, but must never
+    # replace a saved Product Linking relationship. Relinking is user-controlled.
+    if listing.warehouse_stock_id is None:
+        listing.warehouse_stock_id = stock.id
+
     listing.external_listing_id = item_id
     listing.external_sku = sku
     listing.title = title or listing.title or sku
