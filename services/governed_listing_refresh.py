@@ -216,7 +216,12 @@ def refresh_governed_listing_from_snapshot(
     listing.last_synced_at = datetime.utcnow()
     listing.updated_at = datetime.utcnow()
 
-    if warehouse_stock is not None:
+    # Marketplace refresh may establish an initial warehouse relationship,
+    # but it must never replace a relationship saved through Product Linking.
+    if (
+        warehouse_stock is not None
+        and listing.warehouse_stock_id is None
+    ):
         listing.warehouse_stock_id = warehouse_stock.id
 
     normalized_live_channel = str(
