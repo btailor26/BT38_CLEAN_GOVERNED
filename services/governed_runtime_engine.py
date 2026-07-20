@@ -273,7 +273,6 @@ def run_governed_marketplace_import_refresh(
                 )
                 listing_fulfillment = run_governed_amazon_listing_fulfillment_refresh(
                     store_id=store.id,
-                    max_pages=2,
                 )
                 _last_fba_import = datetime.utcnow()
                 results.append({

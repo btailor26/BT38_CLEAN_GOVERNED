@@ -157,7 +157,7 @@ def _extract_listing_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: int = 3) -> dict[str, Any]:
+def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: int | None = None) -> dict[str, Any]:
     query = Store.query.filter(
         Store.platform.ilike("%amazon%"),
         Store.is_active == True,  # noqa: E712
@@ -241,7 +241,7 @@ def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: in
             if not page_token:
                 break
 
-            if pages >= int(max_pages or 3):
+            if max_pages is not None and pages >= int(max_pages):
                 break
 
         set_store_runtime_status(store, "idle", last_sync=True)
