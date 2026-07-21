@@ -625,8 +625,11 @@ print(f"Environment: {APP_ENV.upper()}")
 print(f"Admin Dashboard: /admin/system-activity")
 print("Runtime status:")
 print("  [OK] Governed runtime may start when ENABLE_GOVERNED_RUNTIME_ENGINE is enabled")
-print("  [OK] 15-minute reconcile is controlled by scheduler_enabled + reconcile_15m_enabled")
-print("  [OK] 8-hour hydration is controlled by sync_enabled + sync_worker_enabled")
+print("  [OK] Governed webhook intake routes are registered before runtime startup")
+print("  [OK] Allowed webhook notifications enter the governed notification bridge")
+print("  [OK] Exact webhook identities are queued for governed 15-minute verification")
+print("  [OK] 15-minute verification remains event-driven and does not run broad imports")
+print("  [OK] 8-hour hydration remains the governed recovery path")
 print("  [OK] Legacy sync_dispatcher workers remain retired and are not part of the governed path")
 print("  [OK] FBA/AFN remains read-only")
 print("  [OK] FBM/MFN push remains controlled by the governed fuse-box path")
@@ -634,9 +637,25 @@ print("  [OK] System Activity remains available for audit/reporting")
 print("="*60 + "\n")
 
 try:
-    from services.governed_runtime_engine import start_governed_runtime_engine
+    from services.governed_runtime_engine import (
+        get_governed_runtime_status,
+        start_governed_runtime_engine,
+    )
+
     started = start_governed_runtime_engine(app)
+    runtime_status = get_governed_runtime_status()
+
     print(f"[GOVERNED_RUNTIME_ENGINE] started={started}")
+    print(
+        "[GOVERNED_WEBHOOK_ALIGNMENT] "
+        f"engine_started={runtime_status.get('engine_started')} "
+        f"pending_webhook_verifications="
+        f"{runtime_status.get('pending_webhook_verifications')} "
+        f"last_event_source={runtime_status.get('last_event_source')} "
+        f"last_light_reconcile={runtime_status.get('last_light_reconcile')} "
+        f"automatic_8h_hydration_enabled="
+        f"{runtime_status.get('automatic_8h_hydration_enabled')}"
+    )
 except Exception as exc:
     logging.exception(f"[GOVERNED_RUNTIME_ENGINE] startup failed: {exc}")
 
