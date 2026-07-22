@@ -1998,9 +1998,11 @@ tr[data-action-state="blocked"]{{outline:1px solid rgba(220,38,38,.14);}}
 
 @governed_bp.post("/amazon-inventory-hydration/manual-run")
 def governed_amazon_inventory_hydration_manual_run():
-    from services.governed_amazon_inventory_hydration import hydrate_amazon_inventory
+    from services.governed_runtime_engine import run_governed_marketplace_import_refresh
 
-    result = hydrate_amazon_inventory()
+    result = run_governed_marketplace_import_refresh(
+        source="manual_amazon_inventory_hydration",
+    )
 
     return jsonify({
         "success": True,
@@ -3068,9 +3070,12 @@ def governed_store_import_shortcut(store_id):
     platform = str(store.platform or "").strip().lower()
 
     if "amazon" in platform:
-        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
+        from services.governed_runtime_engine import run_governed_marketplace_import_refresh
 
-        result = run_governed_amazon_inventory_import(store_id=store.id)
+        result = run_governed_marketplace_import_refresh(
+            store_id=store.id,
+            source=shortcut_source,
+        )
         log_shortcut("success", "Amazon import shortcut executed through fuse box")
 
         if isinstance(result, dict):
@@ -3202,8 +3207,11 @@ def governed_amazon_inventory_import():
                 fuse_box_checked=True,
             ), 200
 
-        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
-        result = run_governed_amazon_inventory_import(store_id=getattr(store, "id", None))
+        from services.governed_runtime_engine import run_governed_marketplace_import_refresh
+        result = run_governed_marketplace_import_refresh(
+            store_id=getattr(store, "id", None),
+            source="governed_amazon_inventory_import_route",
+        )
 
         if isinstance(result, dict):
             result.update({
@@ -5054,20 +5062,19 @@ def governed_runtime_understanding_audit():
 # ==============================
 def governed_import_handler():
     try:
-        from services.governed_amazon_inventory_import import run_governed_amazon_inventory_import
-        from services.governed_ebay_inventory_import import run_governed_ebay_inventory_import
+        from services.governed_runtime_engine import run_governed_marketplace_import_refresh
         from services.governed_marketplace_order_import import run_governed_marketplace_order_import
 
-        amazon_result = run_governed_amazon_inventory_import()
-        ebay_result = run_governed_ebay_inventory_import()
+        inventory_result = run_governed_marketplace_import_refresh(
+            source="governed_import_handler",
+        )
         order_result = run_governed_marketplace_order_import()
 
         return {
             "status": "success",
             "warehouse_source": True,
-            "amazon": amazon_result,
-            "ebay": ebay_result,
-            "orders": order_result
+            "inventory": inventory_result,
+            "orders": order_result,
         }, 200
 
     except Exception as e:
