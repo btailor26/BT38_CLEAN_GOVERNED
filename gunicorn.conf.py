@@ -3,9 +3,10 @@ Gunicorn configuration for multi-channel inventory management system.
 Handles long-running sync operations that can take 5+ minutes.
 """
 
-# Worker count: 2 workers for better concurrency
-# Each Fly machine has 512MB, ~200MB per worker is safe
-workers = 2
+# One worker is required because governed marketplace bootstrap runs
+# during application startup. A second worker could accept webhooks before
+# the bootstrap owner has completed the initial order import.
+workers = 1
 
 # Threads per worker: Allows handling concurrent requests within each worker
 threads = 2
