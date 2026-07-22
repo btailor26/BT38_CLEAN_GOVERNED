@@ -26,6 +26,10 @@ def _runtime_module():
     module._last_event_at = None
     module._last_event_source = None
     module._last_verification_result = None
+    module._bootstrap_status = "not_started"
+    module._bootstrap_started_at = None
+    module._bootstrap_completed_at = None
+    module._bootstrap_result = None
     return module
 
 
@@ -54,6 +58,15 @@ def test_no_event_means_no_work_and_scoped_event_waits_for_15m_window(monkeypatc
 
     monkeypatch.setattr(runtime, "LIGHT_RECONCILE_SECONDS", 0.05)
     monkeypatch.setattr(runtime, "_acquire_runtime_owner_lock", lambda: True)
+    monkeypatch.setattr(
+        runtime,
+        "_run_startup_marketplace_import",
+        lambda app: {
+            "success": True,
+            "stores_attempted": 2,
+            "stores_failed": 0,
+        },
+    )
     monkeypatch.setattr(
         runtime,
         "_run_light_reconcile_cycle",
@@ -94,3 +107,97 @@ def test_automatic_hydration_is_off_by_default(monkeypatch):
     assert status["automatic_8h_hydration_enabled"] is False
     assert status["idle_db_activity"] is False
     assert status["runtime_status_source"] == "process_memory"
+
+def test_runtime_starts_only_after_bootstrap_success(monkeypatch):
+    runtime = _runtime_module()
+    sequence = []
+
+    class FakeApp:
+        def app_context(self):
+            return contextlib.nullcontext()
+
+    monkeypatch.setattr(runtime, "_acquire_runtime_owner_lock", lambda: True)
+
+    def successful_bootstrap(app):
+        sequence.append("bootstrap")
+        runtime._bootstrap_status = "completed"
+        runtime._bootstrap_result = {
+            "success": True,
+            "stores_attempted": 2,
+            "stores_failed": 0,
+        }
+        return runtime._bootstrap_result
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon, name):
+            sequence.append("thread_created")
+            self.target = target
+            self.args = args
+
+        def start(self):
+            sequence.append("thread_started")
+
+    monkeypatch.setattr(
+        runtime,
+        "_run_startup_marketplace_import",
+        successful_bootstrap,
+    )
+    monkeypatch.setattr(runtime.threading, "Thread", FakeThread)
+
+    assert runtime.start_governed_runtime_engine(FakeApp()) is True
+    assert sequence == ["bootstrap", "thread_created", "thread_started"]
+    assert runtime._started is True
+    assert runtime._bootstrap_status == "completed"
+
+
+def test_runtime_remains_paused_when_bootstrap_fails(monkeypatch):
+    runtime = _runtime_module()
+    thread_started = []
+
+    class FakeApp:
+        def app_context(self):
+            return contextlib.nullcontext()
+
+    monkeypatch.setattr(runtime, "_acquire_runtime_owner_lock", lambda: True)
+
+    def failed_bootstrap(app):
+        runtime._bootstrap_status = "failed"
+        runtime._bootstrap_result = {
+            "success": False,
+            "stores_attempted": 2,
+            "stores_failed": 1,
+        }
+        raise RuntimeError("startup_marketplace_import_failed:1")
+
+    class ForbiddenThread:
+        def __init__(self, *args, **kwargs):
+            thread_started.append(True)
+
+    monkeypatch.setattr(
+        runtime,
+        "_run_startup_marketplace_import",
+        failed_bootstrap,
+    )
+    monkeypatch.setattr(runtime.threading, "Thread", ForbiddenThread)
+
+    assert runtime.start_governed_runtime_engine(FakeApp()) is False
+    assert runtime._started is False
+    assert runtime._started_at is None
+    assert runtime._bootstrap_status == "failed"
+    assert thread_started == []
+
+
+def test_runtime_status_exposes_bootstrap_gate():
+    runtime = _runtime_module()
+    runtime._bootstrap_status = "completed"
+    runtime._bootstrap_result = {
+        "success": True,
+        "stores_attempted": 2,
+        "stores_failed": 0,
+    }
+
+    status = runtime.get_governed_runtime_status()
+
+    assert status["bootstrap_status"] == "completed"
+    assert status["bootstrap_ready"] is True
+    assert status["bootstrap_result"]["stores_failed"] == 0
