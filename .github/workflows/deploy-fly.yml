@@ -1,0 +1,93 @@
+name: Governed Fly Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: governed-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Checkout exact governed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv sync --frozen --no-dev
+
+      - name: Verify governed production inputs
+        run: |
+          test -f Dockerfile
+          test -f fly.toml
+          test -f pyproject.toml
+          test -f uv.lock
+          grep -q 'uv sync --frozen --no-dev' Dockerfile
+          grep -q 'main:app' Dockerfile
+          grep -q 'app = "bt38-prod"' fly.toml
+
+      - name: Compile production runtime
+        run: |
+          uv run python -m py_compile \
+            main.py \
+            app.py \
+            models.py \
+            governed_routes.py \
+            governed_group_routes.py \
+            governed_group_propagation_routes.py \
+            governed_runtime_visibility_routes.py \
+            services/governed_runtime_engine.py \
+            services/governed_webhook_execution.py \
+            services/governed_webhook_alignment.py \
+            services/governed_push_execution.py \
+            services/governed_ebay_inventory_import.py \
+            services/governed_amazon_inventory_import.py \
+            services/governed_marketplace_order_import.py \
+            services/governed_order_stock_mutation.py \
+            services/governed_warehouse_sync.py
+
+      - name: Run deployment contracts
+        run: |
+          uv run python -m pytest -q \
+            tests/test_runtime_deployment_contract.py \
+            tests/test_fba_targeted_update_contract.py \
+            tests/test_webhook_scoped_reconcile_contract.py \
+            tests/test_webhook_push_alignment_contract.py \
+            tests/test_ui_production_alignment_contract.py
+
+  deploy:
+    needs: audit
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout exact audited commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy governed commit to Fly
+        run: flyctl deploy --remote-only --app bt38-prod
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
