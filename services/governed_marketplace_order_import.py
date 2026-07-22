@@ -147,7 +147,11 @@ def upsert_governed_marketplace_order_line(
     order.fulfillment_type = fulfillment_type
     order.unit_price = _safe_float(unit_price)
     order.line_total = _safe_float(unit_price) * qty
-    order.status = status or "order"
+    # Repeat marketplace reads must not reopen an order that has already
+    # passed through governed processing.
+    if created or not getattr(order, "processed_at", None):
+        order.status = status or "pending"
+
     order.carrier = carrier or order.carrier
     order.tracking_number = tracking_number or order.tracking_number
     order.shipped_at = shipped_at or order.shipped_at
@@ -191,7 +195,42 @@ def upsert_governed_marketplace_order_line(
         "warehouse_stock_id": order.warehouse_stock_id,
         "idempotency_key": order.idempotency_key,
         "listing_matched": bool(listing),
+        # Internal hand-off only. Import callers remove this before returning
+        # JSON so the exact row can be processed without another DB query.
+        "_order_row": order,
     }
+
+
+def _process_exact_imported_order(
+    result: dict[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    """
+    Process only the exact MarketplaceOrder row returned by the upsert.
+
+    No MarketplaceOrder status scan.
+    No pending-row sweep.
+    No separate queue/table.
+    """
+
+    order = result.pop("_order_row", None)
+
+    if order is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "exact_order_row_missing",
+        }
+
+    from services.governed_order_stock_mutation import (
+        process_exact_marketplace_order_line,
+    )
+
+    return process_exact_marketplace_order_line(
+        order,
+        source=source,
+    )
 
 
 def _write_sync_log(store: Store, *, status: str, message: str, items_synced: int = 0) -> None:
@@ -304,11 +343,13 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
             skipped += 1
             continue
 
-        status = "order"
+        status = "pending"
         shipped_at = None
 
         if fulfillment_status == "FULFILLED":
-            status = "order"
+            # Fulfilment state does not bypass stock processing. The exact
+            # imported line still enters the single governed intake path.
+            status = "pending"
             shipped_at = _parse_ebay_datetime(order.get("lastModifiedDate"))
 
         # eBay Fulfillment API exposes the delivery contact under the order's
@@ -370,6 +411,11 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 ship_to_phone=delivery_phone,
             )
 
+            processing_result = _process_exact_imported_order(
+                result,
+                source=f"{source}:ebay_exact_order",
+            )
+            result["processing"] = processing_result
             line_results.append(result)
 
             if result.get("success") and not result.get("skipped"):
@@ -577,9 +623,14 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 quantity=qty,
                 unit_price=price_value,
                 fulfillment_type=fulfillment_type,
-                status="pending" if order_status == "PENDING" else "order",
+                status="pending",
             )
 
+            processing_result = _process_exact_imported_order(
+                result,
+                source=f"{source}:amazon_exact_order",
+            )
+            result["processing"] = processing_result
             line_results.append(result)
 
             if result.get("success") and not result.get("skipped"):
