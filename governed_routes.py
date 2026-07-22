@@ -1291,6 +1291,10 @@ def governed_warehouse_page():
     from sqlalchemy import or_
     from sqlalchemy.orm import joinedload
 
+    # Warehouse UI must always reflect the latest committed database state.
+    # Discard any objects retained in the current scoped SQLAlchemy session.
+    db.session.expire_all()
+
     q = (request.args.get("q") or "").strip().lower()
     view = (request.args.get("view") or "all").strip().lower()
 
@@ -1318,6 +1322,7 @@ def governed_warehouse_page():
         # FBA Read Only quantity is shown as a shortcut from AmazonFBAInventory.
         # Do not show generated "Amazon SKU ..." shadow rows as separate Master Stock listings.
         .filter(~MarketplaceListing.title.ilike("Amazon SKU%"))
+        .populate_existing()
     )
 
     if q:
@@ -1493,6 +1498,7 @@ def governed_warehouse_page():
             .options(joinedload(WarehouseStock.warehouse))
             .filter(WarehouseStock.is_active == True)  # noqa: E712
             .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+            .populate_existing()
         )
 
         if q:
@@ -1617,7 +1623,11 @@ def governed_warehouse_page():
         group_filter=group_filter,
         listing_status_filter=listing_status_filter,
     )
-    return _patch_warehouse_phase1_ui(html, stats, q, view)
+    response = make_response(_patch_warehouse_phase1_ui(html, stats, q, view))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @governed_bp.post("/governed/actions/sku/dry-run")
