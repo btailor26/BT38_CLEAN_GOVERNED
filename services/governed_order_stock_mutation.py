@@ -294,6 +294,72 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
     }
 
 
+def process_exact_marketplace_order_line(
+    line: Any,
+    source: str = "governed_exact_order",
+) -> dict[str, Any]:
+    """
+    Single exact-row order processing entry point.
+
+    FBM/eBay:
+      mutate the linked WarehouseStock row once.
+
+    Amazon FBA/AFN:
+      retain Amazon inventory as read-only authority and mark the exact
+      MarketplaceOrder row processed without decrementing WarehouseStock.
+
+    This function never searches MarketplaceOrder for pending rows.
+    """
+
+    if line is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "marketplace_order_missing",
+        }
+
+    if getattr(line, "processed_at", None):
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "already_processed",
+            "order_id": getattr(line, "marketplace_order_id", None),
+        }
+
+    fulfillment = _text(
+        getattr(line, "fulfillment_type", None)
+    ).upper()
+
+    if fulfillment in {"FBA", "AFN"}:
+        # Amazon remains the inventory authority for FBA. The sale is recorded
+        # and completed through the same MarketplaceOrder path, but local
+        # warehouse stock is not independently decremented.
+        line.status = "processed"
+        line.processed_at = datetime.utcnow()
+
+        if hasattr(line, "updated_at"):
+            line.updated_at = datetime.utcnow()
+
+        db.session.commit()
+
+        return {
+            "success": True,
+            "skipped": False,
+            "processed": True,
+            "stock_mutated": False,
+            "inventory_authority": "AmazonFBAInventory",
+            "fulfillment_type": fulfillment,
+            "order_id": getattr(line, "marketplace_order_id", None),
+            "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
+        }
+
+    # FBM and eBay use the existing idempotent warehouse mutation.
+    return mutate_warehouse_stock_from_order_line(
+        line,
+        source=source,
+    )
+
+
 def mutate_recent_marketplace_order_lines(limit: int = 100, source: str = "governed_order_bridge") -> dict[str, Any]:
     """
     Governed marketplace order bridge.
