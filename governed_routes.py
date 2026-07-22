@@ -1286,6 +1286,7 @@ def governed_warehouse_page():
     - eager-loads relationships to avoid N+1 queries
     - loads the relevant dataset once for browser-session filtering
     """
+    from flask import make_response
     from extensions import db
     from models import MarketplaceListing, WarehouseStock, Store, AmazonFBAInventory
     from sqlalchemy import or_
