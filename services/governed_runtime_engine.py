@@ -41,11 +41,6 @@ _last_event_at = None
 _last_event_source = None
 _last_verification_result = None
 
-_bootstrap_status = "not_started"
-_bootstrap_started_at = None
-_bootstrap_completed_at = None
-_bootstrap_result = None
-
 FULL_SYNC_SECONDS = 8 * 60 * 60
 LIGHT_RECONCILE_SECONDS = 15 * 60
 
@@ -590,86 +585,20 @@ def _acquire_runtime_owner_lock() -> bool:
         return False
 
 
-def _run_startup_marketplace_import(app):
-    """Establish marketplace order truth before releasing runtime execution."""
-    global _bootstrap_status
-    global _bootstrap_started_at
-    global _bootstrap_completed_at
-    global _bootstrap_result
-
-    window_hours = max(
-        1,
-        int(os.getenv("BT38_STARTUP_IMPORT_WINDOW_HOURS", "168")),
-    )
-
-    _bootstrap_status = "running"
-    _bootstrap_started_at = datetime.utcnow()
-    _bootstrap_completed_at = None
-    _bootstrap_result = None
-
-    _safe_log(
-        "Startup marketplace import beginning "
-        f"window_hours={window_hours}; runtime remains paused"
-    )
-
-    with app.app_context():
-        from services.governed_marketplace_order_import import (
-            run_governed_marketplace_order_import,
-        )
-
-        result = run_governed_marketplace_order_import(
-            source="startup_bootstrap_before_runtime",
-            window_hours=window_hours,
-        )
-
-    _bootstrap_result = result
-
-    if not bool(result.get("success")):
-        _bootstrap_status = "failed"
-        raise RuntimeError(
-            "startup_marketplace_import_failed:"
-            f"{result.get('stores_failed', 'unknown')}"
-        )
-
-    _bootstrap_status = "completed"
-    _bootstrap_completed_at = datetime.utcnow()
-
-    _safe_log(
-        "Startup marketplace import completed successfully; "
-        "runtime may now start"
-    )
-
-    return result
-
-
 def start_governed_runtime_engine(app):
-    global _started, _started_at, _bootstrap_status
+    global _started, _started_at
 
     with _status_lock:
         if _started:
             return False
-
-        if not _truthy(
-            os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"),
-            True,
-        ):
-            _bootstrap_status = "runtime_disabled"
+        if not _truthy(os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"), True):
             return False
-
         if not _acquire_runtime_owner_lock():
             return False
+        _started = True
+        _started_at = datetime.utcnow()
 
     try:
-        # Hard startup order:
-        # 1. Import missing marketplace orders.
-        # 2. Apply governed stock mutations.
-        # 3. Only then start webhook verification/recovery runtime.
-        _run_startup_marketplace_import(app)
-
-        with _status_lock:
-            _started = True
-            _started_at = datetime.utcnow()
-
         thread = threading.Thread(
             target=_engine_loop,
             args=(app,),
@@ -678,18 +607,8 @@ def start_governed_runtime_engine(app):
         )
         thread.start()
         return True
-
     except Exception as exc:
-        with _status_lock:
-            _started = False
-            _started_at = None
-            if _bootstrap_status != "failed":
-                _bootstrap_status = "failed"
-
-        _safe_error(
-            "Governed runtime remains paused because startup import failed",
-            exc,
-        )
+        _safe_error("Governed runtime engine failed to start", exc)
         return False
 
 
@@ -705,19 +624,6 @@ def get_governed_runtime_status():
 
     return {
         "engine_started": engine_live,
-        "bootstrap_status": _bootstrap_status,
-        "bootstrap_ready": _bootstrap_status == "completed",
-        "bootstrap_started_at": (
-            _bootstrap_started_at.isoformat()
-            if _bootstrap_started_at
-            else None
-        ),
-        "bootstrap_completed_at": (
-            _bootstrap_completed_at.isoformat()
-            if _bootstrap_completed_at
-            else None
-        ),
-        "bootstrap_result": _bootstrap_result,
         "runtime_mode": "EVENT-DRIVEN GOVERNED" if engine_live else "MANUAL GOVERNED",
         "execution_mode": "EVENT + MANUAL GOVERNED" if engine_live else "MANUAL ONLY",
         "workers_running": engine_live,
