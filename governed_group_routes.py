@@ -122,79 +122,109 @@ def governed_group_link_listing(group_id: int):
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    """Unlink one marketplace listing or one warehouse stock row from a group.
+    """Unlink one mutable marketplace listing without deleting its warehouse identity.
 
-    Product Linking sends both ``listing_id`` and ``warehouse_stock_id`` for a
-    listing unlink. In that case the listing is the requested target: detach the
-    listing from warehouse inventory and group membership, while preserving the
-    warehouse authority row and every other marketplace member in the group.
-
-    A stock-only request remains the explicit operation for removing a warehouse
-    stock row from the group.
+    Preferred contract: restore the listing to the permanent group owned by its
+    WarehouseStock. Legacy rows may have no distinct original group because an
+    older linker moved the warehouse group itself. Those rows are released from
+    the active group (master_product_group_id=None) while warehouse_stock_id is
+    preserved, allowing the UI to show them as unlinked and relink them safely.
     """
     from extensions import db
-    from models import MarketplaceListing, MasterProductGroup, WarehouseStock
+    from models import MarketplaceListing, MasterProductGroup
 
     body = dict(request.get_json(silent=True) or {})
+    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+    if not listing_id:
+        return jsonify(_blocked("listing_id is required.", group_id=group_id)), 400
+
     group = db.session.get(MasterProductGroup, group_id)
     if not group:
         return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
 
-    stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
-    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
-    if not stock_id and not listing_id:
-        return jsonify(_blocked("warehouse_stock_id or listing_id is required.", group_id=group_id)), 400
+    listing = db.session.get(MarketplaceListing, int(listing_id))
+    if not listing:
+        return jsonify(_blocked("Marketplace listing was not found.", group_id=group_id, listing_id=listing_id)), 404
 
+    if int(listing.master_product_group_id or 0) != int(group_id):
+        return jsonify(_blocked(
+            "Marketplace listing is not linked to this group.",
+            group_id=group_id,
+            listing_id=listing_id,
+            current_group_id=listing.master_product_group_id,
+        )), 409
+
+    # FBA/AFN inventory remains read-only. Mixed groups are still unlinkable by
+    # selecting a mutable eBay/FBM child; the existence of an FBA sibling must
+    # never block that operation.
+    if bool(getattr(listing, "is_fba", False)):
+        return jsonify(_blocked(
+            "FBA/AFN listings are read-only. Unlink a mutable marketplace listing from the group instead.",
+            group_id=group_id,
+            listing_id=listing_id,
+            fba_read_only=True,
+        )), 409
+
+    stock = listing.warehouse_stock
+    stock_id = getattr(stock, "id", None)
+    original_group_id = getattr(stock, "master_product_group_id", None) if stock else None
+    previous_group_id = int(group_id)
     now = datetime.utcnow()
 
-    # A listing request always means "unlink this marketplace listing". Do not
-    # also remove the shared warehouse authority merely because the UI supplied
-    # its warehouse_stock_id as context.
-    if listing_id:
-        listing = db.session.get(MarketplaceListing, int(listing_id))
-        if not listing or listing.master_product_group_id != group_id:
+    restored_to_original = bool(original_group_id and int(original_group_id) != previous_group_id)
+    if restored_to_original:
+        original_group = db.session.get(MasterProductGroup, int(original_group_id))
+        if not original_group:
             return jsonify(_blocked(
-                "Marketplace listing is not linked to this group.",
+                "The permanent original group no longer exists.",
                 group_id=group_id,
                 listing_id=listing_id,
-            )), 400
-
-        detached_stock_id = listing.warehouse_stock_id
-        listing.warehouse_stock_id = None
+                original_group_id=original_group_id,
+            )), 409
+        listing.master_product_group_id = int(original_group_id)
+        original_group.updated_at = now
+        resulting_group_id = int(original_group_id)
+        message = "Listing restored to its permanent original group ID."
+    else:
+        # Repair path for historic rows created before permanent original-group
+        # ownership was enforced. Never null warehouse_stock_id: that is the
+        # listing's warehouse identity and the route must not destroy it.
         listing.master_product_group_id = None
-        listing.updated_at = now
-        group.updated_at = now
+        resulting_group_id = None
+        message = "Listing released from the group and returned to unlinked state."
 
-        db.session.commit()
-        result = _serialize_master_group(group)
-        result.update({
-            "message": "Marketplace listing was unlinked from warehouse inventory and the product group.",
-            "listing_id": int(listing_id),
-            "warehouse_stock_id": detached_stock_id,
-        })
-        return jsonify(result)
-
-    # Stock-only requests are explicit group-member removal operations.
-    stock = db.session.get(WarehouseStock, int(stock_id))
-    if not stock or stock.master_product_group_id != group_id:
-        return jsonify(_blocked(
-            "Warehouse stock is not linked to this group.",
-            group_id=group_id,
-            stock_id=stock_id,
-        )), 400
-
-    stock.master_product_group_id = None
-    stock.is_group_controlled = False
-    stock.updated_at = now
+    listing.updated_at = now
     group.updated_at = now
-
     db.session.commit()
-    result = _serialize_master_group(group)
-    result.update({
-        "message": "Warehouse stock was removed from the product group.",
-        "warehouse_stock_id": int(stock_id),
-    })
-    return jsonify(result)
+
+    affected_groups = [previous_group_id]
+    if resulting_group_id:
+        affected_groups.append(resulting_group_id)
+
+    payload = {
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "changed": True,
+        "message": message,
+        "listing_id": int(listing_id),
+        "previous_group_id": previous_group_id,
+        "group_id": resulting_group_id,
+        "original_group_id": int(original_group_id) if original_group_id else None,
+        "warehouse_stock_id": stock_id,
+        "restored_original_group": restored_to_original,
+        "released_to_unlinked": not restored_to_original,
+        "affected_group_ids": affected_groups,
+        "affected_listing_ids": [int(listing_id)],
+        "affected_warehouse_stock_ids": [int(stock_id)] if stock_id else [],
+        "refresh_required": True,
+        "refresh_scope": "affected_records",
+        "full_dataset_refresh": False,
+        "full_page_refresh": False,
+        "cache_clear_required": False,
+        "execution_blocked": False,
+    }
+    return jsonify(payload)
 
 
 def _link_stock_to_group(group, stock_id: int, actor: str) -> dict:
@@ -304,6 +334,15 @@ def _blocked(reason: str, **extra) -> dict:
         "reason": reason,
         "message": reason,
         "error": reason,
+        "changed": False,
+        "affected_group_ids": [],
+        "affected_listing_ids": [],
+        "affected_warehouse_stock_ids": [],
+        "refresh_required": False,
+        "refresh_scope": "none",
+        "full_dataset_refresh": False,
+        "full_page_refresh": False,
+        "cache_clear_required": False,
     }
     result.update(extra)
     return result
