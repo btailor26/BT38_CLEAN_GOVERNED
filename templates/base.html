@@ -213,11 +213,8 @@
     );
   }
 
-  window.fetch = function(input, init){
-    const url = asUrl(input);
-    const method = getMethod(init);
+  /* FETCH OVERRIDE DISABLED - GOVERNED FLOW HANDLED BY JS ONLY */
 
-    if (method === "GET") return originalFetch(input, init);
     if (url.startsWith("/governed/")) return originalFetch(input, init);
 
     const listingPush = url.match(/^\/api\/listings\/(\d+)\/push$/);

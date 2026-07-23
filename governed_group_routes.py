@@ -122,38 +122,89 @@ def governed_group_link_listing(group_id: int):
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    from extensions import db
-    from models import MarketplaceListing, MasterProductGroup, WarehouseStock
+    from flask import jsonify
+    from services.runtime_action_guard import is_execution_allowed
+    from models import WarehouseStock, MarketplaceListing, db
 
-    body = dict(request.get_json(silent=True) or {})
-    group = db.session.get(MasterProductGroup, group_id)
-    if not group:
-        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+    # EXECUTION SAFETY GATE
+    if not is_execution_allowed(group_id=group_id):
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "execution_blocked": True,
+            "group_id": group_id,
+            "reason": "Group unlink blocked due to active or pending execution."
+        }), 409
 
-    stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
-    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
-    if not stock_id and not listing_id:
-        return jsonify(_blocked("warehouse_stock_id or listing_id is required.", group_id=group_id)), 400
+    stocks = WarehouseStock.query.filter_by(master_product_group_id=group_id).all()
+    listings = MarketplaceListing.query.filter_by(master_product_group_id=group_id).all()
 
-    if stock_id:
-        stock = db.session.get(WarehouseStock, int(stock_id))
-        if not stock or stock.master_product_group_id != group_id:
-            return jsonify(_blocked("Warehouse stock is not linked to this group.", group_id=group_id, stock_id=stock_id)), 400
-        stock.master_product_group_id = None
-        stock.is_group_controlled = False
-        stock.updated_at = datetime.utcnow()
+    if not stocks and not listings:
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "group_id": group_id,
+            "reason": "No linked entities found."
+        }), 400
 
-    if listing_id:
-        listing = db.session.get(MarketplaceListing, int(listing_id))
-        if not listing or listing.master_product_group_id != group_id:
-            return jsonify(_blocked("Marketplace listing is not linked to this group.", group_id=group_id, listing_id=listing_id)), 400
-        listing.master_product_group_id = None
-        listing.updated_at = datetime.utcnow()
+    for s in stocks:
+        s.master_product_group_id = None
+
+    for l in listings:
+        l.master_product_group_id = None
 
     db.session.commit()
-    return jsonify(_serialize_master_group(group))
 
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "group_id": group_id,
+        "message": "Group safely unlinked with execution protection.",
+        "unlinked_stocks": len(stocks),
+        "unlinked_listings": len(listings)
+    }), 200
+@governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
+def governed_group_unlink(group_id: int):
+    from flask import jsonify
+    from services.runtime_action_guard import is_execution_allowed
+    from models import WarehouseStock, MarketplaceListing, db
 
+    if not is_execution_allowed(group_id=group_id):
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "execution_blocked": True,
+            "group_id": group_id,
+            "reason": "Group unlink blocked: active or pending execution detected."
+        }), 409
+
+    stocks = WarehouseStock.query.filter_by(master_product_group_id=group_id).all()
+    listings = MarketplaceListing.query.filter_by(master_product_group_id=group_id).all()
+
+    if not stocks and not listings:
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "group_id": group_id,
+            "reason": "No linked stock or listings found for this group."
+        }), 400
+
+    for stock in stocks:
+        stock.master_product_group_id = None
+
+    for listing in listings:
+        listing.master_product_group_id = None
+
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "group_id": group_id,
+        "message": "Group safely unlinked after execution validation.",
+        "unlinked_stocks": len(stocks),
+        "unlinked_listings": len(listings)
+    }), 200
 def _link_stock_to_group(group, stock_id: int, actor: str) -> dict:
     from extensions import db
     from models import WarehouseStock

@@ -139,6 +139,9 @@ def refresh_governed_listing_from_snapshot(
 
     if warehouse_stock_id is not None:
         warehouse_stock = db.session.get(WarehouseStock, warehouse_stock_id)
+        # ENSURE GROUP ID IS EXPOSED TO FRONTEND
+        setattr(warehouse_stock, "master_product_group_id", getattr(warehouse_stock, "master_product_group_id", None))
+
         if warehouse_stock is None:
             return _blocked("missing warehouse stock")
 
