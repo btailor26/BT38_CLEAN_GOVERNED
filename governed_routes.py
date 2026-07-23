@@ -2656,6 +2656,8 @@ def governed_listing_quantity_update(listing_id: int):
     from extensions import db
     from models import MarketplaceListing, WarehouseStock
     from flask import request, jsonify
+    from flask_login import current_user
+    from services.governed_push_execution import push_marketplace_listing
 
     listing = db.session.get(MarketplaceListing, listing_id)
     if not listing:
@@ -2723,6 +2725,24 @@ def governed_listing_quantity_update(listing_id: int):
 
     db.session.commit()
 
+    actor_user = (
+        current_user
+        if getattr(current_user, "is_authenticated", False)
+        else None
+    )
+
+    push_result = push_marketplace_listing(
+        listing_id=listing.id,
+        actor="warehouse_quantity_update",
+        source="warehouse_quantity_auto_push",
+        actor_user=actor_user,
+    )
+
+    push_success = bool(
+        push_result.get("ok")
+        or push_result.get("success")
+    )
+
     return jsonify(
         success=True,
         ok=True,
@@ -2732,7 +2752,14 @@ def governed_listing_quantity_update(listing_id: int):
         quantity=qty,
         updated_column=updated_column,
         listing_quantity_updated=bool(is_ebay_variation),
-        message="Warehouse quantity saved locally. Use Push to sync marketplace.",
+        auto_push_attempted=True,
+        auto_push_success=push_success,
+        push_result=push_result,
+        message=(
+            "Warehouse quantity saved and marketplace updated."
+            if push_success
+            else "Warehouse quantity saved but marketplace push failed or was blocked."
+        ),
     )
 
 
