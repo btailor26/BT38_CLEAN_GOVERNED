@@ -1,7 +1,6 @@
 // Product Linking browser-session controller.
-// The full governed working set is read at most once every 24 hours per browser.
-// Search, filters, pagination and modal search remain local. Governed mutations
-// refresh only the affected Warehouse record and merge it into the saved snapshot.
+// One full governed snapshot is kept for up to 24 hours. Mutations refresh only
+// the exact affected identities and merge those rows back into IndexedDB.
 (function () {
   "use strict";
 
@@ -10,7 +9,7 @@
 
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
-  const CACHE_KEY = "product-linking-v2";
+  const CACHE_KEY = "product-linking-v3";
   const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
@@ -29,7 +28,7 @@
 
   function uniqueById(items) {
     const seen = new Map();
-    (items || []).forEach(item => {
+    (items || []).forEach((item) => {
       const key = item && item.id != null ? String(item.id) : JSON.stringify(item);
       if (!seen.has(key)) seen.set(key, item);
     });
@@ -44,6 +43,24 @@
     return String(product?.id ?? product?.warehouse_stock_id ?? product?.stock_id ?? "");
   }
 
+  function listingIdentity(listing) {
+    return String(listing?.id ?? listing?.listing_id ?? listing?.marketplace_listing_id ?? "");
+  }
+
+  function normaliseIds(values) {
+    const result = [];
+    const seen = new Set();
+    (values || []).forEach((value) => {
+      if (value == null || value === "" || Number(value) === 0) return;
+      const key = String(value);
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(key);
+      }
+    });
+    return result;
+  }
+
   function assignLegacyGlobals() {
     try { allWarehouseProducts = state.products; } catch (_) { window.allWarehouseProducts = state.products; }
     try { allUnlinkedListings = state.unlinked; } catch (_) { window.allUnlinkedListings = state.unlinked; }
@@ -52,10 +69,7 @@
 
   function openCacheDatabase() {
     return new Promise((resolve, reject) => {
-      if (!window.indexedDB) {
-        resolve(null);
-        return;
-      }
+      if (!window.indexedDB) return resolve(null);
       const request = window.indexedDB.open(CACHE_DB_NAME, 1);
       request.onupgradeneeded = () => {
         const database = request.result;
@@ -133,7 +147,10 @@
       show_linked: "all",
       section: "all"
     });
-    const response = await fetch(`/governed/product-linking/data?${params.toString()}`);
+    const response = await fetch(`/governed/product-linking/data?${params.toString()}`, {
+      credentials: "same-origin",
+      cache: "no-store"
+    });
     if (!response.ok) throw new Error(`Product Linking hydration failed: HTTP ${response.status}`);
     const data = await response.json();
     if (!data.success) throw new Error(data.error || "Product Linking hydration failed");
@@ -155,13 +172,9 @@
   async function fetchFullSnapshotOnceDaily() {
     const work = async () => {
       const latest = await readSnapshot();
-      if (snapshotIsFresh(latest)) {
-        applySnapshot(latest);
-        return;
-      }
-      await fetchFullSnapshot();
+      if (snapshotIsFresh(latest)) applySnapshot(latest);
+      else await fetchFullSnapshot();
     };
-
     if (navigator.locks?.request) {
       return navigator.locks.request("bt38-product-linking-daily-snapshot", { mode: "exclusive" }, work);
     }
@@ -182,7 +195,6 @@
       if (loading) loading.classList.remove("d-none");
       if (errorBox) errorBox.classList.add("d-none");
       if (container) container.classList.add("d-none");
-
       try {
         const cached = await readSnapshot();
         if (snapshotIsFresh(cached)) applySnapshot(cached);
@@ -201,41 +213,74 @@
         state.hydrating = null;
       }
     })();
-
     return state.hydrating;
   }
 
-  function mergeTargetedData(data, listingId) {
+  function mergeTargetedData(data, affectedListingIds) {
     const changedProducts = uniqueById(data.warehouse_products || []);
-    const changedIds = new Set(changedProducts.map(productIdentity).filter(Boolean));
+    const changedProductIds = new Set(changedProducts.map(productIdentity).filter(Boolean));
     state.products = state.products
-      .filter(product => !changedIds.has(productIdentity(product)))
+      .filter((product) => !changedProductIds.has(productIdentity(product)))
       .concat(changedProducts);
 
+    const listingIds = new Set(normaliseIds(affectedListingIds));
     const returnedUnlinked = uniqueById(data.unlinked_listings || []);
+    returnedUnlinked.forEach((listing) => listingIds.add(listingIdentity(listing)));
     state.unlinked = state.unlinked
-      .filter(listing => !sameId(listing.id ?? listing.listing_id, listingId))
-      .concat(returnedUnlinked.filter(listing => !state.unlinked.some(existing => sameId(existing.id, listing.id))));
+      .filter((listing) => !listingIds.has(listingIdentity(listing)))
+      .concat(returnedUnlinked);
 
     const returnedListings = uniqueById(data.all_marketplace_listings || data.listings || []);
-    if (returnedListings.length) {
-      const returnedIds = new Set(returnedListings.map(item => String(item.id ?? item.listing_id ?? "")));
-      state.listings = state.listings
-        .filter(item => !returnedIds.has(String(item.id ?? item.listing_id ?? "")))
-        .concat(returnedListings);
-    }
+    returnedListings.forEach((listing) => listingIds.add(listingIdentity(listing)));
+    state.listings = state.listings
+      .filter((listing) => !listingIds.has(listingIdentity(listing)))
+      .concat(returnedListings);
 
     assignLegacyGlobals();
+  }
+
+  function mutationSearchKeys(contract, identity) {
+    const keys = [];
+    const add = (value) => {
+      const text = String(value ?? "").trim();
+      if (text && !keys.includes(text)) keys.push(text);
+    };
+
+    normaliseIds(contract?.affected_warehouse_stock_ids).forEach(add);
+    normaliseIds(contract?.affected_group_ids).forEach(add);
+    normaliseIds(contract?.affected_listing_ids).forEach(add);
+    add(identity?.warehouseSku);
+    add(identity?.listingSku);
+    add(identity?.warehouseId);
+    add(identity?.groupId);
+    add(identity?.previousGroupId);
+    add(identity?.originalGroupId);
+    add(identity?.listingId);
+    return keys;
+  }
+
+  async function applyMutationContract(contract, identity) {
+    if (contract && contract.changed === false) return contract;
+
+    const listingIds = normaliseIds([
+      ...(contract?.affected_listing_ids || []),
+      identity?.listingId
+    ]);
+    const keys = mutationSearchKeys(contract, identity);
+    if (!keys.length) throw new Error("Affected Product Linking rows could not be identified");
+
+    for (const key of keys) {
+      const data = await fetchDataset(key, TARGETED_DATASET_LIMIT);
+      mergeTargetedData(data, listingIds);
+    }
+
     render();
-    return writeSnapshot();
+    await writeSnapshot();
+    return contract;
   }
 
   async function refreshAffectedRecord(identity) {
-    const search = String(identity?.warehouseSku || identity?.listingSku || identity?.warehouseId || "").trim();
-    if (!search) throw new Error("Affected Product Linking record could not be identified");
-    const data = await fetchDataset(search, TARGETED_DATASET_LIMIT);
-    await mergeTargetedData(data, identity?.listingId);
-    return data;
+    return applyMutationContract({ changed: true }, identity);
   }
 
   function getFilters() {
@@ -253,7 +298,7 @@
     const listings = product.listings || [];
     const haystack = [
       product.sku, product.name, product.group_name, product.barcode, product.master_product_group_id,
-      ...listings.flatMap(listing => [
+      ...listings.flatMap((listing) => [
         listing.external_sku, listing.sku, listing.title, listing.external_listing_id,
         listing.external_id, listing.asin, listing.fnsku, listing.platform, listing.store_name
       ])
@@ -261,9 +306,9 @@
 
     if (filters.search && !haystack.includes(filters.search)) return false;
     if (filters.platform && filters.platform !== "all" &&
-        !listings.some(listing => String(listing.platform || "").toLowerCase().includes(filters.platform))) return false;
+        !listings.some((listing) => String(listing.platform || "").toLowerCase().includes(filters.platform))) return false;
     if (filters.store && filters.store !== "all" &&
-        !listings.some(listing => String(listing.store_id || "").toLowerCase() === filters.store)) return false;
+        !listings.some((listing) => String(listing.store_id || "").toLowerCase() === filters.store)) return false;
 
     const linkedCount = Number.parseInt(product.linked_count || listings.length || 0, 10);
     if (filters.showLinked === "linked" && linkedCount <= 0) return false;
@@ -274,7 +319,7 @@
   function render() {
     if (!state.hydrated || typeof renderWarehouseProducts !== "function") return;
     const filters = getFilters();
-    state.filtered = state.products.filter(product => productMatches(product, filters));
+    state.filtered = state.products.filter((product) => productMatches(product, filters));
     const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.perPage));
     state.page = Math.min(Math.max(state.page, 1), totalPages);
     const start = (state.page - 1) * state.perPage;
@@ -284,9 +329,14 @@
       productLinkingPage = state.page;
       productLinkingPerPage = state.perPage;
       productLinkingPagination = {
-        page: state.page, per_page: state.perPage, total_stock: state.filtered.length,
-        total_pages: totalPages, has_prev: state.page > 1, has_next: state.page < totalPages,
-        prev_page: Math.max(1, state.page - 1), next_page: Math.min(totalPages, state.page + 1)
+        page: state.page,
+        per_page: state.perPage,
+        total_stock: state.filtered.length,
+        total_pages: totalPages,
+        has_prev: state.page > 1,
+        has_next: state.page < totalPages,
+        prev_page: Math.max(1, state.page - 1),
+        next_page: Math.min(totalPages, state.page + 1)
       };
     } catch (_) {}
 
@@ -297,17 +347,19 @@
   }
 
   function mappingExists(listingId, warehouseId) {
-    return state.products.some(product => {
-      const productMatchesWarehouse = [product.id, product.warehouse_stock_id, product.stock_id]
-        .some(value => sameId(value, warehouseId));
-      if (!productMatchesWarehouse) return false;
-      return (product.listings || []).some(listing => [listing.id, listing.listing_id, listing.marketplace_listing_id]
-        .some(value => sameId(value, listingId)));
+    return state.products.some((product) => {
+      const warehouseMatches = [product.id, product.warehouse_stock_id, product.stock_id]
+        .some((value) => sameId(value, warehouseId));
+      if (!warehouseMatches) return false;
+      return (product.listings || []).some((listing) =>
+        [listing.id, listing.listing_id, listing.marketplace_listing_id]
+          .some((value) => sameId(value, listingId))
+      );
     });
   }
 
   function closeOpenModals() {
-    document.querySelectorAll(".modal.show").forEach(modal => {
+    document.querySelectorAll(".modal.show").forEach((modal) => {
       const instance = window.bootstrap?.Modal?.getInstance(modal);
       if (instance) instance.hide();
     });
@@ -337,17 +389,16 @@
       </div>`;
   };
 
-  // Page reloads and legacy force=true calls never trigger another full read inside
-  // the 24-hour window. A governed mutation must call the targeted record refresh.
   window.loadProductLinkingData = function () {
     return hydrate();
   };
   window.bt38RefreshProductLinkingRecord = refreshAffectedRecord;
+  window.bt38ApplyProductLinkingMutation = applyMutationContract;
 
   window.filterFlatListings = function () {
     const search = String(document.getElementById("modalListingSearch")?.value || "").trim().toLowerCase();
     const linkable = typeof getLinkableListings === "function" ? getLinkableListings(currentWarehouseId) : state.unlinked;
-    const filtered = !search ? linkable : linkable.filter(listing => [
+    const filtered = !search ? linkable : linkable.filter((listing) => [
       listing.external_sku, listing.sku, listing.title, listing.external_listing_id, listing.external_id, listing.asin
     ].filter(Boolean).join(" ").toLowerCase().includes(search));
     if (typeof renderFlatListings === "function") renderFlatListings(filtered);
@@ -355,7 +406,7 @@
 
   window.searchWarehouseForLinking = function () {
     const search = String(document.getElementById("modalWarehouseSearch")?.value || "").trim().toLowerCase();
-    const products = !search ? state.products : state.products.filter(product => [
+    const products = !search ? state.products : state.products.filter((product) => [
       product.sku, product.name, product.group_name, product.barcode
     ].filter(Boolean).join(" ").toLowerCase().includes(search));
     if (typeof renderWarehouseInModal === "function") renderWarehouseInModal(products, currentListingId, search);
@@ -365,6 +416,7 @@
     try {
       const response = await fetch("/governed/product-linking/link-listing-to-warehouse", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ listing_id: listingId, warehouse_id: warehouseId, user_confirmed: userConfirmed })
       });
@@ -380,20 +432,71 @@
         return;
       }
 
-      if (!response.ok || !data.success) {
+      if (!response.ok || (!data.success && !data.ok)) {
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku });
+      await applyMutationContract(data, {
+        listingId,
+        warehouseId,
+        listingSku,
+        warehouseSku,
+        groupId: data.group_id,
+        originalGroupId: data.original_group_id
+      });
       if (!mappingExists(listingId, warehouseId)) {
-        throw new Error("The server returned success, but the affected relationship could not be verified.");
+        throw new Error("The relationship changed, but the affected browser row could not be verified.");
       }
 
       closeOpenModals();
-      window.alert(`Successfully linked ${listingSku} to ${warehouseSku}.`);
+      window.alert(data.changed === false
+        ? `${listingSku} is already linked to ${warehouseSku}.`
+        : `Successfully linked ${listingSku} to ${warehouseSku}.`);
     } catch (error) {
       console.error("[ProductLinkingSession] verified link failed", error);
       window.alert(`Link failed: ${error.message || error}`);
+    }
+  };
+
+  window.unlinkListing = async function (listingId, listingSku, userConfirmed = false, groupId = null, warehouseStockId = null) {
+    if (!groupId) {
+      window.alert("This listing has no governed group ID and cannot be safely restored.");
+      return;
+    }
+    if (!userConfirmed && !window.confirm(`Unlink ${listingSku} and restore it to its original group ID?`)) return;
+
+    try {
+      const response = await fetch(`/governed/groups/${encodeURIComponent(groupId)}/unlink`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          listing_id: listingId,
+          warehouse_stock_id: warehouseStockId,
+          user_confirmed: true
+        })
+      });
+      const data = await response.json();
+      if (!response.ok || (!data.success && !data.ok)) {
+        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+      }
+
+      await applyMutationContract(data, {
+        listingId,
+        listingSku,
+        warehouseId: data.warehouse_stock_id || warehouseStockId,
+        groupId: data.group_id,
+        previousGroupId: data.previous_group_id || groupId,
+        originalGroupId: data.original_group_id
+      });
+
+      closeOpenModals();
+      window.alert(data.changed === false
+        ? `${listingSku} is already in its original group.`
+        : `${listingSku} was restored to original group ${data.original_group_id || data.group_id}.`);
+    } catch (error) {
+      console.error("[ProductLinkingSession] verified unlink failed", error);
+      window.alert(`Unlink failed: ${error.message || error}`);
     }
   };
 
@@ -401,14 +504,14 @@
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (form && !form.dataset.bt38SessionWired) {
       form.dataset.bt38SessionWired = "1";
-      form.addEventListener("submit", event => {
+      form.addEventListener("submit", (event) => {
         event.preventDefault();
         event.stopImmediatePropagation();
         state.page = 1;
         render();
       }, true);
-      form.querySelectorAll("input, select").forEach(field => {
-        field.addEventListener(field.tagName === "SELECT" ? "change" : "input", event => {
+      form.querySelectorAll("input, select").forEach((field) => {
+        field.addEventListener(field.tagName === "SELECT" ? "change" : "input", (event) => {
           event.preventDefault();
           event.stopImmediatePropagation();
           state.page = 1;
@@ -420,7 +523,7 @@
     const clear = form?.querySelector('a[href="/product-linking"]');
     if (clear && !clear.dataset.bt38SessionWired) {
       clear.dataset.bt38SessionWired = "1";
-      clear.addEventListener("click", event => {
+      clear.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopImmediatePropagation();
         form.reset();
@@ -440,4 +543,4 @@
   } else {
     boot();
   }
-})();
+}());
