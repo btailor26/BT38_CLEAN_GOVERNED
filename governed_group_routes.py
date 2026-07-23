@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, redirect, request
 try:
     from flask_login import current_user
 except Exception:
@@ -124,16 +124,12 @@ def governed_group_link_listing(group_id: int):
 def governed_group_unlink(group_id: int):
     """Unlink one marketplace listing or one warehouse stock row from a group.
 
-    Product Linking sends both ``listing_id`` and ``warehouse_stock_id`` for a
-    listing unlink. In that case the listing is the requested target: detach the
-    listing from warehouse inventory and group membership, while preserving the
-    warehouse authority row and every other marketplace member in the group.
-
-    A stock-only request remains the explicit operation for removing a warehouse
-    stock row from the group.
+    Product Linking listing requests are routed to the existing governed
+    Product Linking unlink action. A stock-only request remains the explicit
+    operation for removing a warehouse stock row from the group.
     """
     from extensions import db
-    from models import MarketplaceListing, MasterProductGroup, WarehouseStock
+    from models import MasterProductGroup, WarehouseStock
 
     body = dict(request.get_json(silent=True) or {})
     group = db.session.get(MasterProductGroup, group_id)
@@ -145,36 +141,10 @@ def governed_group_unlink(group_id: int):
     if not stock_id and not listing_id:
         return jsonify(_blocked("warehouse_stock_id or listing_id is required.", group_id=group_id)), 400
 
-    now = datetime.utcnow()
-
-    # A listing request always means "unlink this marketplace listing". Do not
-    # also remove the shared warehouse authority merely because the UI supplied
-    # its warehouse_stock_id as context.
     if listing_id:
-        listing = db.session.get(MarketplaceListing, int(listing_id))
-        if not listing or listing.master_product_group_id != group_id:
-            return jsonify(_blocked(
-                "Marketplace listing is not linked to this group.",
-                group_id=group_id,
-                listing_id=listing_id,
-            )), 400
+        return redirect("/governed-disabled/unlink-listing", code=307)
 
-        detached_stock_id = listing.warehouse_stock_id
-        listing.warehouse_stock_id = None
-        listing.master_product_group_id = None
-        listing.updated_at = now
-        group.updated_at = now
-
-        db.session.commit()
-        result = _serialize_master_group(group)
-        result.update({
-            "message": "Marketplace listing was unlinked from warehouse inventory and the product group.",
-            "listing_id": int(listing_id),
-            "warehouse_stock_id": detached_stock_id,
-        })
-        return jsonify(result)
-
-    # Stock-only requests are explicit group-member removal operations.
+    now = datetime.utcnow()
     stock = db.session.get(WarehouseStock, int(stock_id))
     if not stock or stock.master_product_group_id != group_id:
         return jsonify(_blocked(
