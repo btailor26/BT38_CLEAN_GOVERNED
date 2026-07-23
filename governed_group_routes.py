@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, jsonify, request
 try:
     from flask_login import current_user
 except Exception:
@@ -124,12 +124,13 @@ def governed_group_link_listing(group_id: int):
 def governed_group_unlink(group_id: int):
     """Unlink one marketplace listing or one warehouse stock row from a group.
 
-    Product Linking listing requests use the existing governed Product Linking
-    unlink authority. A stock-only request remains the explicit operation for
-    removing a warehouse stock row from the group.
+    A listing unlink detaches only that marketplace listing. The warehouse row
+    and its existing MasterProductGroup remain intact so a later relink reuses
+    the same group instead of creating a duplicate. A stock-only request remains
+    the explicit operation for removing a warehouse stock row from the group.
     """
     from extensions import db
-    from models import MasterProductGroup, WarehouseStock
+    from models import MarketplaceListing, MasterProductGroup, WarehouseStock
 
     body = dict(request.get_json(silent=True) or {})
     group = db.session.get(MasterProductGroup, group_id)
@@ -141,21 +142,33 @@ def governed_group_unlink(group_id: int):
     if not stock_id and not listing_id:
         return jsonify(_blocked("warehouse_stock_id or listing_id is required.", group_id=group_id)), 400
 
-    if listing_id:
-        from governed_routes import governed_disabled_action
-
-        # Use the existing governed unlink authority directly. The Product
-        # Linking page keeps a 24-hour IndexedDB snapshot, so clear only browser
-        # storage after a successful unlink; the next refresh must hydrate the
-        # relationship from the committed database state instead of replaying
-        # the stale linked snapshot.
-        response = make_response(governed_disabled_action("unlink-listing"))
-        if response.status_code < 400:
-            response.headers["Clear-Site-Data"] = '"storage"'
-            response.headers["Cache-Control"] = "no-store"
-        return response
-
     now = datetime.utcnow()
+
+    if listing_id:
+        listing = db.session.get(MarketplaceListing, int(listing_id))
+        if not listing or listing.master_product_group_id != group_id:
+            return jsonify(_blocked(
+                "Marketplace listing is not linked to this group.",
+                group_id=group_id,
+                listing_id=listing_id,
+            )), 400
+
+        detached_stock_id = listing.warehouse_stock_id
+        listing.warehouse_stock_id = None
+        listing.master_product_group_id = None
+        listing.updated_at = now
+        group.updated_at = now
+
+        db.session.commit()
+        result = _serialize_master_group(group)
+        result.update({
+            "message": "Marketplace listing was unlinked. Warehouse group authority was preserved.",
+            "listing_id": int(listing_id),
+            "warehouse_stock_id": detached_stock_id,
+            "warehouse_group_preserved": True,
+        })
+        return jsonify(result)
+
     stock = db.session.get(WarehouseStock, int(stock_id))
     if not stock or stock.master_product_group_id != group_id:
         return jsonify(_blocked(
