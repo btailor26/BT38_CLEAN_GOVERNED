@@ -3805,6 +3805,40 @@ def governed_disabled_action(action: str = ""):
 
         db.session.commit()
 
+        # Product Linking rule:
+        # once the relationship is committed, automatically execute the
+        # existing governed group push. FBA/AFN remains read-only and is
+        # skipped by push_group_listings; pushable eBay/FBM members are updated.
+        from services.governed_push_execution import push_group_listings
+
+        try:
+            auto_push_result = push_group_listings(
+                group_id=group.id,
+                actor=_actor(),
+                source="product_linking_auto_push",
+                actor_user=(
+                    current_user
+                    if current_user and current_user.is_authenticated
+                    else None
+                ),
+            )
+        except Exception as exc:
+            # The relationship has already been committed and must remain linked.
+            # The existing manual Push button remains available as a retry.
+            auto_push_result = {
+                "success": False,
+                "ok": False,
+                "governed": True,
+                "group_id": group.id,
+                "error": str(exc),
+                "reason": "product_linking_auto_push_exception",
+            }
+
+        auto_push_success = bool(
+            auto_push_result.get("ok")
+            or auto_push_result.get("success")
+        )
+
         return jsonify({
             "success": True,
             "ok": True,
@@ -3814,7 +3848,14 @@ def governed_disabled_action(action: str = ""):
             "warehouse_stock_id": stock.id,
             "group_id": group.id,
             "archived_duplicate_shadow_rows": duplicate_shadow_count,
-            "message": "Listing linked through governed Phase 2 bridge. Same-SKU FBA shadow duplicates were archived.",
+            "auto_push_attempted": True,
+            "auto_push_success": auto_push_success,
+            "push_result": auto_push_result,
+            "message": (
+                "Listing linked and governed group push completed."
+                if auto_push_success
+                else "Listing linked, but governed group push failed or was blocked."
+            ),
         }), 200
 
     if action == "unlink-listing" and request.method == "POST":
