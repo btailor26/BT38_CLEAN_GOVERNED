@@ -2656,8 +2656,6 @@ def governed_listing_quantity_update(listing_id: int):
     from extensions import db
     from models import MarketplaceListing, WarehouseStock
     from flask import request, jsonify
-    from flask_login import current_user
-    from services.governed_push_execution import push_marketplace_listing
 
     listing = db.session.get(MarketplaceListing, listing_id)
     if not listing:
@@ -2718,29 +2716,12 @@ def governed_listing_quantity_update(listing_id: int):
 
     if is_ebay_variation:
         listing.last_marketplace_qty = qty
+        listing.last_push_quantity = qty
         listing.last_push_status = "pending"
         listing.push_state = "active"
         listing.updated_at = datetime.utcnow()
 
     db.session.commit()
-
-    actor_user = (
-        current_user
-        if getattr(current_user, "is_authenticated", False)
-        else None
-    )
-
-    push_result = push_marketplace_listing(
-        listing_id=listing.id,
-        actor="warehouse_quantity_update",
-        source="warehouse_quantity_auto_push",
-        actor_user=actor_user,
-    )
-
-    push_success = bool(
-        push_result.get("ok")
-        or push_result.get("success")
-    )
 
     return jsonify(
         success=True,
@@ -2751,14 +2732,7 @@ def governed_listing_quantity_update(listing_id: int):
         quantity=qty,
         updated_column=updated_column,
         listing_quantity_updated=bool(is_ebay_variation),
-        auto_push_attempted=True,
-        auto_push_success=push_success,
-        push_result=push_result,
-        message=(
-            "Warehouse quantity saved and marketplace updated."
-            if push_success
-            else "Warehouse quantity saved but marketplace push failed or was blocked."
-        ),
+        message="Warehouse quantity saved locally. Use Push to sync marketplace.",
     )
 
 
@@ -3805,40 +3779,6 @@ def governed_disabled_action(action: str = ""):
 
         db.session.commit()
 
-        # Product Linking rule:
-        # once the relationship is committed, automatically execute the
-        # existing governed group push. FBA/AFN remains read-only and is
-        # skipped by push_group_listings; pushable eBay/FBM members are updated.
-        from services.governed_push_execution import push_group_listings
-
-        try:
-            auto_push_result = push_group_listings(
-                group_id=group.id,
-                actor=_actor(),
-                source="product_linking_auto_push",
-                actor_user=(
-                    current_user
-                    if current_user and current_user.is_authenticated
-                    else None
-                ),
-            )
-        except Exception as exc:
-            # The relationship has already been committed and must remain linked.
-            # The existing manual Push button remains available as a retry.
-            auto_push_result = {
-                "success": False,
-                "ok": False,
-                "governed": True,
-                "group_id": group.id,
-                "error": str(exc),
-                "reason": "product_linking_auto_push_exception",
-            }
-
-        auto_push_success = bool(
-            auto_push_result.get("ok")
-            or auto_push_result.get("success")
-        )
-
         return jsonify({
             "success": True,
             "ok": True,
@@ -3848,14 +3788,7 @@ def governed_disabled_action(action: str = ""):
             "warehouse_stock_id": stock.id,
             "group_id": group.id,
             "archived_duplicate_shadow_rows": duplicate_shadow_count,
-            "auto_push_attempted": True,
-            "auto_push_success": auto_push_success,
-            "push_result": auto_push_result,
-            "message": (
-                "Listing linked and governed group push completed."
-                if auto_push_success
-                else "Listing linked, but governed group push failed or was blocked."
-            ),
+            "message": "Listing linked through governed Phase 2 bridge. Same-SKU FBA shadow duplicates were archived.",
         }), 200
 
     if action == "unlink-listing" and request.method == "POST":
