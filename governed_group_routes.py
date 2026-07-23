@@ -73,7 +73,14 @@ def governed_group_create():
             return jsonify(result), 400
 
     db.session.commit()
-    return jsonify(_serialize_master_group(group)), 201
+    payload = _serialize_master_group(group)
+    payload.update(_change_contract(
+        changed=True,
+        group_ids=[group.id],
+        stock_ids=[warehouse_stock_id] if warehouse_stock_id else [],
+        listing_ids=[listing_id] if listing_id else [],
+    ))
+    return _targeted_response(payload, 201)
 
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/link-stock")
@@ -95,7 +102,9 @@ def governed_group_link_stock(group_id: int):
         return jsonify(result), 400
 
     db.session.commit()
-    return jsonify(_serialize_master_group(group))
+    payload = _serialize_master_group(group)
+    payload.update(_change_contract(changed=True, group_ids=[group.id], stock_ids=[stock_id]))
+    return _targeted_response(payload)
 
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/link-listing")
@@ -123,20 +132,19 @@ def governed_group_link_listing(group_id: int):
         "auto_push_attempted": True,
         "auto_push_success": _push_succeeded(push_result),
         "push_result": push_result,
-        "refresh_required": True,
+        **_change_contract(
+            changed=True,
+            group_ids=[group.id],
+            stock_ids=[result.get("warehouse_stock_id")],
+            listing_ids=[listing_id],
+        ),
     })
-    return _fresh_response(payload)
+    return _targeted_response(payload)
 
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    """Return a listing to its own original product group.
-
-    Every product has a permanent standalone group. Linking temporarily moves a
-    listing into another product's active group. Unlinking must therefore restore
-    the listing to the group belonging to its own SKU, never NULL and never an
-    inferred ``auto`` group.
-    """
+    """Restore a listing to its permanent standalone product group."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup, WarehouseStock
 
@@ -161,6 +169,7 @@ def governed_group_unlink(group_id: int):
                 listing_id=listing_id,
             )), 400
 
+        previous_stock_id = listing.warehouse_stock_id
         original_stock, original_group = _resolve_original_membership(listing, active_group_id=group_id)
         if not original_stock or not original_group:
             return jsonify(_blocked(
@@ -180,7 +189,6 @@ def governed_group_unlink(group_id: int):
         original_stock.updated_at = now
         original_group.updated_at = now
         group.updated_at = now
-
         db.session.commit()
 
         old_group_push = _push_group_safely(group_id, source="product_linking_unlink_old_group_auto_push")
@@ -206,9 +214,14 @@ def governed_group_unlink(group_id: int):
                 "previous_group": old_group_push,
                 "restored_group": restored_group_push,
             },
-            "refresh_required": True,
+            **_change_contract(
+                changed=True,
+                group_ids=[group_id, original_group.id],
+                stock_ids=[previous_stock_id, original_stock.id],
+                listing_ids=[listing_id],
+            ),
         })
-        return _fresh_response(payload)
+        return _targeted_response(payload)
 
     stock = db.session.get(WarehouseStock, int(stock_id))
     if not stock or stock.master_product_group_id != group_id:
@@ -227,10 +240,9 @@ def governed_group_unlink(group_id: int):
     payload = _serialize_master_group(group)
     payload.update({
         "message": "Warehouse stock was removed from the product group.",
-        "warehouse_stock_id": int(stock_id),
-        "refresh_required": True,
+        **_change_contract(changed=True, group_ids=[group_id], stock_ids=[stock_id]),
     })
-    return _fresh_response(payload)
+    return _targeted_response(payload)
 
 
 def _resolve_original_membership(listing, *, active_group_id: int):
@@ -278,18 +290,29 @@ def _link_stock_to_group(group, stock_id: int, actor: str) -> dict:
     if not stock:
         return _blocked("Warehouse stock was not found.", stock_id=stock_id)
 
+    changed = int(stock.master_product_group_id or 0) != int(group.id) or not bool(stock.is_group_controlled)
     stock.master_product_group_id = group.id
     stock.is_group_controlled = True
     stock.group_controlled_at = stock.group_controlled_at or datetime.utcnow()
-    stock.updated_at = datetime.utcnow()
+    if changed:
+        stock.updated_at = datetime.utcnow()
 
     if not group.display_title:
         group.display_title = (stock.product_name or stock.group_title or stock.sku or "Untitled Master Group")[:500]
     if not group.display_image_url and stock.image_url:
         group.display_image_url = stock.image_url
-    group.updated_at = datetime.utcnow()
+    if changed:
+        group.updated_at = datetime.utcnow()
 
-    return {"success": True, "ok": True, "governed": True, "stock_id": stock_id, "group_id": group.id}
+    return {
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "changed": changed,
+        "stock_id": stock_id,
+        "warehouse_stock_id": stock_id,
+        "group_id": group.id,
+    }
 
 
 def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
@@ -300,19 +323,33 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
     if not listing:
         return _blocked("Marketplace listing was not found.", listing_id=listing_id)
 
+    changed = int(listing.master_product_group_id or 0) != int(group.id)
     listing.master_product_group_id = group.id
-    listing.updated_at = datetime.utcnow()
+    if changed:
+        listing.updated_at = datetime.utcnow()
 
+    warehouse_stock_id = None
     if listing.warehouse_stock:
-        result = _link_stock_to_group(group, listing.warehouse_stock.id, actor=actor)
+        warehouse_stock_id = listing.warehouse_stock.id
+        result = _link_stock_to_group(group, warehouse_stock_id, actor=actor)
         if not result.get("ok"):
             return result
+        changed = changed or bool(result.get("changed"))
 
     if not group.display_title:
         group.display_title = (listing.title or listing.external_sku or "Untitled Master Group")[:500]
-    group.updated_at = datetime.utcnow()
+    if changed:
+        group.updated_at = datetime.utcnow()
 
-    return {"success": True, "ok": True, "governed": True, "listing_id": listing_id, "group_id": group.id}
+    return {
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "changed": changed,
+        "listing_id": listing_id,
+        "warehouse_stock_id": warehouse_stock_id,
+        "group_id": group.id,
+    }
 
 
 def _push_group_safely(group_id: int, *, source: str) -> dict:
@@ -344,12 +381,42 @@ def _push_succeeded(result: dict) -> bool:
     return bool(result.get("ok") or result.get("success"))
 
 
-def _fresh_response(payload: dict, status: int = 200):
+def _normalise_ids(values):
+    result = []
+    seen = set()
+    for value in values or []:
+        if value in (None, "", 0, "0"):
+            continue
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _change_contract(*, changed: bool, group_ids=None, stock_ids=None, listing_ids=None) -> dict:
+    return {
+        "changed": bool(changed),
+        "refresh_required": bool(changed),
+        "refresh_scope": "affected_rows" if changed else "none",
+        "affected_group_ids": _normalise_ids(group_ids),
+        "affected_warehouse_stock_ids": _normalise_ids(stock_ids),
+        "affected_listing_ids": _normalise_ids(listing_ids),
+        "full_page_refresh": False,
+        "full_dataset_refresh": False,
+        "cache_clear_required": False,
+    }
+
+
+def _targeted_response(payload: dict, status: int = 200):
+    """Prevent response caching without clearing browser storage or reloading pages."""
     response = make_response(jsonify(payload), status)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-    response.headers["Clear-Site-Data"] = '"storage"'
     return response
 
 
@@ -415,6 +482,7 @@ def _blocked(reason: str, **extra) -> dict:
         "reason": reason,
         "message": reason,
         "error": reason,
+        **_change_contract(changed=False),
     }
     result.update(extra)
     return result
