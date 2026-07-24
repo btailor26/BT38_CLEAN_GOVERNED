@@ -1002,10 +1002,14 @@ def governed_marketplace_webhook_intake(marketplace):
     notification_result = None
     if allowed:
         from services.governed_webhook_execution import process_marketplace_notification
+
+        matched_store = _bt38_match_webhook_store(platform, payload)
+
         notification_result = process_marketplace_notification(
             marketplace=platform,
             payload=payload,
             actor=f"webhook_{platform}",
+            store_id=getattr(matched_store, "id", None),
         )
 
     return jsonify({

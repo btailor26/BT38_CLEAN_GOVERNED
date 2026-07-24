@@ -304,29 +304,57 @@ def _parse_ebay_datetime(value: Any) -> datetime | None:
         return None
 
 
-def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
+def _run_ebay_order_import(
+    store: Store,
+    *,
+    source: str,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    """Use one eBay order-processing path for webhook and reconcile intake.
+
+    When order_id is supplied, only that exact eBay order is fetched.
+    Without order_id, the existing seven-day reconciliation reader is used.
+    Both modes enter the same line upsert and exact processing loop below.
+    """
     access_token = _ebay_access_token(store)
 
-    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
 
-    response = requests.get(
-        EBAY_ORDERS_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        },
-        params={
-            "filter": f"creationdate:[{since}..]",
-            "limit": "100",
-        },
-        timeout=30,
-    )
+    requested_order_id = _text(order_id)
+
+    if requested_order_id:
+        encoded_order_id = requests.utils.quote(requested_order_id, safe="")
+        response = requests.get(
+            f"{EBAY_ORDERS_URL}/{encoded_order_id}",
+            headers=headers,
+            timeout=30,
+        )
+    else:
+        since = (
+            datetime.now(timezone.utc) - timedelta(days=7)
+        ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        response = requests.get(
+            EBAY_ORDERS_URL,
+            headers=headers,
+            params={
+                "filter": f"creationdate:[{since}..]",
+                "limit": "100",
+            },
+            timeout=30,
+        )
 
     if response.status_code >= 400:
-        raise RuntimeError(f"ebay_order_import_failed:{response.status_code}:{response.text[:1000]}")
+        raise RuntimeError(
+            f"ebay_order_import_failed:{response.status_code}:"
+            f"{response.text[:1000]}"
+        )
 
     payload = response.json() or {}
-    orders = payload.get("orders") or []
+    orders = [payload] if requested_order_id else (payload.get("orders") or [])
 
     imported = 0
     created = 0
@@ -444,6 +472,8 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
         "governed": True,
         "marketplace": "ebay",
         "source": source,
+        "mode": "exact_order" if requested_order_id else "reconcile_window",
+        "requested_order_id": requested_order_id or None,
         "orders_seen": len(orders),
         "imported": imported,
         "created": created,
@@ -670,6 +700,87 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         "unmatched": unmatched,
         "results": line_results[:50],
     }
+
+
+
+def run_governed_ebay_exact_order_import(
+    *,
+    store_id: int,
+    order_id: str,
+    source: str = "governed_ebay_notification",
+) -> dict[str, Any]:
+    """Fetch and process one exact eBay order through the governed importer."""
+
+    exact_store_id = int(store_id)
+    exact_order_id = _text(order_id)
+
+    if not exact_order_id:
+        return {
+            "success": False,
+            "governed": True,
+            "marketplace": "ebay",
+            "reason": "missing_ebay_order_id",
+        }
+
+    store = (
+        Store.query
+        .filter(Store.id == exact_store_id)
+        .filter(Store.is_active == True)  # noqa: E712
+        .filter(Store.store_mode == "live")
+        .first()
+    )
+
+    if not store:
+        return {
+            "success": False,
+            "governed": True,
+            "marketplace": "ebay",
+            "store_id": exact_store_id,
+            "order_id": exact_order_id,
+            "reason": "live_ebay_store_not_found",
+        }
+
+    platform = str(store.platform or "").strip().lower()
+    if "ebay" not in platform:
+        return {
+            "success": False,
+            "governed": True,
+            "marketplace": "ebay",
+            "store_id": store.id,
+            "order_id": exact_order_id,
+            "reason": "store_is_not_ebay",
+        }
+
+    try:
+        return _run_ebay_order_import(
+            store,
+            source=source,
+            order_id=exact_order_id,
+        )
+    except Exception as exc:
+        db.session.rollback()
+
+        _write_sync_log(
+            store,
+            status="error",
+            items_synced=0,
+            message=(
+                f"governed_ebay_exact_order_import failed "
+                f"order_id={exact_order_id} source={source}: {exc}"
+            ),
+        )
+        db.session.commit()
+
+        return {
+            "success": False,
+            "governed": True,
+            "marketplace": "ebay",
+            "store_id": store.id,
+            "order_id": exact_order_id,
+            "source": source,
+            "error": str(exc),
+        }
+
 
 
 def run_governed_marketplace_order_import(store_id=None, source: str = "governed_marketplace_order_import") -> dict[str, Any]:

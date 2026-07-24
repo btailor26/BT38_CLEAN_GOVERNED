@@ -21,7 +21,13 @@ from datetime import datetime
 from typing import Any, Dict
 
 
-def process_marketplace_notification(*, marketplace: str, payload: dict, actor: str = "marketplace_webhook") -> Dict[str, Any]:
+def process_marketplace_notification(
+    *,
+    marketplace: str,
+    payload: dict,
+    actor: str = "marketplace_webhook",
+    store_id: int | None = None,
+) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing
     from services.governed_push_execution import push_group_listings, push_marketplace_listing
@@ -30,6 +36,26 @@ def process_marketplace_notification(*, marketplace: str, payload: dict, actor: 
     marketplace = str(marketplace or payload.get("marketplace") or "").strip().lower()
     event_type = _event_type(payload)
     business_event = _classify_business_event(event_type, payload)
+
+    from services.governed_notification_router import (
+        route_marketplace_notification,
+    )
+
+    routed_result = route_marketplace_notification(
+        marketplace=marketplace,
+        payload=payload,
+        actor=actor,
+        store_id=store_id,
+    )
+
+    if routed_result is not None:
+        return _log_result(
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            payload=payload,
+            **routed_result,
+        )
 
     listing = _find_listing(MarketplaceListing, marketplace, payload)
     if not listing:
