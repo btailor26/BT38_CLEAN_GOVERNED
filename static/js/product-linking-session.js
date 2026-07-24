@@ -224,6 +224,20 @@
       .concat(changedProducts);
 
     const listingIds = new Set(normaliseIds(affectedListingIds));
+
+    // Remove affected listings from their previous cached group before
+    // inserting the targeted backend result into the correct group.
+    state.products = state.products.map((product) => {
+      const listings = (product.listings || []).filter(
+        (listing) => !listingIds.has(listingIdentity(listing))
+      );
+
+      return {
+        ...product,
+        listings,
+        linked_count: listings.length
+      };
+    });
     const returnedUnlinked = uniqueById(data.unlinked_listings || []);
     returnedUnlinked.forEach((listing) => listingIds.add(listingIdentity(listing)));
     state.unlinked = state.unlinked
