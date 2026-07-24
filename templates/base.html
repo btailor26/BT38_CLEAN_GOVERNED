@@ -38,7 +38,19 @@
                 <i data-feather="package" class="me-2"></i>BT38 Inventory
             </a>
 
-            <div class="ms-auto">
+            <div class="ms-auto d-flex align-items-center gap-2">
+                <a
+                    class="btn btn-dark border-0 d-inline-flex align-items-center justify-content-center position-relative"
+                    href="{{ url_for('governed.governed_notification_audit') }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Open notifications"
+                    title="Notifications"
+                    id="bt38NotificationBell"
+                >
+                    <i data-feather="bell"></i>
+                </a>
+
                 <a class="nav-link text-light" href="/login">
                     <i data-feather="log-in" class="me-1"></i>Login
                 </a>
