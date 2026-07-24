@@ -66,7 +66,7 @@ def _refresh_access_token_if_needed(store: Store, creds: dict[str, Any]) -> dict
         "https://api.ebay.com/oauth/api_scope "
         "https://api.ebay.com/oauth/api_scope/sell.inventory "
         "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account"
+        "https://api.ebay.com/oauth/api_scope/sell.account https://api.ebay.com/oauth/api_scope/commerce.notification.subscription"
     )
 
     resp = requests.post(
