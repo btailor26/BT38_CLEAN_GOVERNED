@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 import json
+import os
 
-from flask import Blueprint, jsonify, request, render_template, redirect, url_for
+from flask import Blueprint, jsonify, request, render_template, redirect, url_for, current_app
 try:
     from flask_login import current_user, login_required
 except Exception:
@@ -953,21 +954,38 @@ def governed_marketplace_webhook_intake(marketplace):
             "marketplace": platform,
         }), 404
 
-    # Lightweight challenge echo only. Provider-specific verification can be
-    # added later after the exact marketplace challenge contract is audited.
     if request.method == "GET":
-        challenge = (
+        challenge_code = (
             request.args.get("challenge_code")
             or request.args.get("challenge")
             or request.args.get("hub.challenge")
         )
+
+        verification_token = (
+            current_app.config.get("EBAY_NOTIFICATION_VERIFICATION_TOKEN")
+            or os.getenv("EBAY_NOTIFICATION_VERIFICATION_TOKEN")
+        )
+
+        endpoint = request.base_url
+
+        if platform == "ebay" and challenge_code and verification_token:
+            import hashlib
+
+            challenge_response = hashlib.sha256(
+                f"{challenge_code}{verification_token}{endpoint}".encode("utf-8")
+            ).hexdigest()
+
+            return jsonify({
+                "challengeResponse": challenge_response
+            }), 200
+
         return jsonify({
             "ok": True,
             "success": True,
             "governed": True,
             "marketplace": platform,
-            "challenge": challenge,
-            "message": "Governed webhook intake is reachable. No marketplace execution was run.",
+            "challenge": challenge_code,
+            "message": "Governed webhook intake is reachable."
         }), 200
 
     payload = _bt38_webhook_payload()
