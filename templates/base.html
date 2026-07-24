@@ -39,17 +39,18 @@
             </a>
 
             <div class="ms-auto d-flex align-items-center gap-2">
-                <a
+                <button
                     class="btn btn-dark border-0 d-inline-flex align-items-center justify-content-center position-relative"
-                    href="{{ url_for('governed.governed_notification_audit') }}"
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    type="button"
+                    data-bs-toggle="offcanvas"
+                    data-bs-target="#bt38NotificationPanel"
+                    aria-controls="bt38NotificationPanel"
                     aria-label="Open notifications"
                     title="Notifications"
                     id="bt38NotificationBell"
                 >
                     <i data-feather="bell"></i>
-                </a>
+                </button>
 
                 <a class="nav-link text-light" href="/login">
                     <i data-feather="log-in" class="me-1"></i>Login
@@ -105,6 +106,69 @@
         </div>
     </div>
 
+    <!-- Global Notification Panel -->
+    <div
+        class="offcanvas offcanvas-end"
+        tabindex="-1"
+        id="bt38NotificationPanel"
+        aria-labelledby="bt38NotificationPanelLabel"
+    >
+        <div class="offcanvas-header border-bottom">
+            <div>
+                <h5 class="offcanvas-title mb-0" id="bt38NotificationPanelLabel">
+                    <i data-feather="bell" class="me-2"></i>Notifications
+                </h5>
+                <small class="text-muted">Recent governed marketplace activity</small>
+            </div>
+            <button
+                type="button"
+                class="btn-close"
+                data-bs-dismiss="offcanvas"
+                aria-label="Close"
+            ></button>
+        </div>
+
+        <div class="offcanvas-body p-0">
+            <div
+                id="bt38NotificationLoading"
+                class="text-center text-muted py-5"
+            >
+                <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                Loading notifications…
+            </div>
+
+            <div
+                id="bt38NotificationError"
+                class="alert alert-danger m-3 d-none"
+                role="alert"
+            ></div>
+
+            <div
+                id="bt38NotificationEmpty"
+                class="text-center text-muted py-5 d-none"
+            >
+                <i data-feather="bell-off" class="mb-2"></i>
+                <div>No notifications have been received.</div>
+            </div>
+
+            <div
+                id="bt38NotificationList"
+                class="list-group list-group-flush d-none"
+            ></div>
+        </div>
+
+        <div class="border-top p-3">
+            <a
+                class="btn btn-outline-secondary btn-sm w-100"
+                href="{{ url_for('governed.governed_notification_audit') }}"
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                View raw notification audit
+            </a>
+        </div>
+    </div>
+
     <!-- Flash Messages -->
     <div class="container mt-3">
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -156,6 +220,150 @@
         document.getElementById('last-update').textContent = new Date().toLocaleString();
     </script>
     
+    <script id="bt38NotificationPanelScript">
+    (function () {
+        const panel = document.getElementById("bt38NotificationPanel");
+        const loading = document.getElementById("bt38NotificationLoading");
+        const errorBox = document.getElementById("bt38NotificationError");
+        const emptyBox = document.getElementById("bt38NotificationEmpty");
+        const list = document.getElementById("bt38NotificationList");
+
+        if (!panel || !loading || !errorBox || !emptyBox || !list) return;
+
+        let loaded = false;
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        function formatDate(value) {
+            if (!value) return "Time unavailable";
+
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return value;
+
+            return date.toLocaleString();
+        }
+
+        function marketplaceLabel(record) {
+            const text = `${record.message || ""} ${record.details || ""}`.toLowerCase();
+
+            if (text.includes("ebay")) return "eBay";
+            if (text.includes("amazon")) return "Amazon";
+            return "Marketplace";
+        }
+
+        function iconName(record) {
+            if (record.log_type === "marketplace_webhook") return "radio";
+            if (record.log_type === "governed_webhook_execution") return "check-circle";
+            return "bell";
+        }
+
+        function render(records) {
+            list.innerHTML = "";
+
+            if (!Array.isArray(records) || records.length === 0) {
+                emptyBox.classList.remove("d-none");
+                return;
+            }
+
+            records.forEach(function (record) {
+                const item = document.createElement("div");
+                item.className = "list-group-item px-3 py-3";
+
+                item.innerHTML = `
+                    <div class="d-flex align-items-start gap-3">
+                        <div class="pt-1">
+                            <i data-feather="${iconName(record)}"></i>
+                        </div>
+
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="d-flex justify-content-between gap-2">
+                                <strong class="small">
+                                    ${escapeHtml(marketplaceLabel(record))}
+                                </strong>
+                                <span class="text-muted small text-nowrap">
+                                    ${escapeHtml(formatDate(record.created_at))}
+                                </span>
+                            </div>
+
+                            <div class="mt-1">
+                                ${escapeHtml(record.message || "Notification received")}
+                            </div>
+
+                            <div class="text-muted small mt-1">
+                                ${escapeHtml(record.log_type || "notification")}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                list.appendChild(item);
+            });
+
+            list.classList.remove("d-none");
+            feather.replace();
+        }
+
+        async function loadNotifications() {
+            loading.classList.remove("d-none");
+            errorBox.classList.add("d-none");
+            emptyBox.classList.add("d-none");
+            list.classList.add("d-none");
+
+            try {
+                const response = await fetch(
+                    "{{ url_for('governed.governed_notification_audit') }}?limit=20",
+                    {
+                        method: "GET",
+                        headers: {
+                            "Accept": "application/json"
+                        },
+                        credentials: "same-origin"
+                    }
+                );
+
+                if (!response.ok) {
+                    throw new Error(`Notification request failed with HTTP ${response.status}`);
+                }
+
+                const payload = await response.json();
+
+                if (!payload || payload.success !== true) {
+                    throw new Error(
+                        payload?.error ||
+                        payload?.message ||
+                        "Notification response was not successful."
+                    );
+                }
+
+                render(payload.records || []);
+                loaded = true;
+            } catch (error) {
+                errorBox.textContent =
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to load notifications.";
+
+                errorBox.classList.remove("d-none");
+            } finally {
+                loading.classList.add("d-none");
+            }
+        }
+
+        panel.addEventListener("show.bs.offcanvas", function () {
+            if (!loaded) {
+                loadNotifications();
+            }
+        });
+    })();
+    </script>
+
     {% block scripts %}{% endblock %}
 
 
