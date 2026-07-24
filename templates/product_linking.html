@@ -350,7 +350,7 @@
                                                     {{ listing.external_sku }}
                                                 </small>
                                                 <button class="btn btn-link btn-sm p-0 ms-1 text-danger" 
-                                                        onclick="unlinkListing({{ listing.id }}, '{{ listing.external_sku|e }}')"
+                                                        onclick="unlinkListing({{ listing.id }}, '{{ listing.external_sku|e }}', false, {{ product.master_product_group_id or 'null' }}, {{ product.id }})"
                                                         title="Unlink">
                                                     <i data-feather="x" class="feather-sm"></i>
                                                 </button>
@@ -441,7 +441,7 @@
                                                                     <i data-feather="edit-2" class="feather-xs"></i>
                                                                 </a>
                                                                 <button class="btn btn-outline-danger" 
-                                                                        onclick="unlinkListing({{ listing.id }}, '{{ listing.external_sku|e }}')"
+                                                                        onclick="unlinkListing({{ listing.id }}, '{{ listing.external_sku|e }}', false, {{ product.master_product_group_id or 'null' }}, {{ product.id }})"
                                                                         title="Unlink">
                                                                     <i data-feather="x" class="feather-xs"></i>
                                                                 </button>
@@ -2082,7 +2082,7 @@ function showUnlinkModal(warehouseId, warehouseSku) {
                     <code>${l.sku}</code>
                     <small class="text-muted ms-2">${l.title || ''}</small>
                 </div>
-                <button class="btn btn-sm btn-danger" onclick="unlinkListing(${l.id}, '${l.sku}')">
+                <button class="btn btn-sm btn-danger" onclick="unlinkListing(${l.id}, '${l.sku}', false, ${l.master_product_group_id || product.master_product_group_id || 'null'}, ${l.warehouse_stock_id || warehouseId || 'null'})">
                     <i data-feather="x" class="feather-sm"></i> Unlink
                 </button>
             </div>
