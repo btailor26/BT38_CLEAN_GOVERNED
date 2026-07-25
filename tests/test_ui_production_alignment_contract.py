@@ -42,7 +42,8 @@ def test_product_linking_changes_refresh_only_affected_record():
 
     assert "TARGETED_DATASET_LIMIT = 25" in source
     assert "async function refreshAffectedRecord(identity)" in source
-    assert "await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku })" in source
+    assert "return applyMutationContract({ changed: true }, identity)" in source
+    assert "await applyMutationContract(data, {" in source
     assert "await hydrate(true)" not in source
 
 
