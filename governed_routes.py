@@ -970,6 +970,37 @@ def governed_marketplace_webhook_intake(marketplace):
             "message": "Governed webhook intake is reachable. No marketplace execution was run.",
         }), 200
 
+    from services.governed_webhook_capture import (
+        capture_amazon_notification,
+        capture_ebay_notification,
+        mark_notification_status,
+    )
+
+    notification_record_id = None
+
+    try:
+        if platform == "ebay":
+            notification_record_id = capture_ebay_notification(request)
+        else:
+            notification_record_id = capture_amazon_notification(request)
+    except Exception as exc:
+        from extensions import db
+
+        db.session.rollback()
+
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "governed": True,
+            "marketplace": platform,
+            "status": "capture_failed",
+            "error": str(exc),
+            "message": (
+                "Webhook execution was stopped because the immutable raw "
+                "notification could not be stored."
+            ),
+        }), 500
+
     payload = _bt38_webhook_payload()
     allowed, reason = _bt38_webhook_platform_allowed(platform)
     status = "received" if allowed else "blocked_by_fuse"
@@ -981,14 +1012,86 @@ def governed_marketplace_webhook_intake(marketplace):
         payload=payload,
     )
 
-    notification_result = None
-    if allowed:
-        from services.governed_webhook_execution import process_marketplace_notification
+    if not allowed:
+        mark_notification_status(
+            platform,
+            notification_record_id,
+            processing_status="BLOCKED",
+            parsed=True,
+            completed=True,
+        )
+
+        return jsonify({
+            "ok": True,
+            "success": True,
+            "governed": True,
+            "marketplace": platform,
+            "status": status,
+            "reason": reason,
+            "notification_record_id": notification_record_id,
+            "system_log_id": row.id,
+            "notification_result": None,
+            "message": (
+                "Webhook notification was captured permanently but execution "
+                "was blocked by the governed fuse settings."
+            ),
+        }), 200
+
+    mark_notification_status(
+        platform,
+        notification_record_id,
+        processing_status="PROCESSING",
+        verification_status="PENDING",
+        parsed=True,
+    )
+
+    try:
+        from services.governed_webhook_execution import (
+            process_marketplace_notification,
+        )
+
         notification_result = process_marketplace_notification(
             marketplace=platform,
             payload=payload,
             actor=f"webhook_{platform}",
+            notification_record_id=notification_record_id,
         )
+
+        mark_notification_status(
+            platform,
+            notification_record_id,
+            processing_status="COMPLETED",
+            completed=True,
+        )
+
+    except Exception as exc:
+        from extensions import db
+
+        db.session.rollback()
+
+        mark_notification_status(
+            platform,
+            notification_record_id,
+            processing_status="FAILED",
+            last_error=str(exc)[:4000],
+            completed=True,
+        )
+
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "governed": True,
+            "marketplace": platform,
+            "status": "processing_failed",
+            "reason": reason,
+            "notification_record_id": notification_record_id,
+            "system_log_id": row.id,
+            "error": str(exc),
+            "message": (
+                "Webhook was captured permanently, but governed downstream "
+                "processing failed."
+            ),
+        }), 500
 
     return jsonify({
         "ok": True,
@@ -997,9 +1100,13 @@ def governed_marketplace_webhook_intake(marketplace):
         "marketplace": platform,
         "status": status,
         "reason": reason,
+        "notification_record_id": notification_record_id,
         "system_log_id": row.id,
         "notification_result": _governed_json_safe(notification_result),
-        "message": "Webhook notification stored and routed through governed notification bridge when fuses allow it.",
+        "message": (
+            "Webhook notification was captured permanently and routed through "
+            "the governed notification bridge."
+        ),
     }), 200
 
 
@@ -4631,7 +4738,9 @@ def governed_ebay_oauth_authorize():
         "https://api.ebay.com/oauth/api_scope "
         "https://api.ebay.com/oauth/api_scope/sell.inventory "
         "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account"
+        "https://api.ebay.com/oauth/api_scope/sell.account "
+        "https://api.ebay.com/oauth/api_scope/"
+        "commerce.notification.subscription"
     )
 
     if not client_id or not runame:
@@ -4670,6 +4779,7 @@ def governed_ebay_oauth_authorize():
         }), 200
 
     return redirect(auth_url)
+
 
 
 @governed_bp.get("/ebay-oauth/callback")
@@ -4791,6 +4901,40 @@ def governed_ebay_oauth_callback():
     store.store_mode = "live"
     db.session.commit()
 
+    notification_registration = None
+
+    try:
+        from services.governed_ebay_notification_registration import (
+            ensure_ebay_order_notification_registration,
+        )
+
+        notification_registration = ensure_ebay_order_notification_registration(
+            store=store,
+            access_token=token.get("access_token"),
+        )
+    except Exception as exc:
+        notification_registration = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+
+        existing = {}
+        try:
+            existing = json.loads(store.api_key or "{}")
+        except Exception:
+            existing = {}
+
+        existing.update({
+            "ebay_notification_registration_status": "FAILED",
+            "ebay_notification_registration_error": str(exc),
+            "ebay_notification_registration_attempted_at": datetime.utcnow().isoformat(),
+        })
+
+        store.api_key = json.dumps(existing)
+        db.session.commit()
+
+
     success_payload = {
         "ok": True,
         "success": True,
@@ -4799,12 +4943,14 @@ def governed_ebay_oauth_callback():
         "store_id": store.id,
         "store_name": store.name,
         "mode": "production",
+        "notification_registration": notification_registration,
     }
 
     if request.args.get("json") == "1":
         return jsonify(success_payload), 200
 
     return redirect(f"/stores?ebay_oauth=success&store_id={store.id}")
+
 
 
 @governed_bp.post("/ebay-oauth/token")
@@ -4858,7 +5004,9 @@ def governed_ebay_oauth_refresh_token():
         "https://api.ebay.com/oauth/api_scope "
         "https://api.ebay.com/oauth/api_scope/sell.inventory "
         "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account"
+        "https://api.ebay.com/oauth/api_scope/sell.account "
+        "https://api.ebay.com/oauth/api_scope/"
+        "commerce.notification.subscription"
     )
 
     resp = requests.post(
@@ -4914,6 +5062,7 @@ def governed_ebay_oauth_refresh_token():
         "store_name": store.name,
         "mode": "production",
     }), 200
+
 
 # === AMAZON FBA READ ONLY STOCK PAGE ===
 # Governed fuse-box path only.
