@@ -4653,8 +4653,20 @@ def governed_ebay_oauth_authorize():
         "https://api.ebay.com/oauth/api_scope "
         "https://api.ebay.com/oauth/api_scope/sell.inventory "
         "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account https://api.ebay.com/oauth/api_scope/commerce.notification.subscription"
+        "https://api.ebay.com/oauth/api_scope/sell.account"
     )
+
+    required_notification_scope = (
+        "https://api.ebay.com/oauth/api_scope/"
+        "commerce.notification.subscription"
+    )
+
+    scope_values = scopes.split()
+
+    if required_notification_scope not in scope_values:
+        scope_values.append(required_notification_scope)
+
+    scopes = " ".join(scope_values)
 
     if not client_id or not runame:
         return jsonify({
@@ -4813,6 +4825,39 @@ def governed_ebay_oauth_callback():
     store.store_mode = "live"
     db.session.commit()
 
+    notification_registration = None
+
+    try:
+        from services.governed_ebay_notification_registration import (
+            ensure_ebay_order_notification_registration,
+        )
+
+        notification_registration = ensure_ebay_order_notification_registration(
+            store=store,
+            access_token=token.get("access_token"),
+        )
+    except Exception as exc:
+        notification_registration = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+
+        existing = {}
+        try:
+            existing = json.loads(store.api_key or "{}")
+        except Exception:
+            existing = {}
+
+        existing.update({
+            "ebay_notification_registration_status": "FAILED",
+            "ebay_notification_registration_error": str(exc),
+            "ebay_notification_registration_attempted_at": datetime.utcnow().isoformat(),
+        })
+
+        store.api_key = json.dumps(existing)
+        db.session.commit()
+
     success_payload = {
         "ok": True,
         "success": True,
@@ -4821,6 +4866,7 @@ def governed_ebay_oauth_callback():
         "store_id": store.id,
         "store_name": store.name,
         "mode": "production",
+        "notification_registration": notification_registration,
     }
 
     if request.args.get("json") == "1":
@@ -4880,8 +4926,20 @@ def governed_ebay_oauth_refresh_token():
         "https://api.ebay.com/oauth/api_scope "
         "https://api.ebay.com/oauth/api_scope/sell.inventory "
         "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account https://api.ebay.com/oauth/api_scope/commerce.notification.subscription"
+        "https://api.ebay.com/oauth/api_scope/sell.account"
     )
+
+    required_notification_scope = (
+        "https://api.ebay.com/oauth/api_scope/"
+        "commerce.notification.subscription"
+    )
+
+    scope_values = scopes.split()
+
+    if required_notification_scope not in scope_values:
+        scope_values.append(required_notification_scope)
+
+    scopes = " ".join(scope_values)
 
     resp = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
