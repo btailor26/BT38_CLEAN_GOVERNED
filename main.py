@@ -1,5 +1,11 @@
 from app import app
 
+from services.governed_ebay_notification_challenge import (
+    install_ebay_notification_challenge_handler,
+)
+
+install_ebay_notification_challenge_handler(app)
+
 try:
     import services.governed_mcf_compat  # noqa: F401
     from governed_mcf_routes import governed_mcf_bp
