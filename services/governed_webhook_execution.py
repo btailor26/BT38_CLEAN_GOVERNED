@@ -21,13 +21,25 @@ from datetime import datetime
 from typing import Any, Dict
 
 
-def process_marketplace_notification(*, marketplace: str, payload: dict, actor: str = "marketplace_webhook") -> Dict[str, Any]:
+def process_marketplace_notification(
+    *,
+    marketplace: str,
+    payload: dict,
+    actor: str = "marketplace_webhook",
+    notification_record_id: int | None = None,
+) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing
     from services.governed_push_execution import push_group_listings, push_marketplace_listing
 
     payload = dict(payload or {})
-    marketplace = str(marketplace or payload.get("marketplace") or "").strip().lower()
+
+    if notification_record_id is not None:
+        payload["_bt38_notification_record_id"] = int(notification_record_id)
+
+    marketplace = str(
+        marketplace or payload.get("marketplace") or ""
+    ).strip().lower()
     event_type = _event_type(payload)
     business_event = _classify_business_event(event_type, payload)
 
@@ -540,7 +552,15 @@ def _log_result(**data) -> Dict[str, Any]:
     from models import SystemLog
 
     safe = dict(data)
-    payload = safe.pop("payload", {}) or {}
+    payload = dict(safe.pop("payload", {}) or {})
+
+    notification_record_id = (
+        safe.get("notification_record_id")
+        or payload.pop("_bt38_notification_record_id", None)
+    )
+
+    if notification_record_id is not None:
+        safe["notification_record_id"] = int(notification_record_id)
 
     try:
         db.session.add(SystemLog(
