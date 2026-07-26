@@ -1,0 +1,1747 @@
+BT38 IMPORT + PAGE ALIGNMENT AUDIT
+Branch: patch/event-driven-page-sleep-and-import-alignment
+Commit: b96c7b6b36aa8fac46eca1184fd4631397dc3586
+
+=== IMPORT ENTRY POINTS ===
+governed_routes.py:1050:            process_marketplace_notification,
+governed_routes.py:1053:        notification_result = process_marketplace_notification(
+governed_routes.py:5251:def governed_import_handler():
+governed_routes.py:5253:        from services.governed_marketplace_order_import import run_governed_marketplace_order_import
+governed_routes.py:5255:        order_result = run_governed_marketplace_order_import(
+services/governed_marketplace_order_import.py:232:        process_exact_marketplace_order_line,
+services/governed_marketplace_order_import.py:235:    return process_exact_marketplace_order_line(
+services/governed_marketplace_order_import.py:680:def run_governed_marketplace_order_import(store_id=None, source: str = "governed_marketplace_order_import") -> dict[str, Any]:
+services/governed_order_stock_mutation.py:297:def process_exact_marketplace_order_line(
+services/governed_webhook_execution.py:24:def process_marketplace_notification(
+services/governed_webhook_execution.py:123:        process_exact_marketplace_order_line,
+services/governed_webhook_execution.py:126:    mutation_result = process_exact_marketplace_order_line(
+tests/test_exact_marketplace_order_alignment_contract.py:29:    assert "process_exact_marketplace_order_line" in source
+tests/test_exact_marketplace_order_alignment_contract.py:42:        "process_exact_marketplace_order_line",
+tests/test_exact_marketplace_order_alignment_contract.py:52:        "process_exact_marketplace_order_line",
+tests/test_exact_order_db_ui_alignment_contract.py:38:    assert "process_exact_marketplace_order_line(" in IMPORTER
+tests/test_exact_order_db_ui_alignment_contract.py:53:        "process_exact_marketplace_order_line",
+tests/test_webhook_push_alignment_contract.py:20:    assert "process_exact_marketplace_order_line(" in source
+tests/test_webhook_push_alignment_contract.py:45:    assert "run_governed_marketplace_order_import" not in function_source
+tests/test_webhook_scoped_reconcile_contract.py:25:    assert "run_governed_marketplace_order_import" not in body
+
+=== IMPORT INFORMATION ===
+admin_logging.py:116:    raw_payload: Any = None,
+admin_logging.py:128:        raw_payload: Raw error response (will be masked and truncated)
+admin_logging.py:136:        if raw_payload:
+admin_logging.py:137:            if isinstance(raw_payload, str):
+admin_logging.py:138:                masked_payload = raw_payload[:2000] if len(raw_payload) > 2000 else raw_payload
+admin_logging.py:141:                    masked_data = _mask_sensitive_data(raw_payload)
+admin_logging.py:144:                    masked_payload = str(raw_payload)[:2000]
+admin_logging.py:154:            raw_payload=masked_payload
+admin_logging.py:474:                raw_payload=log.details
+governed_mcf_routes.py:23:    MarketplaceOrder,
+governed_mcf_routes.py:35:def _order_lines(anchor: MarketplaceOrder) -> list[MarketplaceOrder]:
+governed_mcf_routes.py:37:        MarketplaceOrder.query
+governed_mcf_routes.py:39:            MarketplaceOrder.store_id == anchor.store_id,
+governed_mcf_routes.py:40:            MarketplaceOrder.marketplace_order_id == anchor.marketplace_order_id,
+governed_mcf_routes.py:42:        .order_by(MarketplaceOrder.id)
+governed_mcf_routes.py:59:def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
+governed_mcf_routes.py:82:def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
+governed_mcf_routes.py:86:    MarketplaceOrder
+governed_mcf_routes.py:159:def _line_view(line: MarketplaceOrder) -> dict:
+governed_mcf_routes.py:175:    order: MarketplaceOrder,
+governed_mcf_routes.py:203:        MarketplaceOrder.query
+governed_mcf_routes.py:205:            MarketplaceOrder.created_at.desc(),
+governed_mcf_routes.py:206:            MarketplaceOrder.id.desc(),
+governed_mcf_routes.py:225:        MarketplaceOrder.query
+governed_mcf_routes.py:227:            selectinload(MarketplaceOrder.store),
+governed_mcf_routes.py:228:            selectinload(MarketplaceOrder.mcf_order),
+governed_mcf_routes.py:229:            selectinload(MarketplaceOrder.warehouse_stock),
+governed_mcf_routes.py:233:                MarketplaceOrder.store_id,
+governed_mcf_routes.py:234:                MarketplaceOrder.marketplace_order_id,
+governed_mcf_routes.py:238:            MarketplaceOrder.created_at.desc(),
+governed_mcf_routes.py:239:            MarketplaceOrder.id,
+governed_mcf_routes.py:488:def _source_is_ebay(order: MarketplaceOrder) -> bool:
+governed_mcf_routes.py:511:def _safe_seller_fulfillment_id(order: MarketplaceOrder) -> str:
+governed_mcf_routes.py:544:        MarketplaceOrder.query
+governed_mcf_routes.py:545:        .filter(MarketplaceOrder.id.in_(order_ids))
+governed_mcf_routes.py:584:    anchor = db.session.get(MarketplaceOrder, order_id)
+governed_mcf_routes.py:607:    anchor = db.session.get(MarketplaceOrder, order_id)
+governed_mcf_routes.py:909:    anchor = db.session.get(MarketplaceOrder, order_id)
+governed_routes.py:96:    from models import Store, SystemLog, MarketplaceOrder, SalesOrder, SalesOrderItem, MCFOrder
+governed_routes.py:109:        MarketplaceOrder.query
+governed_routes.py:110:        .order_by(MarketplaceOrder.created_at.desc())
+governed_routes.py:1314:    from models import MarketplaceOrder, CanonicalOrderLine, SalesOrder, SalesOrderItem, MCFOrder
+governed_routes.py:1344:            "MarketplaceOrder": safe_count(MarketplaceOrder),
+governed_routes.py:1351:            "MarketplaceOrder": latest(MarketplaceOrder, [
+governed_routes.py:4183:    from models import WarehouseStock, MarketplaceListing, MarketplaceOrder, AmazonFBAInventory
+governed_routes.py:4206:        db.session.query(MarketplaceOrder)
+governed_routes.py:4208:            MarketplaceOrder.warehouse_stock_id == stock.id,
+governed_routes.py:4209:            MarketplaceOrder.processed_at.is_(None),
+governed_routes.py:5146:    - latest MarketplaceOrder rows
+governed_routes.py:5150:    from models import Store, SyncLog, MarketplaceOrder
+governed_routes.py:5203:        MarketplaceOrder.query
+governed_routes.py:5204:        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
+governed_routes.py:5241:                "Marketplace order reader is wired; sales can create MarketplaceOrder rows for governed stock mutation."
+mcf_service.py:27:    MCFOrder, MCFOrderItem, MarketplaceOrder, AmazonFBAInventory,
+mcf_service.py:614:                    mcf_order.tracking_number = first_shipment.get('trackingNumber')
+mcf_service.py:738:        For FBM items: Creates MarketplaceOrder (deducts warehouse stock)
+models.py:2208:class MarketplaceOrder(db.Model):
+models.py:2272:    idempotency_key = db.Column(db.String(500), unique=True, nullable=False)  # Composite key: store_id:order_id:item_id:sku
+models.py:2307:        return f'<MarketplaceOrder {store_name}:{self.marketplace_order_id} {self.sku} x{self.quantity}>'
+models.py:2342:    def generate_idempotency_key(store_id: int, order_id: str, sku: str, item_id: Optional[str] = None) -> str:
+models.py:2352:        key = cls.generate_idempotency_key(store_id, order_id, sku, item_id)
+models.py:2353:        existing = cls.query.filter_by(idempotency_key=key).first()
+models.py:3774:    raw_payload = db.Column(db.Text, nullable=True)  # Masked/truncated payload
+models.py:3792:            'raw_payload': self.raw_payload
+models.py:4032:Index('idx_marketplace_order_idempotency', MarketplaceOrder.idempotency_key)
+models.py:4033:Index('idx_marketplace_order_store', MarketplaceOrder.store_id, MarketplaceOrder.created_at)
+models.py:4034:Index('idx_marketplace_order_sku', MarketplaceOrder.sku, MarketplaceOrder.status)
+models.py:4133:    raw_payload = db.Column(db.JSON)
+models.py:4140:    idempotency_key = db.Column(db.String(500), unique=True, nullable=False)
+models.py:4153:        Index('idx_canonical_order_idempotency', 'idempotency_key'),
+models.py:4157:    def generate_idempotency_key(platform: str, settlement_id: str, order_id: str, sku: str, row_num: int = 0) -> str:
+profit_calculator.py:21:    OrderFees, ListingMarginConfig, MCFOrder, MarketplaceOrder
+scripts/backfill_listing_prices.py:9:   b) Historical MarketplaceOrder.unit_price for same SKU
+scripts/backfill_listing_prices.py:22:from models import MarketplaceListing, WarehouseStock, MarketplaceOrder
+scripts/backfill_listing_prices.py:66:                order = MarketplaceOrder.query.filter(
+scripts/backfill_listing_prices.py:67:                    MarketplaceOrder.store_id == listing.store_id,
+scripts/backfill_listing_prices.py:68:                    MarketplaceOrder.sku == listing.external_sku,
+scripts/backfill_listing_prices.py:69:                    MarketplaceOrder.unit_price > 0,
+scripts/backfill_listing_prices.py:70:                    MarketplaceOrder.status == 'processed'
+scripts/backfill_listing_prices.py:71:                ).order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc()).first()
+scripts/backfill_marketplace_order_totals.py:25:from models import MarketplaceOrder, WarehouseStock
+scripts/backfill_marketplace_order_totals.py:37:        orders_to_update = MarketplaceOrder.query.filter(
+scripts/backfill_marketplace_order_totals.py:38:            MarketplaceOrder.status == 'processed',
+scripts/backfill_marketplace_order_totals.py:40:                MarketplaceOrder.line_total == None,
+scripts/backfill_marketplace_order_totals.py:41:                MarketplaceOrder.line_total == 0
+scripts/backfill_order_pricing.py:19:from models import MarketplaceOrder, MarketplaceListing, WarehouseStock
+scripts/backfill_order_pricing.py:30:        orders_to_fix = MarketplaceOrder.query.filter(
+scripts/backfill_order_pricing.py:31:            MarketplaceOrder.status == 'processed',
+scripts/backfill_order_pricing.py:33:                MarketplaceOrder.unit_price == 0,
+scripts/backfill_order_pricing.py:34:                MarketplaceOrder.unit_price.is_(None)
+services/governed_ebay_dispatch.py:18:from models import MarketplaceOrder, Store
+services/governed_ebay_dispatch.py:75:    order: MarketplaceOrder,
+services/governed_marketplace_order_import.py:7:-> MarketplaceOrder
+services/governed_marketplace_order_import.py:26:from models import Store, MarketplaceOrder, MarketplaceListing, SyncLog
+services/governed_marketplace_order_import.py:128:    order = MarketplaceOrder.query.filter_by(idempotency_key=key).first()
+services/governed_marketplace_order_import.py:132:        order = MarketplaceOrder(
+services/governed_marketplace_order_import.py:141:            idempotency_key=key,
+services/governed_marketplace_order_import.py:201:        "idempotency_key": order.idempotency_key,
+services/governed_marketplace_order_import.py:215:    Process only the exact MarketplaceOrder row returned by the upsert.
+services/governed_marketplace_order_import.py:217:    No MarketplaceOrder status scan.
+services/governed_marketplace_order_import.py:538:    from models import MarketplaceOrder
+services/governed_marketplace_order_import.py:584:            MarketplaceOrder.query
+services/governed_marketplace_order_import.py:585:            .filter(MarketplaceOrder.store_id == store.id)
+services/governed_marketplace_order_import.py:586:            .filter(MarketplaceOrder.marketplace_order_id == order_id)
+services/governed_marketplace_order_normaliser.py:6:    SINGLE SOURCE OF TRUTH for MarketplaceOrder meaning.
+services/governed_marketplace_order_normaliser.py:74:        "raw_payload": payload,
+services/governed_mcf_execution.py:14:from models import MCFOrder, MarketplaceOrder
+services/governed_mcf_execution.py:117:def _bind_source_lines(mcf_order: MCFOrder) -> list[MarketplaceOrder]:
+services/governed_mcf_execution.py:119:        MarketplaceOrder.query
+services/governed_mcf_execution.py:121:            MarketplaceOrder.store_id == mcf_order.source_store_id,
+services/governed_mcf_execution.py:122:            MarketplaceOrder.marketplace_order_id == mcf_order.source_order_id,
+services/governed_mcf_execution.py:352:        mcf_order.tracking_number = first_package.get("trackingNumber") or first_shipment.get("trackingNumber") or mcf_order.tracking_number
+services/governed_order_stock_mutation.py:39:def _line_idempotency_key(line: Any) -> str:
+services/governed_order_stock_mutation.py:44:    explicit = _text(getattr(line, "idempotency_key", None))
+services/governed_order_stock_mutation.py:158:    key = _line_idempotency_key(line)
+services/governed_order_stock_mutation.py:309:      MarketplaceOrder row processed without decrementing WarehouseStock.
+services/governed_order_stock_mutation.py:311:    This function never searches MarketplaceOrder for pending rows.
+services/governed_order_stock_mutation.py:335:        # and completed through the same MarketplaceOrder path, but local
+services/governed_order_stock_mutation.py:367:    MarketplaceOrder is the marketplace authority.
+services/governed_order_stock_mutation.py:369:    Webhook/order import paths create MarketplaceOrder rows.
+services/governed_order_stock_mutation.py:370:    This bridge mutates warehouse stock from MarketplaceOrder only.
+services/governed_order_stock_mutation.py:375:    from models import MarketplaceOrder
+services/governed_order_stock_mutation.py:378:        MarketplaceOrder.query
+services/governed_order_stock_mutation.py:379:        .filter(MarketplaceOrder.status == "pending")
+services/governed_order_stock_mutation.py:380:        .filter(MarketplaceOrder.fulfillment_type == "FBM")
+services/governed_order_stock_mutation.py:381:        .filter(MarketplaceOrder.warehouse_stock_id.isnot(None))
+services/governed_order_stock_mutation.py:382:        .order_by(MarketplaceOrder.id.desc())
+services/governed_order_stock_mutation.py:404:        "authority": "MarketplaceOrder",
+services/governed_order_stock_mutation.py:417:    - MarketplaceOrder only
+services/governed_order_stock_mutation.py:427:    from models import MarketplaceOrder
+services/governed_order_stock_mutation.py:430:        MarketplaceOrder.query
+services/governed_order_stock_mutation.py:431:        .filter(MarketplaceOrder.status == "failed")
+services/governed_order_stock_mutation.py:432:        .order_by(MarketplaceOrder.id.desc())
+services/governed_order_stock_mutation.py:445:        key = _line_idempotency_key(order)
+services/governed_runtime_engine.py:337:    from models import MarketplaceOrder
+services/governed_runtime_engine.py:340:        MarketplaceOrder,
+services/governed_runtime_engine.py:346:    query = MarketplaceOrder.query.filter(order_column == event["order_id"])
+services/governed_runtime_engine.py:347:    if hasattr(MarketplaceOrder, "store_id"):
+services/governed_runtime_engine.py:348:        query = query.filter(MarketplaceOrder.store_id == event["store_id"])
+services/governed_runtime_engine.py:353:        "object": "MarketplaceOrder",
+services/governed_warehouse_snapshot.py:2:from models import WarehouseStock, MarketplaceOrder, MarketplaceListing
+services/governed_warehouse_snapshot.py:10:    - Detect drift between MarketplaceOrder ledger and WarehouseStock
+services/governed_warehouse_snapshot.py:34:        MarketplaceOrder.query
+services/governed_warehouse_snapshot.py:35:        .filter(MarketplaceOrder.sku.in_(skus))
+services/governed_warehouse_snapshot.py:36:        .order_by(MarketplaceOrder.created_at.asc())
+services/governed_webhook_execution.py:111:                or "Canonical MarketplaceOrder import did not return a row."
+services/governed_webhook_execution.py:170:            reason="Grouped sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing group correction path.",
+services/governed_webhook_execution.py:198:        reason="Sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing listing correction path.",
+services/governed_webhook_execution.py:224:    MarketplaceOrder import authority.
+services/governed_webhook_execution.py:227:    query or update MarketplaceOrder directly.
+services/parsers/amazon_transactions_parser.py:140:        idempotency_key = f"amazon:{settlement_id}:{order_id}:{sku}:{row_num}"
+services/parsers/amazon_transactions_parser.py:148:            'raw_payload': dict(row),
+services/parsers/amazon_transactions_parser.py:150:            'idempotency_key': idempotency_key,
+services/parsers/amazon_transactions_parser.py:223:                idempotency_key=row['idempotency_key']
+services/parsers/amazon_transactions_parser.py:266:                raw_payload=row['raw_payload'],
+services/parsers/amazon_transactions_parser.py:268:                idempotency_key=row['idempotency_key']
+services/parsers/ebay_parser.py:35:    - eBay-only fields -> raw_payload
+services/parsers/ebay_parser.py:193:        idempotency_key = f"ebay:{settlement_id}:{order_number}:{sku or 'NOSKU'}:{row_num}"
+services/parsers/ebay_parser.py:225:        raw_payload = {
+services/parsers/ebay_parser.py:244:            'idempotency_key': idempotency_key,
+services/parsers/ebay_parser.py:268:            'raw_payload': raw_payload,
+services/parsers/ebay_parser.py:387:        REQUIRED_FIELDS = ['platform', 'external_order_id', 'sku', 'idempotency_key']
+services/parsers/ebay_parser.py:448:            idempotency_key = row.get('idempotency_key', '')
+services/parsers/ebay_parser.py:449:            if idempotency_key in seen_keys:
+services/parsers/ebay_parser.py:453:                        'key': idempotency_key,
+services/parsers/ebay_parser.py:454:                        'first_row': seen_keys[idempotency_key],
+services/parsers/ebay_parser.py:458:                seen_keys[idempotency_key] = row_num
+services/parsers/ebay_parser.py:480:        - Inserts with idempotency: skip on duplicate idempotency_key
+services/parsers/ebay_parser.py:508:        existing_records = db.session.query(CanonicalOrderLine.idempotency_key).filter(
+services/parsers/ebay_parser.py:514:        parsed_keys = [r['idempotency_key'] for r in parsed_rows]
+services/parsers/ebay_parser.py:515:        all_existing = db.session.query(CanonicalOrderLine.idempotency_key).filter(
+services/parsers/ebay_parser.py:516:            CanonicalOrderLine.idempotency_key.in_(parsed_keys)
+services/parsers/ebay_parser.py:523:            if row['idempotency_key'] in existing_keys:
+services/parsers/ebay_parser.py:564:                    raw_payload=row.get('raw_payload'),
+services/parsers/ebay_parser.py:566:                    idempotency_key=row['idempotency_key']
+services/parsers/ebay_parser.py:569:                existing_keys.add(row['idempotency_key'])  # Prevent in-batch duplicates
+test_concurrent_sales.py:19:from models import WarehouseStock, MarketplaceOrder, StockLedgerEntry, Store, MarketplaceListing
+test_concurrent_sales.py:20:from marketplace_order_processor import MarketplaceOrderProcessor
+test_concurrent_sales.py:70:                    success, msg, order = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:82:                    success, msg, order = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:114:            processed_orders = MarketplaceOrder.query.filter_by(
+test_concurrent_sales.py:121:            failed_orders = MarketplaceOrder.query.filter_by(
+test_concurrent_sales.py:150:            success1, msg1, order1 = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:157:            success2, msg2, order2 = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:217:                    success, msg, order = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:274:            success, msg, order = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:323:            success, msg, order = MarketplaceOrderProcessor.process_order(
+test_concurrent_sales.py:337:            cancel_success, cancel_msg = MarketplaceOrderProcessor.cancel_order(
+tests/test_exact_marketplace_order_alignment_contract.py:45:    assert "MarketplaceOrder.query" not in source
+tests/test_exact_order_db_ui_alignment_contract.py:45:    assert "MarketplaceOrder.query" not in process_block
+tests/test_exact_order_db_ui_alignment_contract.py:46:    assert "db.session.query(MarketplaceOrder)" not in process_block
+tests/test_runtime_deployment_contract.py:41:    assert "MarketplaceOrder" not in names
+tests/test_webhook_push_alignment_contract.py:21:    assert "MarketplaceOrder(" not in source
+
+=== PUSH ALIGNMENT ===
+amazon_service_live_patch.py:82:            "listing_id": getattr(listing, "id", None),
+amazon_service_live_patch.py:104:            "listing_id": getattr(listing, "id", None),
+amazon_service_live_patch.py:251:        "listing_id": getattr(listing, "id", None),
+app.py:679:        {"group_id": 9001, "warehouse_id": 9001, "listing_id": 9101, "sku": "VC-SC-TB-6PK", "title": "Vicco Senso Clean Comfortable Soft Tooth Brush Pack Of 6", "marketplace": "eBay", "qty": 24},
+app.py:680:        {"group_id": 9002, "warehouse_id": 9002, "listing_id": 9102, "sku": "PT-SHINE-150G", "title": "Pitambari Shining Powder For 6 Types Of Metals 150g", "marketplace": "Amazon", "qty": 18},
+app.py:681:        {"group_id": 9003, "warehouse_id": 9003, "listing_id": 9103, "sku": "MAC-LASH-026", "title": "MAC False Eyelashes 026", "marketplace": "eBay", "qty": 12},
+app.py:682:        {"group_id": 9004, "warehouse_id": 9004, "listing_id": 9104, "sku": "COL-EXC-TB-2PK", "title": "Colgate Extra Clean Toothbrush Twin Pack", "marketplace": "Amazon", "qty": 30},
+app.py:683:        {"group_id": 9005, "warehouse_id": 9005, "listing_id": 9105, "sku": "DET-ANT-500ML", "title": "Dettol Antiseptic Liquid 500ml", "marketplace": "eBay", "qty": 16},
+app.py:684:        {"group_id": 9006, "warehouse_id": 9006, "listing_id": 9106, "sku": "DOVE-BAR-4PK", "title": "Dove Beauty Cream Bar Soap 4 Pack", "marketplace": "Amazon", "qty": 20},
+app.py:685:        {"group_id": 9007, "warehouse_id": 9007, "listing_id": 9107, "sku": "VAS-ORG-250ML", "title": "Vaseline Original Petroleum Jelly 250ml", "marketplace": "eBay", "qty": 22},
+app.py:686:        {"group_id": 9008, "warehouse_id": 9008, "listing_id": 9108, "sku": "NIV-SOFT-200ML", "title": "Nivea Soft Moisturising Cream 200ml", "marketplace": "Amazon", "qty": 14},
+app.py:687:        {"group_id": 9009, "warehouse_id": 9009, "listing_id": 9109, "sku": "SEN-RP-75ML", "title": "Sensodyne Repair And Protect Toothpaste 75ml", "marketplace": "eBay", "qty": 28},
+app.py:688:        {"group_id": 9010, "warehouse_id": 9010, "listing_id": 9110, "sku": "PEARS-SOAP-2PK", "title": "Pears Transparent Soap Twin Pack", "marketplace": "Amazon", "qty": 26},
+backend/services/smart_push_service.py:27:def push_warehouse_stock(warehouse_stock_id: int):
+backend/services/smart_push_service.py:32:        warehouse_stock_id: ID of WarehouseStock record
+fba_fbm_helpers.py:281:            if payload.get('listing_id'):
+fba_fbm_helpers.py:282:                resolved_listing = db.session.get(MarketplaceListing, payload.get('listing_id'))
+fba_fbm_helpers.py:286:                    query = query.filter(MarketplaceListing.warehouse_stock_id == resolved_warehouse_stock.id)
+fba_protection.py:18:def is_fba_protected(warehouse_stock_id: int) -> Tuple[bool, str]:
+fba_protection.py:25:        warehouse_stock_id: The WarehouseStock.id to check
+fba_protection.py:35:        MarketplaceListing.warehouse_stock_id == warehouse_stock_id,
+fba_protection.py:57:    fba_linked = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:61:        MarketplaceListing.warehouse_stock_id.isnot(None)
+fba_protection.py:67:def filter_fba_protected_ids(warehouse_stock_ids: List[int]) -> Tuple[List[int], List[int]]:
+fba_protection.py:72:        warehouse_stock_ids: List of WarehouseStock IDs to check
+fba_protection.py:82:    for ws_id in warehouse_stock_ids:
+fba_protection.py:94:def validate_push_operation(warehouse_stock_ids: List[int], 
+fba_protection.py:100:        warehouse_stock_ids: List of WarehouseStock IDs to push
+fba_protection.py:108:    if not warehouse_stock_ids:
+fba_protection.py:111:    pushable, blocked = filter_fba_protected_ids(warehouse_stock_ids)
+fba_protection.py:141:    fba_subquery = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:145:        MarketplaceListing.warehouse_stock_id.isnot(None)
+fba_protection.py:149:        ~WarehouseStock.id.in_(select(fba_subquery.c.warehouse_stock_id))
+fba_protection.py:164:    fba_subquery = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:168:        MarketplaceListing.warehouse_stock_id.isnot(None)
+fba_protection.py:172:        WarehouseStock.id.in_(select(fba_subquery.c.warehouse_stock_id))
+fba_protection.py:176:def log_fba_push_attempt(warehouse_stock_ids: List[int], source: str):
+fba_protection.py:181:        warehouse_stock_ids: IDs that were blocked
+fba_protection.py:186:    if not warehouse_stock_ids:
+fba_protection.py:190:        WarehouseStock.id.in_(warehouse_stock_ids)
+fba_protection.py:208:    logger.warning(f"FBA Push Blocked [{source}]: Attempted push for {len(warehouse_stock_ids)} FBA-linked items: {sku_list}")
+governed_execution.py:191:            "listing_id": command.payload.get("listing_id"),
+governed_execution.py:240:    listing_id = command.payload.get("listing_id")
+governed_execution.py:244:    if listing_id is None:
+governed_execution.py:245:        return {"allowed": False, "reason": "eBay live push blocked: missing listing_id."}
+governed_execution.py:259:    listing = _resolve_listing(listing_id)
+governed_execution.py:284:    listing_id = command.payload.get("listing_id")
+governed_execution.py:288:    if listing_id is None:
+governed_execution.py:289:        return {"allowed": False, "reason": "Amazon FBM live push blocked: missing listing_id."}
+governed_execution.py:301:    listing = _resolve_listing(listing_id)
+governed_execution.py:350:def _resolve_listing(listing_id):
+governed_execution.py:355:        return db.session.get(MarketplaceListing, int(listing_id))
+governed_group_propagation_routes.py:18:@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink-disabled")
+governed_group_propagation_routes.py:19:def governed_group_unlink_listing_disabled(group_id: int):
+governed_group_propagation_routes.py:29:    listing_id = body.get("listing_id")
+governed_group_propagation_routes.py:30:    warehouse_stock_id = body.get("warehouse_stock_id")
+governed_group_propagation_routes.py:33:        listing_id = int(listing_id)
+governed_group_propagation_routes.py:35:        return jsonify(_blocked("listing_id must be provided as an integer.", group_id=group_id)), 400
+governed_group_propagation_routes.py:37:    listing = db.session.get(MarketplaceListing, listing_id)
+governed_group_propagation_routes.py:39:        return jsonify(_blocked("Marketplace listing was not found.", group_id=group_id, listing_id=listing_id)), 404
+governed_group_propagation_routes.py:41:    current_warehouse_stock_id = getattr(listing, "warehouse_stock_id", None)
+governed_group_propagation_routes.py:42:    current_group_id = getattr(listing, "master_product_group_id", None)
+governed_group_propagation_routes.py:44:    if warehouse_stock_id not in (None, ""):
+governed_group_propagation_routes.py:46:            warehouse_stock_id = int(warehouse_stock_id)
+governed_group_propagation_routes.py:48:            return jsonify(_blocked("warehouse_stock_id must be an integer when provided.", group_id=group_id)), 400
+governed_group_propagation_routes.py:50:    if current_group_id not in (None, group_id) and current_warehouse_stock_id != warehouse_stock_id:
+governed_group_propagation_routes.py:53:            group_id=group_id,
+governed_group_propagation_routes.py:54:            listing_id=listing_id,
+governed_group_propagation_routes.py:55:            current_group_id=current_group_id,
+governed_group_propagation_routes.py:56:            current_warehouse_stock_id=current_warehouse_stock_id,
+governed_group_propagation_routes.py:59:    listing.warehouse_stock_id = None
+governed_group_propagation_routes.py:60:    listing.master_product_group_id = None
+governed_group_propagation_routes.py:62:    if warehouse_stock_id:
+governed_group_propagation_routes.py:66:            .filter(MarketplaceListing.warehouse_stock_id == warehouse_stock_id)
+governed_group_propagation_routes.py:67:            .filter(MarketplaceListing.id != listing_id)
+governed_group_propagation_routes.py:71:        stock = db.session.get(WarehouseStock, warehouse_stock_id)
+governed_group_propagation_routes.py:73:            if hasattr(stock, "master_product_group_id") and getattr(stock, "master_product_group_id", None) == group_id:
+governed_group_propagation_routes.py:74:                stock.master_product_group_id = None
+governed_group_propagation_routes.py:85:        "listing_id": listing_id,
+governed_group_propagation_routes.py:86:        "group_id": group_id,
+governed_group_propagation_routes.py:87:        "warehouse_stock_id": warehouse_stock_id,
+governed_group_propagation_routes.py:92:@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/propagate-quantity")
+governed_group_propagation_routes.py:93:def governed_group_propagate_quantity(group_id: int):
+governed_group_propagation_routes.py:117:    requested_warehouse_stock_id = body.get("warehouse_stock_id")
+governed_group_propagation_routes.py:124:            return jsonify(_blocked("quantity must be an integer when provided.", group_id=group_id)), 400
+governed_group_propagation_routes.py:126:            return jsonify(_blocked("quantity cannot be negative.", group_id=group_id)), 400
+governed_group_propagation_routes.py:128:    group = db.session.get(MasterProductGroup, group_id)
+governed_group_propagation_routes.py:130:        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+governed_group_propagation_routes.py:132:    target_warehouse_stock_ids = set()
+governed_group_propagation_routes.py:134:    if requested_warehouse_stock_id not in (None, ""):
+governed_group_propagation_routes.py:136:            target_warehouse_stock_ids.add(int(requested_warehouse_stock_id))
+governed_group_propagation_routes.py:138:            return jsonify(_blocked("warehouse_stock_id must be an integer when provided.", group_id=group_id)), 400
+governed_group_propagation_routes.py:142:        .filter(MarketplaceListing.master_product_group_id == group_id)
+governed_group_propagation_routes.py:149:        if getattr(listing, "warehouse_stock_id", None):
+governed_group_propagation_routes.py:150:            target_warehouse_stock_ids.add(int(listing.warehouse_stock_id))
+governed_group_propagation_routes.py:167:                WarehouseStock.master_product_group_id
+governed_group_propagation_routes.py:168:                == group_id
+governed_group_propagation_routes.py:174:    target_warehouse_stock_ids.update(group_stock_ids)
+governed_group_propagation_routes.py:176:    if target_warehouse_stock_ids:
+governed_group_propagation_routes.py:181:                MarketplaceListing.warehouse_stock_id.in_(
+governed_group_propagation_routes.py:182:                    target_warehouse_stock_ids
+governed_group_propagation_routes.py:189:            saved_listing_group_id = getattr(
+governed_group_propagation_routes.py:191:                "master_product_group_id",
+governed_group_propagation_routes.py:195:            if saved_listing_group_id != group_id:
+governed_group_propagation_routes.py:201:                        group_id=group_id,
+governed_group_propagation_routes.py:202:                        listing_id=listing.id,
+governed_group_propagation_routes.py:203:                        saved_group_id=saved_listing_group_id,
+governed_group_propagation_routes.py:211:                    target_warehouse_stock_ids
+governed_group_propagation_routes.py:228:                AmazonFBAInventory.warehouse_stock_id.in_(
+governed_group_propagation_routes.py:246:                    group_id=group_id,
+governed_group_propagation_routes.py:258:                    list(target_warehouse_stock_ids)
+governed_group_propagation_routes.py:265:        saved_stock_group_id = getattr(
+governed_group_propagation_routes.py:267:            "master_product_group_id",
+governed_group_propagation_routes.py:275:            saved_stock_group_id != group_id
+governed_group_propagation_routes.py:283:                    group_id=group_id,
+governed_group_propagation_routes.py:284:                    warehouse_stock_id=stock.id,
+governed_group_propagation_routes.py:285:                    saved_group_id=saved_stock_group_id,
+governed_group_propagation_routes.py:309:    listing_filters = [MarketplaceListing.master_product_group_id == group_id]
+governed_group_propagation_routes.py:310:    if target_warehouse_stock_ids:
+governed_group_propagation_routes.py:311:        listing_filters.append(MarketplaceListing.warehouse_stock_id.in_(target_warehouse_stock_ids))
+governed_group_propagation_routes.py:341:                "listing_id": listing.id,
+governed_group_propagation_routes.py:361:                    group_id=group_id,
+governed_group_propagation_routes.py:362:                    listing_id=listing.id,
+governed_group_propagation_routes.py:376:            "listing_id": listing.id,
+governed_group_propagation_routes.py:380:            "group_id": group_id,
+governed_group_propagation_routes.py:389:                "group_id": group_id,
+governed_group_propagation_routes.py:390:                "listing_id": listing.id,
+governed_group_propagation_routes.py:419:            "listing_id": listing.id,
+governed_group_propagation_routes.py:439:                f"governed_group_propagation group_id={group_id} "
+governed_group_propagation_routes.py:451:        "group_id": group_id,
+governed_group_propagation_routes.py:485:    is_group_child = bool(getattr(listing, "master_product_group_id", None))
+governed_group_routes.py:16:@governed_group_bp.get("/governed/groups/<int:group_id>")
+governed_group_routes.py:17:def governed_group_detail(group_id: int):
+governed_group_routes.py:21:    group = db.session.get(MasterProductGroup, group_id)
+governed_group_routes.py:23:        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+governed_group_routes.py:70:    warehouse_stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
+governed_group_routes.py:71:    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+governed_group_routes.py:73:    if warehouse_stock_id:
+governed_group_routes.py:74:        result = _link_stock_to_group(group, int(warehouse_stock_id), actor=_actor())
+governed_group_routes.py:79:    if listing_id:
+governed_group_routes.py:80:        result = _link_listing_to_group(group, int(listing_id), actor=_actor())
+governed_group_routes.py:89:        group_ids=[group.id],
+governed_group_routes.py:90:        stock_ids=[warehouse_stock_id] if warehouse_stock_id else [],
+governed_group_routes.py:91:        listing_ids=[listing_id] if listing_id else [],
+governed_group_routes.py:96:@governed_group_bp.post("/governed/groups/<int:group_id>/link-stock")
+governed_group_routes.py:97:def governed_group_link_stock(group_id: int):
+governed_group_routes.py:102:    stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
+governed_group_routes.py:104:        return jsonify(_blocked("warehouse_stock_id is required.", group_id=group_id)), 400
+governed_group_routes.py:106:    group = db.session.get(MasterProductGroup, group_id)
+governed_group_routes.py:108:        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+governed_group_routes.py:124:        group_ids=[group.id] if changed else [],
+governed_group_routes.py:130:@governed_group_bp.post("/governed/groups/<int:group_id>/link-listing")
+governed_group_routes.py:131:def governed_group_link_listing(group_id: int):
+governed_group_routes.py:136:    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+governed_group_routes.py:137:    if not listing_id:
+governed_group_routes.py:138:        return jsonify(_blocked("listing_id is required.", group_id=group_id)), 400
+governed_group_routes.py:140:    group = db.session.get(MasterProductGroup, group_id)
+governed_group_routes.py:142:        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+governed_group_routes.py:144:    result = _link_listing_to_group(group, int(listing_id), actor=_actor())
+governed_group_routes.py:155:            "original_group_id": result.get("original_group_id"),
+governed_group_routes.py:167:        "original_group_id": result.get("original_group_id"),
+governed_group_routes.py:173:            group_ids=[group.id, result.get("original_group_id")],
+governed_group_routes.py:174:            stock_ids=[result.get("warehouse_stock_id")],
+governed_group_routes.py:175:            listing_ids=[listing_id],
+governed_group_routes.py:181:@governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
+governed_group_routes.py:182:def governed_group_unlink(group_id: int):
+governed_group_routes.py:187:    are released to an unlinked state while retaining warehouse_stock_id. This
+governed_group_routes.py:195:    group = db.session.get(MasterProductGroup, group_id)
+governed_group_routes.py:197:        return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
+governed_group_routes.py:199:    listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+governed_group_routes.py:200:    if not listing_id:
+governed_group_routes.py:201:        return jsonify(_blocked("listing_id is required.", group_id=group_id)), 400
+governed_group_routes.py:203:    listing = db.session.get(MarketplaceListing, int(listing_id))
+governed_group_routes.py:207:            group_id=group_id,
+governed_group_routes.py:208:            listing_id=listing_id,
+governed_group_routes.py:211:    if int(listing.master_product_group_id or 0) != int(group_id):
+governed_group_routes.py:214:            group_id=group_id,
+governed_group_routes.py:215:            listing_id=listing_id,
+governed_group_routes.py:216:            current_group_id=listing.master_product_group_id,
+governed_group_routes.py:222:            group_id=group_id,
+governed_group_routes.py:223:            listing_id=listing_id,
+governed_group_routes.py:231:            group_id=group_id,
+governed_group_routes.py:232:            listing_id=listing_id,
+governed_group_routes.py:235:    original_group_id = original_stock.master_product_group_id
+governed_group_routes.py:236:    previous_group_id = int(group_id)
+governed_group_routes.py:240:        original_group_id and int(original_group_id) != previous_group_id
+governed_group_routes.py:244:        original_group = db.session.get(MasterProductGroup, int(original_group_id))
+governed_group_routes.py:248:                group_id=group_id,
+governed_group_routes.py:249:                listing_id=listing_id,
+governed_group_routes.py:250:                original_group_id=original_group_id,
+governed_group_routes.py:252:        listing.master_product_group_id = int(original_group_id)
+governed_group_routes.py:254:        resulting_group_id = int(original_group_id)
+governed_group_routes.py:257:        listing.master_product_group_id = None
+governed_group_routes.py:258:        resulting_group_id = None
+governed_group_routes.py:266:        previous_group_id,
+governed_group_routes.py:270:    if resulting_group_id:
+governed_group_routes.py:272:            resulting_group_id,
+governed_group_routes.py:277:    affected_groups = [previous_group_id]
+governed_group_routes.py:278:    if resulting_group_id:
+governed_group_routes.py:279:        affected_groups.append(resulting_group_id)
+governed_group_routes.py:282:        "listing_id": int(listing_id),
+governed_group_routes.py:283:        "previous_group_id": previous_group_id,
+governed_group_routes.py:284:        "group_id": resulting_group_id,
+governed_group_routes.py:285:        "original_group_id": int(original_group_id) if original_group_id else None,
+governed_group_routes.py:286:        "warehouse_stock_id": original_stock.id,
+governed_group_routes.py:303:            group_ids=affected_groups,
+governed_group_routes.py:305:            listing_ids=[listing_id],
+governed_group_routes.py:320:    current_group_id = int(stock.master_product_group_id or 0)
+governed_group_routes.py:321:    if current_group_id and current_group_id != int(group.id):
+governed_group_routes.py:325:            warehouse_stock_id=stock_id,
+governed_group_routes.py:326:            original_group_id=current_group_id,
+governed_group_routes.py:327:            requested_group_id=group.id,
+governed_group_routes.py:331:    changed = not current_group_id or not bool(stock.is_group_controlled)
+governed_group_routes.py:334:        stock.master_product_group_id = group.id
+governed_group_routes.py:356:        "warehouse_stock_id": stock_id,
+governed_group_routes.py:357:        "group_id": group.id,
+governed_group_routes.py:358:        "original_group_id": group.id,
+governed_group_routes.py:362:def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
+governed_group_routes.py:367:    listing = db.session.get(MarketplaceListing, listing_id)
+governed_group_routes.py:369:        return _blocked("Marketplace listing was not found.", listing_id=listing_id)
+governed_group_routes.py:375:            listing_id=listing_id,
+governed_group_routes.py:378:    original_group_id = stock.master_product_group_id
+governed_group_routes.py:379:    if not original_group_id:
+governed_group_routes.py:382:            listing_id=listing_id,
+governed_group_routes.py:383:            warehouse_stock_id=stock.id,
+governed_group_routes.py:386:    if not db.session.get(MasterProductGroup, int(original_group_id)):
+governed_group_routes.py:389:            listing_id=listing_id,
+governed_group_routes.py:390:            warehouse_stock_id=stock.id,
+governed_group_routes.py:391:            original_group_id=original_group_id,
+governed_group_routes.py:394:    changed = int(listing.master_product_group_id or 0) != int(group.id)
+governed_group_routes.py:397:        listing.master_product_group_id = group.id
+governed_group_routes.py:412:        "listing_id": listing_id,
+governed_group_routes.py:413:        "warehouse_stock_id": stock.id,
+governed_group_routes.py:414:        "group_id": group.id,
+governed_group_routes.py:415:        "original_group_id": int(original_group_id),
+governed_group_routes.py:419:def _push_group_safely(group_id: int, *, source: str) -> dict:
+governed_group_routes.py:421:        from services.governed_push_execution import push_group_listings
+governed_group_routes.py:423:        return push_group_listings(
+governed_group_routes.py:424:            group_id=int(group_id),
+governed_group_routes.py:438:            "group_id": int(group_id),
+governed_group_routes.py:464:def _change_contract(*, changed: bool, group_ids=None, stock_ids=None, listing_ids=None) -> dict:
+governed_group_routes.py:469:        "affected_group_ids": _normalise_ids(group_ids),
+governed_group_routes.py:470:        "affected_warehouse_stock_ids": _normalise_ids(stock_ids),
+governed_group_routes.py:471:        "affected_listing_ids": _normalise_ids(listing_ids),
+governed_group_routes.py:509:                "original_group_id": stock.master_product_group_id,
+governed_group_routes.py:520:                "external_listing_id": listing.external_listing_id,
+governed_group_routes.py:525:                "active_group_id": listing.master_product_group_id,
+governed_group_routes.py:526:                "original_group_id": (
+governed_group_routes.py:527:                    listing.warehouse_stock.master_product_group_id
+governed_mcf_routes.py:66:    if stock is None or not stock.master_product_group_id:
+governed_mcf_routes.py:74:                WarehouseStock.master_product_group_id
+governed_mcf_routes.py:75:                == int(stock.master_product_group_id)
+governed_mcf_routes.py:104:            MarketplaceListing.warehouse_stock_id.in_(stock_ids),
+governed_mcf_routes.py:161:    group_id = getattr(line.warehouse_stock, "master_product_group_id", None) if line.warehouse_stock else None
+governed_mcf_routes.py:164:        "group_id": group_id,
+governed_mcf_routes.py:245:    group_ids = set()
+governed_mcf_routes.py:253:        if stock and stock.master_product_group_id:
+governed_mcf_routes.py:254:            group_ids.add(int(stock.master_product_group_id))
+governed_mcf_routes.py:259:            WarehouseStock.master_product_group_id.in_(group_ids)
+governed_mcf_routes.py:262:        if group_ids else []
+governed_mcf_routes.py:268:        if stock.master_product_group_id:
+governed_mcf_routes.py:270:                int(stock.master_product_group_id)
+governed_mcf_routes.py:285:            MarketplaceListing.warehouse_stock_id.in_(
+governed_mcf_routes.py:298:        stock_id = int(listing.warehouse_stock_id)
+governed_mcf_routes.py:391:            group_id = (
+governed_mcf_routes.py:392:                int(stock.master_product_group_id)
+governed_mcf_routes.py:393:                if stock and stock.master_product_group_id
+governed_mcf_routes.py:399:            if group_id:
+governed_mcf_routes.py:401:                    group_id,
+governed_mcf_routes.py:437:                "group_id": group_id,
+governed_mcf_routes.py:478:            "group_ids": sorted({
+governed_mcf_routes.py:479:                view["group_id"]
+governed_mcf_routes.py:481:                if view["group_id"]
+governed_mcf_routes.py:804:                    fba_listing_id=None,
+governed_routes.py:1184:    listing_id = request.args.get("listing_id")
+governed_routes.py:1185:    external_listing_id = request.args.get("external_listing_id")
+governed_routes.py:1191:    if listing_id:
+governed_routes.py:1193:            query = query.filter(MarketplaceListing.id == int(listing_id))
+governed_routes.py:1195:            return jsonify(ok=False, success=False, governed=True, read_only=True, error="Invalid listing_id"), 400
+governed_routes.py:1196:    elif external_listing_id:
+governed_routes.py:1197:        query = query.filter(MarketplaceListing.external_listing_id == str(external_listing_id))
+governed_routes.py:1206:            "error": "Provide listing_id, external_listing_id, or sku",
+governed_routes.py:1223:                "listing_id": listing_id,
+governed_routes.py:1224:                "external_listing_id": external_listing_id,
+governed_routes.py:1231:    group_id = (
+governed_routes.py:1232:        getattr(listing, "master_product_group_id", None)
+governed_routes.py:1233:        or getattr(stock, "master_product_group_id", None) if stock else None
+governed_routes.py:1239:    if group_id:
+governed_routes.py:1242:            .filter(MarketplaceListing.master_product_group_id == int(group_id))
+governed_routes.py:1250:            .filter(MarketplaceListing.warehouse_stock_id == int(stock.id))
+governed_routes.py:1256:        group_id
+governed_routes.py:1276:            "external_listing_id": listing.external_listing_id,
+governed_routes.py:1278:            "master_product_group_id": listing.master_product_group_id,
+governed_routes.py:1279:            "warehouse_stock_id": listing.warehouse_stock_id,
+governed_routes.py:1287:            "master_product_group_id": stock.master_product_group_id,
+governed_routes.py:1292:            "group_id": int(group_id) if group_id else None,
+governed_routes.py:1353:                "sku", "warehouse_stock_id", "quantity", "carrier", "tracking_number",
+governed_routes.py:1442:                MarketplaceListing.external_listing_id.ilike(like),
+governed_routes.py:1466:        listing_query = listing_query.filter(MarketplaceListing.master_product_group_id.isnot(None))
+governed_routes.py:1468:        listing_query = listing_query.filter(MarketplaceListing.master_product_group_id.is_(None))
+governed_routes.py:1471:        listing_query = listing_query.filter(MarketplaceListing.warehouse_stock_id.isnot(None))
+governed_routes.py:1473:        listing_query = listing_query.filter(MarketplaceListing.warehouse_stock_id.is_(None))
+governed_routes.py:1524:            and str(getattr(listing, "external_listing_id", "") or "").strip()
+governed_routes.py:1530:            or listing.external_listing_id
+governed_routes.py:1560:            marketplace_listing_id=listing.id,
+governed_routes.py:1562:            master_product_group_id=listing.master_product_group_id or (stock.master_product_group_id if stock else None),
+governed_routes.py:1597:            external_listing_id=listing.external_listing_id,
+governed_routes.py:1637:                marketplace_listing_id=None,
+governed_routes.py:1639:                master_product_group_id=stock.master_product_group_id,
+governed_routes.py:1654:                external_listing_id=None,
+governed_routes.py:1666:        rows = [row for row in rows if getattr(row, "marketplace_listing_id", None)]
+governed_routes.py:1672:        rows = [row for row in rows if getattr(row, "master_product_group_id", None) or getattr(row, "is_group_controlled", False)]
+governed_routes.py:1758:@governed_bp.post("/governed/actions/listings/<int:listing_id>/push")
+governed_routes.py:1760:def governed_listing_push(listing_id: int):
+governed_routes.py:1767:        listing_id=listing_id,
+governed_routes.py:1775:@governed_bp.post("/governed/actions/groups/<int:group_id>/push")
+governed_routes.py:1777:def governed_group_push(group_id: int):
+governed_routes.py:1784:    from services.governed_push_execution import push_group_listings
+governed_routes.py:1786:    result = push_group_listings(
+governed_routes.py:1787:        group_id=group_id,
+governed_routes.py:1804:    listing_id = request.args.get("listing_id")
+governed_routes.py:1805:    if listing_id:
+governed_routes.py:1806:        query = query.filter(SyncLog.message.contains(f"listing_id={listing_id}"))
+governed_routes.py:1825:def _push_one_listing(*, listing_id: int, quantity, actor: str, source: str) -> dict:
+governed_routes.py:1831:    from services.governed_push_execution import push_marketplace_listing
+governed_routes.py:1833:    return push_marketplace_listing(
+governed_routes.py:1834:        listing_id=listing_id,
+governed_routes.py:2072:          if (state.listing_id) byListing.set(String(state.listing_id), state);
+governed_routes.py:2073:          if (state.warehouse_stock_id) byStock.set(String(state.warehouse_stock_id), state);
+governed_routes.py:2179:                db.session.query(MarketplaceListing.warehouse_stock_id)
+governed_routes.py:2181:                .filter(MarketplaceListing.warehouse_stock_id.isnot(None))
+governed_routes.py:2185:                    MarketplaceListing.external_listing_id.ilike(like),
+governed_routes.py:2214:            MarketplaceListing.external_listing_id.ilike(like),
+governed_routes.py:2237:    matched_group_ids = {
+governed_routes.py:2238:        int(getattr(stock, "master_product_group_id"))
+governed_routes.py:2240:        if getattr(stock, "master_product_group_id", None)
+governed_routes.py:2243:    if matched_group_ids:
+governed_routes.py:2248:            .filter(WarehouseStock.master_product_group_id.in_(list(matched_group_ids)))
+governed_routes.py:2265:            .filter(MarketplaceListing.warehouse_stock_id.in_(stock_ids_on_page))
+governed_routes.py:2349:            "external_listing_id": listing.external_listing_id,
+governed_routes.py:2350:            "external_id": listing.external_listing_id,
+governed_routes.py:2353:            "warehouse_stock_id": listing.warehouse_stock_id,
+governed_routes.py:2354:            "master_product_group_id": listing.master_product_group_id,
+governed_routes.py:2368:        if listing.warehouse_stock_id:
+governed_routes.py:2369:            listings_by_stock.setdefault(listing.warehouse_stock_id, []).append(listing_payload)
+governed_routes.py:2375:    # master_product_group_id must render as one Product Group with all linked listings.
+governed_routes.py:2380:        stock_group_id = getattr(stock, "master_product_group_id", None)
+governed_routes.py:2381:        if stock_group_id:
+governed_routes.py:2382:            grouped_stock_rows.setdefault(int(stock_group_id), []).append(stock)
+governed_routes.py:2413:            if getattr(stock, "master_product_group_id", None):
+governed_routes.py:2424:    for group_id, group_stocks in grouped_stock_rows.items():
+governed_routes.py:2446:        seen_listing_ids = set()
+governed_routes.py:2450:                if item_id is not None and item_id in seen_listing_ids:
+governed_routes.py:2453:                    seen_listing_ids.add(item_id)
+governed_routes.py:2493:            "master_product_group_id": stock.master_product_group_id,
+governed_routes.py:2578:            MarketplaceListing.warehouse_stock_id.is_(None),
+governed_routes.py:2579:            MarketplaceListing.warehouse_stock_id != exclude_warehouse_id,
+governed_routes.py:2587:            MarketplaceListing.external_listing_id.ilike(like),
+governed_routes.py:2596:        query = query.filter(MarketplaceListing.warehouse_stock_id.is_(None))
+governed_routes.py:2631:            "external_listing_id": listing.external_listing_id,
+governed_routes.py:2632:            "external_id": listing.external_listing_id,
+governed_routes.py:2635:            "warehouse_stock_id": listing.warehouse_stock_id,
+governed_routes.py:2636:            "master_product_group_id": listing.master_product_group_id,
+governed_routes.py:2680:        .filter(MarketplaceListing.warehouse_stock_id == warehouse_id)
+governed_routes.py:2699:                "master_product_group_id": l.master_product_group_id,
+governed_routes.py:2756:@governed_bp.post("/governed/actions/listings/<int:listing_id>/quantity")
+governed_routes.py:2757:def governed_listing_quantity_update(listing_id: int):
+governed_routes.py:2767:    from services.governed_push_execution import push_marketplace_listing
+governed_routes.py:2769:    listing = db.session.get(MarketplaceListing, listing_id)
+governed_routes.py:2774:    if not stock and listing.warehouse_stock_id:
+governed_routes.py:2775:        stock = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+governed_routes.py:2841:    push_result = push_marketplace_listing(
+governed_routes.py:2842:        listing_id=listing.id,
+governed_routes.py:2857:        listing_id=listing.id,
+governed_routes.py:2858:        warehouse_stock_id=stock.id,
+governed_routes.py:2873:@governed_bp.post("/governed/actions/listings/<int:listing_id>/price")
+governed_routes.py:2874:def governed_listing_price_update(listing_id: int):
+governed_routes.py:2883:    listing = db.session.get(MarketplaceListing, listing_id)
+governed_routes.py:2906:        listing_id=listing.id,
+governed_routes.py:3545:        if getattr(stock, "master_product_group_id", None):
+governed_routes.py:3546:            group = db.session.get(MasterProductGroup, int(stock.master_product_group_id))
+governed_routes.py:3550:        existing_listing_group_id = (
+governed_routes.py:3551:            db.session.query(MarketplaceListing.master_product_group_id)
+governed_routes.py:3553:            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+governed_routes.py:3554:            .filter(MarketplaceListing.master_product_group_id.isnot(None))
+governed_routes.py:3560:        if existing_listing_group_id:
+governed_routes.py:3561:            group = db.session.get(MasterProductGroup, int(existing_listing_group_id))
+governed_routes.py:3563:                stock.master_product_group_id = group.id
+governed_routes.py:3581:        stock.master_product_group_id = group.id
+governed_routes.py:3596:            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+governed_routes.py:3608:                "listing_id": listing.id,
+governed_routes.py:3610:                "external_id": listing.external_listing_id,
+governed_routes.py:3623:            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
+governed_routes.py:3632:            "warehouse_stock_id": stock.id,
+governed_routes.py:3633:            "group_id": stock.master_product_group_id,
+governed_routes.py:3642:        stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
+governed_routes.py:3645:            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
+governed_routes.py:3654:        listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+governed_routes.py:3655:        stock_id = body.get("warehouse_id") or body.get("warehouse_stock_id") or body.get("stock_id")
+governed_routes.py:3657:        listing = db.session.get(MarketplaceListing, int(listing_id)) if listing_id else None
+governed_routes.py:3661:            return blocked("Marketplace listing was not found.", status=404, listing_id=listing_id)
+governed_routes.py:3663:            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
+governed_routes.py:3674:        merge_group_ids = set()
+governed_routes.py:3675:        if getattr(stock, "master_product_group_id", None):
+governed_routes.py:3676:            merge_group_ids.add(int(stock.master_product_group_id))
+governed_routes.py:3677:        if getattr(listing, "master_product_group_id", None):
+governed_routes.py:3678:            merge_group_ids.add(int(listing.master_product_group_id))
+governed_routes.py:3680:        if merge_group_ids:
+governed_routes.py:3683:            for merge_group_id in sorted(merge_group_ids):
+governed_routes.py:3687:                    .filter(MarketplaceListing.master_product_group_id == merge_group_id)
+governed_routes.py:3692:                    linked_listing.master_product_group_id = group.id
+governed_routes.py:3695:                        linked_listing.warehouse_stock_id = stock.id
+governed_routes.py:3700:        listing.warehouse_stock_id = stock.id
+governed_routes.py:3701:        listing.master_product_group_id = group.id
+governed_routes.py:3717:            .filter(MarketplaceListing.master_product_group_id == group.id)
+governed_routes.py:3723:            if getattr(group_listing, "warehouse_stock_id", None):
+governed_routes.py:3724:                target_stock_ids.add(int(group_listing.warehouse_stock_id))
+governed_routes.py:3775:                    AmazonFBAInventory.warehouse_stock_id
+governed_routes.py:3783:                    AmazonFBAInventory.warehouse_stock_id.isnot(
+governed_routes.py:3800:            .filter(MarketplaceListing.warehouse_stock_id.in_(list(target_stock_ids)))
+governed_routes.py:3805:            attached_listing.master_product_group_id = group.id
+governed_routes.py:3806:            if getattr(attached_listing, "warehouse_stock_id", None):
+governed_routes.py:3807:                target_stock_ids.add(int(attached_listing.warehouse_stock_id))
+governed_routes.py:3824:            int(item.warehouse_stock_id)
+governed_routes.py:3826:            if is_read_only_fba_listing(item) and getattr(item, "warehouse_stock_id", None)
+governed_routes.py:3838:        # and prevents half-linked groups where a listing has group_id but its stock row does not.
+governed_routes.py:3841:            .filter(MarketplaceListing.master_product_group_id == group.id)
+governed_routes.py:3845:            if getattr(grouped_listing, "warehouse_stock_id", None):
+governed_routes.py:3846:                target_stock_ids.add(int(grouped_listing.warehouse_stock_id))
+governed_routes.py:3855:            group_stock.master_product_group_id = group.id
+governed_routes.py:3870:        listing_fnsku = (getattr(listing, "fnsku", None) or getattr(listing, "external_listing_id", None) or "").strip()
+governed_routes.py:3882:                | (MarketplaceListing.external_listing_id == listing_fnsku)
+governed_routes.py:3897:                    or not getattr(duplicate, "warehouse_stock_id", None)
+governed_routes.py:3898:                    or getattr(duplicate, "warehouse_stock_id", None) != stock.id
+governed_routes.py:3907:            duplicate.warehouse_stock_id = stock.id
+governed_routes.py:3908:            duplicate.master_product_group_id = group.id
+governed_routes.py:3921:            "listing_id": listing.id,
+governed_routes.py:3922:            "warehouse_stock_id": stock.id,
+governed_routes.py:3923:            "group_id": group.id,
+governed_routes.py:3929:        listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
+governed_routes.py:3930:        listing = db.session.get(MarketplaceListing, int(listing_id)) if listing_id else None
+governed_routes.py:3933:            return blocked("Marketplace listing was not found.", status=404, listing_id=listing_id)
+governed_routes.py:3935:        old_stock_id = listing.warehouse_stock_id
+governed_routes.py:3936:        old_group_id = listing.master_product_group_id
+governed_routes.py:3941:        listing.warehouse_stock_id = None
+governed_routes.py:3942:        listing.master_product_group_id = None
+governed_routes.py:3960:                .filter(MarketplaceListing.warehouse_stock_id == int(old_stock_id))
+governed_routes.py:3964:        if old_group_id:
+governed_routes.py:3968:                .filter(MarketplaceListing.master_product_group_id == int(old_group_id))
+governed_routes.py:3976:            and old_group_id
+governed_routes.py:3979:            and getattr(old_stock, "master_product_group_id", None) == int(old_group_id)
+governed_routes.py:3981:            old_stock.master_product_group_id = None
+governed_routes.py:3994:            "listing_id": listing.id,
+governed_routes.py:3995:            "old_warehouse_stock_id": old_stock_id,
+governed_routes.py:3996:            "old_group_id": old_group_id,
+governed_routes.py:4001:            "group_review_required": bool(old_group_id and remaining_group_members <= 1),
+governed_routes.py:4029:    stock_ids = body.get("warehouse_stock_ids") or body.get("stock_ids") or []
+governed_routes.py:4030:    target_group_id = body.get("target_group_id")
+governed_routes.py:4035:        return jsonify(ok=False, success=False, governed=True, message="Invalid warehouse_stock_ids."), 400
+governed_routes.py:4054:    if target_group_id:
+governed_routes.py:4055:        group = db.session.get(MasterProductGroup, int(target_group_id))
+governed_routes.py:4058:        existing_group_ids = [
+governed_routes.py:4059:            int(s.master_product_group_id)
+governed_routes.py:4061:            if getattr(s, "master_product_group_id", None)
+governed_routes.py:4063:        if existing_group_ids:
+governed_routes.py:4064:            group = db.session.get(MasterProductGroup, existing_group_ids[0])
+governed_routes.py:4076:    moved_listing_ids = []
+governed_routes.py:4079:        stock.master_product_group_id = group.id
+governed_routes.py:4090:            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+governed_routes.py:4095:            listing.master_product_group_id = group.id
+governed_routes.py:4098:            moved_listing_ids.append(listing.id)
+governed_routes.py:4108:        group_id=group.id,
+governed_routes.py:4109:        warehouse_stock_ids=moved_stock_ids,
+governed_routes.py:4110:        marketplace_listing_ids=moved_listing_ids,
+governed_routes.py:4193:            warehouse_stock_id=stock_id,
+governed_routes.py:4199:            MarketplaceListing.warehouse_stock_id == stock.id,
+governed_routes.py:4208:            MarketplaceOrder.warehouse_stock_id == stock.id,
+governed_routes.py:4217:            AmazonFBAInventory.warehouse_stock_id == stock.id,
+governed_routes.py:4231:            warehouse_stock_id=stock.id,
+governed_routes.py:4250:        warehouse_stock_id=stock.id,
+governed_routes.py:4270:    stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
+governed_routes.py:4271:    listing_id = body.get("listing_id")
+governed_routes.py:4284:            reason="warehouse_stock_id is required for Convert to FBM.",
+governed_routes.py:4295:            warehouse_stock_id=stock_id_int,
+governed_routes.py:4319:        warehouse_stock_id=stock.id,
+governed_routes.py:4341:    if listing_id not in (None, "", "0"):
+governed_routes.py:4343:            listing = db.session.get(MarketplaceListing, int(listing_id))
+governed_routes.py:4347:    # Frontend may send only warehouse_stock_id from the warehouse row.
+governed_routes.py:4353:            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+governed_routes.py:4389:            getattr(listing, "warehouse_stock_id", None)
+governed_routes.py:4458:        warehouse_stock_id=stock.id,
+governed_routes.py:4459:        listing_id=getattr(listing, "id", listing_id),
+governed_routes.py:5216:        "warehouse_stock_id": row.warehouse_stock_id,
+group_resolution.py:11:- Group Resolution: Given any warehouse_stock_id, find ALL listings across ALL group members.
+group_resolution.py:15:- G2: If warehouse_stock_id is in a group, ANY listing linked to ANY member is treated as group-linked
+group_resolution.py:28:def get_group_for_warehouse_stock(warehouse_stock_id: int) -> Optional[MasterProductGroup]:
+group_resolution.py:33:        warehouse_stock_id: ID of the warehouse stock
+group_resolution.py:38:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:39:    if not ws or not ws.master_product_group_id:
+group_resolution.py:42:    return db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+group_resolution.py:45:def get_group_members(group_id: int) -> List[WarehouseStock]:
+group_resolution.py:50:        group_id: ID of the MasterProductGroup
+group_resolution.py:56:        WarehouseStock.master_product_group_id == group_id,
+group_resolution.py:62:def get_group_member_ids(group_id: int) -> Set[int]:
+group_resolution.py:67:        group_id: ID of the MasterProductGroup
+group_resolution.py:70:        Set of warehouse_stock_id values
+group_resolution.py:73:        WarehouseStock.master_product_group_id == group_id,
+group_resolution.py:80:def get_primary_warehouse_stock(group_id: int) -> Optional[WarehouseStock]:
+group_resolution.py:88:        group_id: ID of the MasterProductGroup
+group_resolution.py:94:        WarehouseStock.master_product_group_id == group_id,
+group_resolution.py:100:def compute_group_quantity(group_id: int) -> int:
+group_resolution.py:108:        group_id: ID of the MasterProductGroup
+group_resolution.py:113:    primary = get_primary_warehouse_stock(group_id)
+group_resolution.py:115:        logging.warning(f"[GROUP_RESOLVE] No primary warehouse stock for group {group_id}")
+group_resolution.py:119:    logging.debug(f"[GROUP_RESOLVE] Group {group_id} quantity = {qty} (from primary SKU: {primary.sku})")
+group_resolution.py:123:def get_all_group_warehouse_stock_ids(warehouse_stock_id: int) -> Set[int]:
+group_resolution.py:125:    Given a warehouse_stock_id, return ALL warehouse_stock_ids in the same group.
+group_resolution.py:131:        warehouse_stock_id: Starting warehouse stock ID
+group_resolution.py:134:        Set of all warehouse_stock_ids in the same group (including input)
+group_resolution.py:136:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:140:    if not ws.master_product_group_id:
+group_resolution.py:141:        return {warehouse_stock_id}
+group_resolution.py:143:    member_ids = get_group_member_ids(ws.master_product_group_id)
+group_resolution.py:144:    logging.debug(f"[GROUP_RESOLVE] SKU {ws.sku} is in group {ws.master_product_group_id}, expanding to {len(member_ids)} members")
+group_resolution.py:148:def get_group_listings(group_id: int, fbm_only: bool = True) -> List[MarketplaceListing]:
+group_resolution.py:152:    Rule G2: If warehouse_stock_id is in a group, ANY listing linked to ANY member
+group_resolution.py:156:        group_id: ID of the MasterProductGroup
+group_resolution.py:162:    member_ids = get_group_member_ids(group_id)
+group_resolution.py:167:        MarketplaceListing.warehouse_stock_id.in_(member_ids),
+group_resolution.py:191:def get_listings_for_warehouse_stock_expanded(warehouse_stock_id: int, fbm_only: bool = True) -> Tuple[Optional[WarehouseStock], List[Dict], Optional[MasterProductGroup]]:
+group_resolution.py:199:        warehouse_stock_id: Starting warehouse stock ID
+group_resolution.py:208:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:214:    member_ids = {warehouse_stock_id}
+group_resolution.py:216:    if ws.master_product_group_id:
+group_resolution.py:217:        group = db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+group_resolution.py:218:        member_ids = get_group_member_ids(ws.master_product_group_id)
+group_resolution.py:219:        primary_ws = get_primary_warehouse_stock(ws.master_product_group_id) or ws
+group_resolution.py:221:        logging.info(f"[GROUP_RESOLVE] Expanding warehouse_stock_id={warehouse_stock_id} (SKU: {ws.sku}) "
+group_resolution.py:222:                    f"to group {ws.master_product_group_id} with {len(member_ids)} members. "
+group_resolution.py:225:    all_listing_ids = set()
+group_resolution.py:230:            MarketplaceListing.warehouse_stock_id == member_id,
+group_resolution.py:236:            all_listing_ids.add(listing.id)
+group_resolution.py:239:            ProductMapping.warehouse_stock_id == member_id
+group_resolution.py:246:                    MarketplaceListing.external_listing_id == pm.external_id,
+group_resolution.py:255:                all_listing_ids.add(listing.id)
+group_resolution.py:257:    if not all_listing_ids:
+group_resolution.py:261:        MarketplaceListing.id.in_(all_listing_ids)
+group_resolution.py:284:            logging.info(f"[GROUP_RESOLVE] AFN BLOCKED: listing_id={l.id}, sku={l.external_sku}, reason={blocked_reason}")
+group_resolution.py:294:            'external_id': l.external_listing_id or l.asin or '',
+group_resolution.py:296:            'warehouse_stock_id': l.warehouse_stock_id,
+group_resolution.py:303:                f"{'group ' + str(ws.master_product_group_id) if group else 'single SKU ' + ws.sku} "
+group_resolution.py:309:def resolve_group_for_push(warehouse_stock_id: int) -> Dict:
+group_resolution.py:320:        warehouse_stock_id: Any warehouse stock ID in the group
+group_resolution.py:325:    primary_ws, listings, group = get_listings_for_warehouse_stock_expanded(warehouse_stock_id, fbm_only=True)
+group_resolution.py:331:            'group_id': None,
+group_resolution.py:335:    group_id = group.id if group else None
+group_resolution.py:345:        'group_id': group_id,
+group_resolution.py:348:        'primary_warehouse_stock_id': primary_ws.id,
+group_resolution.py:358:def apply_group_quantity_change(warehouse_stock_id: int, quantity_delta: int, reason: str = "manual") -> Dict:
+group_resolution.py:365:        warehouse_stock_id: Any warehouse stock ID in the group
+group_resolution.py:372:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:376:    if ws.master_product_group_id:
+group_resolution.py:377:        primary = get_primary_warehouse_stock(ws.master_product_group_id)
+group_resolution.py:396:        'group_id': ws.master_product_group_id
+group_resolution.py:421:def add_warehouse_stock_to_group(warehouse_stock_id: int, group_id: int) -> Dict:
+group_resolution.py:429:        warehouse_stock_id: ID of warehouse stock to add
+group_resolution.py:430:        group_id: ID of the group to add to
+group_resolution.py:435:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:439:    group = db.session.query(MasterProductGroup).get(group_id)
+group_resolution.py:443:    old_group_id = ws.master_product_group_id
+group_resolution.py:444:    ws.master_product_group_id = group_id
+group_resolution.py:446:    logging.info(f"[GROUP_LINK] Added warehouse_stock {warehouse_stock_id} (SKU: {ws.sku}) to group {group_id}. "
+group_resolution.py:447:                f"Previous group: {old_group_id}")
+group_resolution.py:451:        'warehouse_stock_id': warehouse_stock_id,
+group_resolution.py:453:        'group_id': group_id,
+group_resolution.py:454:        'previous_group_id': old_group_id
+group_resolution.py:458:def remove_warehouse_stock_from_group(warehouse_stock_id: int) -> Dict:
+group_resolution.py:466:        warehouse_stock_id: ID of warehouse stock to remove
+group_resolution.py:471:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:475:    old_group_id = ws.master_product_group_id
+group_resolution.py:476:    if not old_group_id:
+group_resolution.py:479:    ws.master_product_group_id = None
+group_resolution.py:481:    logging.info(f"[GROUP_UNLINK] Removed warehouse_stock {warehouse_stock_id} (SKU: {ws.sku}) from group {old_group_id}")
+group_resolution.py:485:        'warehouse_stock_id': warehouse_stock_id,
+group_resolution.py:487:        'removed_from_group_id': old_group_id
+group_resolution.py:491:def get_group_context_for_warehouse(warehouse_stock_id: int) -> Dict:
+group_resolution.py:502:        warehouse_stock_id: ID of warehouse stock
+group_resolution.py:507:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:511:    if not ws.master_product_group_id:
+group_resolution.py:513:            MarketplaceListing.warehouse_stock_id == warehouse_stock_id,
+group_resolution.py:519:            'warehouse_stock_id': warehouse_stock_id,
+group_resolution.py:526:    group = db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+group_resolution.py:527:    members = get_group_members(ws.master_product_group_id)
+group_resolution.py:528:    primary = get_primary_warehouse_stock(ws.master_product_group_id)
+group_resolution.py:529:    _, listings, _ = get_listings_for_warehouse_stock_expanded(warehouse_stock_id, fbm_only=False)
+group_resolution.py:533:        'group_id': ws.master_product_group_id,
+group_resolution.py:535:        'warehouse_stock_id': warehouse_stock_id,
+group_resolution.py:537:        'is_primary': primary.id == warehouse_stock_id if primary else False,
+marketplace_adapters/amazon_fbm.py:81:            "listing_id": payload.get("listing_id"),
+marketplace_adapters/ebay.py:149:            payload.get("external_listing_id")
+marketplace_adapters/ebay.py:150:            or getattr(listing, "external_listing_id", None)
+marketplace_adapters/ebay.py:252:            "external_listing_id": item_id,
+mcf_service.py:185:            or not warehouse_stock.master_product_group_id
+mcf_service.py:192:                WarehouseStock.master_product_group_id
+mcf_service.py:193:                == int(warehouse_stock.master_product_group_id)
+mcf_service.py:224:                MarketplaceListing.warehouse_stock_id.in_(stock_ids),
+mcf_service.py:460:                    fba_listing_id=None,
+models.py:185:    group_id = db.Column(db.Integer, db.ForeignKey('product_groups.id', ondelete='SET NULL'), nullable=True)
+models.py:214:            'group_id': self.group_id,
+models.py:575:    group_id = db.Column(db.Integer, db.ForeignKey('product_groups.id', ondelete='CASCADE'), nullable=False)
+models.py:592:        Index('idx_group_id', 'group_id'),
+models.py:596:        return f'<GroupExternalRef {self.platform}:{self.external_id} -> {self.group_id}>'
+models.py:601:            'group_id': self.group_id,
+models.py:827:    master_product_group_id = db.Column(db.Integer, db.ForeignKey('master_product_groups.id', ondelete='SET NULL'), nullable=True, index=True)
+models.py:849:    group_title_source_listing_id = db.Column(db.Integer, nullable=True)  # Listing ID that provided group_title
+models.py:934:            'master_product_group_id': self.master_product_group_id,
+models.py:990:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:1063:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1092:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:1145:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1177:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:1214:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1517:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:1549:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1597:        if self.master_product_group_id and not self.is_fba:
+models.py:1613:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)  # Nullable for unlinked listings
+models.py:1617:    master_product_group_id = db.Column(db.Integer, db.ForeignKey('master_product_groups.id', ondelete='SET NULL'), nullable=True, index=True)
+models.py:1623:    external_listing_id = db.Column(db.String(200), nullable=False)  # Platform's listing ID
+models.py:1686:        Index('idx_store_external_listing_sku', 'store_id', 'external_listing_id', 'external_sku', unique=True),
+models.py:1687:        Index('idx_warehouse_stock_store', 'warehouse_stock_id', 'store_id'),
+models.py:1781:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1782:            'master_product_group_id': self.master_product_group_id,
+models.py:1787:            'external_listing_id': self.external_listing_id,
+models.py:1788:            'external_id': self.asin or self.external_listing_id,  # ASIN for Amazon, Item ID for eBay
+models.py:1834:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:1895:        Index('idx_fba_warehouse_stock', 'warehouse_stock_id'),
+models.py:1914:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:1950:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:2007:        Index('idx_fbm_warehouse_stock', 'warehouse_stock_id'),
+models.py:2055:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:2090:    This model does NOT require a warehouse_stock_id because:
+models.py:2137:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:2202:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:2225:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:2379:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:2416:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:2475:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False, index=True)
+models.py:2492:        Index('idx_product_mapping_unique', 'warehouse_stock_id', 'platform', 'store_id', unique=True),
+models.py:2496:        return f'<ProductMapping ws={self.warehouse_stock_id} -> {self.platform}:{self.external_id}>'
+models.py:2501:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:2570:    product_group_id = db.Column(db.Integer, db.ForeignKey('master_product_groups.id', ondelete='CASCADE'), nullable=False, unique=True)
+models.py:2595:        return f'<MasterListingTemplate group={self.product_group_id}>'
+models.py:2600:            'product_group_id': self.product_group_id,
+models.py:2624:    product_group_id = db.Column(db.Integer, db.ForeignKey('master_product_groups.id', ondelete='CASCADE'), nullable=False, index=True)
+models.py:2647:        Index('idx_channel_override_unique', 'product_group_id', 'platform', 'store_id', unique=True),
+models.py:2651:        return f'<ChannelOverride group={self.product_group_id} {self.platform}>'
+models.py:2656:            'product_group_id': self.product_group_id,
+models.py:2674:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:3004:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:3037:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:3174:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='SET NULL'), nullable=True)
+models.py:3442:    fba_listing_id = db.Column(db.Integer, db.ForeignKey('amazon_fba_listings.id', ondelete='SET NULL'), nullable=True)
+models.py:3477:        Index('idx_mcf_item_fba_listing', 'fba_listing_id'),
+models.py:3662:    marketplace_listing_id = db.Column(db.Integer, db.ForeignKey('marketplace_listings.id', ondelete='CASCADE'), nullable=True)
+models.py:3663:    fba_listing_id = db.Column(db.Integer, db.ForeignKey('amazon_fba_listings.id', ondelete='CASCADE'), nullable=True)
+models.py:3664:    fbm_listing_id = db.Column(db.Integer, db.ForeignKey('amazon_fbm_listings.id', ondelete='CASCADE'), nullable=True)
+models.py:3665:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=True)
+models.py:3685:        Index('idx_margin_config_warehouse', 'warehouse_stock_id'),
+models.py:3883:    warehouse_stock_id = db.Column(db.Integer, db.ForeignKey('warehouse_stock.id', ondelete='CASCADE'), nullable=False)
+models.py:3918:        Index('idx_stock_transfer_warehouse_stock', 'warehouse_stock_id'),
+models.py:3938:            'warehouse_stock_id': self.warehouse_stock_id,
+models.py:4011:Index('idx_stock_movement_warehouse', StockMovement.warehouse_stock_id, StockMovement.created_at)
+models.py:4016:Index('idx_inventory_item_group_id', InventoryItem.group_id)
+models.py:4024:Index('idx_stock_ledger_warehouse_created', StockLedgerEntry.warehouse_stock_id, StockLedgerEntry.created_at)
+product_linking_patch.py:32:            group_id=getattr(s, "master_product_group_id", None),
+profit_calculator.py:96:    def get_margin_config(self, warehouse_stock_id: int = None, 
+profit_calculator.py:97:                         listing_id: int = None,
+profit_calculator.py:116:        if listing_id:
+profit_calculator.py:119:                    fba_listing_id=listing_id
+profit_calculator.py:123:                    fbm_listing_id=listing_id
+profit_calculator.py:127:                    marketplace_listing_id=listing_id
+profit_calculator.py:141:        if warehouse_stock_id:
+profit_calculator.py:143:                warehouse_stock_id=warehouse_stock_id
+profit_calculator.py:314:                warehouse_stock_id=warehouse_stock.id,
+profit_calculator.py:338:        margin_config = self.get_margin_config(warehouse_stock_id=warehouse_stock.id)
+profit_calculator.py:435:def update_listing_margin_config(listing_type: str, listing_id: int,
+profit_calculator.py:446:        config = ListingMarginConfig.query.filter_by(fba_listing_id=listing_id).first()
+profit_calculator.py:448:            config = ListingMarginConfig(fba_listing_id=listing_id)
+profit_calculator.py:450:        config = ListingMarginConfig.query.filter_by(fbm_listing_id=listing_id).first()
+profit_calculator.py:452:            config = ListingMarginConfig(fbm_listing_id=listing_id)
+profit_calculator.py:454:        config = ListingMarginConfig.query.filter_by(warehouse_stock_id=listing_id).first()
+profit_calculator.py:456:            config = ListingMarginConfig(warehouse_stock_id=listing_id)
+profit_calculator.py:458:        config = ListingMarginConfig.query.filter_by(marketplace_listing_id=listing_id).first()
+profit_calculator.py:460:            config = ListingMarginConfig(marketplace_listing_id=listing_id)
+receiving_service.py:76:                    warehouse_stock_id=warehouse_stock.id,
+receiving_service.py:94:                    warehouse_stock_id=warehouse_stock.id,
+receiving_service.py:177:                        warehouse_stock_id=warehouse_stock.id,
+receiving_service.py:281:                            warehouse_stock_id=warehouse_stock.id,
+reverse_sync_coordinator.py:84:            logging.info(f"First sync for {marketplace_listing.external_listing_id}, initializing with {current_marketplace_qty}")
+reverse_sync_coordinator.py:185:                warehouse_stock_id=locked_stock.id,
+reverse_sync_coordinator.py:206:                notes=f"Synced from {store.platform} listing {marketplace_listing.external_listing_id}"
+scripts/backfill_listing_prices.py:78:            if not resolved_price and listing.warehouse_stock_id:
+scripts/backfill_listing_prices.py:79:                ws = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+scripts/backfill_marketplace_order_totals.py:62:                if order.warehouse_stock_id:
+scripts/backfill_marketplace_order_totals.py:63:                    warehouse_stock = db.session.get(WarehouseStock, order.warehouse_stock_id)
+scripts/backfill_order_pricing.py:59:            if not listing and order.warehouse_stock_id:
+scripts/backfill_order_pricing.py:60:                ws = db.session.get(WarehouseStock, order.warehouse_stock_id)
+scripts/backfill_order_pricing.py:64:                        warehouse_stock_id=order.warehouse_stock_id
+scripts/backfill_order_pricing.py:72:                if order.warehouse_stock_id:
+scripts/backfill_order_pricing.py:73:                    ws = db.session.get(WarehouseStock, order.warehouse_stock_id)
+scripts/fix_ebay_prices.py:108:                        'itemId': listing.external_listing_id,
+scripts/fix_ebay_prices.py:120:                        logger.info(f"[DRY-RUN] Would update {listing.external_listing_id} (SKU: {result['sku']}): £{old_price:.2f} → £{new_price:.2f}")
+scripts/fix_ebay_prices.py:127:                        logger.info(f"Updating {listing.external_listing_id} (SKU: {result['sku']}): £{old_price:.2f} → £{new_price:.2f}")
+scripts/fix_ebay_prices.py:132:                            item_id=listing.external_listing_id,
+scripts/fix_ebay_prices.py:151:                                message=f"Price remediation: {listing.external_listing_id} updated from £{old_price:.2f} to £{new_price:.2f}",
+scripts/fix_ebay_prices.py:156:                            logger.info(f"✅ Successfully updated {listing.external_listing_id}")
+scripts/fix_ebay_prices.py:161:                            logger.error(f"❌ Failed to update {listing.external_listing_id}: {message}")
+scripts/fix_ebay_prices.py:170:                    logger.error(f"Error processing listing {listing.external_listing_id}: {error_msg}")
+scripts/full_governed_execution_audit.py:25:    ("/groups/<int:group_id>/push", "push_group_stock", "retired 410", "none", "LEGACY_REMOVE_CANDIDATE"),
+scripts/full_governed_execution_audit.py:78:        "/groups/<int:group_id>/push",
+scripts/full_governed_execution_audit.py:87:        "/api/listings/<int:listing_id>/push",
+scripts/full_governed_worker_rewrite_audit.py:88:        "/groups/<int:group_id>/push",
+scripts/full_governed_worker_rewrite_audit.py:91:        "/api/listings/<int:listing_id>/push",
+scripts/governed_runtime_audit.py:44:        warehouse_stock_id=10,
+scripts/governed_runtime_audit.py:175:        "push_group_stock": ("routes.py", "@bp.route('/groups/<int:group_id>/push'", "@bp.route('/groups/<int:group_id>/update-stock'"),
+scripts/governed_runtime_audit.py:178:        "push_listing": ("routes.py", "@bp.route('/api/listings/<int:listing_id>/push'", "@bp.route('/api/listings/bulk-action'"),
+scripts/marketplace_push_guard_audit.py:39:        warehouse_stock_id=10,
+services/governed_amazon_inventory_import.py:83:            (MarketplaceListing.external_listing_id == fnsku)
+services/governed_amazon_inventory_import.py:175:            "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
+services/governed_amazon_inventory_import.py:176:            "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
+services/governed_amazon_inventory_import.py:219:        "listing_id": getattr(listing, "id", None) if listing else None,
+services/governed_amazon_inventory_import.py:220:        "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
+services/governed_amazon_inventory_import.py:221:        "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
+services/governed_amazon_listing_fulfillment_refresh.py:152:        "external_listing_id": asin or sku,
+services/governed_amazon_listing_fulfillment_refresh.py:223:                    external_listing_id=snapshot["external_listing_id"],
+services/governed_approval.py:16:REQUIRED_SCOPE_KEYS = ("sku", "store_id", "listing_id", "quantity")
+services/governed_approval.py:23:    listing_id: Any,
+services/governed_approval.py:40:            "listing_id": listing_id,
+services/governed_ebay_inventory_import.py:241:            MarketplaceListing.external_listing_id == item_id,
+services/governed_ebay_inventory_import.py:250:            warehouse_stock_id=stock.id,
+services/governed_ebay_inventory_import.py:251:            external_listing_id=item_id,
+services/governed_ebay_inventory_import.py:262:    if listing.warehouse_stock_id is None:
+services/governed_ebay_inventory_import.py:263:        listing.warehouse_stock_id = stock.id
+services/governed_ebay_inventory_import.py:265:    listing.external_listing_id = item_id
+services/governed_listing_refresh.py:44:    creates a MarketplaceListing without a warehouse_stock_id, that listing is
+services/governed_listing_refresh.py:98:    external_listing_id: str,
+services/governed_listing_refresh.py:103:    warehouse_stock_id: Any | None = None,
+services/governed_listing_refresh.py:115:    external_listing_id = str(external_listing_id or "").strip()
+services/governed_listing_refresh.py:119:    if not external_listing_id:
+services/governed_listing_refresh.py:120:        return _blocked("missing external_listing_id")
+services/governed_listing_refresh.py:134:        external_listing_id=external_listing_id,
+services/governed_listing_refresh.py:140:    if warehouse_stock_id is not None:
+services/governed_listing_refresh.py:141:        warehouse_stock = db.session.get(WarehouseStock, warehouse_stock_id)
+services/governed_listing_refresh.py:145:    elif listing is not None and getattr(listing, "warehouse_stock_id", None):
+services/governed_listing_refresh.py:148:        warehouse_stock = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+services/governed_listing_refresh.py:165:    # Older rows used external_listing_id = SKU.
+services/governed_listing_refresh.py:166:    # Newer snapshots may use ASIN as external_listing_id.
+services/governed_listing_refresh.py:175:                warehouse_stock_id=warehouse_stock.id,
+services/governed_listing_refresh.py:178:            .filter(MarketplaceListing.external_listing_id == sku)
+services/governed_listing_refresh.py:189:            external_listing_id=external_listing_id,
+services/governed_listing_refresh.py:195:            warehouse_stock_id=warehouse_stock.id,
+services/governed_listing_refresh.py:223:        and listing.warehouse_stock_id is None
+services/governed_listing_refresh.py:225:        listing.warehouse_stock_id = warehouse_stock.id
+services/governed_listing_refresh.py:233:        and bool(getattr(listing, "warehouse_stock_id", None))
+services/governed_listing_refresh.py:254:        "listing_id": listing.id,
+services/governed_listing_refresh.py:257:        "external_listing_id": external_listing_id,
+services/governed_listing_refresh.py:260:        "warehouse_stock_id": listing.warehouse_stock_id,
+services/governed_marketplace_order_import.py:76:            MarketplaceListing.warehouse_stock_id.is_(None),
+services/governed_marketplace_order_import.py:121:    warehouse_stock_id = (
+services/governed_marketplace_order_import.py:122:        getattr(listing, "warehouse_stock_id", None)
+services/governed_marketplace_order_import.py:138:            warehouse_stock_id=warehouse_stock_id,
+services/governed_marketplace_order_import.py:151:    order.warehouse_stock_id = warehouse_stock_id
+services/governed_marketplace_order_import.py:200:        "warehouse_stock_id": order.warehouse_stock_id,
+services/governed_marketplace_order_import.py:430:                if not result.get("warehouse_stock_id"):
+services/governed_marketplace_order_import.py:645:                if not result.get("warehouse_stock_id"):
+services/governed_order_stock_mutation.py:7:- Linked MarketplaceListing.warehouse_stock_id decides the warehouse stock row.
+services/governed_order_stock_mutation.py:138:        MarketplaceListing.warehouse_stock_id.is_(None),
+services/governed_order_stock_mutation.py:170:    if not listing or not listing.warehouse_stock_id:
+services/governed_order_stock_mutation.py:179:    stock = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+services/governed_order_stock_mutation.py:186:            "warehouse_stock_id": listing.warehouse_stock_id,
+services/governed_order_stock_mutation.py:229:        .filter(MarketplaceListing.warehouse_stock_id == stock.id)
+services/governed_order_stock_mutation.py:242:        warehouse_stock_id=stock.id,
+services/governed_order_stock_mutation.py:266:    group_id = getattr(stock, "master_product_group_id", None)
+services/governed_order_stock_mutation.py:268:    should_reconcile_group = bool(group_id and is_group_controlled)
+services/governed_order_stock_mutation.py:276:        "group_id": group_id,
+services/governed_order_stock_mutation.py:284:        "warehouse_stock_id": stock.id,
+services/governed_order_stock_mutation.py:285:        "group_id": group_id,
+services/governed_order_stock_mutation.py:353:            "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
+services/governed_order_stock_mutation.py:381:        .filter(MarketplaceOrder.warehouse_stock_id.isnot(None))
+services/governed_order_stock_mutation.py:419:    - SKU must now link to MarketplaceListing.warehouse_stock_id
+services/governed_order_stock_mutation.py:459:        if not listing or not listing.warehouse_stock_id:
+services/governed_order_stock_mutation.py:469:        stock = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+services/governed_order_stock_mutation.py:488:                "warehouse_stock_id": stock.id,
+services/governed_push_execution.py:46:            listing_id=getattr(listing, "external_listing_id", None),
+services/governed_push_execution.py:47:            listing_ids=[getattr(listing, "id", None)],
+services/governed_push_execution.py:48:            warehouse_stock_id=getattr(stock, "id", None),
+services/governed_push_execution.py:49:            group_id=getattr(stock, "master_product_group_id", None),
+services/governed_push_execution.py:58:def _queue_exact_group_webhook_verifications(*, listings, warehouse_rows, group_id: int, source: str) -> None:
+services/governed_push_execution.py:69:            stock_id = getattr(listing, "warehouse_stock_id", None)
+services/governed_push_execution.py:89:                listing_ids=[int(item.id) for item in members],
+services/governed_push_execution.py:90:                warehouse_stock_id=stock_id,
+services/governed_push_execution.py:91:                group_id=int(group_id),
+services/governed_push_execution.py:98:def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_user=None) -> Dict[str, Any]:
+services/governed_push_execution.py:103:    listing = db.session.get(MarketplaceListing, int(listing_id))
+services/governed_push_execution.py:105:        return _blocked(f"Marketplace listing {listing_id} was not found.", listing_id=listing_id)
+services/governed_push_execution.py:108:        return _blocked("Marketplace listing has no store.", listing_id=listing_id)
+services/governed_push_execution.py:111:        return _blocked("Marketplace listing is not linked to warehouse stock.", listing_id=listing_id)
+services/governed_push_execution.py:122:        return _blocked("Unable to derive governed push quantity from warehouse/listing truth.", listing_id=listing_id)
+services/governed_push_execution.py:126:        return _blocked("Marketplace listing has no SKU for governed push.", listing_id=listing_id)
+services/governed_push_execution.py:133:        "listing_id": listing.id,
+services/governed_push_execution.py:134:        "external_listing_id": listing.external_listing_id,
+services/governed_push_execution.py:185:            f"governed_push listing_id={listing.id} sku={sku} "
+services/governed_push_execution.py:200:        "listing_id": listing.id,
+services/governed_push_execution.py:201:        "warehouse_stock_id": listing.warehouse_stock_id,
+services/governed_push_execution.py:202:        "master_product_group_id": listing.master_product_group_id,
+services/governed_push_execution.py:214:def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=None) -> Dict[str, Any]:
+services/governed_push_execution.py:218:    group_id = int(group_id)
+services/governed_push_execution.py:222:    # even if an individual MarketplaceListing is missing master_product_group_id.
+services/governed_push_execution.py:227:            .filter(WarehouseStock.master_product_group_id == group_id)
+services/governed_push_execution.py:233:    direct_group_listing_ids = [
+services/governed_push_execution.py:237:            .filter(MarketplaceListing.master_product_group_id == group_id)
+services/governed_push_execution.py:248:    if warehouse_ids and direct_group_listing_ids:
+services/governed_push_execution.py:252:                (MarketplaceListing.warehouse_stock_id.in_(warehouse_ids))
+services/governed_push_execution.py:253:                | (MarketplaceListing.id.in_(direct_group_listing_ids))
+services/governed_push_execution.py:261:            .filter(MarketplaceListing.warehouse_stock_id.in_(warehouse_ids))
+services/governed_push_execution.py:265:    elif direct_group_listing_ids:
+services/governed_push_execution.py:268:            .filter(MarketplaceListing.id.in_(direct_group_listing_ids))
+services/governed_push_execution.py:276:        push_marketplace_listing(
+services/governed_push_execution.py:277:            listing_id=listing.id,
+services/governed_push_execution.py:309:    # listing warehouse_stock_id values, never from the group id itself.
+services/governed_push_execution.py:311:        int(item.get("warehouse_stock_id"))
+services/governed_push_execution.py:313:        if item.get("warehouse_stock_id")
+services/governed_push_execution.py:336:                "group_id": group_id,
+services/governed_push_execution.py:350:        group_id=group_id,
+services/governed_push_execution.py:358:        "group_id": group_id,
+services/governed_push_execution.py:360:        "direct_group_listing_ids": direct_group_listing_ids,
+services/governed_runtime_engine.py:89:    warehouse_stock_id = _safe_int(raw.get("warehouse_stock_id"))
+services/governed_runtime_engine.py:90:    group_id = _safe_int(raw.get("group_id") or raw.get("master_product_group_id"))
+services/governed_runtime_engine.py:94:    listing_id = _clean(
+services/governed_runtime_engine.py:95:        raw.get("listing_id")
+services/governed_runtime_engine.py:96:        or raw.get("external_listing_id")
+services/governed_runtime_engine.py:107:    listing_ids = []
+services/governed_runtime_engine.py:108:    for value in list(raw.get("listing_ids") or []):
+services/governed_runtime_engine.py:111:            listing_ids.append(parsed)
+services/governed_runtime_engine.py:112:    listing_ids = sorted(set(listing_ids))
+services/governed_runtime_engine.py:119:                listing_id,
+services/governed_runtime_engine.py:123:                warehouse_stock_id,
+services/governed_runtime_engine.py:124:                listing_ids,
+services/governed_runtime_engine.py:135:        "listing_id": listing_id,
+services/governed_runtime_engine.py:136:        "listing_ids": listing_ids,
+services/governed_runtime_engine.py:140:        "warehouse_stock_id": warehouse_stock_id,
+services/governed_runtime_engine.py:141:        "group_id": group_id,
+services/governed_runtime_engine.py:157:        event.get("listing_id"),
+services/governed_runtime_engine.py:158:        tuple(event.get("listing_ids") or []),
+services/governed_runtime_engine.py:162:        event.get("warehouse_stock_id"),
+services/governed_runtime_engine.py:163:        event.get("group_id"),
+services/governed_runtime_engine.py:404:        ("external_listing_id", event.get("listing_id")),
+services/governed_runtime_engine.py:416:        return {"verified": False, "reason": "exact_listing_identity_unavailable"}
+services/governed_runtime_engine.py:438:    if event.get("warehouse_stock_id") and event.get("listing_ids"):
+services/governed_warehouse_snapshot.py:28:        warehouse_stock_id=stock_id
+services/governed_webhook_alignment.py:54:        push_group_listings,
+services/governed_webhook_alignment.py:55:        push_marketplace_listing,
+services/governed_webhook_alignment.py:58:    warehouse_stock_id = event.get("warehouse_stock_id")
+services/governed_webhook_alignment.py:59:    listing_ids = []
+services/governed_webhook_alignment.py:60:    for value in list(event.get("listing_ids") or []):
+services/governed_webhook_alignment.py:62:            listing_ids.append(int(value))
+services/governed_webhook_alignment.py:65:    listing_ids = sorted(set(listing_ids))
+services/governed_webhook_alignment.py:67:    if warehouse_stock_id is None or not listing_ids:
+services/governed_webhook_alignment.py:76:    stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
+services/governed_webhook_alignment.py:82:            "warehouse_stock_id": warehouse_stock_id,
+services/governed_webhook_alignment.py:88:        .filter(MarketplaceListing.id.in_(listing_ids))
+services/governed_webhook_alignment.py:94:    expected_group_id = event.get("group_id")
+services/governed_webhook_alignment.py:105:            int(getattr(listing, "warehouse_stock_id", 0) or 0) == int(stock.id)
+services/governed_webhook_alignment.py:107:        if expected_group_id is not None:
+services/governed_webhook_alignment.py:109:                int(getattr(listing, "master_product_group_id", 0) or 0)
+services/governed_webhook_alignment.py:110:                == int(expected_group_id)
+services/governed_webhook_alignment.py:127:        if expected_group_id is not None:
+services/governed_webhook_alignment.py:128:            retry_result = push_group_listings(
+services/governed_webhook_alignment.py:129:                group_id=int(expected_group_id),
+services/governed_webhook_alignment.py:136:                push_marketplace_listing(
+services/governed_webhook_alignment.py:137:                    listing_id=listing_id,
+services/governed_webhook_alignment.py:142:                for listing_id in misaligned_ids
+services/governed_webhook_alignment.py:161:        "warehouse_stock_id": stock.id,
+services/governed_webhook_alignment.py:162:        "group_id": expected_group_id,
+services/governed_webhook_alignment.py:164:        "listing_ids": listing_ids,
+services/governed_webhook_alignment.py:165:        "aligned_listing_ids": aligned_ids,
+services/governed_webhook_alignment.py:166:        "read_only_listing_ids": read_only_ids,
+services/governed_webhook_alignment.py:167:        "misaligned_listing_ids": misaligned_ids,
+services/governed_webhook_alignment.py:170:        "rows_examined_max": 1 + len(listing_ids),
+services/governed_webhook_execution.py:33:    from services.governed_push_execution import push_group_listings, push_marketplace_listing
+services/governed_webhook_execution.py:66:            listing_id=listing.id,
+services/governed_webhook_execution.py:80:            listing_id=listing.id,
+services/governed_webhook_execution.py:81:            warehouse_stock_id=stock.id,
+services/governed_webhook_execution.py:88:    group_id = group_context.get("group_id")
+services/governed_webhook_execution.py:114:            listing_id=listing.id,
+services/governed_webhook_execution.py:115:            warehouse_stock_id=stock.id,
+services/governed_webhook_execution.py:142:        if not group_id:
+services/governed_webhook_execution.py:148:                reason="DB says listing/stock is grouped but no group_id could be resolved.",
+services/governed_webhook_execution.py:150:                listing_id=listing.id,
+services/governed_webhook_execution.py:151:                warehouse_stock_id=stock.id,
+services/governed_webhook_execution.py:158:        push_result = push_group_listings(
+services/governed_webhook_execution.py:159:            group_id=int(group_id),
+services/governed_webhook_execution.py:172:            listing_id=listing.id,
+services/governed_webhook_execution.py:173:            warehouse_stock_id=stock.id,
+services/governed_webhook_execution.py:174:            group_id=int(group_id),
+services/governed_webhook_execution.py:186:    push_result = push_marketplace_listing(
+services/governed_webhook_execution.py:187:        listing_id=listing.id,
+services/governed_webhook_execution.py:200:        listing_id=listing.id,
+services/governed_webhook_execution.py:201:        warehouse_stock_id=stock.id,
+services/governed_webhook_execution.py:256:        or getattr(listing, "external_listing_id", None)
+services/governed_webhook_execution.py:361:    listing_group_id = getattr(listing, "master_product_group_id", None)
+services/governed_webhook_execution.py:362:    stock_group_id = getattr(stock, "master_product_group_id", None)
+services/governed_webhook_execution.py:365:    group_id = stock_group_id or listing_group_id
+services/governed_webhook_execution.py:370:    if group_id:
+services/governed_webhook_execution.py:373:            .filter(MarketplaceListing.master_product_group_id == int(group_id))
+services/governed_webhook_execution.py:381:            .filter(MarketplaceListing.warehouse_stock_id == int(stock.id))
+services/governed_webhook_execution.py:387:        group_id
+services/governed_webhook_execution.py:395:        "group_id": int(group_id) if group_id else None,
+services/governed_webhook_execution.py:396:        "listing_id": getattr(listing, "id", None),
+services/governed_webhook_execution.py:397:        "listing_group_id": int(listing_group_id) if listing_group_id else None,
+services/governed_webhook_execution.py:398:        "warehouse_stock_id": getattr(stock, "id", None),
+services/governed_webhook_execution.py:399:        "stock_group_id": int(stock_group_id) if stock_group_id else None,
+services/governed_webhook_execution.py:407:def _apply_group_stock_change(warehouse_stock_id: int, quantity_delta: int) -> None:
+services/governed_webhook_execution.py:411:            warehouse_stock_id=int(warehouse_stock_id),
+services/governed_webhook_execution.py:422:    stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
+services/governed_webhook_execution.py:430:    listing_id_keys = {"listing_id", "marketplace_listing_id"}
+services/governed_webhook_execution.py:431:    external_keys = {"external_listing_id", "item_id", "itemid", "listingid", "orderlineitemid"}
+services/governed_webhook_execution.py:434:    for key in listing_id_keys:
+services/governed_webhook_execution.py:449:                .filter(MarketplaceListing.external_listing_id == str(value))
+services/governed_webhook_execution.py:472:                (MarketplaceListing.external_listing_id == text)
+services/group_resolution_bridge.py:7:def resolve_group_id(stock_row) -> int | None:
+services/group_resolution_bridge.py:11:    group_id = getattr(stock_row, "master_product_group_id", None)
+services/group_resolution_bridge.py:12:    if group_id:
+services/group_resolution_bridge.py:13:        return int(group_id)
+services/group_resolution_bridge.py:19:def get_full_group_stock(group_id: int) -> list:
+services/group_resolution_bridge.py:23:    group_id = int(group_id)
+services/group_resolution_bridge.py:29:            (WarehouseStock.master_product_group_id == group_id)
+services/group_resolution_bridge.py:30:            | (WarehouseStock.id == group_id)
+services/group_resolution_bridge.py:48:    resolved = [resolve_group_id(r) for r in rows]
+services/group_resolution_bridge.py:49:    group_id = next((g for g in resolved if g), None)
+services/group_resolution_bridge.py:59:        gid = resolve_group_id(r) or group_id
+services/group_resolution_bridge.py:60:        setattr(r, "resolved_group_id", gid)
+services/stock_transfer_governed_link.py:53:    listing_id: Any,
+services/stock_transfer_governed_link.py:68:        "listing_id": listing_id,
+services/stock_transfer_governed_link.py:89:        listing_id=payload["listing_id"],
+services/stock_transfer_governed_link.py:104:    listing_id: Any,
+services/stock_transfer_governed_link.py:113:        listing_id=listing_id,
+test_concurrent_sales.py:177:                warehouse_stock_id=warehouse_stock.id,
+test_concurrent_sales.py:295:                warehouse_stock_id=warehouse_stock.id
+test_concurrent_sales.py:357:                warehouse_stock_id=warehouse_stock.id,
+test_coordinator.py:35:            MarketplaceListing, MarketplaceListing.warehouse_stock_id == WarehouseStock.id
+test_coordinator.py:53:            warehouse_stock_id=test_stock.id
+test_coordinator.py:70:            warehouse_stock_id=test_stock.id,
+tests/test_exact_order_db_ui_alignment_contract.py:146:    assert '"warehouse_stock_id"' in api_block
+tests/test_exact_order_db_ui_alignment_contract.py:147:    assert '"master_product_group_id"' in api_block
+tests/test_fba_targeted_update_contract.py:77:    assert "existing_listing.warehouse_stock_id =" not in source
+tests/test_fba_targeted_update_contract.py:78:    assert "existing_listing.master_product_group_id =" not in source
+tests/test_fba_targeted_update_contract.py:79:    assert "inventory_row.warehouse_stock_id =" not in source
+tests/test_governed_amazon_fbm_live_path.py:23:            "listing_id": payload["listing_id"],
+tests/test_governed_amazon_fbm_live_path.py:35:        "listing_id": 20,
+tests/test_governed_amazon_fbm_live_path.py:59:    monkeypatch.setattr(governed_execution, "_resolve_listing", lambda listing_id: listing)
+tests/test_governed_approval_object.py:14:        listing_id=202,
+tests/test_governed_approval_object.py:31:            "listing_id": 202,
+tests/test_governed_approval_object.py:42:        listing_id=202,
+tests/test_governed_approval_object.py:51:        "listing_id": 202,
+tests/test_governed_approval_object.py:68:        "listing_id": 202,
+tests/test_governed_approval_object.py:75:        listing_id=payload["listing_id"],
+tests/test_governed_approval_object.py:99:        "listing_id": 202,
+tests/test_governed_approval_object.py:106:        listing_id=payload["listing_id"],
+tests/test_group_quantity_relationship_separation.py:6:    "warehouse_stock_id",
+tests/test_group_quantity_relationship_separation.py:7:    "master_product_group_id",
+tests/test_group_quantity_relationship_separation.py:68:        "saved_listing_group_id",
+tests/test_group_quantity_relationship_separation.py:69:        "saved_stock_group_id",
+tests/test_group_relationship_persistence_guard.py:80:        "MarketplaceListing.warehouse_stock_id",
+tests/test_group_relationship_persistence_guard.py:81:        "MarketplaceListing.master_product_group_id",
+tests/test_group_relationship_persistence_guard.py:82:        "WarehouseStock.master_product_group_id",
+tests/test_stage5_governed_marketplace_gate_contract.py:19:        "listing_id": 202,
+tests/test_stage5_governed_marketplace_gate_contract.py:38:            "listing_id": payload["listing_id"],
+tests/test_stage5_governed_marketplace_gate_contract.py:66:    monkeypatch.setattr(governed_execution, "_resolve_listing", lambda listing_id: listing)
+tests/test_stage5_governed_marketplace_gate_contract.py:185:                "listing_id": payload["listing_id"],
+tests/test_stage5_governed_marketplace_gate_contract.py:261:        "listing_id": 404,
+tests/test_webhook_push_alignment_contract.py:17:    assert "push_group_listings(" in source
+tests/test_webhook_push_alignment_contract.py:18:    assert "push_marketplace_listing(" in source
+tests/test_webhook_push_alignment_contract.py:28:    assert 'listing_ids=[getattr(listing, "id", None)]' in source
+tests/test_webhook_push_alignment_contract.py:29:    assert "warehouse_stock_id=getattr(stock, \"id\", None)" in source
+tests/test_webhook_push_alignment_contract.py:51:def test_alignment_checks_only_saved_stock_and_listing_ids():
+tests/test_webhook_push_alignment_contract.py:53:    assert "db.session.get(WarehouseStock, int(warehouse_stock_id))" in source
+tests/test_webhook_push_alignment_contract.py:54:    assert "MarketplaceListing.id.in_(listing_ids)" in source
+tests/test_webhook_push_alignment_contract.py:57:    assert "push_group_listings(" in source
+tests/test_webhook_push_alignment_contract.py:58:    assert "push_marketplace_listing(" in source
+
+=== PAGE ACTIVITY ===
+static/js/bt38-global-state.js:24:  return fetch(url, options);
+static/js/bt38-global-state.js:82:// immediately before DOMContentLoaded so it cannot issue page-by-page reads.
+static/js/bt38-page-controller.js:319:  document.addEventListener("DOMContentLoaded", () => {
+static/js/dashboard.js:7: * Smart fetch() helper with auto-detection
+static/js/dashboard.js:44:    const res = await fetch(url, init);
+static/js/dashboard.js:358:document.addEventListener('DOMContentLoaded', () => {
+static/js/dashboard.js:384:document.addEventListener('DOMContentLoaded', () => {
+static/js/dashboard.js:397:document.addEventListener('DOMContentLoaded', () => {
+static/js/dashboard.js:843:document.addEventListener('DOMContentLoaded', () => {
+static/js/mobile-scanner.js:66:      const response = await fetch(`/api/mobile/sku/${encodeURIComponent(barcode)}`);
+static/js/mobile-scanner.js:178:      const response = await fetch('/api/mobile/adjust', {
+static/js/mobile-scanner.js:255:      const response = await fetch('/api/mobile/bulk-adjust', {
+static/js/mobile-scanner.js:406:document.addEventListener('DOMContentLoaded', () => {
+static/js/product-linking-session.js:150:    const response = await fetch(`/governed/product-linking/data?${params.toString()}`, {
+static/js/product-linking-session.js:431:      const response = await fetch("/governed/product-linking/link-listing-to-warehouse", {
+static/js/product-linking-session.js:483:      const response = await fetch(`/governed/groups/${encodeURIComponent(groupId)}/unlink`, {
+static/js/product-linking-session.js:556:    document.addEventListener("DOMContentLoaded", boot, { once: true });
+static/js/routing-stability.js:321:                const response = await fetch(this.config.healthCheckUrl, {
+static/js/routing-stability.js:404:        document.addEventListener('DOMContentLoaded', function() {
+static/js/routing-stability.js:415:        const response = await fetch(url, {
+static/js/routing-stability.js:439:        const response = await fetch(url, {
+static/js/warehouse-governed.js:33:  function postJson(endpoint, body, actor) {
+static/js/warehouse-governed.js:36:    return fetch(endpoint, {
+static/js/warehouse-governed.js:78:    return postJson(`/governed/actions/listings/${listingId}/push`, {}, "push");
+static/js/warehouse-governed.js:84:    return postJson(`/governed/actions/listings/${listingId}/quantity`, { quantity }, 'qty');
+static/js/warehouse-governed.js:91:    return postJson(`/governed/actions/listings/${listingId}/price`, { price }, 'price');
+static/js/warehouse-governed.js:98:    return postJson(`/governed/warehouse/stock-transfer/convert-to-fbm`, {
+static/js/warehouse-governed.js:130:          return postJson(`/governed/warehouse/${stockId}/archive`, {}, 'archive');
+static/js/warehouse-governed.js:161:      await postJson(`/governed/actions/listings/${listingId}/push`, {}, 'warehouse-market-badge');
+static/js/warehouse-governed.js:206:  document.addEventListener('DOMContentLoaded', function () {
+static/js/warehouse-governed.js:224:  document.addEventListener('DOMContentLoaded', function () {
+static/js/warehouse-governed.js:236:        const result = await postJson(
+static/service-worker.js:27:        return fetch(event.request).then(response => {
+templates/add_group.html:125:document.addEventListener('DOMContentLoaded', function() {
+templates/add_store.html:429:        fetch('/api/test-connection', {
+templates/add_store.html:511:            fetch('/auth/amazon/start')
+templates/add_store.html:551:        fetch('/auth/amazon/status')
+templates/add_store.html:589:            fetch('/auth/amazon/auto-fill', {
+templates/admin/system_activity.html:464:document.addEventListener('DOMContentLoaded', function() {
+templates/admin/system_activity.html:484:    fetch('/admin/api/backfill', {method: 'POST'})
+templates/admin/system_activity.html:510:    fetch('/admin/api/dashboard-stats')
+templates/admin/system_activity.html:594:    fetch(url)
+templates/admin/system_activity.html:644:    fetch(url)
+templates/admin/system_activity.html:692:    fetch(url)
+templates/admin/system_activity.html:743:    fetch(url)
+templates/admin/system_activity.html:822:    fetch(url)
+templates/admin_product_linking.html:813:        const resp = await fetch('/governed-disabled/product-linking-ungroup', {
+templates/admin_product_linking.html:837:        const resp = await fetch('/governed-disabled/product-linking-not-same-product', {
+templates/admin_product_linking.html:890:        const resp = await fetch('/governed-disabled/product-linking-link', {
+templates/admin_product_linking.html:931:        const resp = await fetch('/governed-disabled/product-linking-link', {
+templates/admin_product_linking.html:966:        const resp = await fetch('/governed-disabled/product-linking-link', {
+templates/admin_product_linking.html:992:        const resp = await fetch('/governed-disabled/unlink-listing', {
+templates/admin_product_linking.html:1017:        const resp = await fetch(`/governed/product-linking/diagnostics/${warehouseId}`);
+templates/admin_product_linking.html:1106:        const resp = await fetch(`/governed/product-linking/repair/${warehouseId}`, {method: 'POST'});
+templates/admin_product_linking.html:1168:        const resp = await fetch('/governed-disabled/product-linking-bulk-diagnostics', {
+templates/admin_product_linking.html:1197:        const resp = await fetch('/governed-disabled/product-linking-bulk-repair', {
+templates/admin_product_linking.html:1226:        const resp = await fetch('/governed-disabled/product-linking-bulk-push', {
+templates/admin_product_linking.html:1251:        const resp = await fetch('/governed/actions/history');
+templates/admin_product_linking.html:1317:        const resp = await fetch('/governed-disabled/product-linking-ebay-bulk', {
+templates/admin_product_linking.html:1357:        const resp = await fetch('/governed/product-linking/repair/reset-failures', {
+templates/admin_product_linking.html:1379:        const resp = await fetch('/governed/product-linking/repair/rebuild-link', {
+templates/admin_product_linking.html:1401:        const resp = await fetch('/governed/product-linking/repair/create-missing-sku', {
+templates/admin_product_linking.html:1427:        const resp = await fetch('/governed/product-linking/repair/sync-now', {
+templates/admin_product_linking.html:1484:        const resp = await fetch('/governed-disabled/product-linking-bulk-merge', {
+templates/admin_product_linking.html:1556:        const resp = await fetch('/governed-disabled/product-linking-bulk-reassign', {
+templates/admin_product_linking.html:1586:        const resp = await fetch('/governed-disabled/product-linking-bulk-ungroup', {
+templates/admin_product_linking.html:1647:        const resp = await fetch('/governed-disabled/product-linking-bulk-repair', {
+templates/admin_product_linking.html:1674:        const resp = await fetch(`/governed/product-linking/repair/${warehouseStockId}`, {
+templates/admin_product_linking.html:1699:document.addEventListener('DOMContentLoaded', function() {
+templates/ai_image_studio.html:331:            const response = await fetch('/api/ai-image/enhance', {
+templates/ai_image_studio.html:375:            const response = await fetch('/api/ai-image/remove-background', {
+templates/ai_image_studio.html:434:            const response = await fetch('/api/ai-image/generate', {
+templates/ai_image_studio.html:479:            const response = await fetch('/api/ai-image/check-compliance', {
+templates/amazon_oauth.html:178:            fetch('/auth/amazon/manual-refresh', {
+templates/amazon_oauth.html:229:            fetch('/auth/amazon/auto-fill', {
+templates/amazon_oauth.html:263:            fetch('/api/stores?platform=Amazon')
+templates/bt38_setup.html:213:            fetch('/bt38-setup/save-refresh-token', {
+templates/bt38_setup.html:255:            fetch('/bt38-setup/test-connection', {
+templates/bt38_setup.html:307:            fetch('/bt38-setup/save-credentials', {
+templates/bt38_setup.html:361:            fetch('/bt38-setup/save-credentials', {
+templates/bt38_setup.html:423:            fetch('/auth/amazon/manual-refresh', {
+templates/bulk_product_linking.html:159:document.addEventListener('DOMContentLoaded', function() {
+templates/bulk_product_linking.html:187:            const response = await fetch('/api/bulk_link_products', {
+templates/create_listing.html:247:document.addEventListener('DOMContentLoaded', function() {
+templates/create_po.html:98:    document.addEventListener('DOMContentLoaded', function() {
+templates/create_user.html:66:document.addEventListener('DOMContentLoaded', function() {
+templates/dashboard.html:160:document.addEventListener('DOMContentLoaded', function(){ if(window.feather){ feather.replace(); }});
+templates/ebay_setup.html:185:            fetch('/test-ebay-connection', {
+templates/edit_group.html:266:document.addEventListener('DOMContentLoaded', function() {
+templates/edit_group.html:292:    fetch(`/__disabled_propagate_quantity`, {
+templates/edit_group.html:359:    fetch(`/governed/actions/groups/${groupId}/push`, {
+templates/edit_item.html:420:                    fetch(`/governed/groups/search?q=${encodeURIComponent(query)}`),
+templates/edit_item.html:421:                    fetch(`/items/search?q=${encodeURIComponent(query)}&require_group=true`)
+templates/edit_item.html:570:                const response = await fetch(`/items/${this.itemId}/link_group`, {
+templates/edit_item.html:609:                const response = await fetch(`/items/${this.itemId}/link_group`, {
+templates/edit_item.html:770:                const response = await fetch('/governed/groups/search', {
+templates/edit_item.html:960:                const response = await fetch(`/governed/groups/${this.groupId}`, {
+templates/edit_item.html:1080:    document.addEventListener('DOMContentLoaded', function() {
+templates/edit_listing.html:251:document.addEventListener('DOMContentLoaded', function() {
+templates/edit_store.html:651:        fetch(`/api/test-amazon-connection/${storeId}`, {
+templates/edit_store.html:695:            fetch(`/api/test-ebay-connection/${storeId}`, {
+templates/edit_user.html:116:document.addEventListener('DOMContentLoaded', function() {
+templates/faq.html:817:document.addEventListener('DOMContentLoaded', function() {
+templates/groups.html:333:      response = await fetch(url, {
+templates/groups.html:475:  document.addEventListener("DOMContentLoaded", function () {
+templates/inventory.html:670:      response = await fetch(url, {
+templates/inventory.html:791:  document.addEventListener("DOMContentLoaded", function () {
+templates/inventory_import_review.html:220:document.addEventListener('DOMContentLoaded', function() {
+templates/inventory_repair.html:418:document.addEventListener('DOMContentLoaded', function() {
+templates/listings.html:389:      response = await fetch(url, {
+templates/listings.html:617:  document.addEventListener("DOMContentLoaded", function () {
+templates/login.html:64:document.addEventListener('DOMContentLoaded', function() {
+templates/master_carton_bulk.html:132:document.addEventListener('DOMContentLoaded', function() {
+templates/master_carton_form.html:135:document.addEventListener('DOMContentLoaded', function() {
+templates/master_cartons.html:146:document.addEventListener('DOMContentLoaded', function() {
+templates/mcf_workbench.html:130:document.addEventListener('DOMContentLoaded', function () {
+templates/product_linking.html:993:document.addEventListener('DOMContentLoaded', function() {
+templates/product_linking.html:1163:        const quantityResponse = await fetch(`/governed/groups/${groupId}/propagate-quantity`, {
+templates/product_linking.html:1190:        const pushResponse = await fetch(`/governed/actions/groups/${groupId}/push`, {
+templates/product_linking.html:1269:            const response = await fetch(`/governed/product-linking/search-all-listings?search=${encodeURIComponent(searchText)}&exclude_warehouse=${currentWarehouseId}&limit=20`);
+templates/product_linking.html:1637:        const response = await fetch(`/governed/product-linking/search-warehouse?search=${encodeURIComponent(search)}&limit=50`);
+templates/product_linking.html:1663:        const response = await fetch('/governed/product-linking/link-listing-to-warehouse', {
+templates/product_linking.html:1741:        const response = await fetch(url, {
+templates/product_linking.html:1864:        const response = await fetch('/governed-disabled/product-linking-link', {
+templates/product_linking.html:1920:        const response = await fetch(`/governed/product-linking/diagnostics/${warehouseId}`);
+templates/product_linking.html:2043:        const response = await fetch(`/governed/product-linking/repair/${warehouseId}`, {
+templates/product_linking.html:2098:document.addEventListener('DOMContentLoaded', function() {
+templates/quick_scan.html:180:            const response = await fetch(`/governed-disabled/warehouse-lookup/${encodeURIComponent(sku)}`);
+templates/quick_scan.html:243:            const response = await fetch(`/governed-disabled/warehouse-quick-adjust/${stockId}`, {
+templates/receive_po.html:142:    document.addEventListener('DOMContentLoaded', function() {
+templates/sentinel_home.html:316:                const response = await fetch('/api/sentinel/control');
+templates/sentinel_home.html:375:                const response = await fetch('/api/sentinel/control', {
+templates/sentinel_home.html:406:                const response = await fetch('/api/system/fingerprint');
+templates/sentinel_home.html:497:                const response = await fetch('/api/sentinel/validate-command', {
+templates/sentinel_home.html:532:                const response = await fetch('/api/sentinel/knowledge');
+templates/sentinel_home.html:574:                const response = await fetch('/api/sentinel/knowledge/upload', {
+templates/settings.html:280:        <tr><td>Normalize Settings</td><td><button class="bt38-btn light" onclick="bt38Post('/governed/settings/normalize', {})">Run</button></td><td>Config cleanup only.</td></tr>
+templates/settings.html:283:        <tr><td>Reset Failures</td><td><button class="bt38-btn light" onclick="bt38Post('/governed/product-linking/repair/reset-failures', {})">Run</button></td><td>Manual recovery action.</td></tr>
+templates/settings.html:284:        <tr><td>Rebuild Links</td><td><button class="bt38-btn light" onclick="bt38Post('/governed/product-linking/repair/rebuild-link', {})">Run</button></td><td>Manual product-linking repair.</td></tr>
+templates/settings.html:339:async function bt38Post(url, payload){
+templates/settings.html:340:  const res = await fetch(url, {
+templates/settings.html:397:  return bt38Post("/governed/settings/config", payload);
+templates/settings.html:405:  return bt38Post(`/governed/settings/stores/${storeId}`, payload);
+templates/settings.html:430:  return bt38Post(`/governed/stores/${target.id}/${action}`, {
+templates/settings.html:436:  return bt38Post('/governed/actions/import/orders', {
+templates/settings.html:444:  return bt38Post("/governed/settings/emergency-freeze", {});
+templates/settings.html:447:  const res = await fetch("/governed/warehouse/runtime-state");
+templates/settings.html:508:document.addEventListener("DOMContentLoaded", bt38RefreshState);
+templates/setup_admin.html:53:document.addEventListener('DOMContentLoaded', function() {
+templates/shelf_capacity.html:279:            const resp = await fetch(`/governed-disabled/warehouse-layout/${warehouseId}`);
+templates/shelf_capacity.html:324:            const resp = await fetch(`/api/shelf/allocation/${allocationId}`, {
+templates/shelf_capacity.html:364:                const resp = await fetch(`/api/shelf/${shelfId}/allocate`, {
+templates/stores.html:231:        fetch(`/governed/stores/${storeId}/import`, {
+templates/stores.html:308:        fetch(`/governed/stores/${storeId}/sync-preview`, {
+templates/stores.html:393:        fetch(`/governed/stores/${storeId}/toggle`, {
+templates/test_ebay_push.html:156:                    const response = await fetch(`/api/test/ebay-push/${itemId}`, {
+templates/tools/sentinel.html:67:document.addEventListener('DOMContentLoaded', function() {
+templates/tools/sentinel.html:99:            const response = await fetch('/api/sentinel/propose', {
+templates/tools/sentinel_home.html:244:document.addEventListener('DOMContentLoaded', function() {
+templates/tools/sentinel_home.html:252:        return fetch(url, {
+templates/user_management.html:99:document.addEventListener('DOMContentLoaded', function() {
+templates/view_po.html:263:            const response = await fetch('/api/ocr/invoice', {
+templates/warehouse_bulk_adjust.html:335:document.addEventListener('DOMContentLoaded', function() {
+templates/warehouse_detail.html:957:      response = await fetch(url, {
+templates/warehouse_detail.html:1018:    fetch("/governed/warehouse/" + encodeURIComponent(stockId) + "/upload-image", {
+templates/warehouse_detail.html:1044:  document.addEventListener("DOMContentLoaded", function () {
+templates/warehouse_layout.html:168:document.addEventListener('DOMContentLoaded', function() {
+templates/warehouse_layout.html:188:            const response = await fetch(`/governed-disabled/warehouse-generate-layout/${warehouseId}`, {
+templates/warehouse_layout.html:236:            const response = await fetch(`/governed-disabled/warehouse-location/${encodeURIComponent(code)}`);
+templates/warehouse_layout.html:263:            const response = await fetch(`/governed-disabled/warehouse-layout/${warehouseId}`);
+templates/warehouses.html:100:    fetch('/api/warehouses/' + warehouseId + '/toggle', {
+templates/warehouses.html:119:        fetch('/api/warehouses/' + warehouseId, {
+
+=== PAGE SLEEP VIOLATIONS ===
+governed_runtime_visibility_routes.py:21:    """Lightweight warehouse runtime heartbeat.
+governed_runtime_visibility_routes.py:32:        "mode": "heartbeat",
+governed_runtime_visibility_routes.py:48:        "message": "Runtime heartbeat only. No listing or warehouse rows are exported from this endpoint.",
+models.py:353:    heartbeat_at = db.Column(db.DateTime, nullable=True)
+models.py:382:            'heartbeat_at': self.heartbeat_at.isoformat() if self.heartbeat_at else None,
+services/governed_runtime_engine.py:651:        "runtime_heartbeat": None,
+services/sentinel_observer.py:15:CACHE_TTL_SECONDS = 60
+services/sentinel_observer.py:135:        if (now - _observation_cache["last_run"]) < CACHE_TTL_SECONDS:
+static/js/dashboard.js:227:                setTimeout(() => {
+static/js/dashboard.js:239:                setTimeout(() => {
+static/js/dashboard.js:317:        setTimeout(() => {
+static/js/dashboard.js:342:            setTimeout(() => this.updateSyncStatus(), 1000);
+static/js/dashboard.js:845:    setTimeout(() => {
+static/js/dashboard.js:989:        setTimeout(() => {
+static/js/dashboard.js:1022:    window.quantityInputTimeout = setTimeout(() => {
+static/js/dashboard.js:1085:    setTimeout(() => {
+static/js/dashboard.js:1307:            setTimeout(() => {
+static/js/dashboard.js:1332:        setTimeout(() => {
+static/js/dashboard.js:1386:            setTimeout(() => {
+static/js/mobile-scanner.js:356:    setTimeout(() => toast.remove(), 3000);
+static/js/product-linking-session.js:13:  const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+static/js/product-linking-session.js:125:    return loadedAt > 0 && (Date.now() - loadedAt) < CACHE_TTL_MS;
+static/js/routing-stability.js:210:                const timeoutId = setTimeout(() => {
+static/js/routing-stability.js:244:            setTimeout(function() {
+static/js/routing-stability.js:248:                    setTimeout(function() {
+static/js/routing-stability.js:282:                self.state.overlayDelayId = setTimeout(function() {
+static/js/routing-stability.js:284:                    self.state.navigationTimeoutId = setTimeout(function() {
+static/js/routing-stability.js:308:            setInterval(function() {
+static/js/routing-stability.js:319:                const timeoutId = setTimeout(() => controller.abort(), 3000);
+static/js/routing-stability.js:391:            setTimeout(function() {
+sync_dispatcher.py:4:any background marketplace worker, poller, or scheduled import loop from
+templates/add_store.html:472:            setTimeout(() => {
+templates/add_store.html:523:                        const checkClosed = setInterval(function() {
+templates/admin_credentials.html:180:                setTimeout(() => {
+templates/admin_product_linking.html:821:            location.reload();
+templates/admin_product_linking.html:848:            location.reload();
+templates/admin_product_linking.html:905:            location.reload();
+templates/admin_product_linking.html:946:            location.reload();
+templates/admin_product_linking.html:979:            location.reload();
+templates/admin_product_linking.html:999:            location.reload();
+templates/admin_product_linking.html:1131:        html += '<button class="btn btn-primary mt-3" onclick="location.reload()">Refresh Page</button>';
+templates/admin_product_linking.html:1366:            location.reload();
+templates/admin_product_linking.html:1388:            location.reload();
+templates/admin_product_linking.html:1410:            location.reload();
+templates/admin_product_linking.html:1436:            location.reload();
+templates/admin_product_linking.html:1498:            location.reload();
+templates/admin_product_linking.html:1569:            location.reload();
+templates/admin_product_linking.html:1597:            location.reload();
+templates/admin_product_linking.html:1656:            setTimeout(() => location.reload(), 3000);
+templates/admin_product_linking.html:1688:            location.reload();
+templates/bt38_setup.html:326:                    setTimeout(() => {
+templates/bt38_setup.html:453:                    setTimeout(() => {
+templates/edit_group.html:315:            setTimeout(() => {
+templates/edit_group.html:316:                window.location.reload();
+templates/edit_group.html:383:            setTimeout(() => {
+templates/edit_item.html:411:            this.searchTimeout = setTimeout(() => {
+templates/edit_item.html:763:            this.searchTimeout = setTimeout(() => {
+templates/product_linking.html:996:        setTimeout(loadProductLinkingData, 50);
+templates/product_linking.html:1246:    setTimeout(() => {
+templates/product_linking.html:1254:    filterDebounceTimer = setTimeout(async () => {
+templates/product_linking.html:1623:    warehouseSearchDebounce = setTimeout(searchWarehouseForLinking, 300);
+templates/quick_scan.html:191:                setTimeout(() => {
+templates/quick_scan.html:262:                setTimeout(() => {
+templates/sentinel_home.html:599:        setInterval(loadFingerprint, 30000);
+templates/settings.html:279:        <tr><td>Runtime State</td><td><button class="bt38-btn light" onclick="bt38GetRuntimeState()">Check</button></td><td>Lightweight heartbeat only.</td></tr>
+templates/shelf_capacity.html:330:                location.reload();
+templates/shelf_capacity.html:376:                    location.reload();
+templates/stock_transfers.html:326:            location.reload();
+templates/stores.html:281:            setTimeout(() => {
+templates/stores.html:330:                setTimeout(() => { location.reload(); }, 2000);
+templates/stores.html:388:        setTimeout(() => feather.replace(), 100);
+templates/stores.html:406:                location.reload();
+templates/stores.html:411:            location.reload();
+templates/tools/sentinel_home.html:565:        window.location.reload();
+templates/warehouse_detail.html:1033:        window.location.reload();
+templates/warehouses.html:110:            location.reload();
+templates/warehouses.html:125:                location.reload();
+tests/test_product_linking_daily_snapshot_contract.py:13:    assert "const CACHE_TTL_MS = 24 * 60 * 60 * 1000" in code
+tests/test_product_linking_local_search_contract.py:27:    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
+tests/test_runtime_deployment_contract.py:32:def test_idle_engine_loop_contains_no_database_polling():
+tests/test_ui_production_alignment_contract.py:31:    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
+
+=== DATABASE LOAD ACTIVITY ===
+admin_logging.py:421:        sync_logs = SyncLog.query.order_by(SyncLog.created_at.asc()).all()
+admin_logging.py:459:        ).order_by(SystemLog.created_at.asc()).all()
+admin_logging.py:828:        sync_logs = SyncLog.query.order_by(SyncLog.created_at.asc()).limit(5000).all()
+admin_logging.py:874:        system_logs = SystemLog.query.order_by(SystemLog.created_at.asc()).limit(2000).all()
+admin_logging.py:915:        job_logs = SyncJobLog.query.order_by(SyncJobLog.started_at.asc()).limit(5000).all()
+admin_logging.py:964:        error_logs = APIErrorLog.query.order_by(APIErrorLog.created_at.asc()).limit(2000).all()
+admin_logging.py:1003:        config_logs = ConfigChangeLog.query.order_by(ConfigChangeLog.changed_at.asc()).limit(1000).all()
+admin_logging.py:1041:        agent_logs = AgentRunLog.query.order_by(AgentRunLog.started_at.asc()).limit(500).all()
+admin_routes.py:105:    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+admin_routes.py:137:    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+admin_routes.py:172:    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+admin_routes.py:207:    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+admin_routes.py:245:    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+admin_routes.py:331:    items = query.limit(10000).all()
+admin_routes.py:407:    stores = Store.query.filter_by(is_active=True).all()
+admin_routes.py:409:    categories = db.session.query(
+admin_routes.py:412:    ).filter(SystemEvent.timestamp >= day_ago).group_by(SystemEvent.category).all()
+app.py:463:        ebay_stores = Store.query.filter_by(platform='eBay', is_active=True).all()
+fba_fbm_helpers.py:96:    stores = db.session.query(Store).filter(
+fba_fbm_helpers.py:104:    ).all()
+fba_fbm_helpers.py:111:    stores = db.session.query(Store).filter(
+fba_fbm_helpers.py:119:    ).all()
+fba_fbm_helpers.py:135:    stores = db.session.query(Store).filter(
+fba_fbm_helpers.py:138:    ).all()
+fba_fbm_helpers.py:452:    store = db.session.query(Store).filter(
+fba_protection.py:32:    fba_listing = db.session.query(MarketplaceListing).join(
+fba_protection.py:57:    fba_linked = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:62:    ).distinct().all()
+fba_protection.py:114:        blocked_skus = db.session.query(WarehouseStock.sku).filter(
+fba_protection.py:116:        ).all()
+fba_protection.py:141:    fba_subquery = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:148:    return db.session.query(WarehouseStock).filter(
+fba_protection.py:164:    fba_subquery = db.session.query(MarketplaceListing.warehouse_stock_id).join(
+fba_protection.py:171:    return db.session.query(WarehouseStock).filter(
+fba_protection.py:189:    skus = db.session.query(WarehouseStock.sku).filter(
+fba_protection.py:191:    ).all()
+governed_group_propagation_routes.py:64:            db.session.query(MarketplaceListing)
+governed_group_propagation_routes.py:141:        db.session.query(MarketplaceListing)
+governed_group_propagation_routes.py:144:        .all()
+governed_group_propagation_routes.py:165:            db.session.query(WarehouseStock.id)
+governed_group_propagation_routes.py:170:            .all()
+governed_group_propagation_routes.py:178:            db.session.query(MarketplaceListing)
+governed_group_propagation_routes.py:185:            .all()
+governed_group_propagation_routes.py:208:            db.session.query(WarehouseStock)
+governed_group_propagation_routes.py:214:            .all()
+governed_group_propagation_routes.py:226:            db.session.query(AmazonFBAInventory)
+governed_group_propagation_routes.py:255:            db.session.query(WarehouseStock)
+governed_group_propagation_routes.py:261:            .all()
+governed_group_propagation_routes.py:314:        db.session.query(MarketplaceListing)
+governed_group_propagation_routes.py:318:        .all()
+governed_group_routes.py:33:    query = db.session.query(MasterProductGroup).order_by(
+governed_group_routes.py:40:    groups = query.limit(25).all()
+governed_group_routes.py:487:    warehouse_stocks = list(group.warehouse_stocks.all()) if include_children else []
+governed_group_routes.py:488:    marketplace_listings = list(group.marketplace_listings.all()) if include_children else []
+governed_mcf_routes.py:43:        .all()
+governed_mcf_routes.py:53:            .all()
+governed_mcf_routes.py:77:            .all()
+governed_mcf_routes.py:107:        .all()
+governed_mcf_routes.py:208:        .limit(max(1, min(int(limit or 100), 250)))
+governed_mcf_routes.py:209:        .all()
+governed_mcf_routes.py:241:        .all()
+governed_mcf_routes.py:261:        .all()
+governed_mcf_routes.py:290:        .all()
+governed_mcf_routes.py:350:        inventory_rows = inventory_query.all()
+governed_mcf_routes.py:546:        .all()
+governed_mcf_routes.py:731:        for item in mcf.items.all():
+governed_routes.py:98:    stores = Store.query.order_by(Store.id).all()
+governed_routes.py:104:        .limit(12)
+governed_routes.py:105:        .all()
+governed_routes.py:111:        .limit(50)
+governed_routes.py:112:        .all()
+governed_routes.py:118:        .limit(50)
+governed_routes.py:119:        .all()
+governed_routes.py:125:        .limit(50)
+governed_routes.py:126:        .all()
+governed_routes.py:132:        .limit(50)
+governed_routes.py:133:        .all()
+governed_routes.py:367:    stores = Store.query.order_by(Store.id).all()
+governed_routes.py:475:    ).all()
+governed_routes.py:507:    stores = Store.query.order_by(Store.id).all()
+governed_routes.py:583:            db.session.query(User)
+governed_routes.py:734:    users = User.query.order_by(User.created_at.desc(), User.id.desc()).all()
+governed_routes.py:1137:        db.session.query(SystemLog)
+governed_routes.py:1140:        .limit(limit)
+governed_routes.py:1141:        .all()
+governed_routes.py:1189:    query = db.session.query(MarketplaceListing)
+governed_routes.py:1241:            db.session.query(MarketplaceListing.id)
+governed_routes.py:1249:            db.session.query(MarketplaceListing.id)
+governed_routes.py:1318:            return db.session.query(model).count()
+governed_routes.py:1324:            rows = db.session.query(model).order_by(model.id.desc()).limit(limit).all()
+governed_routes.py:1424:        db.session.query(MarketplaceListing)
+governed_routes.py:1499:        .all()
+governed_routes.py:1544:                    db.session.query(AmazonFBAInventory)
+governed_routes.py:1551:                    db.session.query(AmazonFBAInventory)
+governed_routes.py:1605:            db.session.query(WarehouseStock)
+governed_routes.py:1626:            .all()
+governed_routes.py:1677:        db.session.query(WarehouseStock)
+governed_routes.py:1680:        .all()
+governed_routes.py:1688:        db.session.query(MarketplaceListing)
+governed_routes.py:1801:    query = db.session.query(SyncLog).filter(
+governed_routes.py:1807:    rows = query.order_by(SyncLog.created_at.desc()).limit(limit).all()
+governed_routes.py:2164:    stock_query = db.session.query(WarehouseStock).filter(
+governed_routes.py:2169:    listing_query = db.session.query(MarketplaceListing).filter(
+governed_routes.py:2179:                db.session.query(MarketplaceListing.warehouse_stock_id)
+governed_routes.py:2194:                .all()
+governed_routes.py:2231:    stock_rows = stock_query.order_by(WarehouseStock.id.desc()).offset(offset).limit(per_page).all()
+governed_routes.py:2245:            db.session.query(WarehouseStock)
+governed_routes.py:2249:            .all()
+governed_routes.py:2263:            db.session.query(MarketplaceListing)
+governed_routes.py:2267:            .all()
+governed_routes.py:2291:            db.session.query(AmazonFBAInventory)
+governed_routes.py:2298:            .all()
+governed_routes.py:2572:    query = db.session.query(MarketplaceListing).filter(
+governed_routes.py:2598:    rows = query.order_by(MarketplaceListing.id.desc()).limit(limit).all()
+governed_routes.py:2679:        db.session.query(MarketplaceListing)
+governed_routes.py:2681:        .limit(100)
+governed_routes.py:2682:        .all()
+governed_routes.py:3047:        .all()
+governed_routes.py:3551:            db.session.query(MarketplaceListing.master_product_group_id)
+governed_routes.py:3556:            .limit(1)
+governed_routes.py:3595:            db.session.query(MarketplaceListing)
+governed_routes.py:3599:            .all()
+governed_routes.py:3686:                    db.session.query(MarketplaceListing)
+governed_routes.py:3688:                    .all()
+governed_routes.py:3716:            db.session.query(MarketplaceListing)
+governed_routes.py:3719:            .all()
+governed_routes.py:3774:                db.session.query(
+governed_routes.py:3789:                .all()
+governed_routes.py:3798:            db.session.query(MarketplaceListing)
+governed_routes.py:3801:            .all()
+governed_routes.py:3840:            db.session.query(MarketplaceListing)
+governed_routes.py:3843:            .all()
+governed_routes.py:3849:            db.session.query(WarehouseStock)
+governed_routes.py:3851:            .all()
+governed_routes.py:3872:        duplicate_query = db.session.query(MarketplaceListing).filter(
+governed_routes.py:3887:        for duplicate in duplicate_query.all():
+governed_routes.py:3958:                db.session.query(MarketplaceListing)
+governed_routes.py:3966:                db.session.query(MarketplaceListing)
+governed_routes.py:4043:        db.session.query(WarehouseStock)
+governed_routes.py:4047:        .all()
+governed_routes.py:4088:            db.session.query(MarketplaceListing)
+governed_routes.py:4091:            .all()
+governed_routes.py:4197:        db.session.query(MarketplaceListing)
+governed_routes.py:4206:        db.session.query(MarketplaceOrder)
+governed_routes.py:4215:        db.session.query(AmazonFBAInventory)
+governed_routes.py:4418:                db.session.query(AmazonFBAInventory)
+governed_routes.py:4420:                .all()
+governed_routes.py:4514:    for row in SystemConfig.query.filter(SystemConfig.key.in_(keys)).all():
+governed_routes.py:4518:    for store in Store.query.order_by(Store.id).all():
+governed_routes.py:5082:    ).all()
+governed_routes.py:5107:    fba_items = query.order_by(AmazonFBAInventory.seller_sku.asc()).paginate(
+governed_routes.py:5114:    total_quantity = db.session.query(db.func.coalesce(db.func.sum(AmazonFBAInventory.available_quantity), 0)).scalar() or 0
+governed_routes.py:5159:    for store in Store.query.order_by(Store.id).all():
+governed_routes.py:5164:            .limit(8)
+governed_routes.py:5165:            .all()
+governed_routes.py:5205:        .limit(20)
+governed_routes.py:5206:        .all()
+group_resolution.py:38:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:42:    return db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+group_resolution.py:55:    return db.session.query(WarehouseStock).filter(
+group_resolution.py:59:    ).all()
+group_resolution.py:72:    result = db.session.query(WarehouseStock.id).filter(
+group_resolution.py:76:    ).all()
+group_resolution.py:93:    return db.session.query(WarehouseStock).filter(
+group_resolution.py:136:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:166:    query = db.session.query(MarketplaceListing).join(Store).filter(
+group_resolution.py:188:    return query.all()
+group_resolution.py:208:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:217:        group = db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+group_resolution.py:229:        query = db.session.query(MarketplaceListing).join(Store).filter(
+group_resolution.py:235:        for listing in query.all():
+group_resolution.py:238:        pm_listings = db.session.query(ProductMapping).filter(
+group_resolution.py:240:        ).all()
+group_resolution.py:243:            listing = db.session.query(MarketplaceListing).join(Store).filter(
+group_resolution.py:260:    listings = db.session.query(MarketplaceListing).join(Store).filter(
+group_resolution.py:262:    ).all()
+group_resolution.py:372:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:435:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:439:    group = db.session.query(MasterProductGroup).get(group_id)
+group_resolution.py:471:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:507:    ws = db.session.query(WarehouseStock).get(warehouse_stock_id)
+group_resolution.py:512:        listings = db.session.query(MarketplaceListing).filter(
+group_resolution.py:526:    group = db.session.query(MasterProductGroup).get(ws.master_product_group_id)
+import_to_production.py:59:                inventory_count = db.session.query(InventoryItem).count()
+import_to_production.py:60:                store_count = db.session.query(Store).count()
+import_to_production.py:61:                listing_count = db.session.query(MarketplaceListing).count()
+import_to_production.py:62:                warehouse_count = db.session.query(WarehouseStock).count()
+mcf_service.py:195:            .all()
+mcf_service.py:204:            ).all()
+mcf_service.py:227:            .all()
+mcf_service.py:514:            for item in mcf_order.items.all():
+models.py:917:        result = db.session.query(
+models.py:3148:        self.subtotal = sum(item.line_total for item in self.items.all())
+models.py:3376:        return sum(item.quantity for item in self.items.all())
+models.py:3380:        items = self.items.all()
+product_linking_patch.py:9:    query = db.session.query(WarehouseStock).filter(
+product_linking_patch.py:20:    rows = query.limit(300).all()
+reorder_service.py:89:        items = db.session.query(WarehouseStock).filter(
+reorder_service.py:99:        ).all()
+reorder_service.py:159:        items = db.session.query(WarehouseStock).filter(
+reorder_service.py:164:        ).all()
+reset_stores.py:6:    stores = Store.query.order_by(Store.id).all()
+reset_stores.py:30:    stores = Store.query.order_by(Store.id).all()
+reverse_sync_coordinator.py:161:            locked_stock = db.session.execute(
+scripts/backfill_listing_prices.py:33:        before_zero = db.session.query(db.func.count(MarketplaceListing.id)).filter(
+scripts/backfill_listing_prices.py:36:        before_total = db.session.query(db.func.count(MarketplaceListing.id)).scalar()
+scripts/backfill_listing_prices.py:48:        ).all()
+scripts/backfill_listing_prices.py:96:        after_zero = db.session.query(db.func.count(MarketplaceListing.id)).filter(
+scripts/backfill_listing_prices.py:99:        after_missing = db.session.query(db.func.count(MarketplaceListing.id)).filter(
+scripts/backfill_marketplace_order_totals.py:43:        ).all()
+scripts/backfill_order_pricing.py:36:        ).all()
+scripts/fix_ebay_prices.py:27:    query = db.session.query(MarketplaceListing).join(
+scripts/fix_ebay_prices.py:38:    listings = query.all()
+scripts/migrate_mcf_queue_contacts.py:28:        db.session.execute(text(statement))
+services/governed_amazon_inventory_import.py:69:    base = db.session.query(MarketplaceListing).filter(
+services/governed_amazon_inventory_import.py:147:    inv_query = db.session.query(AmazonFBAInventory).filter(
+services/governed_amazon_inventory_import.py:230:        db.session.query(Store)
+services/governed_amazon_inventory_import.py:303:    query = db.session.query(Store).filter(
+services/governed_amazon_inventory_import.py:309:    stores = query.all()
+services/governed_amazon_listing_fulfillment_refresh.py:169:    stores = query.order_by(Store.id).all()
+services/governed_ebay_inventory_import.py:196:        db.session.query(WarehouseStock)
+services/governed_ebay_inventory_import.py:238:        db.session.query(MarketplaceListing)
+services/governed_ebay_inventory_import.py:349:    query = db.session.query(Store).filter(Store.platform.ilike("%ebay%"))
+services/governed_ebay_inventory_import.py:356:    stores = query.order_by(Store.id.asc()).all()
+services/governed_listing_refresh.py:50:    stock = db.session.query(WarehouseStock).filter(
+services/governed_marketplace_order_import.py:686:        .all()
+services/governed_mcf_execution.py:124:        .all()
+services/governed_mcf_execution.py:207:            for item in mcf_order.items.all()
+services/governed_mcf_execution.py:233:                for line in mcf_order.marketplace_orders.all()
+services/governed_mcf_execution.py:261:            for line in mcf_order.marketplace_orders.all():
+services/governed_mcf_execution.py:274:        for line in mcf_order.marketplace_orders.all():
+services/governed_order_stock_mutation.py:65:        db.session.query(StockLedgerEntry.id)
+services/governed_order_stock_mutation.py:230:        .all()
+services/governed_order_stock_mutation.py:383:        .limit(limit)
+services/governed_order_stock_mutation.py:384:        .all()
+services/governed_order_stock_mutation.py:433:        .limit(limit)
+services/governed_order_stock_mutation.py:434:        .all()
+services/governed_push_execution.py:226:            db.session.query(WarehouseStock)
+services/governed_push_execution.py:229:            .all()
+services/governed_push_execution.py:236:            db.session.query(MarketplaceListing)
+services/governed_push_execution.py:239:            .all()
+services/governed_push_execution.py:244:        db.session.query(MarketplaceListing)
+services/governed_push_execution.py:256:            .all()
+services/governed_push_execution.py:263:            .all()
+services/governed_push_execution.py:270:            .all()
+services/governed_push_execution.py:317:        db.session.query(WarehouseStock)
+services/governed_push_execution.py:319:        .all()
+services/governed_runtime_engine.py:224:        .all()
+services/governed_warehouse_snapshot.py:29:    ).all()
+services/governed_warehouse_snapshot.py:37:        .all()
+services/governed_warehouse_sync.py:42:            .all()
+services/governed_webhook_alignment.py:87:        db.session.query(MarketplaceListing)
+services/governed_webhook_alignment.py:90:        .all()
+services/governed_webhook_capture.py:165:    result = db.session.execute(
+services/governed_webhook_capture.py:361:    result = db.session.execute(
+services/governed_webhook_capture.py:543:    db.session.execute(
+services/governed_webhook_execution.py:372:            db.session.query(MarketplaceListing.id)
+services/governed_webhook_execution.py:375:            .all()
+services/governed_webhook_execution.py:380:            db.session.query(MarketplaceListing.id)
+services/governed_webhook_execution.py:383:            .all()
+services/group_resolution_bridge.py:26:        db.session.query(WarehouseStock)
+services/group_resolution_bridge.py:32:        .all()
+services/parsers/ebay_parser.py:508:        existing_records = db.session.query(CanonicalOrderLine.idempotency_key).filter(
+services/parsers/ebay_parser.py:510:        ).all()
+services/parsers/ebay_parser.py:515:        all_existing = db.session.query(CanonicalOrderLine.idempotency_key).filter(
+services/parsers/ebay_parser.py:517:        ).all()
+test_coordinator.py:26:        active_stores = Store.query.filter_by(is_active=True).all()
+test_coordinator.py:34:        test_stock = db.session.query(WarehouseStock).join(
+test_coordinator.py:54:        ).all()
+test_coordinator.py:105:        ).order_by(SyncJob.enqueued_at.desc()).limit(5).all()
+tests/test_exact_order_db_ui_alignment_contract.py:46:    assert "db.session.query(MarketplaceOrder)" not in process_block
+tests/test_fba_targeted_update_contract.py:91:    assert ".all()" not in function_source
+tests/test_ui_production_alignment_contract.py:76:    assert ".all()" in block
+tests/test_ui_production_alignment_contract.py:77:    assert ".limit(" not in block
+tests/test_ui_production_alignment_contract.py:78:    assert ".offset(" not in block
+tests/test_webhook_scoped_reconcile_contract.py:48:        assert ".all()" not in body
