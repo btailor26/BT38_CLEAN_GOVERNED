@@ -433,7 +433,7 @@ async function bt38RunStoreShortcut(action, platform){
   });
 }
 async function bt38RunAllStoreWarehouseSync(){
-  return bt38Post('/governed/warehouse/sync', {
+  return bt38Post('/governed/actions/import/orders', {
     shortcut:true,
     shortcut_source:'settings_cockpit_all_store_sync',
     store_scope:'all_active_live_stores'
