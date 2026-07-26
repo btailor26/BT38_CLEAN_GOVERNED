@@ -19,4 +19,4 @@ FBM is warehouse-authoritative.
 Reverse sync is disabled by default.
 Use existing logging: SystemEvent, ConfigChangeLog, SystemConfig, SystemLog.
 Every change must follow: audit, backup, replace full block, verify, syntax check, git diff, no deploy, approval.
-Current approved scope: Settings Control Center and Command Engine only.
+Current approved scope: Settings Control Center, Command Engine, and the existing governed eBay webhook route's GET destination-verification challenge only. This approval does not extend to POST execution, marketplace push, sync, import, scheduler, or broader webhook runtime changes.
