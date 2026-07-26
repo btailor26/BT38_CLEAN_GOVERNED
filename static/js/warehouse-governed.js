@@ -221,6 +221,35 @@
 
   window.bt38ChooseAction = chooseAction;
   window.bt38UpdateActionBar = updateActionBar;
+  document.addEventListener('DOMContentLoaded', function () {
+    const btn = document.getElementById('governedWarehouseSyncBtn');
+    if (!btn) return;
+
+    btn.addEventListener('click', async function () {
+      if (btn.disabled) return;
+
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Syncing...';
+
+      try {
+        const result = await postJson(
+          '/governed/actions/import/orders',
+          {},
+          'warehouse-sync-button'
+        );
+
+        alert(result.message || 'Warehouse sync complete');
+      } catch (err) {
+        alert(err.message || 'Warehouse sync failed');
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+  });
+
   window.bt38ClearSelection = clearSelection;
 
 })();

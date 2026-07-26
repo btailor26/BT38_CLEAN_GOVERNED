@@ -5247,27 +5247,25 @@ def governed_runtime_understanding_audit():
 # BT38 IMPORT SINGLE SOURCE OF TRUTH
 # Warehouse-aligned import handler
 # ==============================
+@governed_bp.post("/governed/actions/import/orders")
 def governed_import_handler():
     try:
-        from services.governed_runtime_engine import run_governed_marketplace_import_refresh
         from services.governed_marketplace_order_import import run_governed_marketplace_order_import
 
-        inventory_result = run_governed_marketplace_import_refresh(
-            source="governed_import_handler",
+        order_result = run_governed_marketplace_order_import(
+            source="warehouse_sync_button",
         )
-        order_result = run_governed_marketplace_order_import()
 
-        return {
+        return jsonify({
             "status": "success",
             "warehouse_source": True,
-            "inventory": inventory_result,
             "orders": order_result,
-        }, 200
+        }), 200
 
     except Exception as e:
-        return {
+        return jsonify({
             "status": "failed",
             "warehouse_source": True,
-            "error": str(e)
-        }, 500
+            "error": str(e),
+        }), 500
 
