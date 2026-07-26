@@ -89,7 +89,7 @@ def process_marketplace_notification(
 
     before_qty = int(getattr(stock, "available_quantity", 0) or 0)
 
-    order_intake = _create_or_update_marketplace_order_from_notification(
+    order_intake = _import_marketplace_order_from_notification(
         marketplace=marketplace,
         event_type=event_type,
         payload=payload,
@@ -98,25 +98,45 @@ def process_marketplace_notification(
         quantity=quantity,
     )
 
-    from services.governed_order_stock_mutation import mutate_warehouse_stock_from_order_line
+    order = order_intake.get("order")
 
-    mutation_result = mutate_warehouse_stock_from_order_line(
-        order_intake["order"],
+    if not order_intake.get("success") or order is None:
+        return _log_result(
+            status="order_import_failed",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            reason=(
+                order_intake.get("reason")
+                or "Canonical MarketplaceOrder import did not return a row."
+            ),
+            payload=payload,
+            listing_id=listing.id,
+            warehouse_stock_id=stock.id,
+            stock_changed=False,
+            correction_started=False,
+            order_id=order_intake.get("marketplace_order_id"),
+            order_intake=order_intake.get("result"),
+        )
+
+    from services.governed_order_stock_mutation import (
+        process_exact_marketplace_order_line,
+    )
+
+    mutation_result = process_exact_marketplace_order_line(
+        order,
         source=f"webhook_{marketplace}_order_intake",
     )
 
-    if mutation_result.get("success") and not mutation_result.get("skipped"):
-        order_intake["order"].status = "processed"
-        order_intake["order"].processed_at = datetime.utcnow()
-        order_intake["order"].error_message = None
-    elif mutation_result.get("reason") == "already_mutated":
-        order_intake["order"].status = "processed"
-        order_intake["order"].processed_at = order_intake["order"].processed_at or datetime.utcnow()
-    else:
-        order_intake["order"].status = "failed"
-        order_intake["order"].error_message = str(mutation_result.get("reason") or mutation_result)
+    if not mutation_result.get("success"):
+        order.status = "failed"
+        order.error_message = str(
+            mutation_result.get("reason")
+            or mutation_result
+        )
+        order.updated_at = datetime.utcnow()
+        db.session.commit()
 
-    db.session.commit()
 
     if grouped:
         if not group_id:
@@ -190,10 +210,30 @@ def process_marketplace_notification(
     )
 
 
-def _create_or_update_marketplace_order_from_notification(*, marketplace: str, event_type: str, payload: dict, listing, stock, quantity: int) -> Dict[str, Any]:
-    """Create the MarketplaceOrder row required by the governed order stock mutation bridge."""
+def _import_marketplace_order_from_notification(
+    *,
+    marketplace: str,
+    event_type: str,
+    payload: dict,
+    listing,
+    stock,
+    quantity: int,
+) -> Dict[str, Any]:
+    """
+    Translate one resolved webhook notification into the canonical
+    MarketplaceOrder import authority.
+
+    Webhook execution extracts provider identifiers only. It does not create,
+    query or update MarketplaceOrder directly.
+    """
+    import hashlib
+    import json
+
     from extensions import db
-    from models import MarketplaceOrder
+    from models import Store
+    from services.governed_marketplace_order_import import (
+        upsert_governed_marketplace_order_line,
+    )
 
     order_id = (
         _deep_get(payload, "marketplace_order_id")
@@ -226,52 +266,50 @@ def _create_or_update_marketplace_order_from_notification(*, marketplace: str, e
     )
 
     if not order_id:
-        import hashlib
-        import json
         raw = json.dumps(payload or {}, sort_keys=True, default=str)
-        order_id = f"webhook-{marketplace}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+        order_id = f"webhook-{marketplace}-{digest}"
 
     order_id = str(order_id)
     item_id = str(item_id or order_id)
     sku = str(sku or "").strip()
 
-    idempotency_key = f"{getattr(listing, 'store_id', None)}:{order_id}:{item_id}:{sku}"
+    store = getattr(listing, "store", None)
 
-    order = (
-        db.session.query(MarketplaceOrder)
-        .filter(MarketplaceOrder.idempotency_key == idempotency_key)
-        .first()
-    )
+    if store is None:
+        store_id = getattr(listing, "store_id", None)
+        store = db.session.get(Store, store_id) if store_id else None
 
-    created = False
+    if store is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "webhook_listing_store_missing",
+            "marketplace_order_id": order_id,
+            "sku": sku,
+        }
 
-    if not order:
-        order = MarketplaceOrder(
-            store_id=getattr(listing, "store_id", None),
-            marketplace_order_id=order_id,
-            marketplace_order_item_id=item_id,
-            sku=sku,
-            warehouse_stock_id=getattr(stock, "id", None),
-            quantity=int(quantity or 1),
-            fulfillment_type="FBM",
-            status="pending",
-            idempotency_key=idempotency_key,
+    channel = (
+        getattr(
+            listing,
+            "normalized_amazon_fulfillment_channel",
+            None,
         )
-        db.session.add(order)
-        created = True
+        or ""
+    ).upper()
 
-    order.store_id = getattr(listing, "store_id", None)
-    order.sku = sku
-    order.warehouse_stock_id = getattr(stock, "id", None)
-    order.quantity = int(quantity or 1)
-    order.updated_at = datetime.utcnow()
+    platform = (
+        getattr(store, "platform", None)
+        or marketplace
+        or ""
+    ).lower()
 
-    channel = (getattr(listing, "normalized_amazon_fulfillment_channel", None) or "").upper()
-    platform = ((listing.store.platform if getattr(listing, "store", None) else marketplace) or "").lower()
-    if "amazon" in platform and channel not in ("MFN", "FBM", "MERCHANT"):
-        order.fulfillment_type = "FBA"
-    else:
-        order.fulfillment_type = "FBM"
+    fulfillment_type = (
+        "FBA"
+        if "amazon" in platform
+        and channel not in {"MFN", "FBM", "MERCHANT"}
+        else "FBM"
+    )
 
     try:
         unit_price = float(
@@ -281,28 +319,37 @@ def _create_or_update_marketplace_order_from_notification(*, marketplace: str, e
             or _deep_get(payload, "itemPrice")
             or 0
         )
-    except Exception:
+    except (TypeError, ValueError):
         unit_price = 0.0
 
-    order.unit_price = unit_price
-    order.line_total = unit_price * int(quantity or 1)
+    result = upsert_governed_marketplace_order_line(
+        store=store,
+        marketplace_order_id=order_id,
+        marketplace_order_item_id=item_id,
+        sku=sku,
+        quantity=int(quantity or 1),
+        unit_price=unit_price,
+        fulfillment_type=fulfillment_type,
+        status="pending",
+        listing=listing,
+    )
 
-    db.session.flush()
+    order = result.get("_order_row")
+
+    public_result = {
+        key: value
+        for key, value in result.items()
+        if key != "_order_row"
+    }
 
     return {
-        "success": True,
-        "created": created,
+        "success": bool(result.get("success")),
+        "created": bool(result.get("created")),
+        "skipped": bool(result.get("skipped")),
+        "reason": result.get("reason"),
         "order": order,
-        "result": {
-            "created": created,
-            "id": order.id,
-            "marketplace_order_id": order.marketplace_order_id,
-            "sku": order.sku,
-            "quantity": order.quantity,
-            "warehouse_stock_id": order.warehouse_stock_id,
-            "idempotency_key": order.idempotency_key,
-        },
-        "marketplace_order_id": order.marketplace_order_id,
+        "result": public_result,
+        "marketplace_order_id": result.get("order_id") or order_id,
     }
 
 

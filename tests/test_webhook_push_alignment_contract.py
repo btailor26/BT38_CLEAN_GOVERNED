@@ -16,7 +16,10 @@ def test_existing_webhook_execution_still_auto_pushes():
     source = _source(WEBHOOK_PATH)
     assert "push_group_listings(" in source
     assert "push_marketplace_listing(" in source
-    assert "mutate_warehouse_stock_from_order_line(" in source
+    assert "upsert_governed_marketplace_order_line(" in source
+    assert "process_exact_marketplace_order_line(" in source
+    assert "MarketplaceOrder(" not in source
+    assert "db.session.add(order)" not in source
 
 
 def test_existing_governed_push_queues_exact_alignment_scope():
