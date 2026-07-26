@@ -101,6 +101,7 @@ def upsert_governed_marketplace_order_line(
     ship_to_country: str | None = None,
     ship_to_email: str | None = None,
     ship_to_phone: str | None = None,
+    listing: MarketplaceListing | None = None,
 ) -> dict[str, Any]:
     sku = _text(sku)
     order_id = _text(marketplace_order_id)
@@ -116,8 +117,12 @@ def upsert_governed_marketplace_order_line(
             "sku": sku,
         }
 
-    listing = _find_listing(store, sku)
-    warehouse_stock_id = getattr(listing, "warehouse_stock_id", None) if listing else None
+    listing = listing or _find_listing(store, sku)
+    warehouse_stock_id = (
+        getattr(listing, "warehouse_stock_id", None)
+        if listing
+        else None
+    )
     key = f"{store.id}:{order_id}:{item_id}:{sku}"
 
     order = MarketplaceOrder.query.filter_by(idempotency_key=key).first()
