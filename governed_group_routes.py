@@ -9,8 +9,16 @@ try:
 except Exception:
     current_user = None
 
+from legacy_product_linking_guard import block_legacy_product_linking_request
+
 
 governed_group_bp = Blueprint("governed_groups", __name__)
+
+
+@governed_group_bp.before_app_request
+def governed_product_linking_single_writer_guard():
+    """Block every retired Product Linking writer before route dispatch."""
+    return block_legacy_product_linking_request()
 
 
 @governed_group_bp.get("/governed/groups/<int:group_id>")
@@ -180,14 +188,7 @@ def governed_group_link_listing(group_id: int):
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    """Unlink one mutable marketplace listing without changing warehouse identity.
-
-    Normal rows restore to the permanent group owned by WarehouseStock. Historic
-    rows whose warehouse group is missing or still equals the active shared group
-    are released to an unlinked state while retaining warehouse_stock_id. This
-    repairs old data without SKU/title guessing and allows both FBM and mutable
-    children of mixed FBA groups to be unlinked.
-    """
+    """Restore one mutable listing to its permanent original group."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup
 
@@ -233,66 +234,65 @@ def governed_group_unlink(group_id: int):
         )), 409
 
     original_group_id = original_stock.master_product_group_id
+    if not original_group_id:
+        return jsonify(_blocked(
+            "Warehouse product has no permanent original group ID.",
+            group_id=group_id,
+            listing_id=listing_id,
+            warehouse_stock_id=original_stock.id,
+        )), 409
+
+    original_group = db.session.get(MasterProductGroup, int(original_group_id))
+    if not original_group:
+        return jsonify(_blocked(
+            "The permanent original group no longer exists.",
+            group_id=group_id,
+            listing_id=listing_id,
+            original_group_id=original_group_id,
+            warehouse_stock_id=original_stock.id,
+        )), 409
+
     previous_group_id = int(group_id)
+    resulting_group_id = int(original_group_id)
+    if resulting_group_id == previous_group_id:
+        return jsonify(_blocked(
+            "Listing is already in its permanent original group; no unlink mutation is required.",
+            group_id=group_id,
+            listing_id=listing_id,
+            original_group_id=resulting_group_id,
+            warehouse_stock_id=original_stock.id,
+        )), 409
+
     now = datetime.utcnow()
-
-    restored_original_group = bool(
-        original_group_id and int(original_group_id) != previous_group_id
-    )
-    original_group = None
-    if restored_original_group:
-        original_group = db.session.get(MasterProductGroup, int(original_group_id))
-        if not original_group:
-            return jsonify(_blocked(
-                "The permanent original group no longer exists.",
-                group_id=group_id,
-                listing_id=listing_id,
-                original_group_id=original_group_id,
-            )), 409
-        listing.master_product_group_id = int(original_group_id)
-        original_group.updated_at = now
-        resulting_group_id = int(original_group_id)
-        message = "Listing restored to its permanent original group ID."
-    else:
-        listing.master_product_group_id = None
-        resulting_group_id = None
-        message = "Listing released from the group and returned to unlinked state."
-
+    listing.master_product_group_id = resulting_group_id
     listing.updated_at = now
     group.updated_at = now
+    original_group.updated_at = now
     db.session.commit()
 
     previous_group_push = _push_group_safely(
         previous_group_id,
         source="product_linking_unlink_previous_group_auto_push",
     )
-    restored_group_push = None
-    if resulting_group_id:
-        restored_group_push = _push_group_safely(
-            resulting_group_id,
-            source="product_linking_unlink_original_group_auto_push",
-        )
+    restored_group_push = _push_group_safely(
+        resulting_group_id,
+        source="product_linking_unlink_original_group_auto_push",
+    )
 
-    payload = _serialize_master_group(original_group or group)
-    affected_groups = [previous_group_id]
-    if resulting_group_id:
-        affected_groups.append(resulting_group_id)
+    payload = _serialize_master_group(original_group)
     payload.update({
-        "message": message,
+        "message": "Listing restored to its permanent original group ID.",
         "listing_id": int(listing_id),
         "previous_group_id": previous_group_id,
         "group_id": resulting_group_id,
-        "original_group_id": int(original_group_id) if original_group_id else None,
+        "original_group_id": resulting_group_id,
         "warehouse_stock_id": original_stock.id,
-        "restored_original_group": restored_original_group,
-        "released_to_unlinked": not restored_original_group,
+        "restored_original_group": True,
+        "released_to_unlinked": False,
         "auto_push_attempted": True,
         "auto_push_success": (
             _push_succeeded(previous_group_push)
-            and (
-                restored_group_push is None
-                or _push_succeeded(restored_group_push)
-            )
+            and _push_succeeded(restored_group_push)
         ),
         "push_results": {
             "previous_group": previous_group_push,
@@ -300,7 +300,7 @@ def governed_group_unlink(group_id: int):
         },
         **_change_contract(
             changed=True,
-            group_ids=affected_groups,
+            group_ids=[previous_group_id, resulting_group_id],
             stock_ids=[original_stock.id],
             listing_ids=[listing_id],
         ),
