@@ -9,7 +9,7 @@
 
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
-  const CACHE_KEY = "product-linking-v4";
+  const CACHE_KEY = "product-linking-v3";
   const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
@@ -45,26 +45,6 @@
 
   function listingIdentity(listing) {
     return String(listing?.id ?? listing?.listing_id ?? listing?.marketplace_listing_id ?? "");
-  }
-
-  function findListingContext(listingId) {
-    for (const product of state.products) {
-      const listing = (product.listings || []).find((item) => sameId(listingIdentity(item), listingId));
-      if (!listing) continue;
-
-      return {
-        groupId: listing.master_product_group_id ?? listing.active_group_id ?? product.master_product_group_id ?? null,
-        warehouseStockId: listing.warehouse_stock_id ?? product.id ?? product.warehouse_stock_id ?? null
-      };
-    }
-
-    const listing = state.listings.find((item) => sameId(listingIdentity(item), listingId));
-    if (!listing) return { groupId: null, warehouseStockId: null };
-
-    return {
-      groupId: listing.master_product_group_id ?? listing.active_group_id ?? null,
-      warehouseStockId: listing.warehouse_stock_id ?? null
-    };
   }
 
   function normaliseIds(values) {
@@ -317,21 +297,6 @@
     return applyMutationContract({ changed: true }, identity);
   }
 
-  async function resolveUnlinkContext(listingId, groupId, warehouseStockId) {
-    let context = findListingContext(listingId);
-
-    if (!context.groupId || !context.warehouseStockId) {
-      const data = await fetchDataset(String(listingId), TARGETED_DATASET_LIMIT);
-      mergeTargetedData(data, [listingId]);
-      context = findListingContext(listingId);
-    }
-
-    return {
-      groupId: context.groupId || groupId || null,
-      warehouseStockId: context.warehouseStockId || warehouseStockId || null
-    };
-  }
-
   function getFilters() {
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (!form) return { search: "", platform: "", store: "", showLinked: "all" };
@@ -508,24 +473,20 @@
   };
 
   window.unlinkListing = async function (listingId, listingSku, userConfirmed = false, groupId = null, warehouseStockId = null) {
+    if (!groupId) {
+      window.alert("This listing has no governed group ID and cannot be safely restored.");
+      return;
+    }
+    if (!userConfirmed && !window.confirm(`Unlink ${listingSku} and restore it to its original group ID?`)) return;
+
     try {
-      const resolved = await resolveUnlinkContext(listingId, groupId, warehouseStockId);
-      const currentGroupId = resolved.groupId;
-      const currentWarehouseStockId = resolved.warehouseStockId;
-
-      if (!currentGroupId) {
-        throw new Error("The current governed group could not be resolved from the committed listing record.");
-      }
-
-      if (!userConfirmed && !window.confirm(`Unlink ${listingSku} from group ${currentGroupId} and restore it to its original group ID?`)) return;
-
-      const response = await fetch(`/governed/groups/${encodeURIComponent(currentGroupId)}/unlink`, {
+      const response = await fetch(`/governed/groups/${encodeURIComponent(groupId)}/unlink`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           listing_id: listingId,
-          warehouse_stock_id: currentWarehouseStockId,
+          warehouse_stock_id: warehouseStockId,
           user_confirmed: true
         })
       });
@@ -537,9 +498,9 @@
       await applyMutationContract(data, {
         listingId,
         listingSku,
-        warehouseId: data.warehouse_stock_id || currentWarehouseStockId,
+        warehouseId: data.warehouse_stock_id || warehouseStockId,
         groupId: data.group_id,
-        previousGroupId: data.previous_group_id || currentGroupId,
+        previousGroupId: data.previous_group_id || groupId,
         originalGroupId: data.original_group_id
       });
 

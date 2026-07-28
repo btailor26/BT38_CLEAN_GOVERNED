@@ -21,7 +21,7 @@ def test_daily_snapshot_is_persisted_in_indexeddb_not_session_only_memory():
     code = source()
     assert 'const CACHE_DB_NAME = "bt38-browser-cache"' in code
     assert 'const CACHE_STORE_NAME = "snapshots"' in code
-    assert 'const CACHE_KEY = "product-linking-v4"' in code
+    assert 'const CACHE_KEY = "product-linking-v3"' in code
     assert "window.indexedDB.open" in code
     assert "writeSnapshot" in code
     assert "readSnapshot" in code
@@ -54,18 +54,6 @@ def test_governed_mutations_refresh_only_affected_rows():
     assert "await applyMutationContract(data" in link_block
     assert "hydrate(true)" not in link_block
     assert "fetchFullSnapshot" not in link_block
-
-
-def test_unlink_resolves_current_listing_group_from_committed_targeted_data():
-    code = source()
-    assert "function findListingContext(listingId)" in code
-    assert "listing.master_product_group_id ?? listing.active_group_id" in code
-    assert "async function resolveUnlinkContext" in code
-    assert "await fetchDataset(String(listingId), TARGETED_DATASET_LIMIT)" in code
-    unlink_block = code[code.index("window.unlinkListing = async function"):]
-    assert "const resolved = await resolveUnlinkContext" in unlink_block
-    assert "encodeURIComponent(currentGroupId)" in unlink_block
-    assert "This listing has no governed group ID" not in unlink_block
 
 
 def test_search_filter_pagination_and_modals_remain_local():
