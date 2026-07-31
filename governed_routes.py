@@ -1057,6 +1057,57 @@ def governed_marketplace_webhook_intake(marketplace):
             notification_record_id=notification_record_id,
         )
 
+        verification_queue_result = None
+
+        exact_scope = {
+            "event_type": notification_result.get("event_type"),
+            "marketplace": platform,
+            "store_id": notification_result.get("store_id"),
+            "seller_sku": notification_result.get("seller_sku"),
+            "listing_id": notification_result.get("listing_id"),
+            "order_id": notification_result.get("order_id"),
+            "warehouse_stock_id": notification_result.get(
+                "warehouse_stock_id"
+            ),
+            "group_id": notification_result.get("group_id"),
+            "expected_quantity": notification_result.get(
+                "expected_quantity"
+            ),
+            "payload": payload,
+        }
+
+        exact_scope = {
+            key: value
+            for key, value in exact_scope.items()
+            if value is not None
+        }
+
+        if (
+            exact_scope.get("store_id") is not None
+            and any(
+                exact_scope.get(key) is not None
+                for key in (
+                    "seller_sku",
+                    "listing_id",
+                    "order_id",
+                    "warehouse_stock_id",
+                    "group_id",
+                )
+            )
+        ):
+            from services.governed_runtime_engine import (
+                notify_governed_runtime_work,
+            )
+
+            verification_queue_result = notify_governed_runtime_work(
+                source=f"webhook_{platform}",
+                event=exact_scope,
+            )
+
+        notification_result["verification_queue"] = (
+            verification_queue_result
+        )
+
         mark_notification_status(
             platform,
             notification_record_id,
