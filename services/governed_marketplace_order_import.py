@@ -312,7 +312,7 @@ def _parse_ebay_datetime(value: Any) -> datetime | None:
 def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
     access_token = _ebay_access_token(store)
 
-    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     response = requests.get(
         EBAY_ORDERS_URL,
@@ -547,7 +547,7 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
 
     # Keep the 15-minute verifier lightweight. Use a short safety window so
     # missed webhooks are recovered without re-reading the same 7 days forever.
-    created_after = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    created_after = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
 
     response = client.get_orders(
         CreatedAfter=created_after,
@@ -655,7 +655,7 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
             f"governed_amazon_order_import imported={imported} "
             f"created={created} skipped={skipped} existing_skipped={existing_skipped} "
             f"item_read_attempts={item_read_attempts} unmatched={unmatched} "
-            f"window_hours=2 source={source}"
+            f"window_hours=24 source={source}"
         ),
     )
     db.session.commit()
@@ -665,7 +665,7 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         "governed": True,
         "marketplace": "amazon",
         "source": source,
-        "window_hours": 2,
+        "window_hours": 24,
         "orders_seen": len(orders),
         "imported": imported,
         "created": created,
