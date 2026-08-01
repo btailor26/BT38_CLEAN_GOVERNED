@@ -1057,6 +1057,110 @@ def governed_marketplace_webhook_intake(marketplace):
             notification_record_id=notification_record_id,
         )
 
+        # Event-transfer alignment:
+        #
+        # The webhook does not push listings and does not become a second
+        # stock authority.
+        #
+        #   changed   -> transfer the exact Warehouse/group identity into the
+        #                existing Warehouse refresh/verification path
+        #   unchanged -> no refresh, no push, no queue, sleep
+        #
+        # Warehouse remains the quantity authority.
+        # Product Linking remains the relationship/shortcut layer.
+        # The existing Warehouse-controlled group path decides marketplace push.
+        stock_changed = bool(
+            notification_result.get("stock_changed", False)
+        )
+        changed_group_id = notification_result.get("group_id")
+        changed_warehouse_stock_id = notification_result.get(
+            "warehouse_stock_id"
+        )
+
+        refresh_required = bool(
+            stock_changed
+            and changed_warehouse_stock_id is not None
+        )
+
+        notification_result["page_refresh_required"] = refresh_required
+        notification_result["warehouse_refresh_required"] = refresh_required
+        notification_result["refresh_scope"] = (
+            {
+                "warehouse_stock_id": changed_warehouse_stock_id,
+                "group_id": changed_group_id,
+                "seller_sku": notification_result.get("seller_sku"),
+                "listing_id": notification_result.get("listing_id"),
+                "expected_quantity": notification_result.get(
+                    "expected_quantity"
+                ),
+            }
+            if refresh_required
+            else None
+        )
+
+        warehouse_refresh_result = {
+            "success": True,
+            "skipped": True,
+            "reason": "quantity_unchanged_sleep",
+            "warehouse_stock_id": changed_warehouse_stock_id,
+            "group_id": changed_group_id,
+        }
+
+        if refresh_required and changed_group_id is not None:
+            # Enter the existing Warehouse-controlled propagation path.
+            #
+            # This is not the Product Linking push shortcut and it does not
+            # call push_group_listings directly. The Warehouse/group path
+            # resolves authority quantity, refreshes the group and updates
+            # only writable linked marketplace listings.
+            from governed_group_propagation_routes import (
+                run_governed_group_propagation,
+            )
+
+            warehouse_response = run_governed_group_propagation(
+                int(changed_group_id),
+                payload={
+                    "warehouse_stock_id": changed_warehouse_stock_id,
+                },
+            )
+
+            response_object = warehouse_response
+            response_status = 200
+
+            if isinstance(warehouse_response, tuple):
+                response_object = warehouse_response[0]
+                if len(warehouse_response) > 1:
+                    response_status = int(warehouse_response[1])
+
+            if hasattr(response_object, "get_json"):
+                response_payload = response_object.get_json(silent=True)
+            else:
+                response_payload = response_object
+
+            warehouse_refresh_result = {
+                "success": 200 <= response_status < 300,
+                "status_code": response_status,
+                "warehouse_stock_id": changed_warehouse_stock_id,
+                "group_id": changed_group_id,
+                "result": response_payload,
+            }
+
+            notification_result["refresh_status"] = (
+                "warehouse_group_refreshed"
+                if warehouse_refresh_result["success"]
+                else "warehouse_group_refresh_failed"
+            )
+        else:
+            notification_result["refresh_status"] = (
+                "quantity_unchanged_sleep"
+                if not refresh_required
+                else "ungrouped_warehouse_refresh_only"
+            )
+
+        notification_result["warehouse_refresh_result"] = (
+            warehouse_refresh_result
+        )
+
         verification_queue_result = None
 
         exact_scope = {
@@ -1083,7 +1187,8 @@ def governed_marketplace_webhook_intake(marketplace):
         }
 
         if (
-            exact_scope.get("store_id") is not None
+            stock_changed
+            and exact_scope.get("store_id") is not None
             and any(
                 exact_scope.get(key) is not None
                 for key in (
@@ -2109,33 +2214,21 @@ def _patch_warehouse_phase1_ui(html: str, stats, search_query: str, active_view:
   }}
 
   function loadRuntimeOverlay() {{
-    fetch('/governed/warehouse/runtime-state')
+    // Runtime-state is heartbeat/fuse visibility only.
+    // It is not a warehouse-row data endpoint.
+    fetch('/governed/warehouse/runtime-state', {{
+      credentials: 'same-origin',
+      cache: 'no-store'
+    }})
       .then(r => r.json())
       .then(data => {{
-        if (!data || !Array.isArray(data.rows)) return;
-
-        injectWarehouseAttentionBox(data.rows);
-
-        const byListing = new Map();
-        const byStock = new Map();
-
-        data.rows.forEach(state => {{
-          if (state.listing_id) byListing.set(String(state.listing_id), state);
-          if (state.warehouse_stock_id) byStock.set(String(state.warehouse_stock_id), state);
-        }});
-
-        document.querySelectorAll('tr[data-stock-id], tr[data-listing-id]').forEach(row => {{
-          const listingId = row.dataset.listingId || '';
-          const stockId = row.dataset.stockId || '';
-
-          const state =
-            (listingId && byListing.get(String(listingId))) ||
-            (stockId && byStock.get(String(stockId)));
-
-          applyRuntimeState(row, state);
-        }});
+        if (!data || data.mode !== 'heartbeat') return;
+        document.documentElement.dataset.bt38RuntimeAlive =
+          data.ok === true ? 'true' : 'false';
       }})
-      .catch(() => console.warn('Governed runtime overlay unavailable'));
+      .catch(() => {{
+        document.documentElement.dataset.bt38RuntimeAlive = 'false';
+      }});
   }}
 
   document.addEventListener('DOMContentLoaded', function() {{
@@ -3718,8 +3811,11 @@ def governed_disabled_action(action: str = ""):
         group = ensure_group_for_stock(stock)
         db.session.commit()
 
-        from governed_group_propagation_routes import governed_group_propagate_quantity
-        return governed_group_propagate_quantity(group.id)
+        from governed_group_propagation_routes import run_governed_group_propagation
+        return run_governed_group_propagation(
+            group.id,
+            payload=body,
+        )
 
     if action == "link-listing-to-warehouse" and request.method == "POST":
         listing_id = body.get("listing_id") or body.get("marketplace_listing_id")

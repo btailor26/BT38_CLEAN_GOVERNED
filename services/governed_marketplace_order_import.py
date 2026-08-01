@@ -190,6 +190,44 @@ def upsert_governed_marketplace_order_line(
 
     db.session.flush()
 
+    mcf_release_event = None
+
+    # Queue one exact server-side due event only when an external order row
+    # is first created. This does not submit MCF and does not scan orders.
+    #
+    # The runtime sleeps until created_at + one hour, then reloads only this
+    # exact MarketplaceOrder identity.
+    platform = str(
+        getattr(store, "platform", "") or ""
+    ).strip().lower()
+
+    if (
+        created
+        and "amazon" not in platform
+        and order.created_at is not None
+    ):
+        from services.governed_runtime_engine import (
+            notify_governed_runtime_work,
+        )
+
+        release_at = order.created_at + timedelta(hours=1)
+
+        mcf_release_event = notify_governed_runtime_work(
+            source="warehouse_mcf_one_hour_release",
+            event={
+                "event_type": "mcf_auto_release",
+                "marketplace": platform,
+                "store_id": store.id,
+                "order_id": order.marketplace_order_id,
+                "warehouse_stock_id": order.warehouse_stock_id,
+                "verify_after": release_at,
+                "payload": {
+                    "marketplace_order_row_id": order.id,
+                    "idempotency_key": order.idempotency_key,
+                },
+            },
+        )
+
     return {
         "success": True,
         "created": created,
@@ -200,6 +238,7 @@ def upsert_governed_marketplace_order_line(
         "warehouse_stock_id": order.warehouse_stock_id,
         "idempotency_key": order.idempotency_key,
         "listing_matched": bool(listing),
+        "mcf_release_event": mcf_release_event,
         # Internal hand-off only. Import callers remove this before returning
         # JSON so the exact row can be processed without another DB query.
         "_order_row": order,

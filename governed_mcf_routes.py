@@ -6,10 +6,18 @@ POST actions and the existing runtime push guard.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    flash,
+    has_request_context,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from flask_login import current_user, login_required
 from sqlalchemy import tuple_
 from sqlalchemy.orm import selectinload
@@ -475,6 +483,11 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
             "eligible": eligible,
             "mcf": mcf,
             "state": state,
+            "auto_release_at": (
+                _mcf_auto_release_at(anchor)
+                if state == "ready"
+                else None
+            ),
             "group_ids": sorted({
                 view["group_id"]
                 for view in views
@@ -499,13 +512,123 @@ def _active_fba_store() -> Store | None:
     )
 
 
-def _guard(store: Store, context: str) -> dict:
+def _guard(
+    store: Store,
+    context: str,
+    *,
+    actor_user=None,
+    manual: bool = True,
+) -> dict:
+    """Apply the existing governed push guard for UI or runtime callers."""
+    resolved_actor = actor_user
+
+    if resolved_actor is None and has_request_context():
+        resolved_actor = current_user
+
     return is_runtime_action_allowed(
         store,
         "push",
-        manual=True,
-        context={"actor_user": current_user, "context": context},
+        manual=manual,
+        context={
+            "actor_user": resolved_actor,
+            "context": context,
+        },
     )
+
+
+def _mcf_auto_release_at(
+    order: MarketplaceOrder,
+) -> datetime | None:
+    """Return the server-controlled MCF release time.
+
+    The existing governed runtime wakes for the exact order identity when this
+    time is reached. No browser page is required.
+    """
+    if order.created_at is None:
+        return None
+
+    return order.created_at + timedelta(hours=1)
+
+
+def _resolve_mcf_submission_inputs(
+    anchor: MarketplaceOrder,
+    *,
+    form_data=None,
+) -> dict:
+    """Resolve delivery and speed inputs without requiring a Flask request."""
+    data = dict(form_data or {})
+
+    address = {
+        "name": str(
+            data.get("name")
+            or anchor.ship_to_name
+            or ""
+        ).strip(),
+        "address_line1": str(
+            data.get("address_line1")
+            or anchor.ship_to_address
+            or ""
+        ).strip(),
+        "address_line2": str(
+            data.get("address_line2")
+            or ""
+        ).strip(),
+        "city": str(
+            data.get("city")
+            or anchor.ship_to_city
+            or ""
+        ).strip(),
+        "state": str(
+            data.get("state")
+            or ""
+        ).strip(),
+        "postcode": str(
+            data.get("postcode")
+            or anchor.ship_to_postcode
+            or ""
+        ).strip(),
+        "country": str(
+            data.get("country")
+            or anchor.ship_to_country
+            or "GB"
+        ).strip().upper(),
+        "email": str(
+            data.get("email")
+            or anchor.ship_to_email
+            or ""
+        ).strip(),
+        "phone": str(
+            data.get("phone")
+            or anchor.ship_to_phone
+            or ""
+        ).strip(),
+    }
+
+    speed = str(
+        data.get("shipping_speed")
+        or "Standard"
+    ).strip().title()
+
+    if speed not in {"Standard", "Expedited", "Priority"}:
+        speed = "Standard"
+
+    missing = [
+        key
+        for key in (
+            "name",
+            "address_line1",
+            "city",
+            "postcode",
+            "country",
+        )
+        if not address[key]
+    ]
+
+    return {
+        "address": address,
+        "shipping_speed": speed,
+        "missing": missing,
+    }
 
 
 def _safe_seller_fulfillment_id(order: MarketplaceOrder) -> str:
@@ -601,15 +724,99 @@ def order_mcf_detail_page(order_id: int):
     )
 
 
-@governed_mcf_bp.post("/governed/orders-mcf/<int:order_id>/send")
-@login_required
-def send_order_to_mcf(order_id: int):
+def run_governed_mcf_submission(
+    order_id: int,
+    *,
+    auto_release: bool = False,
+    form_data=None,
+    actor_user=None,
+) -> dict:
+    """Run the existing governed MCF submission without an HTTP dependency."""
+    data = dict(form_data or {})
+    captured_messages = []
+
+    def _capture_flash(message, category="info"):
+        captured_messages.append({
+            "message": str(message),
+            "category": str(category or "info"),
+        })
+
+    def _capture_url_for(endpoint, **kwargs):
+        return {
+            "endpoint": endpoint,
+            "kwargs": kwargs,
+        }
+
+    def _capture_redirect(target):
+        latest = (
+            captured_messages[-1]
+            if captured_messages
+            else {
+                "message": "MCF action completed.",
+                "category": "info",
+            }
+        )
+
+        category = latest["category"]
+
+        return {
+            "success": category == "success",
+            "skipped": category in {"warning", "info"},
+            "message": latest["message"],
+            "category": category,
+            "redirect": target,
+            "auto_release": bool(auto_release),
+            "marketplace_order_row_id": order_id,
+        }
+
+    # Preserve the established route control flow while converting its
+    # presentation effects into a plain result contract.
+    flash = _capture_flash
+    url_for = _capture_url_for
+    redirect = _capture_redirect
+
     anchor = db.session.get(MarketplaceOrder, order_id)
     if anchor is None:
         flash("Order not found.", "danger")
         return redirect(url_for("governed_mcf.orders_mcf_page"))
 
     lines = _order_lines(anchor)
+
+    cancelled_statuses = {
+        "cancelled",
+        "canceled",
+        "cancellation",
+        "cancel_requested",
+    }
+
+    if any(
+        str(line.status or "").strip().lower()
+        in cancelled_statuses
+        for line in lines
+    ):
+        flash(
+            "MCF submission stopped because the source order is cancelled.",
+            "warning",
+        )
+        return redirect(
+            url_for(
+                "governed_mcf.order_mcf_detail_page",
+                order_id=anchor.id,
+            )
+        )
+
+    if auto_release:
+        release_at = _mcf_auto_release_at(anchor)
+
+        if release_at is None or datetime.utcnow() < release_at:
+            flash(
+                "The one-hour MCF cancellation window has not completed.",
+                "warning",
+            )
+            return redirect(
+                url_for("governed_mcf.orders_mcf_page")
+            )
+
     existing = next(
         (
             line.mcf_order
@@ -652,8 +859,22 @@ def send_order_to_mcf(order_id: int):
         flash("No active Amazon FBA store is configured.", "danger")
         return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
 
-    amazon_guard = _guard(fba_store, "manual_mcf_submit")
-    ebay_guard = _guard(anchor.store, "mcf_acceptance_ebay_dispatch")
+    amazon_guard = _guard(
+        fba_store,
+        (
+            "warehouse_one_hour_auto_mcf_submit"
+            if auto_release
+            else "manual_mcf_submit"
+        ),
+        actor_user=actor_user,
+        manual=not auto_release,
+    )
+    ebay_guard = _guard(
+        anchor.store,
+        "mcf_acceptance_ebay_dispatch",
+        actor_user=actor_user,
+        manual=not auto_release,
+    )
     if not amazon_guard.get("allowed"):
         flash(f"Amazon MCF blocked: {amazon_guard.get('reason')}", "danger")
         return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
@@ -666,30 +887,12 @@ def send_order_to_mcf(order_id: int):
         flash("Every order line must resolve to an MCF-enabled FBA listing with enough available stock.", "danger")
         return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
 
-    address = {
-        "name": str(request.form.get("name") or anchor.ship_to_name or "").strip(),
-        "address_line1": str(request.form.get("address_line1") or anchor.ship_to_address or "").strip(),
-        "address_line2": str(request.form.get("address_line2") or "").strip(),
-        "city": str(request.form.get("city") or anchor.ship_to_city or "").strip(),
-        "state": str(request.form.get("state") or "").strip(),
-        "postcode": str(request.form.get("postcode") or anchor.ship_to_postcode or "").strip(),
-        "country": str(
-            request.form.get("country")
-            or anchor.ship_to_country
-            or "GB"
-        ).strip().upper(),
-        "email": str(
-            request.form.get("email")
-            or anchor.ship_to_email
-            or ""
-        ).strip(),
-        "phone": str(
-            request.form.get("phone")
-            or anchor.ship_to_phone
-            or ""
-        ).strip(),
-    }
-    missing = [key for key in ("name", "address_line1", "city", "postcode", "country") if not address[key]]
+    submission_inputs = _resolve_mcf_submission_inputs(
+        anchor,
+        form_data=data,
+    )
+    address = submission_inputs["address"]
+    missing = submission_inputs["missing"]
     if missing:
         flash(f"Complete the delivery address before sending: {', '.join(missing)}.", "danger")
         return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
@@ -702,9 +905,7 @@ def send_order_to_mcf(order_id: int):
         if address["phone"]:
             line.ship_to_phone = address["phone"]
 
-    speed = str(request.form.get("shipping_speed") or "Standard").strip().title()
-    if speed not in {"Standard", "Expedited", "Priority"}:
-        speed = "Standard"
+    speed = submission_inputs["shipping_speed"]
 
     service = MCFService()
 
@@ -772,7 +973,7 @@ def send_order_to_mcf(order_id: int):
             ),
             currency="GBP",
             created_by_id=getattr(
-                current_user,
+                actor_user,
                 "id",
                 None,
             ),
@@ -877,7 +1078,55 @@ def send_order_to_mcf(order_id: int):
         db.session.commit()
         flash(f"Amazon accepted MCF, but eBay dispatch failed: {dispatch.get('error')}", "danger")
 
-    return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+    if auto_release:
+        return redirect(
+            url_for("governed_mcf.orders_mcf_page")
+        )
+
+    return redirect(
+        url_for(
+            "governed_mcf.order_mcf_detail_page",
+            order_id=anchor.id,
+        )
+    )
+
+
+@governed_mcf_bp.post(
+    "/governed/orders-mcf/<int:order_id>/send"
+)
+@login_required
+def send_order_to_mcf(order_id: int):
+    """HTTP adapter into the shared governed MCF submission process."""
+    auto_release = (
+        str(request.form.get("auto_release") or "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    result = run_governed_mcf_submission(
+        order_id,
+        auto_release=auto_release,
+        form_data=request.form,
+        actor_user=current_user,
+    )
+
+    flash(
+        result.get("message") or "MCF action completed.",
+        result.get("category") or "info",
+    )
+
+    target = result.get("redirect") or {}
+    endpoint = (
+        target.get("endpoint")
+        or "governed_mcf.order_mcf_detail_page"
+    )
+    kwargs = dict(target.get("kwargs") or {})
+
+    if endpoint.endswith("order_mcf_detail_page"):
+        kwargs.setdefault("order_id", order_id)
+
+    return redirect(url_for(endpoint, **kwargs))
 
 
 @governed_mcf_bp.post("/governed/orders-mcf/<int:order_id>/refresh")

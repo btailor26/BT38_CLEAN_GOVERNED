@@ -240,6 +240,10 @@
         );
 
         alert(result.message || 'Warehouse sync complete');
+
+        // Backend import has completed. Re-read the existing Warehouse route
+        // once so the rendered rows reflect the newly imported authority.
+        window.location.reload();
       } catch (err) {
         alert(err.message || 'Warehouse sync failed');
         console.error(err);

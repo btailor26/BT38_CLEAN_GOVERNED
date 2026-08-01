@@ -21,7 +21,7 @@ import logging
 import os
 import threading
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 _started = False
 _started_at = None
@@ -133,6 +133,28 @@ def _normalise_webhook_event(source, event=None, **identifiers):
         )
     )
 
+    requested_verify_after = raw.get("verify_after")
+
+    if isinstance(requested_verify_after, str):
+        try:
+            requested_verify_after = datetime.fromisoformat(
+                requested_verify_after.replace("Z", "+00:00")
+            )
+            if requested_verify_after.tzinfo is not None:
+                requested_verify_after = (
+                    requested_verify_after
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+        except (TypeError, ValueError):
+            requested_verify_after = None
+
+    if not isinstance(requested_verify_after, datetime):
+        requested_verify_after = (
+            datetime.utcnow()
+            + timedelta(seconds=LIGHT_RECONCILE_SECONDS)
+        )
+
     return {
         "source": _clean(source) or "webhook",
         "event_type": event_type,
@@ -149,7 +171,7 @@ def _normalise_webhook_event(source, event=None, **identifiers):
         "expected_quantity": expected_quantity,
         "payload": raw.get("payload"),
         "received_at": datetime.utcnow(),
-        "verify_after": datetime.utcnow() + timedelta(seconds=LIGHT_RECONCILE_SECONDS),
+        "verify_after": requested_verify_after,
         "scope_present": scope_present,
     }
 
@@ -432,6 +454,51 @@ def _verify_exact_listing(event):
     }
 
 
+def _execute_mcf_auto_release_event(event):
+    """Submit one exact due MCF order through the shared governed process."""
+    payload = dict(event.get("payload") or {})
+
+    marketplace_order_row_id = _safe_int(
+        payload.get("marketplace_order_row_id")
+    )
+
+    if marketplace_order_row_id is None:
+        return {
+            "success": False,
+            "verified": False,
+            "aligned": False,
+            "skipped": True,
+            "reason": "mcf_marketplace_order_row_id_required",
+            "database_touched": False,
+        }
+
+    from governed_mcf_routes import (
+        run_governed_mcf_submission,
+    )
+
+    result = run_governed_mcf_submission(
+        marketplace_order_row_id,
+        auto_release=True,
+        form_data={},
+        actor_user=None,
+    )
+
+    success = bool(result.get("success"))
+    skipped = bool(result.get("skipped"))
+
+    return {
+        **result,
+        "verified": True,
+        "aligned": success or skipped,
+        "event_type": "mcf_auto_release",
+        "database_touched": True,
+        "full_scan_started": False,
+        "recent_order_import_started": False,
+        "warehouse_scan_started": False,
+        "marketplace_hydration_started": False,
+    }
+
+
 def _verify_webhook_event(event):
     """Verify only the exact identity and alignment supplied by the webhook."""
     if not event.get("scope_present"):
@@ -500,7 +567,19 @@ def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
     global _last_light_reconcile, _last_verification_result
 
     events = list(events or [])
-    results = [_verify_webhook_event(event) for event in events]
+    results = []
+
+    for event in events:
+        event_type = str(
+            event.get("event_type") or ""
+        ).strip().lower()
+
+        if event_type == "mcf_auto_release":
+            result = _execute_mcf_auto_release_event(event)
+        else:
+            result = _verify_webhook_event(event)
+
+        results.append(result)
     _last_light_reconcile = datetime.utcnow()
     _last_verification_result = {
         "success": True,

@@ -25,6 +25,9 @@ def governed_group_unlink_listing_disabled(group_id: int):
     from extensions import db
     from models import MarketplaceListing, WarehouseStock
 
+    # All callers enter the same Warehouse-controlled process.
+    # HTTP pages pass request JSON through the thin adapter below.
+    # Webhooks and internal governed callers pass explicit event identity.
     body = dict(request.get_json(silent=True) or {})
     listing_id = body.get("listing_id")
     warehouse_stock_id = body.get("warehouse_stock_id")
@@ -89,8 +92,11 @@ def governed_group_unlink_listing_disabled(group_id: int):
 
 
 
-@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/propagate-quantity")
-def governed_group_propagate_quantity(group_id: int):
+def run_governed_group_propagation(
+    group_id: int,
+    *,
+    payload=None,
+):
     """Propagate warehouse truth quantity to pushable marketplace listings.
 
     Locked rules:
@@ -111,7 +117,7 @@ def governed_group_propagate_quantity(group_id: int):
     )
     from sqlalchemy import or_
 
-    body = dict(request.get_json(silent=True) or {})
+    body = dict(payload or {})
     dry_run = bool(body.get("dry_run", False))
     requested_quantity = body.get("quantity")
     requested_warehouse_stock_id = body.get("warehouse_stock_id")
@@ -456,6 +462,17 @@ def governed_group_propagate_quantity(group_id: int):
         "failed": failed,
         "results": results,
     }), 200 if failed == 0 else 400
+
+@governed_group_propagation_bp.post(
+    "/governed/groups/<int:group_id>/propagate-quantity"
+)
+def governed_group_propagate_quantity(group_id: int):
+    """Thin HTTP adapter into the shared Warehouse group process."""
+    return run_governed_group_propagation(
+        group_id,
+        payload=request.get_json(silent=True) or {},
+    )
+
 
 
 def _classify_listing(listing) -> dict:
