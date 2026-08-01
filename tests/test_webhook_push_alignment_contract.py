@@ -14,8 +14,15 @@ def _source(path):
 
 def test_existing_webhook_execution_still_auto_pushes():
     source = _source(WEBHOOK_PATH)
-    assert "push_group_listings(" in source
+
+    # Grouped notifications use the shared Warehouse authority path.
+    assert "run_governed_group_propagation(" in source
+    assert '"warehouse_stock_id": stock.id' in source
+    assert "push_group_listings(" not in source
+
+    # Ungrouped notifications retain the exact listing push path.
     assert "push_marketplace_listing(" in source
+
     assert "upsert_governed_marketplace_order_line(" in source
     assert "process_exact_marketplace_order_line(" in source
     assert "MarketplaceOrder(" not in source
