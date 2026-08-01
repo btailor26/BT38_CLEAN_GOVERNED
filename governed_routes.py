@@ -2322,6 +2322,7 @@ def governed_product_linking_data_compat():
 
     fba_qty_by_sku = {}
     fba_qty_by_fnsku = {}
+    fba_qty_by_stock_id = {}
 
     fba_skus = {
         str(getattr(listing, "external_sku", "") or "").strip()
@@ -2337,13 +2338,23 @@ def governed_product_linking_data_compat():
         and str(getattr(listing, "fnsku", "") or "").strip()
     }
 
-    if fba_skus or fba_fnskus:
+    fba_stock_ids = {
+        int(listing.warehouse_stock_id)
+        for listing in listing_rows
+        if is_read_only_fba_listing(listing)
+        and getattr(listing, "warehouse_stock_id", None)
+    }
+
+    if fba_skus or fba_fnskus or fba_stock_ids:
         fba_rows = (
             db.session.query(AmazonFBAInventory)
             .filter(
                 or_(
                     AmazonFBAInventory.seller_sku.in_(list(fba_skus) or ["__BT38_NO_SKU__"]),
                     AmazonFBAInventory.fnsku.in_(list(fba_fnskus) or ["__BT38_NO_FNSKU__"]),
+                    AmazonFBAInventory.warehouse_stock_id.in_(
+                        list(fba_stock_ids) or [-1]
+                    ),
                 )
             )
             .all()
@@ -2355,6 +2366,8 @@ def governed_product_linking_data_compat():
                 fba_qty_by_sku[str(row.seller_sku).strip()] = qty
             if getattr(row, "fnsku", None):
                 fba_qty_by_fnsku[str(row.fnsku).strip()] = qty
+            if getattr(row, "warehouse_stock_id", None):
+                fba_qty_by_stock_id[int(row.warehouse_stock_id)] = qty
 
     listings_by_stock = {}
     unlinked_listings = []
@@ -2369,6 +2382,13 @@ def governed_product_linking_data_compat():
             fba_available_quantity = fba_qty_by_sku.get(listing_sku)
             if fba_available_quantity is None:
                 fba_available_quantity = fba_qty_by_fnsku.get(listing_fnsku)
+            if (
+                fba_available_quantity is None
+                and getattr(listing, "warehouse_stock_id", None)
+            ):
+                fba_available_quantity = fba_qty_by_stock_id.get(
+                    int(listing.warehouse_stock_id)
+                )
 
         listing_platform = listing.store.platform if listing.store else getattr(listing, "platform", "")
         listing_channel = str(getattr(listing, "normalized_amazon_fulfillment_channel", None) or listing.amazon_fulfillment_channel or "").upper()
