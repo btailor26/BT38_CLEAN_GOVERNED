@@ -373,6 +373,8 @@ def ensure_ebay_order_notification_registration(
     now = datetime.utcnow().isoformat()
 
     creds.update({
+        "ebay_notification_registration_status": "SUCCESS",
+        "ebay_notification_registration_error": None,
         "ebay_notification_endpoint": endpoint,
         "ebay_notification_destination_id": destination_id,
         "ebay_notification_destination_name": destination_name,

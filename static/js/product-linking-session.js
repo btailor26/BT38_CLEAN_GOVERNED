@@ -409,6 +409,40 @@
   window.bt38RefreshProductLinkingRecord = refreshAffectedRecord;
   window.bt38ApplyProductLinkingMutation = applyMutationContract;
 
+  window.bt38InvalidateProductLinkingSnapshot = async function () {
+    state.fullLoadedAt = 0;
+    state.hydrated = false;
+    state.hydrating = null;
+
+    try {
+      const database = await openCacheDatabase();
+      if (database) {
+        await new Promise((resolve, reject) => {
+          const transaction = database.transaction(
+            CACHE_STORE_NAME,
+            "readwrite"
+          );
+          transaction.objectStore(CACHE_STORE_NAME).delete(CACHE_KEY);
+          transaction.oncomplete = () => {
+            database.close();
+            resolve();
+          };
+          transaction.onerror = () => reject(
+            transaction.error
+            || new Error("Unable to invalidate Product Linking cache")
+          );
+        });
+      }
+    } catch (error) {
+      console.warn(
+        "[ProductLinkingSession] cache invalidation unavailable",
+        error
+      );
+    }
+
+    return hydrate();
+  };
+
   window.filterFlatListings = function () {
     const search = String(document.getElementById("modalListingSearch")?.value || "").trim().toLowerCase();
     const linkable = typeof getLinkableListings === "function" ? getLinkableListings(currentWarehouseId) : state.unlinked;

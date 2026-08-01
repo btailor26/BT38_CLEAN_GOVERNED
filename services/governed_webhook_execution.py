@@ -169,12 +169,20 @@ def process_marketplace_notification(
             business_event=business_event,
             reason="Grouped sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing group correction path.",
             payload=payload,
+            store_id=getattr(listing, "store_id", None),
             listing_id=listing.id,
             warehouse_stock_id=stock.id,
             group_id=int(group_id),
+            seller_sku=(
+                getattr(listing, "external_sku", None)
+                or getattr(stock, "sku", None)
+            ),
             group_context=group_context,
             before_qty=before_qty,
             after_qty=int(getattr(stock, "available_quantity", 0) or 0),
+            expected_quantity=int(
+                getattr(stock, "available_quantity", 0) or 0
+            ),
             stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
             correction_started=True,
             order_id=order_intake.get("marketplace_order_id"),
@@ -197,10 +205,18 @@ def process_marketplace_notification(
         business_event=business_event,
         reason="Sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing listing correction path.",
         payload=payload,
+        store_id=getattr(listing, "store_id", None),
         listing_id=listing.id,
         warehouse_stock_id=stock.id,
+        seller_sku=(
+            getattr(listing, "external_sku", None)
+            or getattr(stock, "sku", None)
+        ),
         before_qty=before_qty,
         after_qty=int(getattr(stock, "available_quantity", 0) or 0),
+        expected_quantity=int(
+            getattr(stock, "available_quantity", 0) or 0
+        ),
         stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
         correction_started=True,
         order_id=order_intake.get("marketplace_order_id"),

@@ -1057,6 +1057,162 @@ def governed_marketplace_webhook_intake(marketplace):
             notification_record_id=notification_record_id,
         )
 
+        # Event-transfer alignment:
+        #
+        # The webhook does not push listings and does not become a second
+        # stock authority.
+        #
+        #   changed   -> transfer the exact Warehouse/group identity into the
+        #                existing Warehouse refresh/verification path
+        #   unchanged -> no refresh, no push, no queue, sleep
+        #
+        # Warehouse remains the quantity authority.
+        # Product Linking remains the relationship/shortcut layer.
+        # The existing Warehouse-controlled group path decides marketplace push.
+        stock_changed = bool(
+            notification_result.get("stock_changed", False)
+        )
+        changed_group_id = notification_result.get("group_id")
+        changed_warehouse_stock_id = notification_result.get(
+            "warehouse_stock_id"
+        )
+
+        refresh_required = bool(
+            stock_changed
+            and changed_warehouse_stock_id is not None
+        )
+
+        notification_result["page_refresh_required"] = refresh_required
+        notification_result["warehouse_refresh_required"] = refresh_required
+        notification_result["refresh_scope"] = (
+            {
+                "warehouse_stock_id": changed_warehouse_stock_id,
+                "group_id": changed_group_id,
+                "seller_sku": notification_result.get("seller_sku"),
+                "listing_id": notification_result.get("listing_id"),
+                "expected_quantity": notification_result.get(
+                    "expected_quantity"
+                ),
+            }
+            if refresh_required
+            else None
+        )
+
+        warehouse_refresh_result = {
+            "success": True,
+            "skipped": True,
+            "reason": "quantity_unchanged_sleep",
+            "warehouse_stock_id": changed_warehouse_stock_id,
+            "group_id": changed_group_id,
+        }
+
+        if refresh_required and changed_group_id is not None:
+            # Enter the existing Warehouse-controlled propagation path.
+            #
+            # This is not the Product Linking push shortcut and it does not
+            # call push_group_listings directly. The Warehouse/group path
+            # resolves authority quantity, refreshes the group and updates
+            # only writable linked marketplace listings.
+            from governed_group_propagation_routes import (
+                run_governed_group_propagation,
+            )
+
+            warehouse_response = run_governed_group_propagation(
+                int(changed_group_id),
+                payload={
+                    "warehouse_stock_id": changed_warehouse_stock_id,
+                },
+            )
+
+            response_object = warehouse_response
+            response_status = 200
+
+            if isinstance(warehouse_response, tuple):
+                response_object = warehouse_response[0]
+                if len(warehouse_response) > 1:
+                    response_status = int(warehouse_response[1])
+
+            if hasattr(response_object, "get_json"):
+                response_payload = response_object.get_json(silent=True)
+            else:
+                response_payload = response_object
+
+            warehouse_refresh_result = {
+                "success": 200 <= response_status < 300,
+                "status_code": response_status,
+                "warehouse_stock_id": changed_warehouse_stock_id,
+                "group_id": changed_group_id,
+                "result": response_payload,
+            }
+
+            notification_result["refresh_status"] = (
+                "warehouse_group_refreshed"
+                if warehouse_refresh_result["success"]
+                else "warehouse_group_refresh_failed"
+            )
+        else:
+            notification_result["refresh_status"] = (
+                "quantity_unchanged_sleep"
+                if not refresh_required
+                else "ungrouped_warehouse_refresh_only"
+            )
+
+        notification_result["warehouse_refresh_result"] = (
+            warehouse_refresh_result
+        )
+
+        verification_queue_result = None
+
+        exact_scope = {
+            "event_type": notification_result.get("event_type"),
+            "marketplace": platform,
+            "store_id": notification_result.get("store_id"),
+            "seller_sku": notification_result.get("seller_sku"),
+            "listing_id": notification_result.get("listing_id"),
+            "order_id": notification_result.get("order_id"),
+            "warehouse_stock_id": notification_result.get(
+                "warehouse_stock_id"
+            ),
+            "group_id": notification_result.get("group_id"),
+            "expected_quantity": notification_result.get(
+                "expected_quantity"
+            ),
+            "payload": payload,
+        }
+
+        exact_scope = {
+            key: value
+            for key, value in exact_scope.items()
+            if value is not None
+        }
+
+        if (
+            stock_changed
+            and exact_scope.get("store_id") is not None
+            and any(
+                exact_scope.get(key) is not None
+                for key in (
+                    "seller_sku",
+                    "listing_id",
+                    "order_id",
+                    "warehouse_stock_id",
+                    "group_id",
+                )
+            )
+        ):
+            from services.governed_runtime_engine import (
+                notify_governed_runtime_work,
+            )
+
+            verification_queue_result = notify_governed_runtime_work(
+                source=f"webhook_{platform}",
+                event=exact_scope,
+            )
+
+        notification_result["verification_queue"] = (
+            verification_queue_result
+        )
+
         mark_notification_status(
             platform,
             notification_record_id,
@@ -2058,33 +2214,21 @@ def _patch_warehouse_phase1_ui(html: str, stats, search_query: str, active_view:
   }}
 
   function loadRuntimeOverlay() {{
-    fetch('/governed/warehouse/runtime-state')
+    // Runtime-state is heartbeat/fuse visibility only.
+    // It is not a warehouse-row data endpoint.
+    fetch('/governed/warehouse/runtime-state', {{
+      credentials: 'same-origin',
+      cache: 'no-store'
+    }})
       .then(r => r.json())
       .then(data => {{
-        if (!data || !Array.isArray(data.rows)) return;
-
-        injectWarehouseAttentionBox(data.rows);
-
-        const byListing = new Map();
-        const byStock = new Map();
-
-        data.rows.forEach(state => {{
-          if (state.listing_id) byListing.set(String(state.listing_id), state);
-          if (state.warehouse_stock_id) byStock.set(String(state.warehouse_stock_id), state);
-        }});
-
-        document.querySelectorAll('tr[data-stock-id], tr[data-listing-id]').forEach(row => {{
-          const listingId = row.dataset.listingId || '';
-          const stockId = row.dataset.stockId || '';
-
-          const state =
-            (listingId && byListing.get(String(listingId))) ||
-            (stockId && byStock.get(String(stockId)));
-
-          applyRuntimeState(row, state);
-        }});
+        if (!data || data.mode !== 'heartbeat') return;
+        document.documentElement.dataset.bt38RuntimeAlive =
+          data.ok === true ? 'true' : 'false';
       }})
-      .catch(() => console.warn('Governed runtime overlay unavailable'));
+      .catch(() => {{
+        document.documentElement.dataset.bt38RuntimeAlive = 'false';
+      }});
   }}
 
   document.addEventListener('DOMContentLoaded', function() {{
@@ -2271,6 +2415,7 @@ def governed_product_linking_data_compat():
 
     fba_qty_by_sku = {}
     fba_qty_by_fnsku = {}
+    fba_qty_by_stock_id = {}
 
     fba_skus = {
         str(getattr(listing, "external_sku", "") or "").strip()
@@ -2286,13 +2431,23 @@ def governed_product_linking_data_compat():
         and str(getattr(listing, "fnsku", "") or "").strip()
     }
 
-    if fba_skus or fba_fnskus:
+    fba_stock_ids = {
+        int(listing.warehouse_stock_id)
+        for listing in listing_rows
+        if bool(getattr(listing, "is_fba", False))
+        and getattr(listing, "warehouse_stock_id", None)
+    }
+
+    if fba_skus or fba_fnskus or fba_stock_ids:
         fba_rows = (
             db.session.query(AmazonFBAInventory)
             .filter(
                 or_(
                     AmazonFBAInventory.seller_sku.in_(list(fba_skus) or ["__BT38_NO_SKU__"]),
                     AmazonFBAInventory.fnsku.in_(list(fba_fnskus) or ["__BT38_NO_FNSKU__"]),
+                    AmazonFBAInventory.warehouse_stock_id.in_(
+                        list(fba_stock_ids) or [-1]
+                    ),
                 )
             )
             .all()
@@ -2304,6 +2459,8 @@ def governed_product_linking_data_compat():
                 fba_qty_by_sku[str(row.seller_sku).strip()] = qty
             if getattr(row, "fnsku", None):
                 fba_qty_by_fnsku[str(row.fnsku).strip()] = qty
+            if getattr(row, "warehouse_stock_id", None):
+                fba_qty_by_stock_id[int(row.warehouse_stock_id)] = qty
 
     listings_by_stock = {}
     unlinked_listings = []
@@ -2318,6 +2475,13 @@ def governed_product_linking_data_compat():
             fba_available_quantity = fba_qty_by_sku.get(listing_sku)
             if fba_available_quantity is None:
                 fba_available_quantity = fba_qty_by_fnsku.get(listing_fnsku)
+            if (
+                fba_available_quantity is None
+                and getattr(listing, "warehouse_stock_id", None)
+            ):
+                fba_available_quantity = fba_qty_by_stock_id.get(
+                    int(listing.warehouse_stock_id)
+                )
 
         listing_platform = listing.store.platform if listing.store else getattr(listing, "platform", "")
         listing_channel = str(getattr(listing, "normalized_amazon_fulfillment_channel", None) or listing.amazon_fulfillment_channel or "").upper()
@@ -3647,8 +3811,11 @@ def governed_disabled_action(action: str = ""):
         group = ensure_group_for_stock(stock)
         db.session.commit()
 
-        from governed_group_propagation_routes import governed_group_propagate_quantity
-        return governed_group_propagate_quantity(group.id)
+        from governed_group_propagation_routes import run_governed_group_propagation
+        return run_governed_group_propagation(
+            group.id,
+            payload=body,
+        )
 
     if action == "link-listing-to-warehouse" and request.method == "POST":
         listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
@@ -5249,23 +5416,70 @@ def governed_runtime_understanding_audit():
 # ==============================
 @governed_bp.post("/governed/actions/import/orders")
 def governed_import_handler():
+    """
+    Explicit Warehouse import action.
+
+    This action performs both real marketplace imports:
+
+    1. Marketplace inventory refresh:
+       - Amazon FBA/AFN -> AmazonFBAInventory
+       - eBay inventory -> governed eBay inventory records
+
+    2. Marketplace order import:
+       - Amazon/eBay orders -> MarketplaceOrder
+       - exact FBM/eBay warehouse mutation only
+       - FBA orders remain read-only and never overwrite FBA inventory
+
+    This route runs only from an explicit user action. It is not part of the
+    idle 15-minute verification loop.
+    """
     try:
-        from services.governed_marketplace_order_import import run_governed_marketplace_order_import
+        from services.governed_runtime_engine import (
+            run_governed_marketplace_import_refresh,
+        )
+        from services.governed_marketplace_order_import import (
+            run_governed_marketplace_order_import,
+        )
+
+        inventory_result = run_governed_marketplace_import_refresh(
+            source="warehouse_sync_button_inventory",
+        )
 
         order_result = run_governed_marketplace_order_import(
-            source="warehouse_sync_button",
+            source="warehouse_sync_button_orders",
+        )
+
+        inventory_success = bool(
+            isinstance(inventory_result, dict)
+            and inventory_result.get("success", True)
+        )
+        order_success = bool(
+            isinstance(order_result, dict)
+            and order_result.get("success", True)
         )
 
         return jsonify({
-            "status": "success",
+            "status": (
+                "success"
+                if inventory_success and order_success
+                else "partial"
+            ),
+            "success": inventory_success and order_success,
+            "governed": True,
             "warehouse_source": True,
+            "explicit_import": True,
+            "idle_runtime_unchanged": True,
+            "inventory": inventory_result,
             "orders": order_result,
         }), 200
 
-    except Exception as e:
+    except Exception as exc:
         return jsonify({
             "status": "failed",
+            "success": False,
+            "governed": True,
             "warehouse_source": True,
-            "error": str(e),
+            "explicit_import": True,
+            "error": str(exc),
         }), 500
 
