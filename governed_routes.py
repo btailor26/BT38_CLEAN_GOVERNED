@@ -5320,23 +5320,70 @@ def governed_runtime_understanding_audit():
 # ==============================
 @governed_bp.post("/governed/actions/import/orders")
 def governed_import_handler():
+    """
+    Explicit Warehouse import action.
+
+    This action performs both real marketplace imports:
+
+    1. Marketplace inventory refresh:
+       - Amazon FBA/AFN -> AmazonFBAInventory
+       - eBay inventory -> governed eBay inventory records
+
+    2. Marketplace order import:
+       - Amazon/eBay orders -> MarketplaceOrder
+       - exact FBM/eBay warehouse mutation only
+       - FBA orders remain read-only and never overwrite FBA inventory
+
+    This route runs only from an explicit user action. It is not part of the
+    idle 15-minute verification loop.
+    """
     try:
-        from services.governed_marketplace_order_import import run_governed_marketplace_order_import
+        from services.governed_runtime_engine import (
+            run_governed_marketplace_import_refresh,
+        )
+        from services.governed_marketplace_order_import import (
+            run_governed_marketplace_order_import,
+        )
+
+        inventory_result = run_governed_marketplace_import_refresh(
+            source="warehouse_sync_button_inventory",
+        )
 
         order_result = run_governed_marketplace_order_import(
-            source="warehouse_sync_button",
+            source="warehouse_sync_button_orders",
+        )
+
+        inventory_success = bool(
+            isinstance(inventory_result, dict)
+            and inventory_result.get("success", True)
+        )
+        order_success = bool(
+            isinstance(order_result, dict)
+            and order_result.get("success", True)
         )
 
         return jsonify({
-            "status": "success",
+            "status": (
+                "success"
+                if inventory_success and order_success
+                else "partial"
+            ),
+            "success": inventory_success and order_success,
+            "governed": True,
             "warehouse_source": True,
+            "explicit_import": True,
+            "idle_runtime_unchanged": True,
+            "inventory": inventory_result,
             "orders": order_result,
         }), 200
 
-    except Exception as e:
+    except Exception as exc:
         return jsonify({
             "status": "failed",
+            "success": False,
+            "governed": True,
             "warehouse_source": True,
-            "error": str(e),
+            "explicit_import": True,
+            "error": str(exc),
         }), 500
 

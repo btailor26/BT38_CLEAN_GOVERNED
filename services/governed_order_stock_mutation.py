@@ -16,12 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from app import db
-from models import (
-    AmazonFBAInventory,
-    MarketplaceListing,
-    WarehouseStock,
-    StockLedgerEntry,
-)
+from models import MarketplaceListing, WarehouseStock, StockLedgerEntry
 
 
 SALE_TYPES = {"order", "processed", "fulfilled", "shipped"}
@@ -336,120 +331,9 @@ def process_exact_marketplace_order_line(
     ).upper()
 
     if fulfillment in {"FBA", "AFN"}:
-        # Amazon remains the inventory authority for FBA.
-        #
-        # Align only the exact FBA authority row associated with this order.
-        # The active AFN/FBA listing already contains Amazon's imported
-        # marketplace quantity. Copy that value into AmazonFBAInventory so:
-        #
-        #   FBA Read Only
-        #   Master Stock
-        #   Product Linking
-        #
-        # all read the same persisted FBA authority.
-        #
-        # WarehouseStock is never decremented for FBA/AFN.
-        stock_id = getattr(line, "warehouse_stock_id", None)
-        seller_sku = _text(getattr(line, "sku", None))
-
-        listing_query = MarketplaceListing.query.filter(
-            MarketplaceListing.is_active == True,  # noqa: E712
-        )
-
-        if stock_id:
-            listing_query = listing_query.filter(
-                MarketplaceListing.warehouse_stock_id == stock_id,
-            )
-        elif seller_sku:
-            listing_query = listing_query.filter(
-                MarketplaceListing.external_sku == seller_sku,
-            )
-        else:
-            listing_query = listing_query.filter(
-                MarketplaceListing.id == -1,
-            )
-
-        listing = (
-            listing_query
-            .order_by(MarketplaceListing.id.desc())
-            .first()
-        )
-
-        fba_row = None
-        authoritative_quantity = None
-        fba_quantity_changed = False
-        fba_quantity_before = None
-        fba_quantity_after = None
-
-        if listing is not None:
-            channel = _text(
-                getattr(
-                    listing,
-                    "normalized_amazon_fulfillment_channel",
-                    None,
-                )
-                or getattr(
-                    listing,
-                    "amazon_fulfillment_channel",
-                    None,
-                )
-            ).upper()
-
-            if (
-                bool(getattr(listing, "is_fba", False))
-                or channel in {"FBA", "AFN"}
-            ):
-                raw_quantity = getattr(
-                    listing,
-                    "effective_quantity",
-                    None,
-                )
-
-                if raw_quantity is not None:
-                    authoritative_quantity = _safe_int(raw_quantity)
-
-                fba_query = AmazonFBAInventory.query
-
-                if stock_id:
-                    fba_query = fba_query.filter(
-                        AmazonFBAInventory.warehouse_stock_id
-                        == stock_id,
-                    )
-                elif seller_sku:
-                    fba_query = fba_query.filter(
-                        AmazonFBAInventory.seller_sku
-                        == seller_sku,
-                    )
-                else:
-                    fba_query = fba_query.filter(
-                        AmazonFBAInventory.id == -1,
-                    )
-
-                fba_row = (
-                    fba_query
-                    .filter(
-                        AmazonFBAInventory.is_archived == False,  # noqa: E712
-                    )
-                    .order_by(AmazonFBAInventory.id.desc())
-                    .first()
-                )
-
-        if fba_row is not None and authoritative_quantity is not None:
-            fba_quantity_before = _safe_int(
-                getattr(fba_row, "available_quantity", 0)
-            )
-            fba_quantity_after = authoritative_quantity
-
-            if fba_quantity_before != fba_quantity_after:
-                fba_row.available_quantity = fba_quantity_after
-                fba_quantity_changed = True
-
-                if hasattr(fba_row, "updated_at"):
-                    fba_row.updated_at = datetime.utcnow()
-
-                if hasattr(fba_row, "last_sync_status"):
-                    fba_row.last_sync_status = "success"
-
+        # Amazon remains the inventory authority for FBA. The sale is recorded
+        # and completed through the same MarketplaceOrder path, but local
+        # warehouse stock is not independently decremented.
         line.status = "processed"
         line.processed_at = datetime.utcnow()
 
@@ -466,15 +350,7 @@ def process_exact_marketplace_order_line(
             "inventory_authority": "AmazonFBAInventory",
             "fulfillment_type": fulfillment,
             "order_id": getattr(line, "marketplace_order_id", None),
-            "warehouse_stock_id": stock_id,
-            "fba_inventory_id": (
-                getattr(fba_row, "id", None)
-                if fba_row is not None
-                else None
-            ),
-            "fba_quantity_changed": fba_quantity_changed,
-            "fba_quantity_before": fba_quantity_before,
-            "fba_quantity_after": fba_quantity_after,
+            "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
         }
 
     # FBM and eBay use the existing idempotent warehouse mutation.
