@@ -30,7 +30,7 @@ def process_marketplace_notification(
 ) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing
-    from services.governed_push_execution import push_group_listings, push_marketplace_listing
+    from services.governed_push_execution import push_marketplace_listing
 
     payload = dict(payload or {})
 
@@ -155,11 +155,55 @@ def process_marketplace_notification(
                 group_context=group_context,
             )
 
-        push_result = push_group_listings(
-            group_id=int(group_id),
-            actor=actor,
-            source=f"webhook_{marketplace}_group_notification",
-            actor_user=None,
+        from governed_group_propagation_routes import (
+            run_governed_group_propagation,
+        )
+
+        propagation_response = run_governed_group_propagation(
+            int(group_id),
+            payload={
+                "warehouse_stock_id": stock.id,
+                "source": (
+                    f"webhook_{marketplace}_"
+                    "warehouse_group_refresh"
+                ),
+                "dry_run": False,
+            },
+        )
+
+        propagation_status = 200
+        response_object = propagation_response
+
+        if isinstance(propagation_response, tuple):
+            response_object = propagation_response[0]
+
+            if len(propagation_response) > 1:
+                propagation_status = int(
+                    propagation_response[1] or 200
+                )
+
+        if hasattr(response_object, "get_json"):
+            push_result = (
+                response_object.get_json(silent=True)
+                or {}
+            )
+        elif isinstance(response_object, dict):
+            push_result = dict(response_object)
+        else:
+            push_result = {
+                "success": False,
+                "reason": (
+                    "group_propagation_returned_"
+                    "unsupported_result"
+                ),
+                "result_type": type(
+                    response_object
+                ).__name__,
+            }
+
+        push_result.setdefault(
+            "http_status",
+            propagation_status,
         )
 
         return _log_result(
@@ -167,7 +211,12 @@ def process_marketplace_notification(
             marketplace=marketplace,
             event_type=event_type,
             business_event=business_event,
-            reason="Grouped sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing group correction path.",
+            reason=(
+                "Grouped sale notification created MarketplaceOrder, "
+                "processed the exact order mutation, refreshed the group "
+                "from Warehouse/FBA authority, skipped read-only FBA, "
+                "and pushed writable group children."
+            ),
             payload=payload,
             store_id=getattr(listing, "store_id", None),
             listing_id=listing.id,
