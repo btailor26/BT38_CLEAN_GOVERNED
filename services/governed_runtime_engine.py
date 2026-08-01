@@ -15,6 +15,8 @@ Runtime contract:
 
 from __future__ import annotations
 
+import json
+
 import logging
 import os
 import threading
@@ -49,6 +51,11 @@ _pending_notification_event = threading.Event()
 _stop_event = threading.Event()
 _pending_events = deque()
 _pending_events_lock = threading.Lock()
+
+# Amazon SQS is transport only. Each message is handed to the existing
+# governed Amazon webhook intake and does not create another execution path.
+_amazon_sqs_client = None
+_amazon_sqs_queue_url = None
 
 
 def _truthy(value, default=False):
@@ -522,25 +529,211 @@ def _run_full_sync_cycle():
     _last_full_sync = datetime.utcnow()
 
 
+def _amazon_sqs_consumer_enabled() -> bool:
+    if not _truthy(os.getenv("ENABLE_AMAZON_SQS_CONSUMER", "true"), True):
+        return False
+
+    return bool(
+        _clean(os.getenv("AMAZON_SQS_QUEUE_URL"))
+        or _clean(os.getenv("AMAZON_SQS_QUEUE_NAME"))
+    )
+
+def _amazon_sqs_connection():
+    """Resolve and cache the configured Amazon notification SQS queue."""
+    global _amazon_sqs_client, _amazon_sqs_queue_url
+
+    if _amazon_sqs_client is not None and _amazon_sqs_queue_url:
+        return _amazon_sqs_client, _amazon_sqs_queue_url
+
+    import boto3
+
+    region = (
+        _clean(os.getenv("AWS_REGION"))
+        or _clean(os.getenv("AWS_DEFAULT_REGION"))
+        or "eu-west-2"
+    )
+
+    client = boto3.client("sqs", region_name=region)
+    queue_url = _clean(os.getenv("AMAZON_SQS_QUEUE_URL"))
+
+    if not queue_url:
+        queue_name = _clean(os.getenv("AMAZON_SQS_QUEUE_NAME"))
+        if not queue_name:
+            raise RuntimeError(
+                "AMAZON_SQS_QUEUE_URL or AMAZON_SQS_QUEUE_NAME is required"
+            )
+
+        queue_url = client.get_queue_url(
+            QueueName=queue_name,
+        )["QueueUrl"]
+
+    _amazon_sqs_client = client
+    _amazon_sqs_queue_url = queue_url
+    return client, queue_url
+
+def _amazon_sqs_message_payload(message: dict) -> dict:
+    body = message.get("Body") or ""
+
+    try:
+        decoded = json.loads(body)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Amazon SQS message body is not valid JSON") from exc
+
+    if not isinstance(decoded, dict):
+        raise ValueError("Amazon SQS message body must decode to a JSON object")
+
+    return decoded
+
+def _send_amazon_sqs_message_to_governed_intake(app, payload: dict) -> dict:
+    """
+    Transport bridge only:
+
+    SQS -> existing governed_marketplace_webhook_intake("amazon")
+
+    The existing route remains the single authority for capture, fuse checks,
+    processing, stock mutation and correction.
+    """
+    from governed_routes import governed_marketplace_webhook_intake
+
+    with app.test_request_context(
+        "/governed/webhooks/amazon",
+        method="POST",
+        json=payload,
+        headers={
+            "X-BT38-Notification-Transport": "amazon_sqs",
+        },
+    ):
+        result = governed_marketplace_webhook_intake("amazon")
+
+    if isinstance(result, tuple):
+        response = result[0]
+        status_code = int(result[1])
+    else:
+        response = result
+        status_code = int(getattr(response, "status_code", 200))
+
+    response_payload = None
+    if hasattr(response, "get_json"):
+        response_payload = response.get_json(silent=True)
+
+    return {
+        "success": 200 <= status_code < 300,
+        "status_code": status_code,
+        "response": response_payload,
+    }
+
+def _poll_amazon_sqs_once(app, wait_seconds: int = 20) -> dict:
+    """
+    Long-poll Amazon SQS without touching Neon while the queue is empty.
+
+    A message is deleted only after the existing governed intake returns a
+    successful HTTP status. Failed messages remain in SQS for retry/DLQ policy.
+    """
+    if not _amazon_sqs_consumer_enabled():
+        return {
+            "enabled": False,
+            "received": 0,
+            "deleted": 0,
+            "failed": 0,
+        }
+
+    client, queue_url = _amazon_sqs_connection()
+
+    response = client.receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=10,
+        WaitTimeSeconds=max(0, min(int(wait_seconds), 20)),
+        VisibilityTimeout=120,
+        MessageAttributeNames=["All"],
+        AttributeNames=["All"],
+    )
+
+    messages = list(response.get("Messages") or [])
+    deleted = 0
+    failed = 0
+
+    for message in messages:
+        receipt_handle = message.get("ReceiptHandle")
+
+        try:
+            payload = _amazon_sqs_message_payload(message)
+            result = _send_amazon_sqs_message_to_governed_intake(
+                app,
+                payload,
+            )
+
+            if not result.get("success"):
+                raise RuntimeError(
+                    "Governed Amazon intake returned "
+                    f"HTTP {result.get('status_code')}: "
+                    f"{result.get('response')}"
+                )
+
+            if not receipt_handle:
+                raise RuntimeError("Amazon SQS receipt handle is missing")
+
+            client.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=receipt_handle,
+            )
+            deleted += 1
+
+        except Exception as exc:
+            failed += 1
+            _safe_error(
+                "Amazon SQS notification processing failed "
+                f"message_id={message.get('MessageId')}",
+                exc,
+            )
+
+    return {
+        "enabled": True,
+        "received": len(messages),
+        "deleted": deleted,
+        "failed": failed,
+    }
+
 def _engine_loop(app):
-    """Sleep in memory; verify queued webhook identities when their 15m timer is due."""
+    """
+    One governed runtime thread:
+
+    1. Long-poll Amazon SQS as transport only.
+    2. Send received messages through the existing governed webhook intake.
+    3. Run only due 15-minute exact-scope verification events.
+    4. Never scan Neon while idle.
+    """
     global _last_full_sync
 
     _safe_log("Webhook-scoped runtime loop started")
+
     hydration_enabled = _truthy(
         os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
         False,
     )
 
     while not _stop_event.is_set():
-        timeout = _seconds_until_next_due()
-        _pending_notification_event.wait(timeout=timeout)
-
-        if _stop_event.is_set():
-            break
-
-        due_events = _pop_due_events()
         try:
+            seconds_until_due = _seconds_until_next_due()
+
+            if _amazon_sqs_consumer_enabled():
+                sqs_wait = max(
+                    0,
+                    min(20, int(seconds_until_due)),
+                )
+                _poll_amazon_sqs_once(
+                    app,
+                    wait_seconds=sqs_wait,
+                )
+            else:
+                _pending_notification_event.wait(
+                    timeout=seconds_until_due,
+                )
+
+            if _stop_event.is_set():
+                break
+
+            due_events = _pop_due_events()
+
             if due_events:
                 with app.app_context():
                     _run_light_reconcile_cycle(events=due_events)
@@ -549,12 +742,17 @@ def _engine_loop(app):
                 now = datetime.utcnow()
                 if (
                     _last_full_sync is None
-                    or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS
+                    or (now - _last_full_sync).total_seconds()
+                    >= FULL_SYNC_SECONDS
                 ):
                     with app.app_context():
                         _run_full_sync_cycle()
+
         except Exception as exc:
             _safe_error("Engine loop error", exc)
+
+            # Prevent a failed AWS connection from creating a tight loop.
+            _stop_event.wait(timeout=30)
 
     _safe_log("Webhook-scoped runtime loop stopped")
 
