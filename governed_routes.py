@@ -2341,7 +2341,7 @@ def governed_product_linking_data_compat():
     fba_stock_ids = {
         int(listing.warehouse_stock_id)
         for listing in listing_rows
-        if is_read_only_fba_listing(listing)
+        if bool(getattr(listing, "is_fba", False))
         and getattr(listing, "warehouse_stock_id", None)
     }
 
