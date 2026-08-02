@@ -467,12 +467,21 @@ def _classify_listing(listing) -> dict:
 
 
 def _actor() -> str:
+    from flask import has_request_context
+
     try:
         if current_user and current_user.is_authenticated:
             return f"user:{current_user.id}"
     except Exception:
         pass
-    return request.headers.get("X-Actor", "governed-group-propagation")
+
+    if not has_request_context():
+        return "governed-group-propagation"
+
+    return request.headers.get(
+        "X-Actor",
+        "governed-group-propagation",
+    )
 
 
 def _blocked(reason: str, **extra) -> dict:
