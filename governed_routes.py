@@ -1194,20 +1194,54 @@ def governed_marketplace_webhook_intake(marketplace):
             if value is not None
         }
 
-        if (
-            stock_changed
+        # Every exact Amazon AFN/FBA webhook must enter the same targeted
+        # verification path, even when Warehouse stock was not mutated.
+        #
+        # FBA remains read-only at webhook intake. Its exact Seller SKU is
+        # refreshed from Amazon later by the governed runtime. FBM/eBay retain
+        # the existing stock_changed requirement.
+        payload_change = (
+            payload.get("Payload", {})
+            .get("OrderChangeNotification", {})
+        )
+        payload_summary = payload_change.get("Summary", {})
+
+        fulfillment_type = str(
+            payload_summary.get("FulfillmentType")
+            or payload_summary.get("fulfillmentType")
+            or payload.get("fulfillment_type")
+            or payload.get("fulfillmentType")
+            or ""
+        ).strip().upper()
+
+        exact_fba_scope = bool(
+            str(platform or "").strip().lower() == "amazon"
+            and fulfillment_type in {"AFN", "FBA", "AMAZON"}
             and exact_scope.get("store_id") is not None
-            and any(
-                exact_scope.get(key) is not None
-                for key in (
-                    "seller_sku",
-                    "listing_id",
-                    "order_id",
-                    "warehouse_stock_id",
-                    "group_id",
-                )
+            and exact_scope.get("seller_sku")
+        )
+
+        exact_identity_present = any(
+            exact_scope.get(key) is not None
+            for key in (
+                "seller_sku",
+                "listing_id",
+                "order_id",
+                "warehouse_stock_id",
+                "group_id",
             )
-        ):
+        )
+
+        should_queue_verification = bool(
+            exact_scope.get("store_id") is not None
+            and exact_identity_present
+            and (
+                stock_changed
+                or exact_fba_scope
+            )
+        )
+
+        if should_queue_verification:
             from services.governed_runtime_engine import (
                 notify_governed_runtime_work,
             )
