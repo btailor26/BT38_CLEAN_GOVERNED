@@ -201,10 +201,31 @@ def upsert_governed_marketplace_order_line(
         getattr(store, "platform", "") or ""
     ).strip().lower()
 
+    cancelled_statuses = {
+        "cancelled",
+        "canceled",
+        "cancellation",
+        "cancel_requested",
+    }
+
+    order_status = str(
+        getattr(order, "status", "") or ""
+    ).strip().lower()
+
+    # Arm or re-arm the exact automatic MCF release whenever the canonical
+    # importer sees an eligible external order without an existing MCF record.
+    #
+    # This preserves the original server-controlled release time:
+    # MarketplaceOrder.created_at + one hour.
+    #
+    # Re-reading the order after a restart restores the process-memory event
+    # without creating another order, another queue table, or another MCF path.
     if (
-        created
-        and "amazon" not in platform
+        "amazon" not in platform
         and order.created_at is not None
+        and not getattr(order, "mcf_order_id", None)
+        and not bool(getattr(order, "mcf_queue_hidden", False))
+        and order_status not in cancelled_statuses
     ):
         from services.governed_runtime_engine import (
             notify_governed_runtime_work,

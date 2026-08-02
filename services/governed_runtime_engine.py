@@ -486,6 +486,14 @@ def _execute_mcf_auto_release_event(event):
     success = bool(result.get("success"))
     skipped = bool(result.get("skipped"))
 
+<<<<<<< HEAD
+=======
+    # A completed, cancelled, hidden, already-submitted, or permanently
+    # ineligible order may return skipped and must not be repeatedly submitted.
+    #
+    # A genuine automatic failure is re-armed for the same exact order only.
+    # No order scan, Warehouse scan, listing scan, or new MCF route is started.
+>>>>>>> 7099584 (Align automatic MCF release and exact-order retry)
     retry_count = _safe_int(
         payload.get("mcf_auto_retry_count"),
         0,
@@ -494,6 +502,7 @@ def _execute_mcf_auto_release_event(event):
     retry_queued = False
     retry_after = None
 
+<<<<<<< HEAD
     # Retry only genuine automatic failures for the same exact order.
     #
     # Skipped outcomes are terminal for this event. They cover conditions such
@@ -505,11 +514,24 @@ def _execute_mcf_auto_release_event(event):
         retry_payload = dict(payload)
         retry_payload["mcf_auto_retry_count"] = retry_count + 1
 
+=======
+    if not success and not skipped and retry_count < 3:
+        retry_after = datetime.utcnow() + timedelta(minutes=15)
+
+        retry_event = dict(event)
+        retry_payload = dict(payload)
+        retry_payload["mcf_auto_retry_count"] = retry_count + 1
+
+        retry_event["payload"] = retry_payload
+        retry_event["verify_after"] = retry_after
+
+>>>>>>> 7099584 (Align automatic MCF release and exact-order retry)
         notify_governed_runtime_work(
             source=(
                 event.get("source")
                 or "warehouse_mcf_one_hour_release"
             ),
+<<<<<<< HEAD
             event={
                 **event,
                 "verify_after": retry_after,
@@ -517,6 +539,10 @@ def _execute_mcf_auto_release_event(event):
             },
         )
 
+=======
+            event=retry_event,
+        )
+>>>>>>> 7099584 (Align automatic MCF release and exact-order retry)
         retry_queued = True
 
     return {
