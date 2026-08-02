@@ -852,6 +852,24 @@ def _recover_mcf_auto_release_events(app) -> dict:
                 continue
             seen_orders.add(order_key)
 
+            # Do not re-arm an order when any line already belongs to an MCF
+            # record. The initial bounded query filters individual rows, but
+            # completion authority belongs to the complete marketplace order.
+            completed_line = (
+                MarketplaceOrder.query
+                .filter(
+                    MarketplaceOrder.store_id == row.store_id,
+                    MarketplaceOrder.marketplace_order_id
+                    == row.marketplace_order_id,
+                    MarketplaceOrder.mcf_order_id.isnot(None),
+                )
+                .first()
+            )
+
+            if completed_line is not None:
+                skipped += 1
+                continue
+
             release_at = row.created_at + timedelta(hours=1)
 
             notify_governed_runtime_work(
