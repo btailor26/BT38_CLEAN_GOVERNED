@@ -308,8 +308,6 @@ def run_governed_amazon_inventory_import(
         query = query.filter(Store.id == store_id)
     stores = query.all()
     results = []
-    propagation_targets = {}
-    propagation_results = []
 
     for store in stores:
         rows = list(inventory_rows or [])
@@ -322,17 +320,6 @@ def run_governed_amazon_inventory_import(
             result = _apply_inventory_row(store, row)
             if result.get("updated"):
                 changed_rows.append(result)
-
-                group_id = result.get("group_id")
-                warehouse_stock_id = result.get(
-                    "warehouse_stock_id"
-                )
-
-                if group_id and warehouse_stock_id:
-                    propagation_targets[int(group_id)] = int(
-                        warehouse_stock_id
-                    )
-
             elif result.get("reason") == "unchanged":
                 unchanged_rows.append(result)
 
@@ -360,84 +347,10 @@ def run_governed_amazon_inventory_import(
             "updated_skus": [item["seller_sku"] for item in changed_rows],
             "warehouse_mutation": False,
             "relationship_mutation": False,
-            "group_propagation_requested": sorted({
-                int(item["group_id"])
-                for item in changed_rows
-                if item.get("group_id")
-                and item.get("warehouse_stock_id")
-            }),
         })
 
     if any(item["rows_updated"] for item in results) or full_refresh:
-        # Commit refreshed AmazonFBAInventory truth before the shared
-        # propagation path reads it.
         db.session.commit()
-
-        if propagation_targets:
-            from flask import current_app, has_request_context
-            from governed_group_propagation_routes import (
-                run_governed_group_propagation,
-            )
-
-            for group_id in sorted(propagation_targets):
-                warehouse_stock_id = propagation_targets[group_id]
-
-                payload = {
-                    "warehouse_stock_id": warehouse_stock_id,
-                    "source": (
-                        "amazon_fba_inventory_refresh_shared_handoff"
-                    ),
-                    "dry_run": False,
-                }
-
-                if has_request_context():
-                    response = run_governed_group_propagation(
-                        group_id,
-                        payload=payload,
-                    )
-                else:
-                    with current_app.test_request_context(
-                        headers={
-                            "X-Actor": (
-                                "amazon-fba-inventory-refresh"
-                            ),
-                        },
-                    ):
-                        response = run_governed_group_propagation(
-                            group_id,
-                            payload=payload,
-                        )
-
-                status_code = 200
-                response_object = response
-
-                if isinstance(response, tuple):
-                    response_object = response[0]
-
-                    if len(response) > 1:
-                        status_code = int(response[1] or 200)
-
-                if hasattr(response_object, "get_json"):
-                    response_body = (
-                        response_object.get_json(silent=True)
-                        or {}
-                    )
-                elif isinstance(response_object, dict):
-                    response_body = dict(response_object)
-                else:
-                    response_body = {
-                        "success": False,
-                        "reason": (
-                            "unsupported_group_propagation_response"
-                        ),
-                    }
-
-                propagation_results.append({
-                    "group_id": group_id,
-                    "warehouse_stock_id": warehouse_stock_id,
-                    "http_status": status_code,
-                    "result": response_body,
-                })
     else:
         db.session.rollback()
 
@@ -448,14 +361,9 @@ def run_governed_amazon_inventory_import(
         "truth_source": "AmazonFBAInventory",
         "targeted": not full_refresh,
         "full_scan_started": bool(full_refresh),
-        "warehouse_mutation": any(
-            item.get("http_status", 500) < 400
-            and bool(item.get("result", {}).get("success"))
-            for item in propagation_results
-        ),
+        "warehouse_mutation": False,
         "relationship_mutation": False,
         "created_marketplace_listings": 0,
         "created_warehouse_stock": 0,
-        "group_propagation": propagation_results,
         "results": results,
     }
