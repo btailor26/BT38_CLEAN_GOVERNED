@@ -82,9 +82,14 @@ class AmazonSPAPIAdapter:
             credentials=credentials,
         )
 
-    def get_inventory(self):
+    def get_inventory(self, seller_skus=None):
 
         rows = []
+        seller_skus = [
+            str(sku).strip()
+            for sku in (seller_skus or [])
+            if str(sku or "").strip()
+        ]
         next_token = None
         page_count = 0
         max_pages = int(os.getenv("AMAZON_INVENTORY_MAX_PAGES", "200"))
@@ -99,6 +104,9 @@ class AmazonSPAPIAdapter:
                 "granularityType": "Marketplace",
                 "granularityId": (self.creds.get("marketplace_id") or "A1F83G8C2ARO7P"),
             }
+
+            if seller_skus:
+                kwargs["sellerSkus"] = seller_skus[:50]
 
             if next_token:
                 kwargs["nextToken"] = next_token

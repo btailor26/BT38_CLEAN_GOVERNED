@@ -387,35 +387,116 @@ def _verify_exact_order(event):
 
 
 def _verify_exact_fba(event):
-    from models import AmazonFBAInventory
+    """Refresh and verify one exact Amazon FBA seller SKU only."""
+    from extensions import db
+    from models import Store
+    from backend.adapters.amazon_sp_api_adapter import AmazonSPAPIAdapter
+    from services.governed_amazon_inventory_import import (
+        apply_governed_amazon_fba_event,
+    )
 
-    query = AmazonFBAInventory.query
-    identity = None
-    identity_field = None
+    seller_sku = _clean(event.get("seller_sku"))
+    store_id = _safe_int(event.get("store_id"))
 
-    for field, value in (
-        ("seller_sku", event.get("seller_sku")),
-        ("fnsku", event.get("fnsku")),
-        ("asin", event.get("asin")),
+    if not seller_sku or store_id is None:
+        return {
+            "verified": False,
+            "reason": "exact_fba_store_and_seller_sku_required",
+            "full_scan_started": False,
+        }
+
+    store = (
+        Store.query
+        .filter(
+            Store.id == store_id,
+            Store.platform.ilike("%amazon%"),
+            Store.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+
+    if store is None:
+        return {
+            "verified": False,
+            "reason": "amazon_store_not_found",
+            "store_id": store_id,
+            "seller_sku": seller_sku,
+            "full_scan_started": False,
+        }
+
+    rows = AmazonSPAPIAdapter(store).get_inventory(
+        seller_skus=[seller_sku],
+    )
+
+    matching_rows = [
+        row
+        for row in rows
+        if _clean(row.get("seller_sku")) == seller_sku
+    ]
+
+    if not matching_rows:
+        return {
+            "verified": False,
+            "reason": "exact_fba_inventory_not_returned",
+            "store_id": store_id,
+            "seller_sku": seller_sku,
+            "rows_received": len(rows),
+            "full_scan_started": False,
+        }
+
+    fba_result = apply_governed_amazon_fba_event(
+        store_id=store_id,
+        payload=matching_rows[0],
+        source="amazon_webhook_exact_sku_verification",
+    )
+
+    group_result = None
+    group_id = fba_result.get("group_id")
+    warehouse_stock_id = fba_result.get("warehouse_stock_id")
+
+    if (
+        fba_result.get("success")
+        and fba_result.get("stock_changed")
+        and group_id is not None
+        and warehouse_stock_id is not None
     ):
-        if value and hasattr(AmazonFBAInventory, field):
-            query = query.filter(getattr(AmazonFBAInventory, field) == value)
-            identity = value
-            identity_field = field
-            break
+        from governed_group_propagation_routes import (
+            run_governed_group_propagation,
+        )
 
-    if identity is None:
-        return {"verified": False, "reason": "exact_fba_identity_unavailable"}
-    if hasattr(AmazonFBAInventory, "store_id"):
-        query = query.filter(AmazonFBAInventory.store_id == event["store_id"])
+        response = run_governed_group_propagation(
+            int(group_id),
+            payload={
+                "warehouse_stock_id": int(warehouse_stock_id),
+                "source": "amazon_webhook_exact_fba_handoff",
+            },
+        )
 
-    row = query.first()
+        response_object = response[0] if isinstance(response, tuple) else response
+
+        if hasattr(response_object, "get_json"):
+            group_result = response_object.get_json(silent=True)
+        elif isinstance(response_object, dict):
+            group_result = response_object
+        else:
+            group_result = {"result": str(response_object)}
+
+    db.session.expire_all()
+
     return {
-        "verified": row is not None,
+        **fba_result,
+        "verified": bool(fba_result.get("success")),
+        "aligned": bool(fba_result.get("success")),
         "object": "AmazonFBAInventory",
-        "identity_field": identity_field,
-        "identity": identity,
+        "identity_field": "seller_sku",
+        "identity": seller_sku,
         "rows_examined_max": 1,
+        "rows_received_from_amazon": len(rows),
+        "group_propagation": group_result,
+        "full_scan_started": False,
+        "recent_order_import_started": False,
+        "warehouse_scan_started": False,
+        "marketplace_hydration_started": False,
     }
 
 
@@ -554,7 +635,30 @@ def _verify_webhook_event(event):
         event_type = str(event.get("event_type") or "").lower()
         marketplace = str(event.get("marketplace") or "").lower()
 
-        if event.get("order_id") or "order" in event_type:
+        payload = event.get("payload") or {}
+        notification = (
+            payload.get("Payload", {})
+            .get("OrderChangeNotification", {})
+        )
+        summary = notification.get("Summary", {})
+
+        fulfillment_type = str(
+            summary.get("FulfillmentType")
+            or summary.get("fulfillmentType")
+            or payload.get("fulfillment_type")
+            or payload.get("fulfillmentType")
+            or ""
+        ).strip().upper()
+
+        amazon_fba_event = bool(
+            marketplace in {"amazon", "amazon_fba"}
+            and event.get("seller_sku")
+            and fulfillment_type in {"AFN", "FBA", "AMAZON"}
+        )
+
+        if amazon_fba_event:
+            result = _verify_exact_fba(event)
+        elif event.get("order_id") or "order" in event_type:
             result = _verify_exact_order(event)
         elif "fba" in event_type or "afn" in event_type or marketplace == "amazon_fba":
             result = _verify_exact_fba(event)
