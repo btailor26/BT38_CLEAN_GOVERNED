@@ -266,6 +266,10 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
         }
 
     db.session.commit()
+
+    # Reuse the existing webhook mutation contract.
+    # FBA remains read-only; these identifiers only hand the changed FBA
+    # authority into the existing group refresh and non-FBA propagation path.
     return {
         "success": True,
         "governed": True,
@@ -277,6 +281,24 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
         "full_scan_started": False,
         "warehouse_mutation": False,
         "relationship_mutation": False,
+        "stock_changed": True,
+        "fba_inventory_changed": True,
+        "seller_sku": result.get("seller_sku"),
+        "listing_id": result.get("listing_id"),
+        "warehouse_stock_id": result.get("warehouse_stock_id"),
+        "group_id": result.get("group_id"),
+        "expected_quantity": result.get("available_quantity"),
+        "page_refresh_required": True,
+        "warehouse_refresh_required": bool(
+            result.get("warehouse_stock_id") is not None
+        ),
+        "refresh_scope": {
+            "seller_sku": result.get("seller_sku"),
+            "listing_id": result.get("listing_id"),
+            "warehouse_stock_id": result.get("warehouse_stock_id"),
+            "group_id": result.get("group_id"),
+            "expected_quantity": result.get("available_quantity"),
+        },
         "result": result,
     }
 

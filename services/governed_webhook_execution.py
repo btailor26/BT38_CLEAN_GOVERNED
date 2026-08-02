@@ -66,6 +66,65 @@ def process_marketplace_notification(
             listing_id=listing.id,
         )
 
+    # Existing targeted FBA inventory notifications already contain the
+    # authoritative inventory quantities. Hand those notifications into the
+    # existing AmazonFBAInventory writer and return its normal mutation contract.
+    #
+    # Amazon ORDER_CHANGE only contains ordered quantity, so it must continue
+    # through the existing order/runtime verification path and must never be
+    # treated as current fulfillable inventory.
+    platform_name = str(marketplace or "").strip().lower()
+    listing_channel = str(
+        getattr(listing, "normalized_amazon_fulfillment_channel", None)
+        or getattr(listing, "amazon_fulfillment_channel", None)
+        or ""
+    ).strip().upper()
+
+    is_amazon_fba = (
+        "amazon" in platform_name
+        and listing_channel not in {"MFN", "FBM", "MERCHANT"}
+    )
+
+    explicit_inventory_quantity = any(
+        _deep_get(payload, key) is not None
+        for key in (
+            "available_quantity",
+            "fulfillableQuantity",
+            "totalQuantity",
+            "inventoryDetails",
+            "inventory_details",
+        )
+    )
+
+    if is_amazon_fba and explicit_inventory_quantity:
+        from services.governed_amazon_inventory_import import (
+            apply_governed_amazon_fba_event,
+        )
+
+        fba_result = apply_governed_amazon_fba_event(
+            store_id=getattr(listing, "store_id", None),
+            payload=payload,
+            source="amazon_webhook_targeted_fba_handoff",
+        )
+
+        if fba_result.get("success"):
+            return _log_result(
+                status=(
+                    "fba_inventory_updated"
+                    if fba_result.get("stock_changed")
+                    else "fba_inventory_unchanged"
+                ),
+                marketplace=marketplace,
+                event_type=event_type,
+                business_event=business_event,
+                reason=(
+                    "Targeted FBA inventory event used the existing "
+                    "AmazonFBAInventory writer and refresh contract."
+                ),
+                payload=payload,
+                **fba_result,
+            )
+
     quantity = _extract_quantity(payload)
     is_stock_event = _is_stock_decrement_event(event_type, payload)
 
