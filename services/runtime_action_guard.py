@@ -180,14 +180,22 @@ def is_runtime_action_allowed(store, action_type, manual=False, context=None):
     """Single governed runtime decision point.
 
     SystemConfig decides execution.
-    User access decides whether this logged-in person may execute runtime actions.
-    Store/listing values only prove whether the requested action is structurally safe.
+    User access decides whether a logged-in person may execute manual actions.
+    Explicit automatic push calls may run without a browser user, but still
+    require every runtime push fuse and all store/listing safety checks.
     """
 
     action = str(action_type or "").strip().lower()
     manual = bool(manual)
+    context = context or {}
     actor_user = _resolve_actor_user(context)
     user_checked = action in RUNTIME_ACTIONS
+    automatic_push = bool(
+        action == "push"
+        and not manual
+        and isinstance(context, dict)
+        and context.get("automatic_push") is True
+    )
 
     if action not in VALID_ACTIONS:
         return _blocked(store, action, manual, "Unsupported runtime action", user=actor_user, user_checked=False)
@@ -195,11 +203,10 @@ def is_runtime_action_allowed(store, action_type, manual=False, context=None):
     if action in READ_ONLY_ACTIONS:
         return _allowed(store, action, manual, "Read-only action allowed", user=actor_user, user_checked=False)
 
-    # Manual runtime actions from an unauthenticated HTTP request stay blocked.
-    # System/runtime import loops may execute with no actor because they are controlled
-    # by the fuse-box and store state, not by a browser user session.
     if not _user_has_action_access(actor_user, action):
-        if actor_user is None and not _request_context_exists() and action == "import":
+        if automatic_push and actor_user is None:
+            pass
+        elif actor_user is None and not _request_context_exists() and action == "import":
             pass
         else:
             permission_key = ACTION_PERMISSION_KEYS.get(action, "runtime_action_permission")
@@ -235,8 +242,4 @@ def is_runtime_action_allowed(store, action_type, manual=False, context=None):
     if not _store_value(store, "api_key"):
         return _blocked(store, action, manual, "Store credentials are missing", user=actor_user, user_checked=user_checked)
 
-    # Store-level guard must not permanently classify stock as FBA/FBM.
-    # SKU text and deprecated store fulfillment_type are identity/history signals only.
-    # Listing, warehouse, and transfer state decide whether a specific row is pushable.
-    # FBA/AFN read-only protection remains in governed_execution.py listing eligibility.
     return _allowed(store, action, manual, user=actor_user, user_checked=user_checked)
