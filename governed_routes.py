@@ -50,6 +50,14 @@ def _governed_json_safe(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
 
+    if hasattr(value, "__table__"):
+        return {
+            column.name: _governed_json_safe(
+                getattr(value, column.name, None)
+            )
+            for column in value.__table__.columns
+        }
+
     if isinstance(value, dict):
         safe = {}
         for key, item in value.items():
