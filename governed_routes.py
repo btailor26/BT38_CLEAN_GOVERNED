@@ -5419,34 +5419,38 @@ def governed_import_handler():
     """
     Explicit Warehouse import action.
 
-    This action performs both real marketplace imports:
+    Explicit missing-order recovery action.
 
-    1. Marketplace inventory refresh:
-       - Amazon FBA/AFN -> AmazonFBAInventory
-       - eBay inventory -> governed eBay inventory records
+    The normal Warehouse Sync button imports recent Amazon and eBay orders,
+    skips existing marketplace identities, and processes only newly discovered
+    order lines.
 
-    2. Marketplace order import:
-       - Amazon/eBay orders -> MarketplaceOrder
-       - exact FBM/eBay warehouse mutation only
-       - FBA orders remain read-only and never overwrite FBA inventory
+    It does not start Amazon or eBay inventory hydration, scan Warehouse rows,
+    or perform a full catalogue refresh. Broad inventory hydration remains a
+    separate operator recovery action.
 
     This route runs only from an explicit user action. It is not part of the
     idle 15-minute verification loop.
     """
     try:
-        from services.governed_runtime_engine import (
-            run_governed_marketplace_import_refresh,
-        )
         from services.governed_marketplace_order_import import (
             run_governed_marketplace_order_import,
         )
 
-        inventory_result = run_governed_marketplace_import_refresh(
-            source="warehouse_sync_button_inventory",
-        )
+        # Normal Warehouse Sync is the marketplace-webhook fallback.
+        # It imports only recent/missing Amazon and eBay orders.
+        # Broad inventory hydration remains a separate recovery action.
+        inventory_result = {
+            "success": True,
+            "skipped": True,
+            "governed": True,
+            "reason": "normal_sync_missing_orders_only",
+            "full_scan_started": False,
+            "marketplace_hydration_started": False,
+        }
 
         order_result = run_governed_marketplace_order_import(
-            source="warehouse_sync_button_orders",
+            source="warehouse_sync_button_missing_orders",
         )
 
         inventory_success = bool(
