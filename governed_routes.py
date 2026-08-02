@@ -1931,21 +1931,37 @@ def governed_listing_push(listing_id: int):
 @governed_bp.post("/governed/actions/groups/<int:group_id>/push")
 @login_required
 def governed_group_push(group_id: int):
-    """Group push shortcut.
+    """Product Linking shortcut into Warehouse group authority.
 
-    Product linking/grouping remains relationship-only.
-    Quantity truth is resolved inside governed_push_execution.
-    Request body quantity is intentionally ignored.
+    Product Linking reports only the saved group relationship.
+    Warehouse resolves the shared quantity and pushes every writable listing
+    belonging to the affected group. Request-body quantity is ignored.
     """
-    from services.governed_push_execution import push_group_listings
-
-    result = push_group_listings(
-        group_id=group_id,
-        actor=_actor(),
-        source="ui_group_button",
-        actor_user=current_user if current_user and current_user.is_authenticated else None,
+    from governed_group_propagation_routes import (
+        run_governed_group_propagation,
     )
-    return jsonify(result), 200
+
+    body = dict(request.get_json(silent=True) or {})
+
+    payload = {
+        "dry_run": bool(body.get("dry_run", False)),
+        "source": "product_linking_group_shortcut",
+    }
+
+    warehouse_stock_id = (
+        body.get("warehouse_stock_id")
+        or body.get("stock_id")
+    )
+
+    if warehouse_stock_id not in (None, ""):
+        payload["warehouse_stock_id"] = warehouse_stock_id
+
+    # Do not accept Product Linking quantity as authority.
+    # Warehouse/group propagation resolves quantity from WarehouseStock.
+    return run_governed_group_propagation(
+        group_id,
+        payload=payload,
+    )
 
 
 @governed_bp.get("/governed/actions/history")
