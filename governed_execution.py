@@ -165,26 +165,30 @@ def _check_fuse_box_authority(
 ) -> Dict[str, Any]:
     """Ask the single SystemConfig fuse box before any live adapter execution.
 
-    Block replacement scope:
-    - keep runtime_action_guard as the final authority
-    - pass explicit actor_user when a Flask user is available
-    - preserve non-request/system contexts without inventing a user
+    Manual UI pushes continue to require the manual push fuse and user access.
+    Existing webhook and auto-push sources are classified as automatic so they
+    use the same runtime push fuses without pretending to be manual actions.
     """
     from services.runtime_action_guard import is_runtime_action_allowed
 
-    # Actor user is passed from governed routes directly.
-    # Do not rediscover user context here because runtime execution
-    # may run outside the original Flask request lifecycle.
-
     action_type = _runtime_action_type(command.action)
     store = eligibility.get("store") or _resolve_store(command.payload.get("store_id"))
+    source = str(command.payload.get("source") or "").strip().lower()
+    automatic_push = bool(
+        action_type == "push"
+        and (
+            source.startswith("webhook_")
+            or "auto_push" in source
+            or "automatic_push" in source
+        )
+    )
 
     return is_runtime_action_allowed(
         store=store,
         action_type=action_type,
-        manual=True,
+        manual=not automatic_push,
         context={
-            "source": "governed_execution",
+            "source": source or "governed_execution",
             "command_id": command.command_id,
             "marketplace": command.marketplace,
             "action": command.action,
@@ -192,6 +196,7 @@ def _check_fuse_box_authority(
             "store_id": command.payload.get("store_id"),
             "actor": command.actor,
             "actor_user": actor_user,
+            "automatic_push": automatic_push,
             "authority": "SystemConfig fuse box",
         },
     )
