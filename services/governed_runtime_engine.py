@@ -494,27 +494,22 @@ def _execute_mcf_auto_release_event(event):
     retry_queued = False
     retry_after = None
 
-    # Retry only genuine automatic failures for the same exact order.
-    #
-    # Skipped outcomes are terminal for this event. They cover conditions such
-    # as cancelled, already submitted, hidden, not yet due, or permanently
-    # ineligible orders. Manual MCF remains unchanged.
     if not success and not skipped and retry_count < 3:
         retry_after = datetime.utcnow() + timedelta(minutes=15)
 
+        retry_event = dict(event)
         retry_payload = dict(payload)
         retry_payload["mcf_auto_retry_count"] = retry_count + 1
+
+        retry_event["payload"] = retry_payload
+        retry_event["verify_after"] = retry_after
 
         notify_governed_runtime_work(
             source=(
                 event.get("source")
                 or "warehouse_mcf_one_hour_release"
             ),
-            event={
-                **event,
-                "verify_after": retry_after,
-                "payload": retry_payload,
-            },
+            event=retry_event,
         )
 
         retry_queued = True
