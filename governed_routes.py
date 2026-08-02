@@ -5537,7 +5537,7 @@ def governed_import_handler():
         }
 
         order_result = run_governed_marketplace_order_import(
-            source="warehouse_sync_button_missing_orders",
+            source="warehouse_sync_button_orders",
         )
 
         inventory_success = bool(
