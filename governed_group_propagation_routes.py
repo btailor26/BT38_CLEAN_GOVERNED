@@ -15,82 +15,30 @@ governed_group_propagation_bp = Blueprint("governed_group_propagation", __name__
 # Disabled duplicate destructive unlink route.
 # Single unlink authority lives in governed_group_routes.py.
 # This blueprint owns propagation only.
-@governed_group_propagation_bp.post("/governed/groups/<int:group_id>/unlink-disabled")
+
+@governed_group_propagation_bp.post(
+    "/governed/groups/<int:group_id>/unlink-disabled"
+)
 def governed_group_unlink_listing_disabled(group_id: int):
-    """Governed unlink for Product Linking group rows.
+    """Retired duplicate relationship writer.
 
-    This is warehouse/group relationship cleanup only.
-    It does not push, sync, import, or call marketplaces.
+    Link and unlink relationship mutations are owned only by
+    governed_group_routes.py. This blueprint owns quantity propagation.
     """
-    from extensions import db
-    from models import MarketplaceListing, WarehouseStock
-
-    # All callers enter the same Warehouse-controlled process.
-    # HTTP pages pass request JSON through the thin adapter below.
-    # Webhooks and internal governed callers pass explicit event identity.
-    body = dict(request.get_json(silent=True) or {})
-    listing_id = body.get("listing_id")
-    warehouse_stock_id = body.get("warehouse_stock_id")
-
-    try:
-        listing_id = int(listing_id)
-    except (TypeError, ValueError):
-        return jsonify(_blocked("listing_id must be provided as an integer.", group_id=group_id)), 400
-
-    listing = db.session.get(MarketplaceListing, listing_id)
-    if not listing:
-        return jsonify(_blocked("Marketplace listing was not found.", group_id=group_id, listing_id=listing_id)), 404
-
-    current_warehouse_stock_id = getattr(listing, "warehouse_stock_id", None)
-    current_group_id = getattr(listing, "master_product_group_id", None)
-
-    if warehouse_stock_id not in (None, ""):
-        try:
-            warehouse_stock_id = int(warehouse_stock_id)
-        except (TypeError, ValueError):
-            return jsonify(_blocked("warehouse_stock_id must be an integer when provided.", group_id=group_id)), 400
-
-    if current_group_id not in (None, group_id) and current_warehouse_stock_id != warehouse_stock_id:
-        return jsonify(_blocked(
-            "Listing does not belong to this governed group or warehouse.",
-            group_id=group_id,
-            listing_id=listing_id,
-            current_group_id=current_group_id,
-            current_warehouse_stock_id=current_warehouse_stock_id,
-        )), 409
-
-    listing.warehouse_stock_id = None
-    listing.master_product_group_id = None
-
-    if warehouse_stock_id:
-        remaining = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id == warehouse_stock_id)
-            .filter(MarketplaceListing.id != listing_id)
-            .count()
-        )
-
-        stock = db.session.get(WarehouseStock, warehouse_stock_id)
-        if stock and remaining == 0:
-            if hasattr(stock, "master_product_group_id") and getattr(stock, "master_product_group_id", None) == group_id:
-                stock.master_product_group_id = None
-            if hasattr(stock, "is_group_controlled"):
-                stock.is_group_controlled = False
-
-    db.session.commit()
-
     return jsonify({
-        "success": True,
-        "ok": True,
+        "success": False,
+        "ok": False,
         "governed": True,
-        "message": "Listing unlinked from warehouse/group authority.",
-        "listing_id": listing_id,
+        "execution_blocked": True,
+        "reason": "legacy_product_linking_disabled",
         "group_id": group_id,
-        "warehouse_stock_id": warehouse_stock_id,
-    }), 200
-
-
+        "message": (
+            "Duplicate unlink route is retired. "
+            "Use POST /governed/groups/<group_id>/unlink."
+        ),
+        "full_page_refresh": False,
+        "full_dataset_refresh": False,
+    }), 409
 
 def run_governed_group_propagation(
     group_id: int,

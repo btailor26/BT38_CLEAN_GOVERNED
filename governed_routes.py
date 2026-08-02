@@ -3659,15 +3659,62 @@ def governed_webhook_amazon_ingest():
 
 
 
+
 @governed_bp.post("/governed/product-linking/link-listing-to-warehouse")
 def governed_product_linking_link_listing_to_warehouse():
-    """One clear governed Product Linking path.
+    """Resolve Warehouse original group then use the canonical link writer.
 
-    Keeps the existing proven relationship authority block,
-    but moves the frontend direction away from /governed-disabled.
-    No marketplace push. No FBM change. No rewrite.
+    Product Linking remains a relationship shortcut. This compatibility route
+    performs no relationship mutation itself.
     """
-    return governed_disabled_action("link-listing-to-warehouse")
+    from extensions import db
+    from models import WarehouseStock
+    from governed_group_routes import governed_group_link_listing
+
+    body = dict(request.get_json(silent=True) or {})
+
+    stock_id = (
+        body.get("warehouse_id")
+        or body.get("warehouse_stock_id")
+        or body.get("stock_id")
+    )
+
+    try:
+        stock_id = int(stock_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_stock_id_required",
+            "message": "A valid Warehouse stock ID is required.",
+        }), 400
+
+    stock = db.session.get(WarehouseStock, stock_id)
+    if stock is None:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_stock_not_found",
+            "warehouse_stock_id": stock_id,
+        }), 404
+
+    group_id = getattr(stock, "master_product_group_id", None)
+    if not group_id:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_original_group_required",
+            "warehouse_stock_id": stock.id,
+            "message": "Warehouse product has no permanent original group ID.",
+        }), 409
+
+    return governed_group_link_listing(int(group_id))
 
 @governed_bp.route("/governed-disabled", defaults={"action": ""}, methods=["GET", "POST"])
 @governed_bp.route("/governed-disabled/<path:action>", methods=["GET", "POST"])
@@ -3689,6 +3736,30 @@ def governed_disabled_action(action: str = ""):
     from models import MarketplaceListing, MasterProductGroup, WarehouseStock
 
     action = (action or "").strip("/")
+
+    retired_relationship_actions = {
+        "link-listing-to-warehouse",
+        "unlink-listing",
+        "product-linking-link",
+    }
+
+    if action in retired_relationship_actions:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "legacy_bridge": True,
+            "execution_blocked": True,
+            "reason": "legacy_product_linking_disabled",
+            "action": action,
+            "message": (
+                "Legacy Product Linking relationship writer is disabled. "
+                "Use the governed group relationship routes."
+            ),
+            "full_page_refresh": False,
+            "full_dataset_refresh": False,
+            "cache_clear_required": False,
+        }), 409
     body = request.get_json(silent=True) or {}
 
     def blocked(message, status=409, **extra):
