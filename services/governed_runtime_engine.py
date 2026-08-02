@@ -486,11 +486,51 @@ def _execute_mcf_auto_release_event(event):
     success = bool(result.get("success"))
     skipped = bool(result.get("skipped"))
 
+    retry_count = _safe_int(
+        payload.get("mcf_auto_retry_count"),
+        0,
+    ) or 0
+
+    retry_queued = False
+    retry_after = None
+
+    # Retry only genuine automatic failures for the same exact order.
+    #
+    # Skipped outcomes are terminal for this event. They cover conditions such
+    # as cancelled, already submitted, hidden, not yet due, or permanently
+    # ineligible orders. Manual MCF remains unchanged.
+    if not success and not skipped and retry_count < 3:
+        retry_after = datetime.utcnow() + timedelta(minutes=15)
+
+        retry_payload = dict(payload)
+        retry_payload["mcf_auto_retry_count"] = retry_count + 1
+
+        notify_governed_runtime_work(
+            source=(
+                event.get("source")
+                or "warehouse_mcf_one_hour_release"
+            ),
+            event={
+                **event,
+                "verify_after": retry_after,
+                "payload": retry_payload,
+            },
+        )
+
+        retry_queued = True
+
     return {
         **result,
         "verified": True,
         "aligned": success or skipped,
         "event_type": "mcf_auto_release",
+        "mcf_auto_retry_count": retry_count,
+        "mcf_auto_retry_queued": retry_queued,
+        "mcf_auto_retry_after": (
+            retry_after.isoformat()
+            if retry_after
+            else None
+        ),
         "database_touched": True,
         "full_scan_started": False,
         "recent_order_import_started": False,
@@ -772,6 +812,147 @@ def _poll_amazon_sqs_once(app, wait_seconds: int = 20) -> dict:
         "failed": failed,
     }
 
+
+def _recover_mcf_auto_release_events(app) -> dict:
+    """Re-arm recent exact MCF release events after a process restart.
+
+    MarketplaceOrder remains the durable authority. This performs one bounded
+    startup recovery query and queues exact order identities only. It does not
+    submit MCF directly and does not create a second MCF workflow.
+    """
+    from models import MarketplaceOrder
+
+    now = datetime.utcnow()
+    recovery_since = now - timedelta(hours=48)
+
+    with app.app_context():
+        query = (
+            MarketplaceOrder.query
+            .filter(MarketplaceOrder.created_at >= recovery_since)
+            .order_by(
+                MarketplaceOrder.created_at.asc(),
+                MarketplaceOrder.id.asc(),
+            )
+            .limit(250)
+        )
+
+        if hasattr(MarketplaceOrder, "mcf_order_id"):
+            query = query.filter(
+                MarketplaceOrder.mcf_order_id.is_(None)
+            )
+
+        if hasattr(MarketplaceOrder, "mcf_queue_hidden"):
+            query = query.filter(
+                MarketplaceOrder.mcf_queue_hidden == False  # noqa: E712
+            )
+
+        rows = query.all()
+
+        cancelled_statuses = {
+            "cancelled",
+            "canceled",
+            "cancellation",
+            "cancel_requested",
+        }
+
+        seen_orders = set()
+        queued = 0
+        skipped = 0
+
+        for row in rows:
+            store = getattr(row, "store", None)
+            platform = str(
+                getattr(store, "platform", "") or ""
+            ).strip().lower()
+
+            # Amazon-origin orders must never be sent back through Amazon MCF.
+            if not platform or "amazon" in platform:
+                skipped += 1
+                continue
+
+            status = str(
+                getattr(row, "status", "") or ""
+            ).strip().lower()
+
+            if status in cancelled_statuses:
+                skipped += 1
+                continue
+
+            if getattr(row, "created_at", None) is None:
+                skipped += 1
+                continue
+
+            order_key = (
+                getattr(row, "store_id", None),
+                getattr(row, "marketplace_order_id", None),
+            )
+
+            # Multi-line orders use one anchor event only.
+            if order_key in seen_orders:
+                continue
+            seen_orders.add(order_key)
+
+            # Do not re-arm an order when any line already belongs to an MCF
+            # record. The initial bounded query filters individual rows, but
+            # completion authority belongs to the complete marketplace order.
+            completed_line = (
+                MarketplaceOrder.query
+                .filter(
+                    MarketplaceOrder.store_id == row.store_id,
+                    MarketplaceOrder.marketplace_order_id
+                    == row.marketplace_order_id,
+                    MarketplaceOrder.mcf_order_id.isnot(None),
+                )
+                .first()
+            )
+
+            if completed_line is not None:
+                skipped += 1
+                continue
+
+            release_at = row.created_at + timedelta(hours=1)
+
+            notify_governed_runtime_work(
+                source="warehouse_mcf_startup_recovery",
+                event={
+                    "event_type": "mcf_auto_release",
+                    "marketplace": platform,
+                    "store_id": row.store_id,
+                    "order_id": row.marketplace_order_id,
+                    "warehouse_stock_id": getattr(
+                        row,
+                        "warehouse_stock_id",
+                        None,
+                    ),
+                    # Overdue orders execute immediately. Orders still inside
+                    # the cancellation window retain their original due time.
+                    "verify_after": max(release_at, now),
+                    "payload": {
+                        "marketplace_order_row_id": row.id,
+                        "idempotency_key": getattr(
+                            row,
+                            "idempotency_key",
+                            None,
+                        ),
+                        "startup_recovered": True,
+                    },
+                },
+            )
+            queued += 1
+
+    return {
+        "success": True,
+        "governed": True,
+        "bounded": True,
+        "recovery_hours": 48,
+        "rows_examined_max": 250,
+        "orders_queued": queued,
+        "orders_skipped": skipped,
+        "full_scan_started": False,
+        "marketplace_import_started": False,
+        "warehouse_scan_started": False,
+    }
+
 def _engine_loop(app):
     """
     One governed runtime thread:
@@ -784,6 +965,20 @@ def _engine_loop(app):
     global _last_full_sync
 
     _safe_log("Webhook-scoped runtime loop started")
+
+    # One bounded startup recovery restores exact one-hour MCF events that
+    # process memory may have lost during a restart or deployment.
+    try:
+        recovery_result = _recover_mcf_auto_release_events(app)
+        _safe_log(
+            "MCF startup recovery complete "
+            f"queued={recovery_result.get('orders_queued', 0)} "
+            f"skipped={recovery_result.get('orders_skipped', 0)}"
+        )
+    except Exception as exc:
+        # Runtime must continue even if startup recovery cannot run.
+        # Existing imports can re-arm exact orders later.
+        _safe_error("MCF startup recovery failed", exc)
 
     hydration_enabled = _truthy(
         os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),

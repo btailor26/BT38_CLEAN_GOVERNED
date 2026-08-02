@@ -1931,21 +1931,37 @@ def governed_listing_push(listing_id: int):
 @governed_bp.post("/governed/actions/groups/<int:group_id>/push")
 @login_required
 def governed_group_push(group_id: int):
-    """Group push shortcut.
+    """Product Linking shortcut into Warehouse group authority.
 
-    Product linking/grouping remains relationship-only.
-    Quantity truth is resolved inside governed_push_execution.
-    Request body quantity is intentionally ignored.
+    Product Linking reports only the saved group relationship.
+    Warehouse resolves the shared quantity and pushes every writable listing
+    belonging to the affected group. Request-body quantity is ignored.
     """
-    from services.governed_push_execution import push_group_listings
-
-    result = push_group_listings(
-        group_id=group_id,
-        actor=_actor(),
-        source="ui_group_button",
-        actor_user=current_user if current_user and current_user.is_authenticated else None,
+    from governed_group_propagation_routes import (
+        run_governed_group_propagation,
     )
-    return jsonify(result), 200
+
+    body = dict(request.get_json(silent=True) or {})
+
+    payload = {
+        "dry_run": bool(body.get("dry_run", False)),
+        "source": "product_linking_group_shortcut",
+    }
+
+    warehouse_stock_id = (
+        body.get("warehouse_stock_id")
+        or body.get("stock_id")
+    )
+
+    if warehouse_stock_id not in (None, ""):
+        payload["warehouse_stock_id"] = warehouse_stock_id
+
+    # Do not accept Product Linking quantity as authority.
+    # Warehouse/group propagation resolves quantity from WarehouseStock.
+    return run_governed_group_propagation(
+        group_id,
+        payload=payload,
+    )
 
 
 @governed_bp.get("/governed/actions/history")
@@ -3643,15 +3659,62 @@ def governed_webhook_amazon_ingest():
 
 
 
+
 @governed_bp.post("/governed/product-linking/link-listing-to-warehouse")
 def governed_product_linking_link_listing_to_warehouse():
-    """One clear governed Product Linking path.
+    """Resolve Warehouse original group then use the canonical link writer.
 
-    Keeps the existing proven relationship authority block,
-    but moves the frontend direction away from /governed-disabled.
-    No marketplace push. No FBM change. No rewrite.
+    Product Linking remains a relationship shortcut. This compatibility route
+    performs no relationship mutation itself.
     """
-    return governed_disabled_action("link-listing-to-warehouse")
+    from extensions import db
+    from models import WarehouseStock
+    from governed_group_routes import governed_group_link_listing
+
+    body = dict(request.get_json(silent=True) or {})
+
+    stock_id = (
+        body.get("warehouse_id")
+        or body.get("warehouse_stock_id")
+        or body.get("stock_id")
+    )
+
+    try:
+        stock_id = int(stock_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_stock_id_required",
+            "message": "A valid Warehouse stock ID is required.",
+        }), 400
+
+    stock = db.session.get(WarehouseStock, stock_id)
+    if stock is None:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_stock_not_found",
+            "warehouse_stock_id": stock_id,
+        }), 404
+
+    group_id = getattr(stock, "master_product_group_id", None)
+    if not group_id:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "execution_blocked": True,
+            "reason": "warehouse_original_group_required",
+            "warehouse_stock_id": stock.id,
+            "message": "Warehouse product has no permanent original group ID.",
+        }), 409
+
+    return governed_group_link_listing(int(group_id))
 
 @governed_bp.route("/governed-disabled", defaults={"action": ""}, methods=["GET", "POST"])
 @governed_bp.route("/governed-disabled/<path:action>", methods=["GET", "POST"])
@@ -3673,6 +3736,30 @@ def governed_disabled_action(action: str = ""):
     from models import MarketplaceListing, MasterProductGroup, WarehouseStock
 
     action = (action or "").strip("/")
+
+    retired_relationship_actions = {
+        "link-listing-to-warehouse",
+        "unlink-listing",
+        "product-linking-link",
+    }
+
+    if action in retired_relationship_actions:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "legacy_bridge": True,
+            "execution_blocked": True,
+            "reason": "legacy_product_linking_disabled",
+            "action": action,
+            "message": (
+                "Legacy Product Linking relationship writer is disabled. "
+                "Use the governed group relationship routes."
+            ),
+            "full_page_refresh": False,
+            "full_dataset_refresh": False,
+            "cache_clear_required": False,
+        }), 409
     body = request.get_json(silent=True) or {}
 
     def blocked(message, status=409, **extra):
@@ -5419,34 +5506,38 @@ def governed_import_handler():
     """
     Explicit Warehouse import action.
 
-    This action performs both real marketplace imports:
+    Explicit missing-order recovery action.
 
-    1. Marketplace inventory refresh:
-       - Amazon FBA/AFN -> AmazonFBAInventory
-       - eBay inventory -> governed eBay inventory records
+    The normal Warehouse Sync button imports recent Amazon and eBay orders,
+    skips existing marketplace identities, and processes only newly discovered
+    order lines.
 
-    2. Marketplace order import:
-       - Amazon/eBay orders -> MarketplaceOrder
-       - exact FBM/eBay warehouse mutation only
-       - FBA orders remain read-only and never overwrite FBA inventory
+    It does not start Amazon or eBay inventory hydration, scan Warehouse rows,
+    or perform a full catalogue refresh. Broad inventory hydration remains a
+    separate operator recovery action.
 
     This route runs only from an explicit user action. It is not part of the
     idle 15-minute verification loop.
     """
     try:
-        from services.governed_runtime_engine import (
-            run_governed_marketplace_import_refresh,
-        )
         from services.governed_marketplace_order_import import (
             run_governed_marketplace_order_import,
         )
 
-        inventory_result = run_governed_marketplace_import_refresh(
-            source="warehouse_sync_button_inventory",
-        )
+        # Normal Warehouse Sync is the marketplace-webhook fallback.
+        # It imports only recent/missing Amazon and eBay orders.
+        # Broad inventory hydration remains a separate recovery action.
+        inventory_result = {
+            "success": True,
+            "skipped": True,
+            "governed": True,
+            "reason": "normal_sync_missing_orders_only",
+            "full_scan_started": False,
+            "marketplace_hydration_started": False,
+        }
 
         order_result = run_governed_marketplace_order_import(
-            source="warehouse_sync_button_orders",
+            source="warehouse_sync_button_missing_orders",
         )
 
         inventory_success = bool(

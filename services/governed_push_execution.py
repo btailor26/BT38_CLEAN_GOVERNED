@@ -26,6 +26,15 @@ def _is_webhook_push_source(source: str) -> bool:
     )
 
 
+def _is_automatic_push_source(source: str) -> bool:
+    value = str(source or "").strip().lower()
+    return bool(
+        value.startswith("webhook_")
+        or "auto_push" in value
+        or "automatic_push" in value
+    )
+
+
 def _queue_exact_webhook_verification(*, listing, stock, source: str) -> None:
     if not _is_webhook_push_source(source):
         return
@@ -50,8 +59,6 @@ def _queue_exact_webhook_verification(*, listing, stock, source: str) -> None:
             expected_quantity=getattr(listing, "effective_quantity", None),
         )
     except Exception:
-        # The push has already followed the governed path. A process-local
-        # verification signal must never turn a completed push into a failure.
         return
 
 
@@ -110,13 +117,36 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
     if not listing.warehouse_stock:
         return _blocked("Marketplace listing is not linked to warehouse stock.", listing_id=listing_id)
 
+    source_value = str(source or "").strip().lower()
+    group_id = (
+        getattr(listing.warehouse_stock, "master_product_group_id", None)
+        or getattr(listing, "master_product_group_id", None)
+    )
+    group_controlled = bool(
+        getattr(listing.warehouse_stock, "is_group_controlled", False)
+        or getattr(listing, "master_product_group_id", None)
+    )
+
+    # Automatic changes entering through a single-listing shortcut must still
+    # honour the saved DB relationship. Expand only the affected governed group.
+    # Group members carry the suffix below so this does not recurse.
+    if (
+        _is_automatic_push_source(source_value)
+        and ":group_member" not in source_value
+        and group_id
+        and group_controlled
+    ):
+        return push_group_listings(
+            group_id=int(group_id),
+            actor=actor,
+            source=f"{source}:group_auto_push",
+            actor_user=actor_user,
+        )
+
     platform = (listing.store.platform or "").strip().lower()
     marketplace = "amazon" if "amazon" in platform else "ebay" if "ebay" in platform else platform
 
     try:
-        # Quantity authority:
-        # never trust request-body quantity here.
-        # Marketplace push quantity must be derived from the linked listing/warehouse policy.
         push_quantity = int(listing.effective_quantity or 0)
     except Exception:
         return _blocked("Unable to derive governed push quantity from warehouse/listing truth.", listing_id=listing_id)
@@ -217,9 +247,6 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
 
     group_id = int(group_id)
 
-    # Warehouse is the authority.
-    # A grouped shortcut must push every active listing attached to the grouped warehouse,
-    # even if an individual MarketplaceListing is missing master_product_group_id.
     warehouse_ids = [
         row.id
         for row in (
@@ -272,11 +299,12 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
     else:
         listings = []
 
+    member_source = f"{source}:group_member"
     results: List[Dict[str, Any]] = [
         push_marketplace_listing(
             listing_id=listing.id,
             actor=actor,
-            source=source,
+            source=member_source,
             actor_user=actor_user,
         )
         for listing in listings
@@ -303,10 +331,6 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
 
     group_success = failed_count == 0 and pushable_count > 0
 
-    # Report group push result back to Warehouse authority rows.
-    # Product Linking is only a shortcut; Warehouse remains the source of truth.
-    # Warehouse authority must always be resolved from the marketplace
-    # listing warehouse_stock_id values, never from the group id itself.
     report_stock_ids = sorted({
         int(item.get("warehouse_stock_id"))
         for item in results

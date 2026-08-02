@@ -787,9 +787,18 @@ def run_governed_marketplace_order_import(store_id=None, source: str = "governed
             })
             continue
 
+    failed_stores = [
+        item
+        for item in results
+        if not bool(item.get("order_import", {}).get("success"))
+    ]
+    overall_success = not failed_stores
+
     return {
-        "success": True,
+        "success": overall_success,
+        "status": "success" if overall_success else "partial",
         "governed": True,
         "source": source,
+        "failed_store_count": len(failed_stores),
         "results": results,
     }
