@@ -1738,9 +1738,16 @@ def governed_warehouse_page():
                 int(getattr(fba_truth, "available_quantity", 0) or 0)
                 if is_fba
                 else (
-                    int(listing.last_marketplace_qty or 0)
-                    if is_ebay_variation_child
-                    else int(stock.sellable_quantity or 0)
+                    int(stock.sellable_quantity or 0)
+                    if (
+                        listing.master_product_group_id
+                        or bool(stock.is_group_controlled)
+                    )
+                    else (
+                        int(listing.last_marketplace_qty or 0)
+                        if is_ebay_variation_child
+                        else int(stock.sellable_quantity or 0)
+                    )
                 )
             ) if stock else (
                 int(getattr(fba_truth, "available_quantity", 0) or 0)
@@ -2481,6 +2488,12 @@ def governed_product_linking_data_compat():
     listings_by_stock = {}
     unlinked_listings = []
 
+    stock_quantity_by_id = {
+        int(stock.id): int(stock.sellable_quantity or 0)
+        for stock in stock_rows
+        if getattr(stock, "id", None) is not None
+    }
+
     for listing in listing_rows:
         listing_is_fba = bool(getattr(listing, "is_fba", False))
         listing_sku = str(getattr(listing, "external_sku", "") or "").strip()
@@ -2541,7 +2554,19 @@ def governed_product_linking_data_compat():
             "push_status": push_status,
             "push_status_label": push_status_label,
             "push_status_reason": push_status_reason,
-            "effective_quantity": getattr(listing, "effective_quantity", 0),
+            "effective_quantity": (
+                stock_quantity_by_id.get(
+                    int(listing.warehouse_stock_id),
+                    int(getattr(listing, "effective_quantity", 0) or 0),
+                )
+                if (
+                    listing.master_product_group_id
+                    and listing.warehouse_stock_id
+                )
+                else int(
+                    getattr(listing, "effective_quantity", 0) or 0
+                )
+            ),
             "fba_available_quantity": fba_available_quantity,
         }
 
