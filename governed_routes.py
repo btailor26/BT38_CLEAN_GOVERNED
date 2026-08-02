@@ -1045,36 +1045,7 @@ def governed_marketplace_webhook_intake(marketplace):
         parsed=True,
     )
 
-    canonical_event_ids = []
-
     try:
-        if platform == "amazon":
-            from services.governed_amazon_webhook_event_store import (
-                persist_amazon_webhook_events,
-            )
-
-            canonical_events = persist_amazon_webhook_events(
-                notification_record_id=notification_record_id,
-                payload=payload,
-            )
-
-            canonical_event_ids = list(
-                canonical_events.get("event_ids") or []
-            )
-            canonical_payloads = list(
-                canonical_events.get("payloads") or []
-            )
-
-            if not canonical_event_ids or not canonical_payloads:
-                raise RuntimeError(
-                    "amazon_canonical_event_not_created"
-                )
-
-            # Amazon ORDER_CHANGE currently contains one governed
-            # order item per notification. Process only the canonical
-            # parsed event payload, never the raw receipt directly.
-            payload = canonical_payloads[0]
-
         from services.governed_webhook_execution import (
             process_marketplace_notification,
         )
@@ -1242,16 +1213,6 @@ def governed_marketplace_webhook_intake(marketplace):
             verification_queue_result
         )
 
-        if platform == "amazon":
-            from services.governed_amazon_webhook_event_store import (
-                mark_amazon_webhook_events,
-            )
-
-            mark_amazon_webhook_events(
-                canonical_event_ids,
-                status="PROCESSED",
-            )
-
         mark_notification_status(
             platform,
             notification_record_id,
@@ -1263,17 +1224,6 @@ def governed_marketplace_webhook_intake(marketplace):
         from extensions import db
 
         db.session.rollback()
-
-        if platform == "amazon" and canonical_event_ids:
-            from services.governed_amazon_webhook_event_store import (
-                mark_amazon_webhook_events,
-            )
-
-            mark_amazon_webhook_events(
-                canonical_event_ids,
-                status="FAILED",
-                error=str(exc)[:4000],
-            )
 
         mark_notification_status(
             platform,

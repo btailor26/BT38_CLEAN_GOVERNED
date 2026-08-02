@@ -100,20 +100,11 @@ def _line_type(line: Any) -> str:
 def is_sale(line: Any) -> bool:
     value = _line_type(line)
 
-    # Amazon and eBay order notifications can first arrive as pending.
-    # Once the exact order line is linked to Warehouse stock, both FBM and
-    # FBA/AFN pending sales must reduce the Warehouse quantity exactly once.
+    # Imported FBM marketplace orders arrive as "pending".
+    # Once linked to warehouse stock they should reduce stock.
     if value == "pending":
-        fulfillment = _text(
-            getattr(line, "fulfillment_type", None)
-        ).upper()
-
-        if fulfillment in {
-            "FBM",
-            "MFN",
-            "FBA",
-            "AFN",
-        }:
+        fulfillment = _text(getattr(line, "fulfillment_type", None)).upper()
+        if fulfillment == "FBM":
             return True
 
     if not value:
