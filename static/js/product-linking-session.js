@@ -297,6 +297,45 @@
     return applyMutationContract({ changed: true }, identity);
   }
 
+  let visibleRefreshRunning = false;
+
+  async function refreshVisibleProductLinkingOnce() {
+    if (
+      visibleRefreshRunning
+      || document.hidden
+      || !state.hydrated
+    ) {
+      return;
+    }
+
+    const filters = getFilters();
+    const search = String(filters.search || "").trim();
+
+    if (!search) {
+      return;
+    }
+
+    visibleRefreshRunning = true;
+
+    try {
+      const data = await fetchDataset(
+        search,
+        TARGETED_DATASET_LIMIT
+      );
+
+      mergeTargetedData(data, []);
+      render();
+      await writeSnapshot();
+    } catch (error) {
+      console.warn(
+        "[ProductLinkingSession] targeted visible refresh failed",
+        error
+      );
+    } finally {
+      visibleRefreshRunning = false;
+    }
+  }
+
   function getFilters() {
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (!form) return { search: "", platform: "", store: "", showLinked: "all" };
@@ -584,6 +623,16 @@
   function boot() {
     wire();
     hydrate();
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        void refreshVisibleProductLinkingOnce();
+      }
+    });
+
+    window.addEventListener("focus", () => {
+      void refreshVisibleProductLinkingOnce();
+    });
   }
 
   if (document.readyState === "loading") {
