@@ -454,6 +454,35 @@ def _verify_exact_fba(event):
     group_id = fba_result.get("group_id")
     warehouse_stock_id = fba_result.get("warehouse_stock_id")
 
+    # Resolve the existing Product Group from the persisted Warehouse link
+    # when the FBA listing row itself has no group ID.
+    if group_id is None and warehouse_stock_id is not None:
+        from models import WarehouseStock
+
+        linked_stock = db.session.get(
+            WarehouseStock,
+            int(warehouse_stock_id),
+        )
+
+        if linked_stock is not None:
+            group_id = getattr(
+                linked_stock,
+                "master_product_group_id",
+                None,
+            )
+
+            if group_id is not None:
+                group_id = int(group_id)
+                fba_result["group_id"] = group_id
+
+                refresh_scope = fba_result.get("refresh_scope")
+                if isinstance(refresh_scope, dict):
+                    refresh_scope["group_id"] = group_id
+
+                nested_result = fba_result.get("result")
+                if isinstance(nested_result, dict):
+                    nested_result["group_id"] = group_id
+
     if (
         fba_result.get("success")
         and fba_result.get("stock_changed")
