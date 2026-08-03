@@ -43,11 +43,59 @@ def process_marketplace_notification(
     event_type = _event_type(payload)
     business_event = _classify_business_event(event_type, payload)
 
-    listing = _find_listing(MarketplaceListing, marketplace, payload)
+    listing = _find_listing(
+        MarketplaceListing,
+        marketplace,
+        payload,
+    )
+
+    listing_recovery = None
+
+    if not listing and marketplace == "ebay":
+        # One bounded governed recovery only.
+        #
+        # The existing eBay inventory importer owns MarketplaceListing upsert
+        # through its existing _upsert_listing path. Do not create a second
+        # writer here.
+        from services.governed_ebay_inventory_import import (
+            run_governed_ebay_inventory_import,
+        )
+
+        recovery_store_id = payload.get("_bt38_store_id")
+
+        try:
+            if recovery_store_id is None:
+                listing_recovery = {
+                    "success": False,
+                    "governed": True,
+                    "reason": "ebay_listing_recovery_store_missing",
+                }
+            else:
+                listing_recovery = run_governed_ebay_inventory_import(
+                    store_id=int(recovery_store_id),
+                )
+        except Exception as recovery_exc:
+            listing_recovery = {
+                "success": False,
+                "governed": True,
+                "reason": "ebay_listing_recovery_exception",
+                "error": str(recovery_exc),
+            }
+
+        # Retry the exact DB identity once only when the bounded recovery
+        # completed successfully. No loop and no cross-store import.
+        if bool((listing_recovery or {}).get("success")):
+            listing = _find_listing(
+                MarketplaceListing,
+                marketplace,
+                payload,
+            )
+
     if not listing:
         return _log_result(
             status="unresolved",
             marketplace=marketplace,
+            listing_recovery=listing_recovery,
             event_type=event_type,
             business_event=business_event,
             reason="Notification received but no marketplace listing could be matched.",
