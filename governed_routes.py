@@ -1242,22 +1242,32 @@ def governed_marketplace_webhook_intake(marketplace):
         )
 
         if should_queue_verification:
+            from services.governed_runtime_engine import (
+                notify_governed_runtime_work,
+            )
+
             if exact_fba_scope:
-                # Reuse the proven exact-SKU FBA refresh immediately after the
-                # order has been recorded. This updates only the matching
-                # AmazonFBAInventory DB row and its timestamps.
+                # Refresh the exact FBA DB row immediately, then retain one
+                # delayed exact-SKU verification because Amazon inventory can
+                # settle shortly after the order notification.
                 from services.governed_runtime_engine import (
                     _verify_exact_fba,
                 )
 
-                verification_queue_result = _verify_exact_fba(
+                immediate_fba_result = _verify_exact_fba(
                     exact_scope,
                 )
-            else:
-                from services.governed_runtime_engine import (
-                    notify_governed_runtime_work,
+
+                delayed_fba_result = notify_governed_runtime_work(
+                    source=f"webhook_{platform}_settlement_recheck",
+                    event=exact_scope,
                 )
 
+                verification_queue_result = {
+                    "immediate": immediate_fba_result,
+                    "delayed": delayed_fba_result,
+                }
+            else:
                 verification_queue_result = notify_governed_runtime_work(
                     source=f"webhook_{platform}",
                     event=exact_scope,
