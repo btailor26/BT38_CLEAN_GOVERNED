@@ -50,41 +50,43 @@ def process_marketplace_notification(
     )
 
     listing_recovery = None
+    listing_discovery = None
 
-    if not listing and marketplace == "ebay":
-        # One bounded governed recovery only.
-        #
-        # The existing eBay inventory importer owns MarketplaceListing upsert
-        # through its existing _upsert_listing path. Do not create a second
-        # writer here.
-        from services.governed_ebay_inventory_import import (
-            run_governed_ebay_inventory_import,
+    if not listing:
+        seller_sku = (
+            _deep_get(payload, "seller_sku")
+            or _deep_get(payload, "sellerSku")
+            or _deep_get(payload, "sku")
+            or _deep_get(payload, "SKU")
         )
 
-        recovery_store_id = payload.get("_bt38_store_id")
+        from services.governed_marketplace_listing_recovery import (
+            recover_governed_marketplace_listing,
+        )
 
-        try:
-            if recovery_store_id is None:
-                listing_recovery = {
-                    "success": False,
-                    "governed": True,
-                    "reason": "ebay_listing_recovery_store_missing",
-                }
-            else:
-                listing_recovery = run_governed_ebay_inventory_import(
-                    store_id=int(recovery_store_id),
-                )
-        except Exception as recovery_exc:
-            listing_recovery = {
-                "success": False,
-                "governed": True,
-                "reason": "ebay_listing_recovery_exception",
-                "error": str(recovery_exc),
-            }
+        listing_discovery = recover_governed_marketplace_listing(
+            marketplace=marketplace,
+            store_id=payload.get("_bt38_store_id"),
+            event_type=event_type,
+            seller_sku=(
+                str(seller_sku)
+                if seller_sku not in (None, "")
+                else None
+            ),
+            payload=payload,
+        )
 
-        # Retry the exact DB identity once only when the bounded recovery
-        # completed successfully. No loop and no cross-store import.
-        if bool((listing_recovery or {}).get("success")):
+        listing_recovery = (
+            (listing_discovery or {}).get("recovery")
+            or (listing_discovery or {}).get("result")
+        )
+
+        # Retry the existing DB listing lookup once only after a successful
+        # marketplace-specific recovery. There is no loop or second writer.
+        if (
+            bool((listing_discovery or {}).get("applicable"))
+            and bool((listing_discovery or {}).get("success"))
+        ):
             listing = _find_listing(
                 MarketplaceListing,
                 marketplace,
@@ -96,6 +98,7 @@ def process_marketplace_notification(
             status="unresolved",
             marketplace=marketplace,
             listing_recovery=listing_recovery,
+            listing_discovery=listing_discovery,
             event_type=event_type,
             business_event=business_event,
             reason="Notification received but no marketplace listing could be matched.",

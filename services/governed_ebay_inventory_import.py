@@ -345,6 +345,55 @@ def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[
     return {"items": imported_items, "variations": imported_variations}
 
 
+def recover_governed_ebay_listing_from_notification(
+    *,
+    store_id: int | None,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one bounded exact-store recovery through the existing importer.
+
+    This function performs no MarketplaceListing write itself. The existing
+    run_governed_ebay_inventory_import() -> _import_item() ->
+    _upsert_listing() path remains the only eBay listing writer.
+    """
+    if store_id is None:
+        return {
+            "success": False,
+            "governed": True,
+            "applicable": True,
+            "bounded_recovery": True,
+            "reason": "ebay_listing_recovery_store_missing",
+            "event_type": str(event_type or ""),
+        }
+
+    try:
+        result = run_governed_ebay_inventory_import(
+            store_id=int(store_id),
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "governed": True,
+            "applicable": True,
+            "bounded_recovery": True,
+            "reason": "ebay_listing_recovery_exception",
+            "error": str(exc),
+            "store_id": int(store_id),
+            "event_type": str(event_type or ""),
+        }
+
+    return {
+        "success": bool((result or {}).get("success")),
+        "governed": True,
+        "applicable": True,
+        "bounded_recovery": True,
+        "store_id": int(store_id),
+        "event_type": str(event_type or ""),
+        "result": result,
+    }
+
+
 def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
     query = db.session.query(Store).filter(Store.platform.ilike("%ebay%"))
 
