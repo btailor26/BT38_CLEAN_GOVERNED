@@ -13,6 +13,11 @@ import requests
 
 NOTIFICATION_BASE_URL = "https://api.ebay.com/commerce/notification/v1"
 ORDER_TOPIC_ID = "ORDER_CONFIRMATION"
+LISTING_TOPIC_ID = "LISTING"
+REQUIRED_TOPIC_IDS = (
+    ORDER_TOPIC_ID,
+    LISTING_TOPIC_ID,
+)
 DEFAULT_SCHEMA_VERSION = "1.1"
 DEFAULT_DESTINATION_NAME = "BT38 Production eBay Webhook"
 
@@ -362,11 +367,32 @@ def ensure_ebay_order_notification_registration(
         destination_name=destination_name,
     )
 
-    subscription_id, subscription_created = _ensure_subscription(
-        access_token=access_token,
-        destination_id=destination_id,
-        topic_id=ORDER_TOPIC_ID,
-        schema_version=DEFAULT_SCHEMA_VERSION,
+    subscriptions = []
+
+    for topic_id in REQUIRED_TOPIC_IDS:
+        subscription_id, topic_created = _ensure_subscription(
+            access_token=access_token,
+            destination_id=destination_id,
+            topic_id=topic_id,
+            schema_version=DEFAULT_SCHEMA_VERSION,
+        )
+
+        subscriptions.append({
+            "topic_id": topic_id,
+            "subscription_id": subscription_id,
+            "subscription_created": topic_created,
+        })
+
+    order_subscription = next(
+        item
+        for item in subscriptions
+        if item["topic_id"] == ORDER_TOPIC_ID
+    )
+
+    subscription_id = order_subscription["subscription_id"]
+    subscription_created = any(
+        item["subscription_created"]
+        for item in subscriptions
     )
 
     creds = _decode_store_credentials(store)
@@ -382,6 +408,7 @@ def ensure_ebay_order_notification_registration(
         "ebay_notification_order_topic_id": ORDER_TOPIC_ID,
         "ebay_notification_order_subscription_id": subscription_id,
         "ebay_notification_order_subscription_status": "ENABLED",
+        "ebay_notification_subscriptions": subscriptions,
         "ebay_notification_schema_version": DEFAULT_SCHEMA_VERSION,
         "ebay_notification_registered_at": now,
     })
@@ -395,6 +422,7 @@ def ensure_ebay_order_notification_registration(
         "destination_created": destination_created,
         "subscription_id": subscription_id,
         "subscription_created": subscription_created,
+        "subscriptions": subscriptions,
         "topic_id": ORDER_TOPIC_ID,
         "endpoint": endpoint,
         "schema_version": DEFAULT_SCHEMA_VERSION,

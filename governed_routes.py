@@ -1011,6 +1011,12 @@ def governed_marketplace_webhook_intake(marketplace):
 
     payload = _bt38_webhook_payload()
     allowed, reason = _bt38_webhook_platform_allowed(platform)
+
+    # Carry the already-resolved BT38 store identity into governed execution.
+    # This is internal routing metadata only and does not alter the immutable
+    # raw webhook record captured above.
+    if store is not None:
+        payload["_bt38_store_id"] = int(store.id)
     status = "received" if allowed else "blocked_by_fuse"
 
     row = _bt38_record_webhook_event(
