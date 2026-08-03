@@ -49,6 +49,14 @@ LIGHT_RECONCILE_SECONDS = 15 * 60
 
 # Process-memory only. These objects never touch Neon while idle.
 _pending_notification_event = threading.Event()
+
+# RETIRED GOVERNED PATH
+#
+# The governed runtime uses one exact in-process event path.
+# services/governed_runtime_job_store.py remains in the repository only for
+# historical compatibility. It must never initialise, enqueue, claim or
+# complete runtime jobs.
+DURABLE_RUNTIME_JOB_PATH_ENABLED = False
 _stop_event = threading.Event()
 _pending_events = deque()
 _pending_events_lock = threading.Lock()
@@ -207,27 +215,17 @@ def notify_governed_runtime_work(source: str = "webhook", event=None, **identifi
     _last_event_at = item["received_at"]
     _last_event_source = item["source"]
 
-    if has_app_context():
-        from services.governed_runtime_job_store import (
-            enqueue_runtime_job,
-        )
+    # One governed event path only.
+    # The retired database-backed runtime job layer is never invoked.
+    result = {
+        "queued": True,
+        "durable": False,
+        "status": "GOVERNED_MEMORY_EVENT",
+        "verify_after": item["verify_after"].isoformat(),
+    }
 
-        result = enqueue_runtime_job(
-            source=item["source"],
-            event=item,
-        )
-    else:
-        # A context-free deployment contract must never open a database.
-        # Production webhook requests run inside Flask application context
-        # and continue through the durable database job path above.
-        result = {
-            "queued": True,
-            "durable": False,
-            "status": "MEMORY_WAKE_HINT",
-        }
-
-    # The database is the durable authority. This process-memory copy is only
-    # a low-cost wake-up hint so the runtime does not poll Neon while idle.
+    # This exact process-memory event is the only active governed runtime path.
+    # The retired database-backed job layer remains disabled for compatibility.
     with _pending_events_lock:
         key = _event_key(item)
 
@@ -1135,7 +1133,8 @@ def _engine_loop(app):
     except Exception:
         runtime_database_enabled = False
 
-    if runtime_database_enabled:
+    if DURABLE_RUNTIME_JOB_PATH_ENABLED and runtime_database_enabled:
+        # RETIRED: database runtime jobs remain unreachable.
         # Initialise the durable exact-event table once per runtime-owner
         # production process. Never execute DDL during idle polling.
         try:
@@ -1219,46 +1218,12 @@ def _engine_loop(app):
             due_hints = _pop_due_events()
 
             if due_hints:
-                if runtime_database_enabled:
-                    with app.app_context():
-                        from services.governed_runtime_job_store import (
-                            claim_due_runtime_jobs,
-                            complete_runtime_job,
-                        )
-
-                        durable_jobs = claim_due_runtime_jobs(
-                            limit=max(50, len(due_hints)),
-                        )
-
-                        for durable_job in durable_jobs:
-                            job_id = durable_job.pop("id")
-
-                            try:
-                                _run_light_reconcile_cycle(
-                                    events=[durable_job],
-                                    source=(
-                                        "durable_webhook_verification"
-                                    ),
-                                )
-
-                                complete_runtime_job(
-                                    job_id,
-                                    success=True,
-                                )
-                            except Exception as job_exc:
-                                complete_runtime_job(
-                                    job_id,
-                                    success=False,
-                                    error=str(job_exc),
-                                )
-                                raise
-                else:
-                    # Deployment contract only. No database, marketplace API,
-                    # listing import, push or production-side execution.
-                    _run_light_reconcile_cycle(
-                        events=due_hints,
-                        source="deployment_contract_memory_hint",
-                    )
+                # One governed execution path. The exact event already held in
+                # the runtime queue is passed directly to reconciliation.
+                _run_light_reconcile_cycle(
+                    events=due_hints,
+                    source="governed_exact_event",
+                )
 
             if hydration_enabled:
                 now = datetime.utcnow()
