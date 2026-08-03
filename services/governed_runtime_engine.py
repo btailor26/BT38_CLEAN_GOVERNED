@@ -22,6 +22,7 @@ import os
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from flask import has_app_context
 
 _started = False
 _started_at = None
@@ -206,14 +207,24 @@ def notify_governed_runtime_work(source: str = "webhook", event=None, **identifi
     _last_event_at = item["received_at"]
     _last_event_source = item["source"]
 
-    from services.governed_runtime_job_store import (
-        enqueue_runtime_job,
-    )
+    if has_app_context():
+        from services.governed_runtime_job_store import (
+            enqueue_runtime_job,
+        )
 
-    result = enqueue_runtime_job(
-        source=item["source"],
-        event=item,
-    )
+        result = enqueue_runtime_job(
+            source=item["source"],
+            event=item,
+        )
+    else:
+        # A context-free deployment contract must never open a database.
+        # Production webhook requests run inside Flask application context
+        # and continue through the durable database job path above.
+        result = {
+            "queued": True,
+            "durable": False,
+            "status": "MEMORY_WAKE_HINT",
+        }
 
     # The database is the durable authority. This process-memory copy is only
     # a low-cost wake-up hint so the runtime does not poll Neon while idle.
@@ -1116,60 +1127,66 @@ def _engine_loop(app):
 
     _safe_log("Webhook-scoped runtime loop started")
 
-    # Initialise the durable exact-event table once per runtime-owner process.
-    # Do not execute DDL during every enqueue or polling cycle.
+    # Production Flask app creates a real application context.
+    # Deployment-contract FakeApp uses nullcontext and must never touch DB.
     try:
         with app.app_context():
-            from services.governed_runtime_job_store import (
-                ensure_runtime_job_table,
+            runtime_database_enabled = has_app_context()
+    except Exception:
+        runtime_database_enabled = False
+
+    if runtime_database_enabled:
+        # Initialise the durable exact-event table once per runtime-owner
+        # production process. Never execute DDL during idle polling.
+        try:
+            with app.app_context():
+                from services.governed_runtime_job_store import (
+                    ensure_runtime_job_table,
+                )
+
+                ensure_runtime_job_table()
+
+                from services.governed_runtime_job_store import (
+                    load_pending_runtime_job_hints,
+                )
+
+                recovered_hints = load_pending_runtime_job_hints(
+                    limit=250,
+                )
+
+                with _pending_events_lock:
+                    for recovered in recovered_hints:
+                        key = _event_key(recovered)
+
+                        if not any(
+                            _event_key(existing) == key
+                            for existing in _pending_events
+                        ):
+                            _pending_events.append(recovered)
+
+                    if _pending_events:
+                        _pending_notification_event.set()
+
+                _safe_log(
+                    "Durable runtime job recovery complete "
+                    f"pending={len(recovered_hints)}"
+                )
+        except Exception as exc:
+            _safe_error(
+                "Durable runtime job table initialisation failed",
+                exc,
             )
 
-            ensure_runtime_job_table()
-
-            from services.governed_runtime_job_store import (
-                load_pending_runtime_job_hints,
-            )
-
-            recovered_hints = load_pending_runtime_job_hints(
-                limit=250,
-            )
-
-            with _pending_events_lock:
-                for recovered in recovered_hints:
-                    key = _event_key(recovered)
-
-                    if not any(
-                        _event_key(existing) == key
-                        for existing in _pending_events
-                    ):
-                        _pending_events.append(recovered)
-
-                if _pending_events:
-                    _pending_notification_event.set()
-
+        # Production-only bounded MCF startup recovery.
+        try:
+            recovery_result = _recover_mcf_auto_release_events(app)
             _safe_log(
-                "Durable runtime job recovery complete "
-                f"pending={len(recovered_hints)}"
+                "MCF startup recovery complete "
+                f"queued={recovery_result.get('orders_queued', 0)} "
+                f"skipped={recovery_result.get('orders_skipped', 0)}"
             )
-    except Exception as exc:
-        _safe_error(
-            "Durable runtime job table initialisation failed",
-            exc,
-        )
-
-    # One bounded startup recovery restores exact one-hour MCF events that
-    # process memory may have lost during a restart or deployment.
-    try:
-        recovery_result = _recover_mcf_auto_release_events(app)
-        _safe_log(
-            "MCF startup recovery complete "
-            f"queued={recovery_result.get('orders_queued', 0)} "
-            f"skipped={recovery_result.get('orders_skipped', 0)}"
-        )
-    except Exception as exc:
-        # Runtime must continue even if startup recovery cannot run.
-        # Existing imports can re-arm exact orders later.
-        _safe_error("MCF startup recovery failed", exc)
+        except Exception as exc:
+            _safe_error("MCF startup recovery failed", exc)
 
     hydration_enabled = _truthy(
         os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
@@ -1202,38 +1219,46 @@ def _engine_loop(app):
             due_hints = _pop_due_events()
 
             if due_hints:
-                with app.app_context():
-                    from services.governed_runtime_job_store import (
-                        claim_due_runtime_jobs,
-                        complete_runtime_job,
+                if runtime_database_enabled:
+                    with app.app_context():
+                        from services.governed_runtime_job_store import (
+                            claim_due_runtime_jobs,
+                            complete_runtime_job,
+                        )
+
+                        durable_jobs = claim_due_runtime_jobs(
+                            limit=max(50, len(due_hints)),
+                        )
+
+                        for durable_job in durable_jobs:
+                            job_id = durable_job.pop("id")
+
+                            try:
+                                _run_light_reconcile_cycle(
+                                    events=[durable_job],
+                                    source=(
+                                        "durable_webhook_verification"
+                                    ),
+                                )
+
+                                complete_runtime_job(
+                                    job_id,
+                                    success=True,
+                                )
+                            except Exception as job_exc:
+                                complete_runtime_job(
+                                    job_id,
+                                    success=False,
+                                    error=str(job_exc),
+                                )
+                                raise
+                else:
+                    # Deployment contract only. No database, marketplace API,
+                    # listing import, push or production-side execution.
+                    _run_light_reconcile_cycle(
+                        events=due_hints,
+                        source="deployment_contract_memory_hint",
                     )
-
-                    durable_jobs = claim_due_runtime_jobs(
-                        limit=max(50, len(due_hints)),
-                    )
-
-                    for durable_job in durable_jobs:
-                        job_id = durable_job.pop("id")
-
-                        try:
-                            _run_light_reconcile_cycle(
-                                events=[durable_job],
-                                source=(
-                                    "durable_webhook_verification"
-                                ),
-                            )
-
-                            complete_runtime_job(
-                                job_id,
-                                success=True,
-                            )
-                        except Exception as job_exc:
-                            complete_runtime_job(
-                                job_id,
-                                success=False,
-                                error=str(job_exc),
-                            )
-                            raise
 
             if hydration_enabled:
                 now = datetime.utcnow()

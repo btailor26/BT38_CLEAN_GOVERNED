@@ -37,6 +37,27 @@ def _text(value: Any) -> str:
 
 
 def _line_idempotency_key(line: Any) -> str:
+    """One warehouse mutation identity per store, order and SKU.
+
+    Marketplace webhooks and later imports can describe the same sold SKU with
+    different marketplace item IDs. Item IDs are transport metadata and must
+    never create a second WarehouseStock decrement.
+    """
+    store_id = _text(getattr(line, "store_id", None))
+    order_id = (
+        _text(getattr(line, "external_order_id", None))
+        or _text(getattr(line, "marketplace_order_id", None))
+        or _text(getattr(line, "order_number", None))
+    )
+    sku = (
+        _text(getattr(line, "sku", None))
+        or _text(getattr(line, "external_sku", None))
+        or _text(getattr(line, "seller_sku", None))
+    ).upper()
+
+    if store_id and order_id and sku:
+        return f"order_stock:v2:{store_id}:{order_id}:{sku}"
+
     existing = _text(getattr(line, "stock_mutation_key", None))
     if existing:
         return existing
@@ -45,29 +66,56 @@ def _line_idempotency_key(line: Any) -> str:
     if explicit:
         return f"order_stock:{explicit}"
 
-    platform = _text(getattr(line, "platform", None))
+    platform = _text(
+        getattr(line, "platform", None)
+        or getattr(line, "marketplace", None)
+    ).lower()
+    row_id = _text(getattr(line, "id", None))
+    qty = _text(getattr(line, "quantity", None))
+
+    return f"order_stock:fallback:{platform}:{row_id}:{sku}:{qty}"
+
+def _already_mutated(line: Any, key: str) -> bool:
+    """Block new canonical keys and historical item-specific ledger keys."""
+    if not key:
+        return False
+
+    exact = (
+        db.session.query(StockLedgerEntry.id)
+        .filter(StockLedgerEntry.reference_id == key)
+        .first()
+    )
+
+    if exact is not None:
+        return True
+
+    store_id = _text(getattr(line, "store_id", None))
     order_id = (
         _text(getattr(line, "external_order_id", None))
         or _text(getattr(line, "marketplace_order_id", None))
         or _text(getattr(line, "order_number", None))
-        or _text(getattr(line, "id", None))
     )
-    sku = _text(getattr(line, "sku", None))
-    qty = _text(getattr(line, "quantity", None))
-    return f"order_stock:{platform}:{order_id}:{sku}:{qty}"
+    sku = (
+        _text(getattr(line, "sku", None))
+        or _text(getattr(line, "external_sku", None))
+        or _text(getattr(line, "seller_sku", None))
+    )
 
-
-def _already_mutated(key: str) -> bool:
-    if not key:
+    if not (store_id and order_id and sku):
         return False
+
+    legacy_prefix = f"order_stock:{store_id}:{order_id}:"
+    legacy_suffix = f":{sku}"
 
     return (
         db.session.query(StockLedgerEntry.id)
-        .filter(StockLedgerEntry.reference_id == key)
+        .filter(
+            StockLedgerEntry.reference_id.startswith(legacy_prefix),
+            StockLedgerEntry.reference_id.endswith(legacy_suffix),
+        )
         .first()
         is not None
     )
-
 
 def _line_sku(line: Any) -> str:
     return (
@@ -157,7 +205,7 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
 
     key = _line_idempotency_key(line)
 
-    if _already_mutated(key):
+    if _already_mutated(line, key):
         return {
             "success": True,
             "skipped": True,
@@ -176,7 +224,12 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
             "reference_id": key,
         }
 
-    stock = db.session.get(WarehouseStock, listing.warehouse_stock_id)
+    stock = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.id == listing.warehouse_stock_id)
+        .with_for_update()
+        .first()
+    )
 
     if not stock:
         return {
@@ -184,6 +237,17 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
             "skipped": True,
             "reason": "warehouse_stock_missing",
             "warehouse_stock_id": listing.warehouse_stock_id,
+            "reference_id": key,
+        }
+
+    # A webhook and a later import may arrive at nearly the same time.
+    # Recheck after locking the single Warehouse authority row.
+    if _already_mutated(line, key):
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "already_mutated_after_lock",
+            "warehouse_stock_id": stock.id,
             "reference_id": key,
         }
 
@@ -444,7 +508,7 @@ def replay_failed_grouped_marketplace_orders(limit: int = 100, source: str = "go
 
         key = _line_idempotency_key(order)
 
-        if _already_mutated(key):
+        if _already_mutated(line, key):
             skipped += 1
             results.append({
                 "order_id": getattr(order, "marketplace_order_id", None),
