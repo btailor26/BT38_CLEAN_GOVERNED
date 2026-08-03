@@ -234,15 +234,18 @@
 
       try {
         const result = await postJson(
-          '/governed/actions/import/orders',
-          {},
+          '/governed/warehouse/sync',
+          {
+            shortcut_source: 'warehouse-sync-button'
+          },
           'warehouse-sync-button'
         );
 
         alert(result.message || 'Warehouse sync complete');
 
-        // Backend import has completed. Re-read the existing Warehouse route
-        // once so the rendered rows reflect the newly imported authority.
+        // Existing governed Warehouse Sync has completed marketplace
+        // listing/inventory hydration. Re-read the Warehouse route once so
+        // newly discovered listings and WarehouseStock rows are rendered.
         window.location.reload();
       } catch (err) {
         alert(err.message || 'Warehouse sync failed');
