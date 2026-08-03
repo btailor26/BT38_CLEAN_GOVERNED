@@ -157,6 +157,232 @@ def _extract_listing_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def refresh_governed_amazon_listing_exact(
+    *,
+    store_id: int,
+    seller_sku: str,
+    actor: str = "amazon_listing_event",
+) -> dict[str, Any]:
+    """Fetch one exact Amazon listing and use the existing canonical writer.
+
+    This is not a second importer or writer. The Listings Items snapshot is
+    handed directly to refresh_governed_listing_from_snapshot().
+    """
+    seller_sku = _clean(seller_sku)
+
+    if not seller_sku:
+        return {
+            "success": False,
+            "governed": True,
+            "targeted": True,
+            "reason": "missing_seller_sku",
+        }
+
+    store = (
+        Store.query
+        .filter(
+            Store.id == int(store_id),
+            Store.platform.ilike("%amazon%"),
+            Store.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+
+    if store is None:
+        return {
+            "success": False,
+            "governed": True,
+            "targeted": True,
+            "reason": "amazon_store_not_found",
+            "store_id": store_id,
+            "seller_sku": seller_sku,
+        }
+
+    marketplace, marketplace_id, raw = _marketplace_for_store(store)
+    seller_id = _clean(
+        raw.get("seller_id")
+        or os.getenv("AMAZON_SELLER_ID")
+    )
+
+    if not seller_id:
+        return {
+            "success": False,
+            "governed": True,
+            "targeted": True,
+            "reason": "missing_seller_id",
+            "store_id": store.id,
+            "seller_sku": seller_sku,
+        }
+
+    client = ListingsItems(
+        marketplace=marketplace,
+        credentials=_credentials(raw),
+    )
+
+    response = client.get_listings_item(
+        sellerId=seller_id,
+        sku=seller_sku,
+        marketplaceIds=[marketplace_id],
+        includedData=[
+            "summaries",
+            "fulfillmentAvailability",
+        ],
+    )
+
+    item = dict(response.payload or {})
+    item.setdefault("sku", seller_sku)
+
+    snapshot = _extract_listing_snapshot(item)
+
+    if not snapshot:
+        return {
+            "success": False,
+            "governed": True,
+            "targeted": True,
+            "reason": "amazon_listing_snapshot_unresolved",
+            "store_id": store.id,
+            "seller_sku": seller_sku,
+        }
+
+    result = refresh_governed_listing_from_snapshot(
+        store_id=store.id,
+        sku=snapshot["sku"],
+        external_listing_id=snapshot["external_listing_id"],
+        amazon_fulfillment_channel=(
+            snapshot["amazon_fulfillment_channel"]
+        ),
+        title=snapshot["title"],
+        actor=actor,
+    )
+
+    return {
+        "success": bool(result.get("success")),
+        "governed": True,
+        "targeted": True,
+        "store_id": store.id,
+        "seller_sku": seller_sku,
+        "snapshot": snapshot,
+        "result": result,
+    }
+
+
+AMAZON_LISTING_NOTIFICATION_TYPES = {
+    "LISTINGS_ITEM_STATUS_CHANGE",
+    "LISTINGS_ITEM_MFN_QUANTITY_CHANGE",
+}
+
+
+def recover_governed_amazon_listing_from_notification(
+    *,
+    store_id: int | None,
+    event_type: str,
+    seller_sku: str | None,
+) -> dict[str, Any]:
+    """Use the existing Amazon listing refresh path for one notification.
+
+    Marketplace-specific event recognition, exact Listings Items fetching and
+    bounded store recovery remain inside the Amazon listing service.
+
+    Both exact and recovery paths continue to use
+    refresh_governed_listing_from_snapshot() as the sole listing writer.
+    """
+    event_type = _clean(event_type).upper()
+    seller_sku = _clean(seller_sku)
+
+    if event_type not in AMAZON_LISTING_NOTIFICATION_TYPES:
+        return {
+            "success": False,
+            "governed": True,
+            "applicable": False,
+            "targeted": True,
+            "reason": "not_amazon_listing_notification",
+            "event_type": event_type,
+        }
+
+    if store_id is None:
+        return {
+            "success": False,
+            "governed": True,
+            "applicable": True,
+            "targeted": True,
+            "reason": "amazon_listing_event_store_missing",
+            "event_type": event_type,
+            "seller_sku": seller_sku or None,
+        }
+
+    if not seller_sku:
+        return {
+            "success": False,
+            "governed": True,
+            "applicable": True,
+            "targeted": True,
+            "reason": "amazon_listing_event_sku_missing",
+            "event_type": event_type,
+            "store_id": int(store_id),
+        }
+
+    exact_result = None
+    recovery_result = None
+
+    try:
+        exact_result = refresh_governed_amazon_listing_exact(
+            store_id=int(store_id),
+            seller_sku=seller_sku,
+            actor=f"webhook_{event_type}",
+        )
+    except Exception as exc:
+        exact_result = {
+            "success": False,
+            "governed": True,
+            "targeted": True,
+            "reason": "amazon_exact_listing_fetch_failed",
+            "error": str(exc),
+            "store_id": int(store_id),
+            "seller_sku": seller_sku,
+        }
+
+    if bool((exact_result or {}).get("success")):
+        return {
+            "success": True,
+            "governed": True,
+            "applicable": True,
+            "targeted": True,
+            "store_id": int(store_id),
+            "seller_sku": seller_sku,
+            "event_type": event_type,
+            "exact": exact_result,
+            "recovery": None,
+        }
+
+    # One bounded exact-store recovery through the existing manual listing
+    # refresh. This uses the same canonical listing writer and cannot loop.
+    try:
+        recovery_result = run_governed_amazon_listing_fulfillment_refresh(
+            store_id=int(store_id),
+        )
+    except Exception as exc:
+        recovery_result = {
+            "success": False,
+            "governed": True,
+            "reason": "amazon_listing_manual_recovery_failed",
+            "error": str(exc),
+            "store_id": int(store_id),
+        }
+
+    return {
+        "success": bool((recovery_result or {}).get("success")),
+        "governed": True,
+        "applicable": True,
+        "targeted": False,
+        "bounded_recovery": True,
+        "store_id": int(store_id),
+        "seller_sku": seller_sku,
+        "event_type": event_type,
+        "exact": exact_result,
+        "recovery": recovery_result,
+    }
+
+
 def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: int | None = None) -> dict[str, Any]:
     query = Store.query.filter(
         Store.platform.ilike("%amazon%"),
