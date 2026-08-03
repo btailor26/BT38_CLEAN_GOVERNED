@@ -194,29 +194,51 @@ def _event_key(event):
 
 
 def notify_governed_runtime_work(source: str = "webhook", event=None, **identifiers):
-    """Arm a 15-minute verification for one exact webhook scope."""
+    """Persist one exact webhook verification as a durable DB job."""
     global _last_event_at, _last_event_source
 
-    item = _normalise_webhook_event(source, event=event, **identifiers)
+    item = _normalise_webhook_event(
+        source,
+        event=event,
+        **identifiers,
+    )
+
     _last_event_at = item["received_at"]
     _last_event_source = item["source"]
 
+    from services.governed_runtime_job_store import (
+        enqueue_runtime_job,
+    )
+
+    result = enqueue_runtime_job(
+        source=item["source"],
+        event=item,
+    )
+
+    # The database is the durable authority. This process-memory copy is only
+    # a low-cost wake-up hint so the runtime does not poll Neon while idle.
     with _pending_events_lock:
         key = _event_key(item)
+
         for queued in _pending_events:
             if _event_key(queued) == key:
                 queued["verify_after"] = item["verify_after"]
-                queued["payload"] = item.get("payload") or queued.get("payload")
-                queued["expected_quantity"] = item.get("expected_quantity")
+                queued["payload"] = (
+                    item.get("payload")
+                    or queued.get("payload")
+                )
+                queued["expected_quantity"] = (
+                    item.get("expected_quantity")
+                )
                 break
         else:
             _pending_events.append(item)
 
     _pending_notification_event.set()
+
     return {
-        "queued": True,
+        **result,
         "scoped": item["scope_present"],
-        "verify_after": item["verify_after"].isoformat(),
     }
 
 
@@ -1094,6 +1116,47 @@ def _engine_loop(app):
 
     _safe_log("Webhook-scoped runtime loop started")
 
+    # Initialise the durable exact-event table once per runtime-owner process.
+    # Do not execute DDL during every enqueue or polling cycle.
+    try:
+        with app.app_context():
+            from services.governed_runtime_job_store import (
+                ensure_runtime_job_table,
+            )
+
+            ensure_runtime_job_table()
+
+            from services.governed_runtime_job_store import (
+                load_pending_runtime_job_hints,
+            )
+
+            recovered_hints = load_pending_runtime_job_hints(
+                limit=250,
+            )
+
+            with _pending_events_lock:
+                for recovered in recovered_hints:
+                    key = _event_key(recovered)
+
+                    if not any(
+                        _event_key(existing) == key
+                        for existing in _pending_events
+                    ):
+                        _pending_events.append(recovered)
+
+                if _pending_events:
+                    _pending_notification_event.set()
+
+            _safe_log(
+                "Durable runtime job recovery complete "
+                f"pending={len(recovered_hints)}"
+            )
+    except Exception as exc:
+        _safe_error(
+            "Durable runtime job table initialisation failed",
+            exc,
+        )
+
     # One bounded startup recovery restores exact one-hour MCF events that
     # process memory may have lost during a restart or deployment.
     try:
@@ -1134,11 +1197,43 @@ def _engine_loop(app):
             if _stop_event.is_set():
                 break
 
-            due_events = _pop_due_events()
+            # Check Neon only when an exact in-memory due hint exists.
+            # The DB remains the durable source; the deque is only a wake timer.
+            due_hints = _pop_due_events()
 
-            if due_events:
+            if due_hints:
                 with app.app_context():
-                    _run_light_reconcile_cycle(events=due_events)
+                    from services.governed_runtime_job_store import (
+                        claim_due_runtime_jobs,
+                        complete_runtime_job,
+                    )
+
+                    durable_jobs = claim_due_runtime_jobs(
+                        limit=max(50, len(due_hints)),
+                    )
+
+                    for durable_job in durable_jobs:
+                        job_id = durable_job.pop("id")
+
+                        try:
+                            _run_light_reconcile_cycle(
+                                events=[durable_job],
+                                source=(
+                                    "durable_webhook_verification"
+                                ),
+                            )
+
+                            complete_runtime_job(
+                                job_id,
+                                success=True,
+                            )
+                        except Exception as job_exc:
+                            complete_runtime_job(
+                                job_id,
+                                success=False,
+                                error=str(job_exc),
+                            )
+                            raise
 
             if hydration_enabled:
                 now = datetime.utcnow()

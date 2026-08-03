@@ -1258,9 +1258,17 @@ def governed_marketplace_webhook_intake(marketplace):
                     exact_scope,
                 )
 
+                from datetime import datetime, timedelta
+
+                settlement_scope = dict(exact_scope)
+                settlement_scope["verify_after"] = (
+                    datetime.utcnow()
+                    + timedelta(seconds=90)
+                )
+
                 delayed_fba_result = notify_governed_runtime_work(
                     source=f"webhook_{platform}_settlement_recheck",
-                    event=exact_scope,
+                    event=settlement_scope,
                 )
 
                 verification_queue_result = {
