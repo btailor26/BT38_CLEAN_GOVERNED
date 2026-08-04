@@ -49,10 +49,11 @@ jobs:
           adapter = Path('backend/adapters/amazon_sp_api_adapter.py').read_text(encoding='utf-8')
           live_patch = Path('amazon_service_live_patch.py').read_text(encoding='utf-8')
 
-          assert 'lwa_client_id=(' in adapter, 'Amazon adapter must call Inventories with lwa_client_id'
-          assert 'lwa_app_id=(' not in adapter, 'Amazon adapter must not call Inventories with lwa_app_id'
-          assert '"lwa_client_id"' in live_patch, 'Live patch credentials must output lwa_client_id'
-          print('Amazon SP-API LWA constructor alignment OK')
+          assert 'credentials=credentials' in adapter, 'Amazon adapter must pass the validated credentials dictionary'
+          assert '"lwa_app_id": (' in adapter, 'python-amazon-sp-api credentials must contain lwa_app_id'
+          assert 'creds.get("lwa_client_id")' in adapter, 'Saved lwa_client_id must feed the library credential key'
+          assert '"lwa_app_id"' in live_patch, 'Live patch credentials must output the python-amazon-sp-api lwa_app_id key'
+          print('Amazon SP-API credentials dictionary alignment OK')
           PY
 
       - name: Prove warehouse eBay variation visibility wiring
@@ -67,7 +68,8 @@ jobs:
               'parent_item_id=getattr(listing, "parent_item_id", None)',
               'external_parent_id=getattr(listing, "external_parent_id", None)',
               'variation_sku_map=getattr(listing, "variation_sku_map", None)',
-              'if (is_fba or is_ebay_variation_child)',
+              'is_fba',
+      'is_ebay_variation_child',
           ]
           for needle in required_route:
               assert needle in route, f'Missing warehouse route wiring: {needle}'

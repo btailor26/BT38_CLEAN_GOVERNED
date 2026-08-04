@@ -234,12 +234,20 @@ def _upsert_listing(
     parent_item_id: str | None,
     variation_sku_map: str | None,
 ) -> MarketplaceListing:
+    # Platform-wide listing identity contract:
+    #
+    # store_id + seller SKU is the operational import identity.
+    # eBay Item ID is marketplace metadata and may be corrected or refreshed
+    # without creating another MarketplaceListing.
     listing = (
         db.session.query(MarketplaceListing)
         .filter(
             MarketplaceListing.store_id == store.id,
-            MarketplaceListing.external_listing_id == item_id,
             MarketplaceListing.external_sku == sku,
+        )
+        .order_by(
+            MarketplaceListing.is_active.desc(),
+            MarketplaceListing.id.asc(),
         )
         .first()
     )
