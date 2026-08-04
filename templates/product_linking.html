@@ -733,7 +733,7 @@
                 
                 <div class="alert alert-success py-2">
                     <i data-feather="check-circle" class="feather-sm me-1"></i>
-                    <strong>Push warehouse quantity to ALL linked FBM marketplaces.</strong>
+                    <strong>Push the saved Warehouse quantity to all linked writable marketplaces.</strong>
                     <br><br>
                     <label for="adjustPushQuantity" class="form-label mb-1">Warehouse quantity</label>
                     <input type="number"
@@ -743,7 +743,7 @@
                            step="1"
                            value="0">
                     <div class="small text-muted mt-1">
-                        Save updates warehouse/group quantity. Push sends that saved quantity to linked marketplaces.
+                        Warehouse remains the quantity authority. This button is only a shortcut to the existing Warehouse group push.
                     </div>
                 </div>
                 
@@ -1141,86 +1141,122 @@ function renderGroupMembersPreview(warehouseId) {
 }
 
 async function executeGroupPush() {
-    const warehouseId = document.getElementById('adjustPushWarehouseId').value;
-    const groupId = document.getElementById('adjustPushGroupId') ? document.getElementById('adjustPushGroupId').value : '';
-    const qty = parseInt(document.getElementById('adjustPushQuantity').value, 10);
+    const warehouseId = parseInt(
+        document.getElementById('adjustPushWarehouseId').value,
+        10
+    );
+
+    const groupIdElement = document.getElementById('adjustPushGroupId');
+    const groupId = groupIdElement
+        ? parseInt(groupIdElement.value, 10)
+        : null;
+
     const btn = document.getElementById('adjustPushBtn');
 
-    if (!Number.isInteger(qty) || qty < 0) {
-        alert('Enter a valid warehouse quantity.');
+    if (!Number.isInteger(warehouseId) || warehouseId <= 0) {
+        alert('A valid Warehouse stock ID is required.');
         return;
     }
 
-    if (!groupId) {
-        alert('This warehouse row is not linked to a governed group yet.');
+    if (!Number.isInteger(groupId) || groupId <= 0) {
+        alert('This Warehouse row is not linked to a governed group yet.');
         return;
     }
 
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Pushing...';
+    btn.innerHTML =
+        '<span class="spinner-border spinner-border-sm me-1"></span>Pushing...';
 
     try {
-        const quantityResponse = await fetch(`/governed/groups/${groupId}/propagate-quantity`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-BT38-Shortcut': 'product_linking_push_now_button'
-            },
-            body: JSON.stringify({
-                warehouse_stock_id: parseInt(warehouseId),
-                quantity: qty,
-                update_warehouse_first: true,
-                source: 'product_linking_push_now_button'
-            })
-        });
+        /*
+         * Product Linking is a shortcut only.
+         *
+         * This request does not send or establish quantity authority.
+         * The governed Warehouse/group path reads the saved WarehouseStock
+         * quantity and pushes the writable listings in this exact group.
+         */
+        const response = await fetch(
+            `/governed/actions/groups/${encodeURIComponent(groupId)}/push`,
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-BT38-Shortcut': 'product_linking_warehouse_shortcut'
+                },
+                body: JSON.stringify({
+                    warehouse_stock_id: warehouseId,
+                    source: 'product_linking_warehouse_shortcut'
+                })
+            }
+        );
 
-        const quantityText = await quantityResponse.text();
-        let quantityData = {};
-        try {
-            quantityData = quantityText ? JSON.parse(quantityText) : {};
-        } catch (error) {
-            throw new Error('Quantity save returned non-JSON response. Status: ' + quantityResponse.status);
-        }
-
-        if (!quantityResponse.ok || (!quantityData.success && !quantityData.ok)) {
-            throw new Error(quantityData.error || quantityData.reason || quantityData.message || 'Quantity save failed.');
-        }
-
-        const pushResponse = await fetch(`/governed/actions/groups/${groupId}/push`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-BT38-Shortcut': 'product_linking_push_now_button'
-            },
-            body: JSON.stringify({
-                source: 'product_linking_push_now_button'
-            })
-        });
-
-        const pushText = await pushResponse.text();
+        const responseText = await response.text();
         let data = {};
+
         try {
-            data = pushText ? JSON.parse(pushText) : {};
+            data = responseText ? JSON.parse(responseText) : {};
         } catch (error) {
-            throw new Error('Group push returned non-JSON response. Status: ' + pushResponse.status);
+            throw new Error(
+                'Warehouse group shortcut returned a non-JSON response. '
+                + `Status: ${response.status}`
+            );
         }
 
-        if (!pushResponse.ok || (!data.success && !data.ok)) {
-            throw new Error(data.error || data.reason || data.message || 'Group push failed.');
+        if (!response.ok || (!data.success && !data.ok)) {
+            throw new Error(
+                data.error
+                || data.reason
+                || data.message
+                || 'Warehouse group push failed.'
+            );
         }
 
-        bootstrap.Modal.getInstance(document.getElementById('adjustPushModal')).hide();
-        alert(`Warehouse quantity saved and group push completed.\n\nListings checked: ${data.total_listings || data.total || 0}\nPushed: ${data.pushed || data.ok_count || 0}\nSkipped: ${data.skipped || 0}\nFailed: ${data.failed || 0}`);
-        loadProductLinkingData(productLinkingPage);
+        if (typeof window.bt38ApplyProductLinkingMutation !== 'function') {
+            throw new Error(
+                'Targeted Product Linking refresh controller is unavailable.'
+            );
+        }
+
+        await window.bt38ApplyProductLinkingMutation(
+            data,
+            {
+                warehouseId,
+                groupId
+            }
+        );
+
+        const modalElement = document.getElementById('adjustPushModal');
+        const modal = window.bootstrap?.Modal?.getInstance(modalElement);
+
+        if (modal) {
+            modal.hide();
+        }
+
+        alert(
+            data.message
+            || (
+                'Warehouse group push completed.\n\n'
+                + `Listings checked: ${data.total_listings || data.total || 0}\n`
+                + `Pushed: ${data.pushed || data.ok_count || 0}\n`
+                + `Skipped: ${data.skipped || 0}\n`
+                + `Failed: ${data.failed || 0}`
+            )
+        );
     } catch (error) {
-        alert('Push error: ' + error.message);
-        console.error('Group Push error:', error);
+        alert(`Push error: ${error.message || error}`);
+        console.error(
+            '[ProductLinking] Warehouse shortcut push failed',
+            error
+        );
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i data-feather="send" class="feather-sm me-1"></i>Push Now';
-        feather.replace();
+        btn.innerHTML =
+            '<i data-feather="send" class="feather-sm me-1"></i>Push Now';
+
+        if (typeof feather !== 'undefined') {
+            feather.replace();
+        }
     }
 }
 

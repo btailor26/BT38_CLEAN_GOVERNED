@@ -3822,651 +3822,73 @@ def governed_product_linking_link_listing_to_warehouse():
 @governed_bp.route("/governed-disabled", defaults={"action": ""}, methods=["GET", "POST"])
 @governed_bp.route("/governed-disabled/<path:action>", methods=["GET", "POST"])
 def governed_disabled_action(action: str = ""):
-    """Phase 2 governed bridge for old product-linking frontend calls.
+    """Permanently retired compatibility route.
 
-    This is not a second execution authority.
-    It only translates old frontend paths into governed product-linking/group behavior.
-
-    Marketplace push still flows through:
-    governed group/listing route
-    -> runtime_action_guard.py
-    -> SystemConfig fuse box
-    -> governed_execution.py
-    -> marketplace adapter
+    All Product Linking relationship, grouping and push operations use the
+    canonical governed group routes. This endpoint performs no database write,
+    quantity update, relationship mutation or marketplace execution.
     """
-    from flask import jsonify, request
-    from extensions import db
-    from models import MarketplaceListing, MasterProductGroup, WarehouseStock
+    from flask import jsonify
 
-    action = (action or "").strip("/")
-
-    retired_relationship_actions = {
-        "link-listing-to-warehouse",
-        "unlink-listing",
-        "product-linking-link",
-    }
-
-    if action in retired_relationship_actions:
-        return jsonify({
-            "success": False,
-            "ok": False,
-            "governed": True,
-            "legacy_bridge": True,
-            "execution_blocked": True,
-            "reason": "legacy_product_linking_disabled",
-            "action": action,
-            "message": (
-                "Legacy Product Linking relationship writer is disabled. "
-                "Use the governed group relationship routes."
+    return jsonify({
+        "success": False,
+        "ok": False,
+        "governed": True,
+        "retired": True,
+        "execution_blocked": True,
+        "relationship_mutation": False,
+        "quantity_mutation": False,
+        "marketplace_execution": False,
+        "action": action,
+        "canonical_routes": {
+            "link": (
+                "/governed/product-linking/"
+                "link-listing-to-warehouse"
             ),
-            "full_page_refresh": False,
-            "full_dataset_refresh": False,
-            "cache_clear_required": False,
-        }), 409
-    body = request.get_json(silent=True) or {}
-
-    def blocked(message, status=409, **extra):
-        payload = {
-            "success": False,
-            "ok": False,
-            "governed": True,
-            "legacy_bridge": True,
-            "execution_blocked": True,
-            "action": action,
-            "method": request.method,
-            "message": message,
-        }
-        payload.update(extra)
-        return jsonify(payload), status
-
-    def resolve_stock(stock_id):
-        try:
-            stock_id_int = int(stock_id)
-        except Exception:
-            return None
-        return db.session.get(WarehouseStock, stock_id_int)
-
-    def ensure_group_for_stock(stock):
-        """Resolve one group authority for Product Linking.
-
-        Product Linking is relationship-only. WarehouseStock is stock truth.
-        If active listings already linked to this warehouse stock have a group,
-        reuse that group instead of creating a duplicate group.
-        """
-        if not stock:
-            return None
-
-        if getattr(stock, "master_product_group_id", None):
-            group = db.session.get(MasterProductGroup, int(stock.master_product_group_id))
-            if group:
-                return group
-
-        existing_listing_group_id = (
-            db.session.query(MarketplaceListing.master_product_group_id)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
-            .filter(MarketplaceListing.master_product_group_id.isnot(None))
-            .order_by(MarketplaceListing.updated_at.desc(), MarketplaceListing.id.desc())
-            .limit(1)
-            .scalar()
-        )
-
-        if existing_listing_group_id:
-            group = db.session.get(MasterProductGroup, int(existing_listing_group_id))
-            if group:
-                stock.master_product_group_id = group.id
-                stock.is_group_controlled = True
-                if hasattr(stock, "group_controlled_at") and not stock.group_controlled_at:
-                    from datetime import datetime
-                    stock.group_controlled_at = datetime.utcnow()
-                if hasattr(stock, "updated_at"):
-                    from datetime import datetime
-                    stock.updated_at = datetime.utcnow()
-                group.updated_at = getattr(stock, "updated_at", None) or group.updated_at
-                return group
-
-        group = MasterProductGroup(
-            display_title=(stock.product_name or stock.group_title or stock.sku or "Untitled Master Group")[:500],
-            display_image_url=getattr(stock, "image_url", None),
-        )
-        db.session.add(group)
-        db.session.flush()
-
-        stock.master_product_group_id = group.id
-        stock.is_group_controlled = True
-        if hasattr(stock, "group_controlled_at") and not stock.group_controlled_at:
-            from datetime import datetime
-            stock.group_controlled_at = datetime.utcnow()
-        if hasattr(stock, "updated_at"):
-            from datetime import datetime
-            stock.updated_at = datetime.utcnow()
-
-        group.updated_at = getattr(stock, "updated_at", None) or group.updated_at
-        return group
-
-    def listing_preview_for_stock(stock):
-        listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .order_by(MarketplaceListing.id)
-            .all()
-        )
-        preview = []
-        for listing in listings:
-            platform = (listing.store.platform if listing.store else listing.platform or "").strip()
-            channel = (listing.normalized_amazon_fulfillment_channel or "").upper()
-            is_amazon = "amazon" in platform.lower()
-            is_fba = is_amazon and channel not in ("MFN", "FBM", "MERCHANT")
-            preview.append({
-                "listing_id": listing.id,
-                "sku": listing.external_sku,
-                "external_id": listing.external_listing_id,
-                "platform": platform,
-                "store_name": listing.store.name if listing.store else None,
-                "quantity": listing.effective_quantity,
-                "is_fba": bool(is_fba),
-                "pushable": bool((not is_fba) and listing.is_pushable),
-            })
-        return preview
-
-    if action.startswith("group-push-preview/") and request.method == "GET":
-        stock_id = action.rsplit("/", 1)[-1]
-        stock = resolve_stock(stock_id)
-        if not stock:
-            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
-
-        listings = listing_preview_for_stock(stock)
-        return jsonify({
-            "success": True,
-            "ok": True,
-            "governed": True,
-            "legacy_bridge": True,
-            "preview_only": True,
-            "warehouse_stock_id": stock.id,
-            "group_id": stock.master_product_group_id,
-            "sku": stock.sku,
-            "target_qty": stock.sellable_quantity,
-            "listings": listings,
-            "listings_count": len([x for x in listings if x.get("pushable")]),
-            "message": "Governed preview only. Push still requires governed fuse-box execution.",
-        }), 200
-
-    if action == "group-push" and request.method == "POST":
-        stock_id = body.get("warehouse_stock_id") or body.get("stock_id")
-        stock = resolve_stock(stock_id)
-        if not stock:
-            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
-
-        group = ensure_group_for_stock(stock)
-        db.session.commit()
-
-        from governed_group_propagation_routes import run_governed_group_propagation
-        return run_governed_group_propagation(
-            group.id,
-            payload=body,
-        )
-
-    if action == "link-listing-to-warehouse" and request.method == "POST":
-        listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
-        stock_id = body.get("warehouse_id") or body.get("warehouse_stock_id") or body.get("stock_id")
-
-        listing = db.session.get(MarketplaceListing, int(listing_id)) if listing_id else None
-        stock = resolve_stock(stock_id)
-
-        if not listing:
-            return blocked("Marketplace listing was not found.", status=404, listing_id=listing_id)
-        if not stock:
-            return blocked("Warehouse stock was not found.", status=404, warehouse_stock_id=stock_id)
-
-        group = ensure_group_for_stock(stock)
-
-        # Unified Product Linking authority:
-        # The live UI calls link-listing-to-warehouse, so this path must also
-        # merge existing group ownership into ONE MasterProductGroup.
-        # Rule:
-        # - standalone warehouse rows update from warehouse only
-        # - grouped rows update from group authority only
-        # - one physical product must not split across competing group IDs
-        merge_group_ids = set()
-        if getattr(stock, "master_product_group_id", None):
-            merge_group_ids.add(int(stock.master_product_group_id))
-        if getattr(listing, "master_product_group_id", None):
-            merge_group_ids.add(int(listing.master_product_group_id))
-
-        if merge_group_ids:
-            from datetime import datetime
-
-            for merge_group_id in sorted(merge_group_ids):
-
-                linked_listings = (
-                    db.session.query(MarketplaceListing)
-                    .filter(MarketplaceListing.master_product_group_id == merge_group_id)
-                    .all()
-                )
-
-                for linked_listing in linked_listings:
-                    linked_listing.master_product_group_id = group.id
-
-                    if linked_listing.id == listing.id:
-                        linked_listing.warehouse_stock_id = stock.id
-
-                    if hasattr(linked_listing, "updated_at"):
-                        linked_listing.updated_at = datetime.utcnow()
-
-        listing.warehouse_stock_id = stock.id
-        listing.master_product_group_id = group.id
-
-        # FBA-led groups must follow the same relationship pattern as working FBM groups:
-        # every active listing attached to a grouped stock belongs to the group,
-        # every stock used by a grouped listing belongs to the group,
-        # and exactly one warehouse stock remains the group authority.
-        #
-        # This is local relationship repair only. It does not push, import, sync,
-        # change quantities, or alter marketplace state. FBA/AFN remains read-only.
-        from datetime import datetime
-
-        now = datetime.utcnow()
-        target_stock_ids = {int(stock.id)}
-
-        group_listings_for_authority = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.master_product_group_id == group.id)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .all()
-        )
-
-        for group_listing in group_listings_for_authority:
-            if getattr(group_listing, "warehouse_stock_id", None):
-                target_stock_ids.add(int(group_listing.warehouse_stock_id))
-
-        # A listing may historically point at the wrong warehouse row while its
-        # canonical Amazon FBA inventory remains attached to a separate row.
-        # Collect those related warehouse rows now so one physical product does
-        # not render as a grouped row plus a leftover unlinked row.
-        grouped_skus = {
-            str(getattr(item, "external_sku", "") or "").strip()
-            for item in group_listings_for_authority
-            if str(getattr(item, "external_sku", "") or "").strip()
-        }
-        grouped_fnskus = {
-            str(getattr(item, "fnsku", "") or "").strip()
-            for item in group_listings_for_authority
-            if str(getattr(item, "fnsku", "") or "").strip()
-        }
-
-        from models import AmazonFBAInventory
-
-        amazon_store_ids = {
-            int(item.store_id)
-            for item in group_listings_for_authority
-            if getattr(item, "store_id", None)
-            and "amazon" in str(
-                item.store.platform
-                if item.store
-                else ""
-            ).strip().lower()
-        }
-
-        fba_identity_filters = []
-
-        if grouped_skus:
-            fba_identity_filters.append(
-                AmazonFBAInventory.seller_sku.in_(
-                    list(grouped_skus)
-                )
-            )
-
-        if grouped_fnskus:
-            fba_identity_filters.append(
-                AmazonFBAInventory.fnsku.in_(
-                    list(grouped_fnskus)
-                )
-            )
-
-        if fba_identity_filters and amazon_store_ids:
-            from sqlalchemy import or_
-
-            matching_fba_stock_ids = (
-                db.session.query(
-                    AmazonFBAInventory.warehouse_stock_id
-                )
-                .filter(
-                    AmazonFBAInventory.store_id.in_(
-                        list(amazon_store_ids)
-                    ),
-                    AmazonFBAInventory.is_active == True,  # noqa: E712
-                    AmazonFBAInventory.is_archived == False,  # noqa: E712
-                    AmazonFBAInventory.warehouse_stock_id.isnot(
-                        None
-                    ),
-                    or_(*fba_identity_filters),
-                )
-                .distinct()
-                .all()
-            )
-
-            target_stock_ids.update(
-                int(row[0])
-                for row in matching_fba_stock_ids
-            )
-
-        attached_listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id.in_(list(target_stock_ids)))
-            .all()
-        )
-
-        for attached_listing in attached_listings:
-            attached_listing.master_product_group_id = group.id
-            if getattr(attached_listing, "warehouse_stock_id", None):
-                target_stock_ids.add(int(attached_listing.warehouse_stock_id))
-            if hasattr(attached_listing, "updated_at"):
-                attached_listing.updated_at = now
-
-        candidate_listings_by_id = {
-            int(item.id): item
-            for item in list(group_listings_for_authority) + list(attached_listings)
-        }
-
-        def is_read_only_fba_listing(item):
-            platform = ((item.store.platform if item.store else "") or "").strip().lower()
-            channel = (getattr(item, "normalized_amazon_fulfillment_channel", None) or "").strip().upper()
-            return bool(getattr(item, "is_fba", False)) or (
-                "amazon" in platform and channel not in ("MFN", "FBM", "MERCHANT")
-            )
-
-        fba_authority_stock_ids = {
-            int(item.warehouse_stock_id)
-            for item in candidate_listings_by_id.values()
-            if is_read_only_fba_listing(item) and getattr(item, "warehouse_stock_id", None)
-        }
-
-        if fba_authority_stock_ids:
-            authority_stock_id = sorted(fba_authority_stock_ids)[0]
-        else:
-            authority_stock_id = int(stock.id)
-
-        # Group 45 rule:
-        # every active grouped listing keeps its own warehouse row,
-        # but every warehouse row used by the group must also belong to the same group.
-        # This keeps FBA separate/read-only, keeps eBay/FBM separate/pushable,
-        # and prevents half-linked groups where a listing has group_id but its stock row does not.
-        for grouped_listing in (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.master_product_group_id == group.id)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .all()
-        ):
-            if getattr(grouped_listing, "warehouse_stock_id", None):
-                target_stock_ids.add(int(grouped_listing.warehouse_stock_id))
-
-        group_stocks = (
-            db.session.query(WarehouseStock)
-            .filter(WarehouseStock.id.in_(list(target_stock_ids)))
-            .all()
-        )
-
-        for group_stock in group_stocks:
-            group_stock.master_product_group_id = group.id
-            group_stock.is_group_controlled = True
-            if hasattr(group_stock, "group_controlled_at") and not group_stock.group_controlled_at:
-                group_stock.group_controlled_at = now
-            if hasattr(group_stock, "updated_at"):
-                group_stock.updated_at = now
-
-        if hasattr(listing, "updated_at"):
-            from datetime import datetime
-            listing.updated_at = datetime.utcnow()
-
-        # Same-SKU Amazon FBA shadow rows must not remain as separate active listings/groups.
-        # They are read-only quantity cache rows and cause duplicate Master Stock rows.
-        duplicate_shadow_count = 0
-        listing_sku = (getattr(listing, "external_sku", None) or "").strip()
-        listing_fnsku = (getattr(listing, "fnsku", None) or getattr(listing, "external_listing_id", None) or "").strip()
-
-        duplicate_query = db.session.query(MarketplaceListing).filter(
-            MarketplaceListing.id != listing.id,
-            MarketplaceListing.is_active == True,  # noqa: E712
-        )
-
-        if listing_sku:
-            duplicate_query = duplicate_query.filter(MarketplaceListing.external_sku == listing_sku)
-        elif listing_fnsku:
-            duplicate_query = duplicate_query.filter(
-                (MarketplaceListing.fnsku == listing_fnsku)
-                | (MarketplaceListing.external_listing_id == listing_fnsku)
-            )
-        else:
-            duplicate_query = duplicate_query.filter(False)
-
-        for duplicate in duplicate_query.all():
-            duplicate_title = (getattr(duplicate, "title", None) or "").strip().lower()
-            duplicate_channel = (getattr(duplicate, "normalized_amazon_fulfillment_channel", None) or "").strip().upper()
-            duplicate_platform = ((duplicate.store.platform if duplicate.store else "") or "").strip().lower()
-
-            is_amazon_fba_duplicate = (
-                "amazon" in duplicate_platform
-                and duplicate_channel not in ("MFN", "FBM", "MERCHANT")
-                and (
-                    duplicate_title.startswith("amazon sku")
-                    or not getattr(duplicate, "warehouse_stock_id", None)
-                    or getattr(duplicate, "warehouse_stock_id", None) != stock.id
-                )
-            )
-
-            if not is_amazon_fba_duplicate:
-                continue
-
-            duplicate.is_active = False
-            duplicate.status = "archived_fba_shadow_duplicate"
-            duplicate.warehouse_stock_id = stock.id
-            duplicate.master_product_group_id = group.id
-            if hasattr(duplicate, "updated_at"):
-                from datetime import datetime
-                duplicate.updated_at = datetime.utcnow()
-            duplicate_shadow_count += 1
-
-        db.session.commit()
-
-        return jsonify({
-            "success": True,
-            "ok": True,
-            "governed": True,
-            "legacy_bridge": True,
-            "listing_id": listing.id,
-            "warehouse_stock_id": stock.id,
-            "group_id": group.id,
-            "archived_duplicate_shadow_rows": duplicate_shadow_count,
-            "message": "Listing linked through governed Phase 2 bridge. Same-SKU FBA shadow duplicates were archived.",
-        }), 200
-
-    if action == "unlink-listing" and request.method == "POST":
-        listing_id = body.get("listing_id") or body.get("marketplace_listing_id")
-        listing = db.session.get(MarketplaceListing, int(listing_id)) if listing_id else None
-
-        if not listing:
-            return blocked("Marketplace listing was not found.", status=404, listing_id=listing_id)
-
-        old_stock_id = listing.warehouse_stock_id
-        old_group_id = listing.master_product_group_id
-
-        # Unlinked listing rule:
-        # if a marketplace listing is detached from warehouse authority,
-        # it must not keep any group authority either.
-        listing.warehouse_stock_id = None
-        listing.master_product_group_id = None
-        if hasattr(listing, "updated_at"):
-            from datetime import datetime
-            listing.updated_at = datetime.utcnow()
-
-        remaining_stock_members = 0
-        remaining_group_members = 0
-        old_stock_is_group_controlled = None
-
-        old_stock = None
-        warehouse_group_released = False
-
-        if old_stock_id:
-            old_stock = db.session.get(WarehouseStock, int(old_stock_id))
-            old_stock_is_group_controlled = bool(getattr(old_stock, "is_group_controlled", False)) if old_stock else None
-            remaining_stock_members = (
-                db.session.query(MarketplaceListing)
-                .filter(MarketplaceListing.is_active == True)  # noqa: E712
-                .filter(MarketplaceListing.warehouse_stock_id == int(old_stock_id))
-                .count()
-            )
-
-        if old_group_id:
-            remaining_group_members = (
-                db.session.query(MarketplaceListing)
-                .filter(MarketplaceListing.is_active == True)  # noqa: E712
-                .filter(MarketplaceListing.master_product_group_id == int(old_group_id))
-                .count()
-            )
-
-        # Release warehouse group-control only when unlink leaves no active marketplace members.
-        # This is explicit governed unlink cleanup, not automatic title/quantity inference.
-        if (
-            old_stock is not None
-            and old_group_id
-            and remaining_stock_members == 0
-            and remaining_group_members == 0
-            and getattr(old_stock, "master_product_group_id", None) == int(old_group_id)
-        ):
-            old_stock.master_product_group_id = None
-            old_stock.is_group_controlled = False
-            if hasattr(old_stock, "updated_at"):
-                old_stock.updated_at = listing.updated_at
-            warehouse_group_released = True
-
-        db.session.commit()
-
-        return jsonify({
-            "success": True,
-            "ok": True,
-            "governed": True,
-            "legacy_bridge": True,
-            "listing_id": listing.id,
-            "old_warehouse_stock_id": old_stock_id,
-            "old_group_id": old_group_id,
-            "remaining_stock_members": remaining_stock_members,
-            "remaining_group_members": remaining_group_members,
-            "old_stock_is_group_controlled": old_stock_is_group_controlled,
-            "warehouse_review_required": bool(old_stock_id and remaining_stock_members == 0),
-            "group_review_required": bool(old_group_id and remaining_group_members <= 1),
-            "warehouse_group_released": warehouse_group_released,
-            "message": "Listing unlinked through governed Phase 2 bridge. Empty warehouse group-control released when safe.",
-        }), 200
-
-    if action == "product-linking-link" and request.method == "POST":
-        return blocked(
-            "Create-new-listing link is not enabled yet. Use existing marketplace listings and governed link-listing-to-warehouse first.",
-            status=409,
-            action_supported=False,
-        )
-
-    return blocked("This legacy action is disabled until a governed bridge is approved.")
+            "unlink": (
+                "/governed/groups/<group_id>/unlink"
+            ),
+            "push": (
+                "/governed/actions/groups/<group_id>/push"
+            ),
+        },
+        "message": (
+            "The legacy governed-disabled Product Linking bridge "
+            "is permanently retired."
+        ),
+    }), 410
 
 
 @governed_bp.post("/governed/product-linking/merge-warehouse-group")
 def governed_product_linking_merge_warehouse_group():
-    """Governed Product Linking merge.
+    """Retired duplicate Product Linking group writer.
 
-    Creates/reuses ONE MasterProductGroup and attaches all selected warehouse rows
-    to that same group. No marketplace push. No quantity change. No delete/archive.
+    Group relationships may be changed only through the canonical listing-link
+    and unlink routes. This route performs no database mutation.
     """
-    from datetime import datetime
-    from flask import jsonify, request
-    from extensions import db
-    from models import MasterProductGroup, WarehouseStock, MarketplaceListing
+    from flask import jsonify
 
-    body = request.get_json(silent=True) or {}
-    stock_ids = body.get("warehouse_stock_ids") or body.get("stock_ids") or []
-    target_group_id = body.get("target_group_id")
-
-    try:
-        stock_ids = [int(x) for x in stock_ids if x is not None]
-    except Exception:
-        return jsonify(ok=False, success=False, governed=True, message="Invalid warehouse_stock_ids."), 400
-
-    stock_ids = list(dict.fromkeys(stock_ids))
-
-    if len(stock_ids) < 2:
-        return jsonify(ok=False, success=False, governed=True, message="Select at least two warehouse rows to merge into one group."), 400
-
-    stocks = (
-        db.session.query(WarehouseStock)
-        .filter(WarehouseStock.id.in_(stock_ids))
-        .filter(WarehouseStock.is_active == True)  # noqa: E712
-        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
-        .all()
-    )
-
-    if len(stocks) != len(stock_ids):
-        return jsonify(ok=False, success=False, governed=True, message="One or more warehouse rows were not found or are inactive."), 404
-
-    group = None
-    if target_group_id:
-        group = db.session.get(MasterProductGroup, int(target_group_id))
-
-    if group is None:
-        existing_group_ids = [
-            int(s.master_product_group_id)
-            for s in stocks
-            if getattr(s, "master_product_group_id", None)
-        ]
-        if existing_group_ids:
-            group = db.session.get(MasterProductGroup, existing_group_ids[0])
-
-    if group is None:
-        primary = stocks[0]
-        group = MasterProductGroup(
-            display_title=(primary.product_name or primary.group_title or primary.sku or "Untitled Master Group")[:500],
-            display_image_url=getattr(primary, "image_url", None),
-        )
-        db.session.add(group)
-        db.session.flush()
-
-    moved_stock_ids = []
-    moved_listing_ids = []
-
-    for stock in stocks:
-        stock.master_product_group_id = group.id
-        stock.is_group_controlled = True
-        if hasattr(stock, "group_controlled_at") and not stock.group_controlled_at:
-            stock.group_controlled_at = datetime.utcnow()
-        if hasattr(stock, "updated_at"):
-            stock.updated_at = datetime.utcnow()
-        moved_stock_ids.append(stock.id)
-
-        linked_listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id == stock.id)
-            .all()
-        )
-
-        for listing in linked_listings:
-            listing.master_product_group_id = group.id
-            if hasattr(listing, "updated_at"):
-                listing.updated_at = datetime.utcnow()
-            moved_listing_ids.append(listing.id)
-
-    group.updated_at = datetime.utcnow()
-    db.session.commit()
-
-    return jsonify(
-        ok=True,
-        success=True,
-        governed=True,
-        action="merge_warehouse_group",
-        group_id=group.id,
-        warehouse_stock_ids=moved_stock_ids,
-        marketplace_listing_ids=moved_listing_ids,
-        message="Selected warehouse rows merged into one governed product group. No marketplace push executed.",
-    ), 200
+    return jsonify({
+        "success": False,
+        "ok": False,
+        "governed": True,
+        "retired": True,
+        "execution_blocked": True,
+        "relationship_mutation": False,
+        "quantity_mutation": False,
+        "marketplace_execution": False,
+        "canonical_link_route": (
+            "/governed/product-linking/"
+            "link-listing-to-warehouse"
+        ),
+        "canonical_unlink_route": (
+            "/governed/groups/<group_id>/unlink"
+        ),
+        "message": (
+            "The duplicate merge-warehouse-group writer "
+            "is permanently retired."
+        ),
+    }), 410
 
 
 
