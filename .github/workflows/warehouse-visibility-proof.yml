@@ -49,10 +49,11 @@ jobs:
           adapter = Path('backend/adapters/amazon_sp_api_adapter.py').read_text(encoding='utf-8')
           live_patch = Path('amazon_service_live_patch.py').read_text(encoding='utf-8')
 
-          assert 'lwa_client_id=(' in adapter, 'Amazon adapter must call Inventories with lwa_client_id'
-          assert 'lwa_app_id=(' not in adapter, 'Amazon adapter must not call Inventories with lwa_app_id'
+          assert 'credentials=credentials' in adapter, 'Amazon adapter must pass the validated credentials dictionary'
+          assert '"lwa_app_id": (' in adapter, 'python-amazon-sp-api credentials must contain lwa_app_id'
+          assert 'creds.get("lwa_client_id")' in adapter, 'Saved lwa_client_id must feed the library credential key'
           assert '"lwa_client_id"' in live_patch, 'Live patch credentials must output lwa_client_id'
-          print('Amazon SP-API LWA constructor alignment OK')
+          print('Amazon SP-API credentials dictionary alignment OK')
           PY
 
       - name: Prove warehouse eBay variation visibility wiring
