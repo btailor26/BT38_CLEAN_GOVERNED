@@ -52,7 +52,7 @@ jobs:
           assert 'credentials=credentials' in adapter, 'Amazon adapter must pass the validated credentials dictionary'
           assert '"lwa_app_id": (' in adapter, 'python-amazon-sp-api credentials must contain lwa_app_id'
           assert 'creds.get("lwa_client_id")' in adapter, 'Saved lwa_client_id must feed the library credential key'
-          assert '"lwa_client_id"' in live_patch, 'Live patch credentials must output lwa_client_id'
+          assert '"lwa_app_id"' in live_patch, 'Live patch credentials must output the python-amazon-sp-api lwa_app_id key'
           print('Amazon SP-API credentials dictionary alignment OK')
           PY
 
