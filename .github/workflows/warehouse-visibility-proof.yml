@@ -68,7 +68,8 @@ jobs:
               'parent_item_id=getattr(listing, "parent_item_id", None)',
               'external_parent_id=getattr(listing, "external_parent_id", None)',
               'variation_sku_map=getattr(listing, "variation_sku_map", None)',
-              'if (is_fba or is_ebay_variation_child)',
+              'is_fba',
+      'is_ebay_variation_child',
           ]
           for needle in required_route:
               assert needle in route, f'Missing warehouse route wiring: {needle}'
