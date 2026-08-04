@@ -129,11 +129,23 @@ def refresh_governed_listing_from_snapshot(
     if getattr(store, "is_active", False) is not True:
         return _blocked("store is not active")
 
-    listing = MarketplaceListing.query.filter_by(
-        store_id=store.id,
-        external_listing_id=external_listing_id,
-        external_sku=sku,
-    ).first()
+    # Platform-wide listing identity contract:
+    #
+    # store_id + seller SKU is the operational import identity.
+    # ASIN / external listing ID is marketplace reference metadata and may be
+    # corrected without creating another MarketplaceListing.
+    listing = (
+        MarketplaceListing.query
+        .filter(
+            MarketplaceListing.store_id == store.id,
+            MarketplaceListing.external_sku == sku,
+        )
+        .order_by(
+            MarketplaceListing.is_active.desc(),
+            MarketplaceListing.id.asc(),
+        )
+        .first()
+    )
 
     warehouse_stock = None
 
@@ -161,26 +173,8 @@ def refresh_governed_listing_from_snapshot(
             fulfillment=fulfillment,
         )
 
-    # Legacy Amazon identifier migration guard:
-    # Older rows used external_listing_id = SKU.
-    # Newer snapshots may use ASIN as external_listing_id.
-    # If the same active Amazon SKU already points to the same warehouse row,
-    # reuse that legacy row instead of creating a duplicate MarketplaceListing.
-    if listing is None and warehouse_stock is not None:
-        legacy_listing = (
-            MarketplaceListing.query
-            .filter_by(
-                store_id=store.id,
-                external_sku=sku,
-                warehouse_stock_id=warehouse_stock.id,
-                is_active=True,
-            )
-            .filter(MarketplaceListing.external_listing_id == sku)
-            .order_by(MarketplaceListing.id.asc())
-            .first()
-        )
-        if legacy_listing is not None:
-            listing = legacy_listing
+    # The permanent listing was resolved once by store + seller SKU.
+    # No second listing identity lookup is permitted.
 
     created = False
     if listing is None:
@@ -208,6 +202,12 @@ def refresh_governed_listing_from_snapshot(
         listing.external_sku = incoming_sku
     elif not existing_sku:
         listing.external_sku = ""
+    # Marketplace reference metadata may change without changing the
+    # permanent SKU-based operational listing identity.
+    listing.external_listing_id = external_listing_id
+    if hasattr(listing, "asin") and external_listing_id:
+        listing.asin = external_listing_id
+
     listing.amazon_fulfillment_channel = fulfillment
     listing.title = title or listing.title or sku
     listing.price = float(price if price is not None else listing.price or 0)
