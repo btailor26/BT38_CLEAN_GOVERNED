@@ -2738,6 +2738,13 @@ def governed_product_linking_data_compat():
 
         listings_by_stock[authority_stock.id] = merged_linked
 
+        # The group now renders through the single authority Warehouse row.
+        # Remove the original non-authority keys so flattened listing payloads
+        # cannot return the same MarketplaceListing ID more than once.
+        for group_stock in group_stocks:
+            if int(group_stock.id) != int(authority_stock.id):
+                listings_by_stock.pop(group_stock.id, None)
+
     display_stock_rows.extend(ungrouped_stock_rows)
 
     warehouse_products = []
