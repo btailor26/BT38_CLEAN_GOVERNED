@@ -1011,6 +1011,7 @@ def governed_marketplace_webhook_intake(marketplace):
 
     payload = _bt38_webhook_payload()
     allowed, reason = _bt38_webhook_platform_allowed(platform)
+    store = _bt38_match_webhook_store(platform, payload)
 
     # Carry the already-resolved BT38 store identity into governed execution.
     # This is internal routing metadata only and does not alter the immutable
