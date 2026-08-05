@@ -2504,11 +2504,31 @@ def governed_product_linking_data_compat():
         total_pages_stock = max(1, (total_stock + per_page - 1) // per_page)
 
     stock_ids_on_page = [stock.id for stock in stock_rows]
+    group_ids_on_page = {
+        int(stock.master_product_group_id)
+        for stock in stock_rows
+        if getattr(stock, "master_product_group_id", None)
+    }
+
+    listing_scope = []
+
     if stock_ids_on_page:
+        listing_scope.append(
+            MarketplaceListing.warehouse_stock_id.in_(stock_ids_on_page)
+        )
+
+    if group_ids_on_page:
+        listing_scope.append(
+            MarketplaceListing.master_product_group_id.in_(
+                list(group_ids_on_page)
+            )
+        )
+
+    if listing_scope:
         listing_rows = (
             db.session.query(MarketplaceListing)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(MarketplaceListing.warehouse_stock_id.in_(stock_ids_on_page))
+            .filter(or_(*listing_scope))
             .order_by(MarketplaceListing.id.desc())
             .all()
         )
@@ -2564,7 +2584,15 @@ def governed_product_linking_data_compat():
             if getattr(row, "warehouse_stock_id", None):
                 fba_qty_by_stock_id[int(row.warehouse_stock_id)] = qty
 
+    # Permanent warehouse identity and current Product Linking relationship are
+    # intentionally separate:
+    #
+    # warehouse_stock_id          = permanent warehouse identity
+    # master_product_group_id     = current displayed relationship
+    #
+    # Grouped listings must therefore be placed by their current group ID.
     listings_by_stock = {}
+    listings_by_group = {}
     unlinked_listings = []
 
     stock_quantity_by_id = {
@@ -2649,8 +2677,22 @@ def governed_product_linking_data_compat():
             "fba_available_quantity": fba_available_quantity,
         }
 
-        if listing.warehouse_stock_id:
-            listings_by_stock.setdefault(listing.warehouse_stock_id, []).append(listing_payload)
+        current_group_id = getattr(
+            listing,
+            "master_product_group_id",
+            None,
+        )
+
+        if current_group_id:
+            listings_by_group.setdefault(
+                int(current_group_id),
+                [],
+            ).append(listing_payload)
+        elif listing.warehouse_stock_id:
+            listings_by_stock.setdefault(
+                int(listing.warehouse_stock_id),
+                [],
+            ).append(listing_payload)
         else:
             unlinked_listings.append(listing_payload)
 
@@ -2682,10 +2724,18 @@ def governed_product_linking_data_compat():
         }
 
         grouped_listing_skus = {
-            str(item.get("sku") or item.get("external_sku") or "").strip().lower()
-            for stock_id in grouped_stock_ids
-            for item in listings_by_stock.get(stock_id, [])
-            if str(item.get("sku") or item.get("external_sku") or "").strip()
+            str(
+                item.get("sku")
+                or item.get("external_sku")
+                or ""
+            ).strip().lower()
+            for group_id in grouped_stock_rows
+            for item in listings_by_group.get(int(group_id), [])
+            if str(
+                item.get("sku")
+                or item.get("external_sku")
+                or ""
+            ).strip()
         }
 
         def is_stale_orphan_stock(stock):
@@ -2706,45 +2756,63 @@ def governed_product_linking_data_compat():
         ]
 
     for group_id, group_stocks in grouped_stock_rows.items():
-        def stock_has_fba_listing(stock):
-            return any(
-                bool(item.get("is_fba")) or str(item.get("amazon_fulfillment_channel") or "").upper() in ("AFN", "FBA")
-                for item in listings_by_stock.get(stock.id, [])
+        current_group_listings = []
+        seen_listing_ids = set()
+
+        for item in listings_by_group.get(int(group_id), []):
+            item_id = (
+                int(item.get("id"))
+                if item.get("id") is not None
+                else None
             )
 
-        def stock_linked_count(stock):
-            return len(listings_by_stock.get(stock.id, []))
+            if item_id is not None and item_id in seen_listing_ids:
+                continue
 
-        # Prefer FBA authority row for FBA-led groups, otherwise prefer the row with listings.
+            if item_id is not None:
+                seen_listing_ids.add(item_id)
+
+            current_group_listings.append(item)
+
+        group_has_fba_listing = any(
+            bool(item.get("is_fba"))
+            or str(
+                item.get("amazon_fulfillment_channel")
+                or ""
+            ).upper() in ("AFN", "FBA")
+            for item in current_group_listings
+        )
+
+        fba_stock_ids = {
+            int(item["warehouse_stock_id"])
+            for item in current_group_listings
+            if bool(item.get("is_fba"))
+            and item.get("warehouse_stock_id")
+        }
+
+        # Warehouse remains the quantity authority. For an FBA-led group,
+        # prefer the Warehouse row permanently associated with the active FBA
+        # listing. Otherwise keep the stable lowest-ID group authority row.
         authority_stock = sorted(
             group_stocks,
             key=lambda stock: (
-                0 if stock_has_fba_listing(stock) else 1,
-                -stock_linked_count(stock),
+                0
+                if (
+                    group_has_fba_listing
+                    and int(stock.id) in fba_stock_ids
+                )
+                else 1,
                 int(stock.id),
-            )
+            ),
         )[0]
+
         display_stock_rows.append(authority_stock)
+        listings_by_stock[authority_stock.id] = current_group_listings
 
-        merged_linked = []
-        seen_listing_ids = set()
-        for group_stock in group_stocks:
-            for item in listings_by_stock.get(group_stock.id, []):
-                item_id = int(item.get("id")) if item.get("id") is not None else None
-                if item_id is not None and item_id in seen_listing_ids:
-                    continue
-                if item_id is not None:
-                    seen_listing_ids.add(item_id)
-                merged_linked.append(item)
-
-        listings_by_stock[authority_stock.id] = merged_linked
-
-        # The group now renders through the single authority Warehouse row.
-        # Remove the original non-authority keys so flattened listing payloads
-        # cannot return the same MarketplaceListing ID more than once.
+        # One displayed row per current Product Group.
         for group_stock in group_stocks:
             if int(group_stock.id) != int(authority_stock.id):
-                listings_by_stock.pop(group_stock.id, None)
+                listings_by_stock.pop(int(group_stock.id), None)
 
     display_stock_rows.extend(ungrouped_stock_rows)
 
@@ -2820,8 +2888,8 @@ def governed_product_linking_data_compat():
         "unlinked_by_platform": unlinked_by_platform,
         "all_marketplace_listings": [
             item
-            for grouped in listings_by_stock.values()
-            for item in grouped
+            for product in warehouse_products
+            for item in product.get("listings", [])
         ] + unlinked_listings,
         "all_stores": [],
         "warehouse": warehouse_products,

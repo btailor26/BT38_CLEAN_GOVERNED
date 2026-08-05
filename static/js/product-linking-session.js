@@ -399,14 +399,27 @@
     if (typeof feather !== "undefined") feather.replace();
   }
 
-  function mappingExists(listingId, warehouseId) {
+  function mappingExists(listingId, warehouseId, groupId = null) {
     return state.products.some((product) => {
-      const warehouseMatches = [product.id, product.warehouse_stock_id, product.stock_id]
-        .some((value) => sameId(value, warehouseId));
-      if (!warehouseMatches) return false;
+      const groupMatches = groupId != null && sameId(
+        product.master_product_group_id,
+        groupId
+      );
+
+      const warehouseMatches = [
+        product.id,
+        product.warehouse_stock_id,
+        product.stock_id
+      ].some((value) => sameId(value, warehouseId));
+
+      if (!groupMatches && !warehouseMatches) return false;
+
       return (product.listings || []).some((listing) =>
-        [listing.id, listing.listing_id, listing.marketplace_listing_id]
-          .some((value) => sameId(value, listingId))
+        [
+          listing.id,
+          listing.listing_id,
+          listing.marketplace_listing_id
+        ].some((value) => sameId(value, listingId))
       );
     });
   }
@@ -531,7 +544,7 @@
         groupId: data.group_id,
         originalGroupId: data.original_group_id
       });
-      if (!mappingExists(listingId, warehouseId)) {
+      if (!mappingExists(listingId, warehouseId, data.group_id)) {
         throw new Error("The relationship changed, but the affected browser row could not be verified.");
       }
 
