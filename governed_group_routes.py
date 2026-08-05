@@ -254,21 +254,209 @@ def governed_group_unlink(group_id: int):
 
     previous_group_id = int(group_id)
     resulting_group_id = int(original_group_id)
-    if resulting_group_id == previous_group_id:
+
+    # Neon is the relationship authority.
+    #
+    # Equal listing and Warehouse group IDs do not prove that the listing is
+    # standalone. Confirm the current relationship from Neon before deciding.
+    active_group_listing_count = (
+        db.session.query(MarketplaceListing.id)
+        .filter(
+            MarketplaceListing.master_product_group_id == previous_group_id,
+            MarketplaceListing.is_active == True,  # noqa: E712
+        )
+        .count()
+    )
+
+    if (
+        resulting_group_id == previous_group_id
+        and active_group_listing_count <= 1
+    ):
         return jsonify(_blocked(
-            "Listing is already in its permanent original group; no unlink mutation is required.",
+            "Listing is already in its standalone group; no unlink mutation is required.",
             group_id=group_id,
             listing_id=listing_id,
             original_group_id=resulting_group_id,
             warehouse_stock_id=original_stock.id,
+            active_group_listing_count=active_group_listing_count,
         )), 409
 
     now = datetime.utcnow()
+
+    # Historical rows may have lost their individual Warehouse identity when
+    # multiple marketplace listings were attached to one shared stock row.
+    #
+    # Reuse the existing governed import identity helper. It resolves or creates
+    # the listing's WarehouseStock row from its own marketplace SKU. This keeps
+    # import, Warehouse authority, order mutation and auto-push on one path.
+    if resulting_group_id == previous_group_id:
+        from services.governed_listing_refresh import (
+            _find_or_create_warehouse_stock_for_listing,
+        )
+
+        listing_sku = str(
+            getattr(listing, "external_sku", None) or ""
+        ).strip()
+
+        if not listing_sku:
+            return jsonify(_blocked(
+                "Listing has no marketplace SKU from which to restore its standalone Warehouse identity.",
+                group_id=previous_group_id,
+                listing_id=listing_id,
+                warehouse_stock_id=original_stock.id,
+            )), 409
+
+        fulfillment = str(
+            getattr(
+                listing,
+                "normalized_amazon_fulfillment_channel",
+                None,
+            )
+            or getattr(
+                listing,
+                "amazon_fulfillment_channel",
+                None,
+            )
+            or ""
+        ).strip().upper()
+
+        standalone_stock = _find_or_create_warehouse_stock_for_listing(
+            sku=listing_sku,
+            title=(
+                listing.title
+                or listing_sku
+            ),
+            fulfillment=fulfillment,
+        )
+
+        if int(standalone_stock.id) == int(original_stock.id):
+            return jsonify(_blocked(
+                "Neon resolves this listing to the same shared Warehouse identity; unlink cannot create a second authority for the same stock row.",
+                group_id=previous_group_id,
+                listing_id=listing_id,
+                warehouse_stock_id=original_stock.id,
+                listing_sku=listing_sku,
+            )), 409
+
+        standalone_group_id = int(
+            getattr(
+                standalone_stock,
+                "master_product_group_id",
+                0,
+            )
+            or 0
+        )
+
+        # Imported listings normally already retain their own Warehouse row and
+        # permanent group. Restore that exact committed Neon identity.
+        if standalone_group_id:
+            standalone_group = db.session.get(
+                MasterProductGroup,
+                standalone_group_id,
+            )
+
+            if standalone_group is None:
+                return jsonify(_blocked(
+                    "The listing's standalone Warehouse group no longer exists.",
+                    group_id=previous_group_id,
+                    listing_id=listing_id,
+                    warehouse_stock_id=standalone_stock.id,
+                    standalone_group_id=standalone_group_id,
+                )), 409
+
+        else:
+            # Only legacy Warehouse rows with no permanent group need the
+            # existing group-creation path.
+            standalone_group = MasterProductGroup(
+                display_title=(
+                    listing.title
+                    or listing_sku
+                    or standalone_stock.product_name
+                    or standalone_stock.sku
+                    or "Untitled Master Group"
+                )[:500],
+                display_image_url=(
+                    standalone_stock.image_url
+                    or getattr(group, "display_image_url", None)
+                ),
+                created_at=now,
+                updated_at=now,
+            )
+            db.session.add(standalone_group)
+            db.session.flush()
+
+            stock_result = _link_stock_to_group(
+                standalone_group,
+                int(standalone_stock.id),
+                actor=_actor(),
+            )
+
+            if not stock_result.get("ok"):
+                db.session.rollback()
+                return jsonify(stock_result), 409
+
+            standalone_group_id = int(standalone_group.id)
+
+        listing.warehouse_stock_id = int(standalone_stock.id)
+        resulting_group_id = int(standalone_group_id)
+        original_group = standalone_group
+        original_stock = standalone_stock
+
     listing.master_product_group_id = resulting_group_id
     listing.updated_at = now
     group.updated_at = now
     original_group.updated_at = now
     db.session.commit()
+
+    # Re-query the exact record after commit. The response and UI refresh must
+    # be based on confirmed Neon state, not on pre-commit Python objects.
+    db.session.expire_all()
+
+    committed_listing = db.session.get(
+        MarketplaceListing,
+        int(listing_id),
+    )
+    committed_group = db.session.get(
+        MasterProductGroup,
+        int(resulting_group_id),
+    )
+
+    committed_stock = (
+        committed_listing.warehouse_stock
+        if committed_listing is not None
+        else None
+    )
+
+    if (
+        committed_listing is None
+        or committed_group is None
+        or committed_stock is None
+        or int(committed_listing.master_product_group_id or 0)
+           != int(resulting_group_id)
+        or int(committed_stock.master_product_group_id or 0)
+           != int(resulting_group_id)
+    ):
+        return jsonify(_blocked(
+            "Neon did not confirm the committed unlink relationship.",
+            group_id=previous_group_id,
+            listing_id=listing_id,
+            expected_group_id=resulting_group_id,
+            committed_group_id=(
+                committed_listing.master_product_group_id
+                if committed_listing
+                else None
+            ),
+            warehouse_stock_id=(
+                committed_listing.warehouse_stock_id
+                if committed_listing
+                else original_stock.id
+            ),
+            committed_warehouse_group_id=(
+                committed_stock.master_product_group_id
+                if committed_stock
+                else None
+            ),
+        )), 409
 
     previous_group_push = _push_group_safely(
         previous_group_id,
@@ -279,16 +467,19 @@ def governed_group_unlink(group_id: int):
         source="product_linking_unlink_original_group_auto_push",
     )
 
-    payload = _serialize_master_group(original_group)
+    payload = _serialize_master_group(committed_group)
     payload.update({
-        "message": "Listing restored to its permanent original group ID.",
+        "message": "Listing unlinked and confirmed in its standalone Neon group.",
         "listing_id": int(listing_id),
         "previous_group_id": previous_group_id,
         "group_id": resulting_group_id,
         "original_group_id": resulting_group_id,
         "warehouse_stock_id": original_stock.id,
         "restored_original_group": True,
-        "released_to_unlinked": False,
+        "released_to_unlinked": True,
+        "neon_relationship_confirmed": True,
+        "active_group_listing_count_before":
+            active_group_listing_count,
         "auto_push_attempted": True,
         "auto_push_success": (
             _push_succeeded(previous_group_push)

@@ -329,7 +329,9 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
     failed_count = len(results) - success_count - skipped_count
     pushable_count = len(results) - skipped_count
 
-    group_success = failed_count == 0 and pushable_count > 0
+    # FBA/AFN members are intentionally read-only. A group containing only
+    # protected FBA members is a successful governed no-op when nothing failed.
+    group_success = failed_count == 0
 
     report_stock_ids = sorted({
         int(item.get("warehouse_stock_id"))
