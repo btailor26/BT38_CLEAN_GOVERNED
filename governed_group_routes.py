@@ -167,6 +167,31 @@ def governed_group_link_listing(group_id: int):
         })
         return _targeted_response(payload)
 
+    from models import SyncLog
+
+    link_changed = bool(result.get("changed"))
+
+    db.session.add(SyncLog(
+        store_id=getattr(
+            db.session.get(MarketplaceListing, int(listing_id)),
+            "store_id",
+            None,
+        ),
+        status="success",
+        message=(
+            f"event_type=product_linking_link "
+            f"automatic=False actor={_actor()} "
+            f"source=product_linking_ui "
+            f"listing_id={int(listing_id)} "
+            f"warehouse_stock_id={result.get('warehouse_stock_id')} "
+            f"previous_group_id={result.get('previous_group_id')} "
+            f"group_id={result.get('group_id')} "
+            f"changed={link_changed}"
+        )[:500],
+        items_synced=1 if link_changed else 0,
+        created_at=datetime.utcnow(),
+    ))
+
     db.session.commit()
     push_result = _push_group_safely(group.id, source="product_linking_auto_push")
     payload = _serialize_master_group(group)
