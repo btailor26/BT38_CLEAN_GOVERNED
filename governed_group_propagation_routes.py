@@ -91,23 +91,9 @@ def run_governed_group_propagation(
         except (TypeError, ValueError):
             return jsonify(_blocked("warehouse_stock_id must be an integer when provided.", group_id=group_id)), 400
 
-    existing_group_listings = (
-        db.session.query(MarketplaceListing)
-        .filter(MarketplaceListing.master_product_group_id == group_id)
-        .filter(MarketplaceListing.is_active == True)  # noqa: E712
-        .all()
-    )
-
+    # WarehouseStock.master_product_group_id is the only Product Linking
+    # group authority. Marketplace listings join through warehouse_stock_id.
     group_has_fba_authority = False
-    for listing in existing_group_listings:
-        if getattr(listing, "warehouse_stock_id", None):
-            target_warehouse_stock_ids.add(int(listing.warehouse_stock_id))
-
-        platform = ((listing.store.platform if listing.store else "") or "").strip().lower()
-        channel = (getattr(listing, "normalized_amazon_fulfillment_channel", None) or "").strip().upper()
-        if bool(getattr(listing, "is_fba", False)) or ("amazon" in platform and channel not in ("MFN", "FBM", "MERCHANT")):
-            group_has_fba_authority = True
-
     warehouse_rows = []
 
     # Every Warehouse row already belonging to this group participates in
@@ -140,23 +126,37 @@ def run_governed_group_propagation(
         )
 
         for listing in attached_listings:
-            saved_listing_group_id = getattr(
-                listing,
-                "master_product_group_id",
-                None,
-            )
+            platform = (
+                (
+                    listing.store.platform
+                    if listing.store
+                    else ""
+                )
+                or ""
+            ).strip().lower()
 
-            if saved_listing_group_id != group_id:
-                return jsonify(
-                    _blocked(
-                        "Quantity propagation cannot create or repair "
-                        "marketplace listing relationships. Link the listing "
-                        "explicitly in Product Linking first.",
-                        group_id=group_id,
-                        listing_id=listing.id,
-                        saved_group_id=saved_listing_group_id,
-                    )
-                ), 409
+            channel = str(
+                getattr(
+                    listing,
+                    "normalized_amazon_fulfillment_channel",
+                    None,
+                )
+                or getattr(
+                    listing,
+                    "amazon_fulfillment_channel",
+                    None,
+                )
+                or ""
+            ).strip().upper()
+
+            if (
+                bool(getattr(listing, "is_fba", False))
+                or (
+                    "amazon" in platform
+                    and channel not in ("MFN", "FBM", "MERCHANT")
+                )
+            ):
+                group_has_fba_authority = True
 
         warehouse_rows = (
             db.session.query(WarehouseStock)
@@ -221,23 +221,14 @@ def run_governed_group_propagation(
             "master_product_group_id",
             None,
         )
-        saved_group_controlled = bool(
-            getattr(stock, "is_group_controlled", False)
-        )
-
-        if (
-            saved_stock_group_id != group_id
-            or not saved_group_controlled
-        ):
+        if saved_stock_group_id != group_id:
             return jsonify(
                 _blocked(
-                    "Quantity propagation cannot create or repair Warehouse "
-                    "group relationships. Link the Warehouse row explicitly "
-                    "in Product Linking first.",
+                    "Warehouse row does not belong to the requested Product "
+                    "Linking group.",
                     group_id=group_id,
                     warehouse_stock_id=stock.id,
                     saved_group_id=saved_stock_group_id,
-                    saved_is_group_controlled=saved_group_controlled,
                 )
             ), 409
 
@@ -260,17 +251,20 @@ def run_governed_group_propagation(
 
     db.session.flush()
 
-    listing_filters = [MarketplaceListing.master_product_group_id == group_id]
     if target_warehouse_stock_ids:
-        listing_filters.append(MarketplaceListing.warehouse_stock_id.in_(target_warehouse_stock_ids))
-
-    listings = (
-        db.session.query(MarketplaceListing)
-        .filter(MarketplaceListing.is_active == True)  # noqa: E712
-        .filter(or_(*listing_filters))
-        .order_by(MarketplaceListing.id)
-        .all()
-    )
+        listings = (
+            db.session.query(MarketplaceListing)
+            .filter(MarketplaceListing.is_active == True)  # noqa: E712
+            .filter(
+                MarketplaceListing.warehouse_stock_id.in_(
+                    target_warehouse_stock_ids
+                )
+            )
+            .order_by(MarketplaceListing.id)
+            .all()
+        )
+    else:
+        listings = []
 
     results = []
     pushed = 0
