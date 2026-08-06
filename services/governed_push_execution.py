@@ -374,7 +374,10 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         "governed": True,
         "group_id": group_id,
         "warehouse_ids": warehouse_ids,
-        "direct_group_listing_ids": direct_group_listing_ids,
+        "direct_group_listing_ids": [
+            int(listing.id)
+            for listing in listings
+        ],
         "total": len(results),
         "ok_count": success_count,
         "pushed": success_count,
