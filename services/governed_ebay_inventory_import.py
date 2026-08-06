@@ -234,16 +234,18 @@ def _upsert_listing(
     parent_item_id: str | None,
     variation_sku_map: str | None,
 ) -> MarketplaceListing:
-    # Platform-wide listing identity contract:
+    # Permanent marketplace identity contract:
     #
-    # store_id + seller SKU is the operational import identity.
-    # eBay Item ID is marketplace metadata and may be corrected or refreshed
-    # without creating another MarketplaceListing.
+    # The eBay Item ID supplied by the API is the stable listing identity.
+    # Seller SKU and title are mutable marketplace metadata.
+    #
+    # Resolve by store + Item ID first. A SKU fallback is permitted only for
+    # legacy rows that do not yet contain a marketplace Item ID.
     listing = (
         db.session.query(MarketplaceListing)
         .filter(
             MarketplaceListing.store_id == store.id,
-            MarketplaceListing.external_sku == sku,
+            MarketplaceListing.external_listing_id == item_id,
         )
         .order_by(
             MarketplaceListing.is_active.desc(),
@@ -251,6 +253,24 @@ def _upsert_listing(
         )
         .first()
     )
+
+    if listing is None and sku:
+        listing = (
+            db.session.query(MarketplaceListing)
+            .filter(
+                MarketplaceListing.store_id == store.id,
+                MarketplaceListing.external_sku == sku,
+                db.or_(
+                    MarketplaceListing.external_listing_id.is_(None),
+                    MarketplaceListing.external_listing_id == "",
+                ),
+            )
+            .order_by(
+                MarketplaceListing.is_active.desc(),
+                MarketplaceListing.id.asc(),
+            )
+            .first()
+        )
 
     if not listing:
         listing = MarketplaceListing(
