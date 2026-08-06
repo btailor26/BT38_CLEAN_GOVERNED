@@ -2510,25 +2510,21 @@ def governed_product_linking_data_compat():
         if getattr(stock, "master_product_group_id", None)
     }
 
-    listing_scope = []
-
+    # Product Linking has one group authority:
+    # WarehouseStock.master_product_group_id.
+    #
+    # Marketplace listings enter the dataset only through their committed
+    # warehouse_stock_id. A listing-level group ID must never pull an unrelated
+    # marketplace row into a Product Linking group.
     if stock_ids_on_page:
-        listing_scope.append(
-            MarketplaceListing.warehouse_stock_id.in_(stock_ids_on_page)
-        )
-
-    if group_ids_on_page:
-        listing_scope.append(
-            MarketplaceListing.master_product_group_id.in_(
-                list(group_ids_on_page)
-            )
-        )
-
-    if listing_scope:
         listing_rows = (
             db.session.query(MarketplaceListing)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(or_(*listing_scope))
+            .filter(
+                MarketplaceListing.warehouse_stock_id.in_(
+                    stock_ids_on_page
+                )
+            )
             .order_by(MarketplaceListing.id.desc())
             .all()
         )
@@ -2584,13 +2580,13 @@ def governed_product_linking_data_compat():
             if getattr(row, "warehouse_stock_id", None):
                 fba_qty_by_stock_id[int(row.warehouse_stock_id)] = qty
 
-    # Permanent warehouse identity and current Product Linking relationship are
-    # intentionally separate:
+    # Product Linking group membership follows WarehouseStock only:
     #
-    # warehouse_stock_id          = permanent warehouse identity
-    # master_product_group_id     = current displayed relationship
+    # marketplace_listing.warehouse_stock_id
+    #     -> warehouse_stock.master_product_group_id
     #
-    # Grouped listings must therefore be placed by their current group ID.
+    # MarketplaceListing.master_product_group_id is historical compatibility
+    # data and is not a Product Linking display authority.
     listings_by_stock = {}
     listings_by_group = {}
     unlinked_listings = []
@@ -2651,7 +2647,11 @@ def governed_product_linking_data_compat():
             "asin": listing.asin,
             "fnsku": listing.fnsku,
             "warehouse_stock_id": listing.warehouse_stock_id,
-            "master_product_group_id": listing.master_product_group_id,
+            "master_product_group_id": (
+                listing.warehouse_stock.master_product_group_id
+                if listing.warehouse_stock
+                else None
+            ),
             "store_id": listing.store_id,
             "store_name": listing.store.name if listing.store else "",
             "platform": listing_platform,
@@ -2666,10 +2666,7 @@ def governed_product_linking_data_compat():
                     int(listing.warehouse_stock_id),
                     int(getattr(listing, "effective_quantity", 0) or 0),
                 )
-                if (
-                    listing.master_product_group_id
-                    and listing.warehouse_stock_id
-                )
+                if listing.warehouse_stock_id
                 else int(
                     getattr(listing, "effective_quantity", 0) or 0
                 )
@@ -2677,15 +2674,16 @@ def governed_product_linking_data_compat():
             "fba_available_quantity": fba_available_quantity,
         }
 
-        current_group_id = getattr(
-            listing,
-            "master_product_group_id",
-            None,
+        stock = listing.warehouse_stock
+        stock_group_id = (
+            getattr(stock, "master_product_group_id", None)
+            if stock is not None
+            else None
         )
 
-        if current_group_id:
+        if stock_group_id:
             listings_by_group.setdefault(
-                int(current_group_id),
+                int(stock_group_id),
                 [],
             ).append(listing_payload)
         elif listing.warehouse_stock_id:

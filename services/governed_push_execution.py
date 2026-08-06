@@ -118,13 +118,19 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         return _blocked("Marketplace listing is not linked to warehouse stock.", listing_id=listing_id)
 
     source_value = str(source or "").strip().lower()
-    group_id = (
-        getattr(listing.warehouse_stock, "master_product_group_id", None)
-        or getattr(listing, "master_product_group_id", None)
+    # WarehouseStock is the only Product Linking group authority.
+    group_id = getattr(
+        listing.warehouse_stock,
+        "master_product_group_id",
+        None,
     )
     group_controlled = bool(
-        getattr(listing.warehouse_stock, "is_group_controlled", False)
-        or getattr(listing, "master_product_group_id", None)
+        group_id
+        or getattr(
+            listing.warehouse_stock,
+            "is_group_controlled",
+            False,
+        )
     )
 
     # Automatic changes entering through a single-listing shortcut must still
@@ -229,7 +235,11 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
     result.update({
         "listing_id": listing.id,
         "warehouse_stock_id": listing.warehouse_stock_id,
-        "master_product_group_id": listing.master_product_group_id,
+        "master_product_group_id": (
+            listing.warehouse_stock.master_product_group_id
+            if listing.warehouse_stock
+            else None
+        ),
         "push_quantity": push_quantity,
         "ui_action_wired": True,
         "grouping_layer_ready": True,
@@ -257,42 +267,18 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         )
     ]
 
-    direct_group_listing_ids = [
-        row.id
-        for row in (
+    # Group push never uses MarketplaceListing.master_product_group_id.
+    # Resolve active marketplace members only through the WarehouseStock rows
+    # committed to this group.
+    if warehouse_ids:
+        listings = (
             db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.master_product_group_id == group_id)
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .all()
-        )
-    ]
-
-    query = (
-        db.session.query(MarketplaceListing)
-        .filter(MarketplaceListing.is_active == True)  # noqa: E712
-    )
-
-    if warehouse_ids and direct_group_listing_ids:
-        listings = (
-            query
             .filter(
-                (MarketplaceListing.warehouse_stock_id.in_(warehouse_ids))
-                | (MarketplaceListing.id.in_(direct_group_listing_ids))
+                MarketplaceListing.warehouse_stock_id.in_(
+                    warehouse_ids
+                )
             )
-            .order_by(MarketplaceListing.id)
-            .all()
-        )
-    elif warehouse_ids:
-        listings = (
-            query
-            .filter(MarketplaceListing.warehouse_stock_id.in_(warehouse_ids))
-            .order_by(MarketplaceListing.id)
-            .all()
-        )
-    elif direct_group_listing_ids:
-        listings = (
-            query
-            .filter(MarketplaceListing.id.in_(direct_group_listing_ids))
             .order_by(MarketplaceListing.id)
             .all()
         )
