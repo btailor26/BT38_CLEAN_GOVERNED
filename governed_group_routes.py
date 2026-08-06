@@ -311,6 +311,25 @@ def governed_group_unlink(group_id: int):
 
     listing.updated_at = now
     group.updated_at = now
+    from models import SyncLog
+
+    db.session.add(SyncLog(
+        store_id=getattr(listing, "store_id", None),
+        status="success",
+        message=(
+            f"event_type=product_linking_unlink "
+            f"automatic=False actor={_actor()} "
+            f"source=product_linking_ui "
+            f"listing_id={int(listing.id)} "
+            f"warehouse_stock_id={getattr(listing, 'warehouse_stock_id', None)} "
+            f"previous_group_id={previous_group_id} "
+            f"group_id={resulting_group_id} "
+            f"restored_original={resulting_group_id is not None}"
+        )[:500],
+        items_synced=1,
+        created_at=datetime.utcnow(),
+    ))
+
     db.session.commit()
 
     # Re-query committed Neon state before pushing or responding.
