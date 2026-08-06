@@ -366,11 +366,11 @@ def governed_group_unlink(group_id: int):
         else None
     )
 
-    committed_listing_group_id = (
-        int(committed_listing.master_product_group_id)
+    committed_stock_group_id = (
+        int(committed_stock.master_product_group_id)
         if (
-            committed_listing is not None
-            and committed_listing.master_product_group_id is not None
+            committed_stock is not None
+            and committed_stock.master_product_group_id is not None
         )
         else None
     )
@@ -380,7 +380,7 @@ def governed_group_unlink(group_id: int):
         or committed_stock is None
         or int(committed_listing.warehouse_stock_id or 0)
            != int(original_stock.id)
-        or committed_listing_group_id != resulting_group_id
+        or committed_stock_group_id != resulting_group_id
         or (
             resulting_group_id is not None
             and committed_group is None
@@ -391,7 +391,7 @@ def governed_group_unlink(group_id: int):
             group_id=previous_group_id,
             listing_id=listing_id,
             expected_group_id=resulting_group_id,
-            committed_group_id=committed_listing_group_id,
+            committed_group_id=committed_stock_group_id,
             warehouse_stock_id=(
                 committed_listing.warehouse_stock_id
                 if committed_listing
