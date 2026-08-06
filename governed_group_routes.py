@@ -238,12 +238,23 @@ def governed_group_unlink(group_id: int):
             listing_id=listing_id,
         )), 404
 
-    if int(listing.master_product_group_id or 0) != int(group_id):
+    if int(
+        getattr(
+            listing.warehouse_stock,
+            "master_product_group_id",
+            0,
+        )
+        or 0
+    ) != int(group_id):
         return jsonify(_blocked(
             "Marketplace listing is not linked to this group.",
             group_id=group_id,
             listing_id=listing_id,
-            current_group_id=listing.master_product_group_id,
+            current_group_id=getattr(
+                listing.warehouse_stock,
+                "master_product_group_id",
+                None,
+            ),
         )), 409
 
     if bool(getattr(listing, "is_fba", False)):
@@ -298,13 +309,13 @@ def governed_group_unlink(group_id: int):
             )), 409
 
         resulting_group_id = int(original_group_id)
-        listing.master_product_group_id = resulting_group_id
+        original_stock.master_product_group_id = resulting_group_id
         original_group.updated_at = now
         message = "Listing restored to its permanent original group ID."
 
     else:
         resulting_group_id = None
-        listing.master_product_group_id = None
+        original_stock.master_product_group_id = None
         message = (
             "Listing released from the group and returned to unlinked state."
         )
