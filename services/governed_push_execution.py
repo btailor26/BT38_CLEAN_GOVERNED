@@ -218,8 +218,13 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         store_id=listing.store_id,
         status="success" if ok else "error",
         message=(
-            f"governed_push listing_id={listing.id} sku={sku} "
-            f"marketplace={marketplace} source={source} ok={ok}"
+            f"event_type={'marketplace_push_succeeded' if ok else 'marketplace_push_failed'} "
+            f"automatic={_is_automatic_push_source(source_value)} "
+            f"actor={actor} source={source} "
+            f"store_id={listing.store_id} marketplace={marketplace} "
+            f"listing_id={listing.id} sku={sku} "
+            f"warehouse_stock_id={listing.warehouse_stock_id} "
+            f"group_id={group_id} quantity={push_quantity} ok={ok}"
         )[:500],
         items_synced=1 if ok else 0,
         created_at=datetime.utcnow(),
