@@ -171,8 +171,12 @@ def governed_group_link_listing(group_id: int):
     push_result = _push_group_safely(group.id, source="product_linking_auto_push")
     payload = _serialize_master_group(group)
     payload.update({
-        "message": "Listing linked while preserving its permanent original group.",
+        "message": "Warehouse row linked to the Product Linking group.",
         "original_group_id": result.get("original_group_id"),
+        "previous_group_id": result.get("previous_group_id"),
+        "warehouse_stock_id": result.get("warehouse_stock_id"),
+        "stock_group_authority": True,
+        "listing_group_mutated": False,
         "auto_push_attempted": True,
         "auto_push_success": _push_succeeded(push_result),
         "push_result": push_result,
@@ -456,48 +460,66 @@ def _link_stock_to_group(group, stock_id: int, actor: str) -> dict:
 
 
 def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
-    """Move only the listing's active group; never move its warehouse original group."""
+    """Move the listing's Warehouse row into the requested Product Linking group."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup
 
     listing = db.session.get(MarketplaceListing, listing_id)
     if not listing:
-        return _blocked("Marketplace listing was not found.", listing_id=listing_id)
+        return _blocked(
+            "Marketplace listing was not found.",
+            listing_id=listing_id,
+        )
 
     stock = listing.warehouse_stock
     if not stock:
         return _blocked(
-            "Listing must be linked to a warehouse product before group linking.",
+            "Listing must be linked to a Warehouse product before grouping.",
             listing_id=listing_id,
         )
 
-    original_group_id = stock.master_product_group_id
-    if not original_group_id:
+    requested_group_id = int(group.id)
+    previous_group_id = (
+        int(stock.master_product_group_id)
+        if stock.master_product_group_id is not None
+        else None
+    )
+
+    if not db.session.get(MasterProductGroup, requested_group_id):
         return _blocked(
-            "Warehouse product has no permanent original group ID.",
+            "Requested Product Linking group does not exist.",
             listing_id=listing_id,
             warehouse_stock_id=stock.id,
+            requested_group_id=requested_group_id,
         )
 
-    if not db.session.get(MasterProductGroup, int(original_group_id)):
-        return _blocked(
-            "Warehouse product's permanent original group does not exist.",
-            listing_id=listing_id,
-            warehouse_stock_id=stock.id,
-            original_group_id=original_group_id,
-        )
+    changed = previous_group_id != requested_group_id
 
-    changed = int(listing.master_product_group_id or 0) != int(group.id)
     if changed:
         now = datetime.utcnow()
-        listing.master_product_group_id = group.id
-        listing.updated_at = now
+
+        # WarehouseStock.master_product_group_id is the only active Product
+        # Linking group authority. MarketplaceListing remains attached through
+        # warehouse_stock_id and does not receive a second active group write.
+        stock.master_product_group_id = requested_group_id
+        stock.is_group_controlled = True
+        stock.group_controlled_at = (
+            stock.group_controlled_at or now
+        )
+        stock.updated_at = now
+
         if not group.display_title:
             group.display_title = (
-                listing.title
+                stock.product_name
+                or listing.title
+                or stock.sku
                 or listing.external_sku
                 or "Untitled Master Group"
             )[:500]
+
+        if not group.display_image_url and stock.image_url:
+            group.display_image_url = stock.image_url
+
         group.updated_at = now
 
     return {
@@ -505,12 +527,14 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
         "ok": True,
         "governed": True,
         "changed": changed,
-        "listing_id": listing_id,
-        "warehouse_stock_id": stock.id,
-        "group_id": group.id,
-        "original_group_id": int(original_group_id),
+        "listing_id": int(listing_id),
+        "warehouse_stock_id": int(stock.id),
+        "group_id": requested_group_id,
+        "previous_group_id": previous_group_id,
+        "original_group_id": previous_group_id,
+        "stock_group_authority": True,
+        "listing_group_mutated": False,
     }
-
 
 def _push_group_safely(group_id: int, *, source: str) -> dict:
     try:
