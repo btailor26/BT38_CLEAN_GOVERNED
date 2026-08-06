@@ -82,10 +82,10 @@ logging.basicConfig(level=log_level)
 # Create the app
 app = Flask(__name__)
 
-# === BT38 FORCE SQLITE (DEV ONLY) ===
+# Database configuration
 import os
-# DATABASE_URL must never be removed here.
-# Production uses DATABASE_URL. Local dev may use DEV_DATABASE_URL or explicit SQLite dev fallback.
+# Production and development both use PostgreSQL/Neon.
+# SQLite is not supported.
 
 
 # SECURITY: Require SESSION_SECRET in production - fail fast if missing
@@ -140,40 +140,46 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['TEMPLATES_AUTO_RELOAD'] = True  # Always reload templates on change
 app.jinja_env.auto_reload = True  # Force Jinja2 to check template modification times
 
-# Configure the database - DEV and PROD both use PostgreSQL for parity
+# DEV and PROD both use PostgreSQL/Neon for database parity.
 if IS_DEVELOPMENT:
-    # DEV MODE: Use DEV_DATABASE_URL or DATABASE_URL (both must be PostgreSQL)
-    # SQLite is BLOCKED by default to ensure DEV/PROD parity
-    dev_db_url = os.environ.get("DEV_DATABASE_URL") or os.environ.get("DATABASE_URL") or "sqlite:///C:/Users/btail/_ARCHIVE_OLD_BT38/BT38/instance/bt38_ims_local.db"
+    dev_db_url = (
+        os.environ.get("DEV_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+    )
 
     if not dev_db_url:
         raise RuntimeError(
-            "DEV cannot start: No database URL configured. "
-            "Set DEV_DATABASE_URL or DATABASE_URL to a PostgreSQL connection string."
+            "DEV cannot start: set DEV_DATABASE_URL or DATABASE_URL "
+            "to the Neon PostgreSQL connection string."
         )
 
-    # Block SQLite unless explicitly allowed (for emergency local testing only)
-    if dev_db_url.startswith("sqlite"):
-        allow_sqlite = os.environ.get("ALLOW_SQLITE_DEV", "false").lower() == "true"
-        if not allow_sqlite:
-            raise RuntimeError(
-                "DEV cannot use SQLite. DEV must match PROD (PostgreSQL). "
-                "Set DEV_DATABASE_URL to Postgres, or set ALLOW_SQLITE_DEV=true (temporary only)."
-            )
-        logging.critical("⚠️  SQLITE DEV OVERRIDE ENABLED — GOVERNANCE BYPASS ACTIVE")
+    if not dev_db_url.startswith(
+        ("postgresql://", "postgres://")
+    ):
+        raise RuntimeError(
+            "DEV database must be PostgreSQL/Neon. "
+            "SQLite and other database engines are not supported."
+        )
 
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
-    "LOCAL_SQLITE_DB",
-    "sqlite:///instance/bt38_ims_local.db"
-)
-    logging.info(f"DEV MODE: Using database: {dev_db_url.split('@')[-1] if '@' in dev_db_url else 'configured'}")
+    app.config["SQLALCHEMY_DATABASE_URI"] = dev_db_url
+    logging.info("DEV MODE: Using PostgreSQL/Neon database")
 else:
-    # PROD MODE: Use DATABASE_URL (should be set by Replit deployment)
     prod_db_url = os.environ.get("DATABASE_URL")
+
     if not prod_db_url:
-        raise RuntimeError("CRITICAL: DATABASE_URL must be set in production environment")
+        raise RuntimeError(
+            "CRITICAL: DATABASE_URL must be set in production"
+        )
+
+    if not prod_db_url.startswith(
+        ("postgresql://", "postgres://")
+    ):
+        raise RuntimeError(
+            "Production database must be PostgreSQL/Neon."
+        )
+
     app.config["SQLALCHEMY_DATABASE_URI"] = prod_db_url
-    logging.info("PROD MODE: Using DATABASE_URL")
+    logging.info("PROD MODE: Using PostgreSQL/Neon DATABASE_URL")
 
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_recycle": 300,
