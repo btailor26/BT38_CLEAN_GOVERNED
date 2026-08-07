@@ -167,7 +167,7 @@ def governed_group_link_listing(group_id: int):
         })
         return _targeted_response(payload)
 
-    from models import SyncLog
+    from models import MarketplaceListing, SyncLog
 
     link_changed = bool(result.get("changed"))
 
