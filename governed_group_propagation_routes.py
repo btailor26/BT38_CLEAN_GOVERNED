@@ -57,199 +57,81 @@ def run_governed_group_propagation(
     from extensions import db
     from governed_execution import AMAZON_FBM_LIVE_APPROVAL_TYPE, submit_governed_marketplace_action
     from models import (
-        AmazonFBAInventory,
         MarketplaceListing,
         MasterProductGroup,
         SyncLog,
         WarehouseStock,
     )
-    from sqlalchemy import or_
 
     body = dict(payload or {})
     dry_run = bool(body.get("dry_run", False))
-    requested_quantity = body.get("quantity")
     requested_warehouse_stock_id = body.get("warehouse_stock_id")
-
-    target_quantity = None
-    if requested_quantity is not None:
-        try:
-            target_quantity = int(requested_quantity)
-        except (TypeError, ValueError):
-            return jsonify(_blocked("quantity must be an integer when provided.", group_id=group_id)), 400
-        if target_quantity < 0:
-            return jsonify(_blocked("quantity cannot be negative.", group_id=group_id)), 400
 
     group = db.session.get(MasterProductGroup, group_id)
     if not group:
         return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
 
-    target_warehouse_stock_ids = set()
-
+    requested_stock = None
     if requested_warehouse_stock_id not in (None, ""):
         try:
-            target_warehouse_stock_ids.add(int(requested_warehouse_stock_id))
+            requested_stock_id = int(requested_warehouse_stock_id)
         except (TypeError, ValueError):
             return jsonify(_blocked("warehouse_stock_id must be an integer when provided.", group_id=group_id)), 400
 
-    # WarehouseStock.master_product_group_id is the only Product Linking
-    # group authority. Marketplace listings join through warehouse_stock_id.
-    group_has_fba_authority = False
-    warehouse_rows = []
-
-    # Every Warehouse row already belonging to this group participates in
-    # the same authority path. A listing may historically point at only one
-    # child row, but the group must still expose one shared Warehouse quantity.
-    group_stock_ids = {
-        int(stock_id)
-        for (stock_id,) in (
-            db.session.query(WarehouseStock.id)
-            .filter(
-                WarehouseStock.master_product_group_id
-                == group_id
-            )
-            .all()
+        requested_stock = db.session.get(
+            WarehouseStock,
+            requested_stock_id,
         )
+
+        if requested_stock is None:
+            return jsonify(
+                _blocked(
+                    "Warehouse shortcut row was not found.",
+                    group_id=group_id,
+                    warehouse_stock_id=requested_stock_id,
+                )
+            ), 404
+
+        if not bool(getattr(requested_stock, "is_active", False)):
+            return jsonify(
+                _blocked(
+                    "Warehouse shortcut row is inactive.",
+                    group_id=group_id,
+                    warehouse_stock_id=requested_stock_id,
+                )
+            ), 409
+
+        if (
+            getattr(requested_stock, "master_product_group_id", None)
+            != group_id
+        ):
+            return jsonify(
+                _blocked(
+                    "Warehouse shortcut row does not belong to the "
+                    "requested Product Linking group.",
+                    group_id=group_id,
+                    warehouse_stock_id=requested_stock_id,
+                    saved_group_id=getattr(
+                        requested_stock,
+                        "master_product_group_id",
+                        None,
+                    ),
+                )
+            ), 409
+
+    # WarehouseStock.master_product_group_id is the only Product Linking group
+    # authority. Marketplace listings join only through warehouse_stock_id.
+    warehouse_rows = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.master_product_group_id == group_id)
+        .filter(WarehouseStock.is_active == True)  # noqa: E712
+        .order_by(WarehouseStock.id)
+        .all()
+    )
+    target_warehouse_stock_ids = {
+        int(stock.id)
+        for stock in warehouse_rows
     }
-
-    target_warehouse_stock_ids.update(group_stock_ids)
-
-    if target_warehouse_stock_ids:
-        attached_listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(
-                MarketplaceListing.warehouse_stock_id.in_(
-                    target_warehouse_stock_ids
-                )
-            )
-            .all()
-        )
-
-        for listing in attached_listings:
-            platform = (
-                (
-                    listing.store.platform
-                    if listing.store
-                    else ""
-                )
-                or ""
-            ).strip().lower()
-
-            channel = str(
-                getattr(
-                    listing,
-                    "normalized_amazon_fulfillment_channel",
-                    None,
-                )
-                or getattr(
-                    listing,
-                    "amazon_fulfillment_channel",
-                    None,
-                )
-                or ""
-            ).strip().upper()
-
-            if (
-                bool(getattr(listing, "is_fba", False))
-                or (
-                    "amazon" in platform
-                    and channel not in ("MFN", "FBM", "MERCHANT")
-                )
-            ):
-                group_has_fba_authority = True
-
-        warehouse_rows = (
-            db.session.query(WarehouseStock)
-            .filter(
-                WarehouseStock.id.in_(
-                    target_warehouse_stock_ids
-                )
-            )
-            .all()
-        )
-
-    # Product Linking is only a shortcut into Warehouse authority.
-    #
-    # For an FBA-led group, AmazonFBAInventory is the read-only input.
-    # Copy that quantity into Warehouse once, then Warehouse pushes the
-    # same value to every non-FBA marketplace listing.
-    if group_has_fba_authority:
-        # FBA/AFN is the only quantity source for an FBA-led group.
-        # Ignore any listing-local or caller-supplied quantity.
-        fba_truth = (
-            db.session.query(AmazonFBAInventory)
-            .filter(
-                AmazonFBAInventory.warehouse_stock_id.in_(
-                    list(group_stock_ids)
-                ),
-                AmazonFBAInventory.is_active == True,  # noqa: E712
-                AmazonFBAInventory.is_archived == False,  # noqa: E712
-            )
-            .order_by(
-                AmazonFBAInventory.updated_at.desc(),
-                AmazonFBAInventory.id.desc(),
-            )
-            .first()
-        )
-
-        if fba_truth is None:
-            return jsonify(
-                _blocked(
-                    "FBA-led group has no active Amazon FBA "
-                    "inventory truth.",
-                    group_id=group_id,
-                )
-            ), 409
-
-        target_quantity = int(
-            fba_truth.available_quantity or 0
-        )
-
-        warehouse_rows = (
-            db.session.query(WarehouseStock)
-            .filter(
-                WarehouseStock.id.in_(
-                    list(target_warehouse_stock_ids)
-                )
-            )
-            .all()
-        )
-
-    for stock in warehouse_rows:
-        saved_stock_group_id = getattr(
-            stock,
-            "master_product_group_id",
-            None,
-        )
-        if saved_stock_group_id != group_id:
-            return jsonify(
-                _blocked(
-                    "Warehouse row does not belong to the requested Product "
-                    "Linking group.",
-                    group_id=group_id,
-                    warehouse_stock_id=stock.id,
-                    saved_group_id=saved_stock_group_id,
-                )
-            ), 409
-
-        if target_quantity is not None:
-            stock_columns = set(
-                stock.__table__.columns.keys()
-            )
-
-            for col in (
-                "sellable_quantity",
-                "available_quantity",
-                "quantity",
-            ):
-                if col in stock_columns:
-                    setattr(
-                        stock,
-                        col,
-                        target_quantity,
-                    )
-
-    db.session.flush()
 
     if target_warehouse_stock_ids:
         listings = (
@@ -299,19 +181,17 @@ def run_governed_group_propagation(
             })
             continue
 
-        # Every pushable group child receives one Warehouse truth
-        # quantity. Listing-local marketplace quantities must never
-        # become a second authority.
-        if target_quantity is None:
-            return jsonify(
-                _blocked(
-                    "Warehouse group quantity could not be resolved.",
-                    group_id=group_id,
-                    listing_id=listing.id,
-                )
-            ), 409
-
-        quantity = target_quantity
+        # Each pushable member receives the sellable quantity from its exact
+        # linked Warehouse row. Caller, listing, FBA, and MCF quantities are
+        # never inventory authority here.
+        quantity = int(
+            getattr(
+                listing.warehouse_stock,
+                "sellable_quantity",
+                0,
+            )
+            or 0
+        )
 
         sku = (listing.external_sku or (listing.warehouse_stock.sku if listing.warehouse_stock else "") or "").strip()
         marketplace = classification["marketplace"]
@@ -421,8 +301,13 @@ def _classify_listing(listing) -> dict:
     platform = (listing.store.platform or "").strip().lower() if listing.store else ""
     channel = (listing.normalized_amazon_fulfillment_channel or "").upper()
     is_amazon = "amazon" in platform
-    is_fbm = is_amazon and channel in ("MFN", "FBM", "MERCHANT")
-    is_fba = is_amazon and not is_fbm
+    explicit_fba = bool(getattr(listing, "is_fba", False))
+    is_fbm = (
+        is_amazon
+        and not explicit_fba
+        and channel in ("MFN", "FBM", "MERCHANT")
+    )
+    is_fba = is_amazon and (explicit_fba or not is_fbm)
     marketplace = "amazon" if is_amazon else "ebay" if "ebay" in platform else platform
 
     if is_fba:
@@ -441,7 +326,14 @@ def _classify_listing(listing) -> dict:
             "reason": "Listing is not linked to warehouse stock, so warehouse truth quantity cannot be propagated.",
         }
 
-    is_group_child = bool(getattr(listing, "master_product_group_id", None))
+    is_group_child = bool(
+        listing.warehouse_stock
+        and getattr(
+            listing.warehouse_stock,
+            "master_product_group_id",
+            None,
+        )
+    )
     is_non_amazon_group_child = bool(is_group_child and not is_amazon)
 
     if not listing.is_pushable and not is_non_amazon_group_child:

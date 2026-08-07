@@ -1,9 +1,13 @@
+import ast
 from pathlib import Path
 
 
 ROUTES = Path("governed_routes.py").read_text(encoding="utf-8")
 PUSH = Path(
     "services/governed_push_execution.py"
+).read_text(encoding="utf-8")
+PROPAGATION = Path(
+    "governed_group_propagation_routes.py"
 ).read_text(encoding="utf-8")
 
 
@@ -58,7 +62,9 @@ def test_group_push_members_are_resolved_only_through_warehouse_stock():
         "MarketplaceListing.master_product_group_id == group_id"
         not in block
     )
-    assert "direct_group_listing_ids" not in block
+    # This response/audit field may report the listings selected through the
+    # Warehouse relationship. Its presence is not membership authority.
+    assert '"direct_group_listing_ids"' in block
 
 
 def test_single_listing_automatic_group_expansion_has_no_listing_fallback():
@@ -78,12 +84,81 @@ def test_single_listing_automatic_group_expansion_has_no_listing_fallback():
 
 def test_push_does_not_assign_relationship_fields():
     block = _function_block(PUSH, "push_group_listings")
+    tree = ast.parse(block)
+    relationship_fields = {
+        "master_product_group_id",
+        "warehouse_stock_id",
+        "is_group_controlled",
+    }
 
-    forbidden_assignments = (
-        ".master_product_group_id =",
-        ".warehouse_stock_id =",
-        ".is_group_controlled =",
+    assigned_relationship_fields = set()
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+            )
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+
+        for target in targets:
+            for child in ast.walk(target):
+                if (
+                    isinstance(child, ast.Attribute)
+                    and child.attr in relationship_fields
+                ):
+                    assigned_relationship_fields.add(child.attr)
+
+    assert assigned_relationship_fields == set()
+
+
+def test_group_propagation_uses_exact_warehouse_sellable_authority():
+    block = _function_block(
+        PROPAGATION,
+        "run_governed_group_propagation",
     )
 
-    for assignment in forbidden_assignments:
-        assert assignment not in block
+    assert "requested_stock = db.session.get(" in block
+    assert (
+        'getattr(requested_stock, "master_product_group_id", None)'
+        in block
+    )
+    assert "MarketplaceListing.warehouse_stock_id.in_(" in block
+    assert '"sellable_quantity"' in block
+
+    stale_authorities = (
+        "AmazonFBAInventory",
+        "requested_quantity",
+        "group_has_fba_authority",
+        "target_quantity",
+        "MarketplaceListing.master_product_group_id",
+    )
+
+    for stale_authority in stale_authorities:
+        assert stale_authority not in block
+
+
+def test_group_propagation_skips_fba_per_listing():
+    propagation = _function_block(
+        PROPAGATION,
+        "run_governed_group_propagation",
+    )
+    classifier = _function_block(
+        PROPAGATION,
+        "_classify_listing",
+    )
+
+    assert 'if classification["skip"]:' in propagation
+    assert 'if classification["is_fba"]:' in propagation
+    assert '"status": (\n                    "read_only"' in propagation
+    assert (
+        'explicit_fba = bool(getattr(listing, "is_fba", False))'
+        in classifier
+    )
+    assert (
+        'is_fba = is_amazon and (explicit_fba or not is_fbm)'
+        in classifier
+    )
+
