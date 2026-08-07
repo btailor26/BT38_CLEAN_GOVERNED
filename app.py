@@ -199,12 +199,35 @@ login_manager.login_message_category = 'warning'
 # Custom unauthorized handler to use RELATIVE paths (not absolute URLs)
 @login_manager.unauthorized_handler
 def unauthorized():
-    from flask import flash, redirect, url_for, request
+    from flask import flash, jsonify, redirect, url_for, request
     import logging
+
     logging.info(f"[UNAUTH] Custom handler called for path: {request.path}")
-    flash(login_manager.login_message, login_manager.login_message_category)
-    # Use request.path (relative) instead of request.url (absolute with host)
-    return redirect(url_for('governed.login', next=request.path))
+
+    governed_api_prefixes = (
+        "/governed/actions/",
+        "/governed/product-linking/",
+        "/governed/groups/",
+    )
+
+    if request.path.startswith(governed_api_prefixes):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "authentication_required",
+            "message": "Authentication is required.",
+        }), 401
+
+    flash(
+        login_manager.login_message,
+        login_manager.login_message_category,
+    )
+
+    # Browser/page requests continue to use the governed login page.
+    return redirect(
+        url_for("governed.login", next=request.path)
+    )
 
 # Add custom Jinja2 filter to parse JSON strings
 @app.template_filter('from_json')

@@ -1901,7 +1901,7 @@ async function saveNewLink() {
     }
     
     try {
-        const response = await fetch('/governed-disabled/product-linking-link', {
+        const response = await fetch('/governed/product-linking/link-listing-to-warehouse', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
