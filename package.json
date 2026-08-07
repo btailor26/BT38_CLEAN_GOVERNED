@@ -1,0 +1,28 @@
+{
+  "name": "bt38_clean_governed",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/btailor26/BT38_CLEAN_GOVERNED-Github.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/btailor26/BT38_CLEAN_GOVERNED-Github/issues"
+  },
+  "homepage": "https://github.com/btailor26/BT38_CLEAN_GOVERNED-Github#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

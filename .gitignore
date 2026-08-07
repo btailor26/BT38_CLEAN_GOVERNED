@@ -45,3 +45,7 @@ LEGACY_ROUTE_BACKUPS/
 # Local attached assets
 attached_assets/
 static/js/warehouse-governed.js.BACKUP_CLEAN
+node_modules/
+playwright-report/
+test-results/
+.playwright/
