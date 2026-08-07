@@ -198,7 +198,7 @@
 
                 <div class="bt38-product-image">
                   {% if item.image_url %}
-                    <img src="{{ item.image_url }}">
+                    <img src="{{ item.image_url }}" width="54" height="54">
                   {% else %}
                     <div class="bt38-placeholder-img"></div>
                   {% endif %}
@@ -291,6 +291,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
                   <img
                     src="{{ url_for('static', filename='img/marketplaces/amazon.png') }}"
                     class="bt38-mp-logo amazon"
+                    width="30"
+                    height="26"
                     title="Push to Amazon"
                     alt="Amazon Push"
                   >
@@ -298,6 +300,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
                   <img
                     src="{{ url_for('static', filename='img/marketplaces/ebay.png') }}"
                     class="bt38-mp-logo ebay"
+                    width="30"
+                    height="26"
                     title="Push to eBay"
                     alt="eBay Push"
                   >
