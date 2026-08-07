@@ -118,9 +118,10 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         return _blocked("Marketplace listing is not linked to warehouse stock.", listing_id=listing_id)
 
     source_value = str(source or "").strip().lower()
-    # WarehouseStock is the only Product Linking group authority.
+    # Current Product Linking membership belongs to MarketplaceListing.
+    # Warehouse remains permanent identity and quantity authority.
     group_id = getattr(
-        listing.warehouse_stock,
+        listing,
         "master_product_group_id",
         None,
     )
@@ -262,33 +263,23 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
 
     group_id = int(group_id)
 
-    warehouse_ids = [
-        row.id
-        for row in (
-            db.session.query(WarehouseStock)
-            .filter(WarehouseStock.master_product_group_id == group_id)
-            .filter(WarehouseStock.is_active == True)  # noqa: E712
-            .all()
-        )
-    ]
+    # Current Product Linking membership belongs to MarketplaceListing.
+    # Permanent Warehouse identity remains warehouse_stock_id and the linked
+    # Warehouse row remains quantity authority.
+    listings = (
+        db.session.query(MarketplaceListing)
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .filter(MarketplaceListing.master_product_group_id == group_id)
+        .filter(MarketplaceListing.warehouse_stock_id.isnot(None))
+        .order_by(MarketplaceListing.id)
+        .all()
+    )
 
-    # Group push never uses MarketplaceListing.master_product_group_id.
-    # Resolve active marketplace members only through the WarehouseStock rows
-    # committed to this group.
-    if warehouse_ids:
-        listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(
-                MarketplaceListing.warehouse_stock_id.in_(
-                    warehouse_ids
-                )
-            )
-            .order_by(MarketplaceListing.id)
-            .all()
-        )
-    else:
-        listings = []
+    warehouse_ids = sorted({
+        int(listing.warehouse_stock_id)
+        for listing in listings
+        if listing.warehouse_stock_id is not None
+    })
 
     member_source = f"{source}:group_member"
     results: List[Dict[str, Any]] = [

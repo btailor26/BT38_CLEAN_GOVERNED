@@ -238,23 +238,12 @@ def governed_group_unlink(group_id: int):
             listing_id=listing_id,
         )), 404
 
-    if int(
-        getattr(
-            listing.warehouse_stock,
-            "master_product_group_id",
-            0,
-        )
-        or 0
-    ) != int(group_id):
+    if int(listing.master_product_group_id or 0) != int(group_id):
         return jsonify(_blocked(
             "Marketplace listing is not linked to this group.",
             group_id=group_id,
             listing_id=listing_id,
-            current_group_id=getattr(
-                listing.warehouse_stock,
-                "master_product_group_id",
-                None,
-            ),
+            current_group_id=listing.master_product_group_id,
         )), 409
 
     if bool(getattr(listing, "is_fba", False)):
@@ -277,23 +266,31 @@ def governed_group_unlink(group_id: int):
     previous_group_id = int(group_id)
     now = datetime.utcnow()
 
-    # Existing governed unlink contract:
-    #
-    # - When Warehouse owns a different permanent group, restore the listing
-    #   to that group.
-    # - Historic rows whose Warehouse group still equals the active relationship
-    #   are released to an unlinked state while retaining warehouse_stock_id.
-    #
-    # Never resolve by SKU, never create a duplicate Warehouse authority and
-    # never change the listing's permanent Warehouse identity here.
-    restored_original_group = bool(
-        original_group_id
-        and int(original_group_id) != previous_group_id
-    )
+    # Recover a missing permanent original group deterministically from the
+    # listing's already-persisted Warehouse identity only.
+    if original_group_id is None:
+        original_group = MasterProductGroup(
+            display_title=(
+                original_stock.product_name
+                or original_stock.group_title
+                or original_stock.sku
+                or "Untitled Master Group"
+            )[:500],
+            display_image_url=original_stock.image_url or None,
+        )
+        db.session.add(original_group)
+        db.session.flush()
 
-    original_group = None
+        original_stock.master_product_group_id = int(original_group.id)
+        original_stock.is_group_controlled = True
+        original_stock.group_controlled_at = (
+            original_stock.group_controlled_at or now
+        )
+        original_stock.updated_at = now
 
-    if restored_original_group:
+        original_group_id = int(original_group.id)
+        recovered_missing_original = True
+    else:
         original_group = db.session.get(
             MasterProductGroup,
             int(original_group_id),
@@ -308,17 +305,16 @@ def governed_group_unlink(group_id: int):
                 warehouse_stock_id=original_stock.id,
             )), 409
 
-        resulting_group_id = int(original_group_id)
-        original_stock.master_product_group_id = resulting_group_id
-        original_group.updated_at = now
-        message = "Listing restored to its permanent original group ID."
+        recovered_missing_original = False
 
-    else:
-        resulting_group_id = None
-        original_stock.master_product_group_id = None
-        message = (
-            "Listing released from the group and returned to unlinked state."
-        )
+    resulting_group_id = int(original_group_id)
+
+    # Restore current Product Linking relationship only.
+    # Never mutate permanent Warehouse identity here.
+    listing.master_product_group_id = resulting_group_id
+    original_group.updated_at = now
+    restored_original_group = True
+    message = "Listing restored to its permanent original group ID."
 
     listing.updated_at = now
     group.updated_at = now
@@ -375,16 +371,23 @@ def governed_group_unlink(group_id: int):
         else None
     )
 
+    committed_listing_group_id = (
+        int(committed_listing.master_product_group_id)
+        if (
+            committed_listing is not None
+            and committed_listing.master_product_group_id is not None
+        )
+        else None
+    )
+
     if (
         committed_listing is None
         or committed_stock is None
         or int(committed_listing.warehouse_stock_id or 0)
            != int(original_stock.id)
-        or committed_stock_group_id != resulting_group_id
-        or (
-            resulting_group_id is not None
-            and committed_group is None
-        )
+        or committed_stock_group_id != int(original_group_id)
+        or committed_listing_group_id != resulting_group_id
+        or committed_group is None
     ):
         return jsonify(_blocked(
             "Neon did not confirm the committed unlink relationship.",
@@ -439,7 +442,7 @@ def governed_group_unlink(group_id: int):
         ),
         "warehouse_stock_id": committed_listing.warehouse_stock_id,
         "restored_original_group": restored_original_group,
-        "released_to_unlinked": not restored_original_group,
+        "released_to_unlinked": False,
         "neon_relationship_confirmed": True,
         "auto_push_attempted": True,
         "auto_push_success": (
@@ -515,7 +518,7 @@ def _link_stock_to_group(group, stock_id: int, actor: str) -> dict:
 
 
 def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
-    """Move the listing's Warehouse row into the requested Product Linking group."""
+    """Move only the listing's current Product Linking relationship."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup
 
@@ -533,12 +536,20 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
             listing_id=listing_id,
         )
 
-    requested_group_id = int(group.id)
-    previous_group_id = (
+    original_group_id = (
         int(stock.master_product_group_id)
         if stock.master_product_group_id is not None
         else None
     )
+
+    if original_group_id is None:
+        return _blocked(
+            "Warehouse product has no permanent original group.",
+            listing_id=listing_id,
+            warehouse_stock_id=stock.id,
+        )
+
+    requested_group_id = int(group.id)
 
     if not db.session.get(MasterProductGroup, requested_group_id):
         return _blocked(
@@ -548,20 +559,25 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
             requested_group_id=requested_group_id,
         )
 
+    previous_group_id = (
+        int(listing.master_product_group_id)
+        if listing.master_product_group_id is not None
+        else original_group_id
+    )
+
     changed = previous_group_id != requested_group_id
 
     if changed:
         now = datetime.utcnow()
 
-        # WarehouseStock.master_product_group_id is the only active Product
-        # Linking group authority. MarketplaceListing remains attached through
-        # warehouse_stock_id and does not receive a second active group write.
-        stock.master_product_group_id = requested_group_id
+        listing.master_product_group_id = requested_group_id
+        listing.updated_at = now
+
+        # Warehouse identity and original group remain permanent.
         stock.is_group_controlled = True
         stock.group_controlled_at = (
             stock.group_controlled_at or now
         )
-        stock.updated_at = now
 
         if not group.display_title:
             group.display_title = (
@@ -586,9 +602,9 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
         "warehouse_stock_id": int(stock.id),
         "group_id": requested_group_id,
         "previous_group_id": previous_group_id,
-        "original_group_id": previous_group_id,
-        "stock_group_authority": True,
-        "listing_group_mutated": False,
+        "original_group_id": original_group_id,
+        "stock_group_authority": False,
+        "listing_group_mutated": True,
     }
 
 def _push_group_safely(group_id: int, *, source: str) -> dict:

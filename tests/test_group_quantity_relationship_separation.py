@@ -64,23 +64,27 @@ def test_quantity_propagation_contains_relationship_validation():
         "governed_group_propagation_routes.py"
     ).read_text(encoding="utf-8")
 
-    required_fragments = (
-        "saved_listing_group_id",
-        "saved_stock_group_id",
-        "saved_group_controlled",
-        "marketplace listing relationships",
-        "Warehouse",
-        "group relationships",
-        "Product Linking first",
+    # Current Product Linking membership belongs to MarketplaceListing.
+    assert (
+        "MarketplaceListing.master_product_group_id"
+        in source
     )
 
-    missing = [
-        fragment
-        for fragment in required_fragments
-        if fragment not in source
-    ]
-
-    assert missing == [], (
-        "Quantity propagation relationship validation is incomplete: "
-        f"{missing}"
+    # Permanent Warehouse identity must still be required.
+    assert (
+        "MarketplaceListing.warehouse_stock_id"
+        in source
     )
+
+    # Inventory authority remains Warehouse.
+    assert '"sellable_quantity"' in source
+
+    # Propagation must never mutate relationship identity.
+    forbidden = (
+        "listing.master_product_group_id =",
+        "listing.warehouse_stock_id =",
+        "stock.master_product_group_id =",
+    )
+
+    for value in forbidden:
+        assert value not in source

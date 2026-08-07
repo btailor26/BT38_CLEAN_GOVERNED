@@ -101,52 +101,44 @@ def run_governed_group_propagation(
                 )
             ), 409
 
-        if (
-            getattr(requested_stock, "master_product_group_id", None)
-            != group_id
-        ):
+        requested_membership = (
+            db.session.query(MarketplaceListing.id)
+            .filter(MarketplaceListing.master_product_group_id == group_id)
+            .filter(
+                MarketplaceListing.warehouse_stock_id
+                == requested_stock_id
+            )
+            .first()
+        )
+
+        if requested_membership is None:
             return jsonify(
                 _blocked(
                     "Warehouse shortcut row does not belong to the "
                     "requested Product Linking group.",
                     group_id=group_id,
                     warehouse_stock_id=requested_stock_id,
-                    saved_group_id=getattr(
-                        requested_stock,
-                        "master_product_group_id",
-                        None,
+                    original_group_id=(
+                        requested_stock.master_product_group_id
                     ),
                 )
             ), 409
 
-    # WarehouseStock.master_product_group_id is the only Product Linking group
-    # authority. Marketplace listings join only through warehouse_stock_id.
-    warehouse_rows = (
-        db.session.query(WarehouseStock)
-        .filter(WarehouseStock.master_product_group_id == group_id)
-        .filter(WarehouseStock.is_active == True)  # noqa: E712
-        .order_by(WarehouseStock.id)
+    # Current Product Linking membership belongs to MarketplaceListing.
+    # Permanent Warehouse identity remains warehouse_stock_id.
+    listings = (
+        db.session.query(MarketplaceListing)
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .filter(
+            MarketplaceListing.master_product_group_id
+            == group_id
+        )
+        .filter(
+            MarketplaceListing.warehouse_stock_id.isnot(None)
+        )
+        .order_by(MarketplaceListing.id)
         .all()
     )
-    target_warehouse_stock_ids = {
-        int(stock.id)
-        for stock in warehouse_rows
-    }
-
-    if target_warehouse_stock_ids:
-        listings = (
-            db.session.query(MarketplaceListing)
-            .filter(MarketplaceListing.is_active == True)  # noqa: E712
-            .filter(
-                MarketplaceListing.warehouse_stock_id.in_(
-                    target_warehouse_stock_ids
-                )
-            )
-            .order_by(MarketplaceListing.id)
-            .all()
-        )
-    else:
-        listings = []
 
     results = []
     pushed = 0
@@ -327,12 +319,7 @@ def _classify_listing(listing) -> dict:
         }
 
     is_group_child = bool(
-        listing.warehouse_stock
-        and getattr(
-            listing.warehouse_stock,
-            "master_product_group_id",
-            None,
-        )
+        listing.master_product_group_id
     )
     is_non_amazon_group_child = bool(is_group_child and not is_amazon)
 
