@@ -22,7 +22,12 @@
     fullLoadedAt: 0,
     page: 1,
     perPage: 25,
-    filtered: []
+    filtered: [],
+    pushSettingsLoaded: false,
+    pushSettings: {
+      config: {},
+      stores: []
+    }
   };
 
   function uniqueById(items) {
@@ -60,10 +65,136 @@
     return result;
   }
 
+  function settingOn(value) {
+    if (value === true || value === 1) return true;
+    return ["1", "true", "yes", "on", "enabled"].includes(
+      String(value ?? "").trim().toLowerCase()
+    );
+  }
+
   function assignLegacyGlobals() {
     try { allWarehouseProducts = state.products; } catch (_) { window.allWarehouseProducts = state.products; }
     try { allUnlinkedListings = state.unlinked; } catch (_) { window.allUnlinkedListings = state.unlinked; }
     try { allMarketplaceListings = state.listings; } catch (_) { window.allMarketplaceListings = state.listings; }
+  }
+
+  async function fetchPushSettingsState() {
+    if (state.pushSettingsLoaded) return state.pushSettings;
+
+    try {
+      const response = await fetch("/governed/settings/state", {
+        credentials: "same-origin",
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error(`Push settings state failed: HTTP ${response.status}`);
+
+      const data = await response.json();
+      if (!data || (!data.success && !data.ok)) {
+        throw new Error(data?.error || "Push settings state unavailable");
+      }
+
+      state.pushSettings = {
+        config: data.config || {},
+        stores: Array.isArray(data.stores) ? data.stores : []
+      };
+      state.pushSettingsLoaded = true;
+    } catch (error) {
+      console.warn("[ProductLinkingSession] push settings evidence unavailable", error);
+      state.pushSettings = { config: {}, stores: [] };
+      state.pushSettingsLoaded = false;
+    }
+
+    return state.pushSettings;
+  }
+
+  function pushSettingsEvidence(listing, product) {
+    if (listing?.push_status === "read_only" || listing?.is_fba) {
+      return {
+        label: "Push settings: FBA read-only · Amazon authority",
+        healthy: true,
+        relationshipBlocked: false
+      };
+    }
+
+    const config = state.pushSettings?.config || {};
+    const store = (state.pushSettings?.stores || []).find((item) =>
+      sameId(item?.id, listing?.store_id)
+    );
+
+    const globalOn = [
+      "push_enabled",
+      "runtime_push_enabled",
+      "marketplace_push_enabled",
+      "manual_push_enabled"
+    ].every((key) => settingOn(config[key]));
+
+    const quantityOn = settingOn(config.quantity_push_enabled);
+    const groupOn = settingOn(config.group_push_enabled);
+    const autoOn = Boolean(store?.auto_push_enabled);
+    const relationshipBlocked = !product?.master_product_group_id;
+
+    return {
+      label: [
+        `Global ${globalOn ? "ON" : "OFF"}`,
+        `Qty ${quantityOn ? "ON" : "OFF"}`,
+        `Group ${groupOn ? "ON" : "OFF"}`,
+        `Auto ${autoOn ? "ON" : "OFF"}`
+      ].join(" · "),
+      healthy: globalOn && quantityOn && groupOn,
+      relationshipBlocked
+    };
+  }
+
+  function renderRelationshipAndPushEvidence(pageRows) {
+    const products = Array.isArray(pageRows) ? pageRows : [];
+
+    document.querySelectorAll(".bt38-push-settings-evidence").forEach((node) => node.remove());
+
+    products.forEach((product) => {
+      const row = document.querySelector(
+        `tr[data-warehouse-id="${CSS.escape(String(product?.id ?? ""))}"]`
+      );
+      if (!row) return;
+
+      const groupId = product?.master_product_group_id;
+      const statusCell = row.children?.[2];
+      const groupPushButton = row.querySelector(".bt38-qty-push-open");
+
+      if (!groupId) {
+        if (statusCell) {
+          statusCell.innerHTML = '<span class="badge bg-danger">Missing Group ID</span>';
+          statusCell.title = "Warehouse/listing relationship is incomplete. Group push is blocked until the permanent group ID exists.";
+        }
+        if (groupPushButton) {
+          groupPushButton.disabled = true;
+          groupPushButton.setAttribute("aria-disabled", "true");
+          groupPushButton.title = "Group push blocked: permanent Group ID is missing";
+        }
+      }
+
+      const listingCell = row.children?.[4];
+      if (!listingCell) return;
+
+      const cards = Array.from(listingCell.querySelectorAll(":scope > .d-block"));
+      (product?.listings || []).forEach((listing, index) => {
+        const card = cards[index];
+        if (!card) return;
+
+        const evidence = pushSettingsEvidence(listing, product);
+        const line = document.createElement("div");
+        line.className = "bt38-push-settings-evidence small mt-1";
+
+        if (evidence.relationshipBlocked) {
+          line.classList.add("text-danger");
+          line.textContent = `Relationship BLOCKED · no Group ID · ${evidence.label}`;
+        } else {
+          line.classList.add(evidence.healthy ? "text-success" : "text-warning");
+          line.textContent = evidence.label;
+        }
+
+        card.appendChild(line);
+      });
+    });
   }
 
   function openCacheDatabase() {
@@ -210,6 +341,7 @@
 
   async function hydrate() {
     if (state.hydrated) {
+      await fetchPushSettingsState();
       render();
       return;
     }
@@ -226,6 +358,7 @@
         const cached = await readSnapshot();
         if (snapshotExists(cached)) applySnapshot(cached);
         else await fetchInitialSnapshotOnce();
+        await fetchPushSettingsState();
         render();
         if (loading) loading.classList.add("d-none");
         if (container) container.classList.remove("d-none");
@@ -382,6 +515,7 @@
     } catch (_) {}
 
     renderWarehouseProducts(pageRows);
+    renderRelationshipAndPushEvidence(pageRows);
     const count = document.getElementById("warehouseGroupsCount");
     if (count) count.textContent = `${state.filtered.length} matching of ${state.products.length} warehouse groups`;
     if (typeof feather !== "undefined") feather.replace();
@@ -470,6 +604,7 @@
     state.fullLoadedAt = 0;
     state.hydrated = false;
     state.hydrating = null;
+    state.pushSettingsLoaded = false;
 
     await clearSnapshot();
     return hydrate();
@@ -666,8 +801,8 @@
 
       window.alert(
         data.changed === false
-          ? `${identity.listingSku} is already unlinked.`
-          : `Successfully unlinked ${identity.listingSku}.`
+          ? `${identity.listingSku} is already in its original group.`
+          : `Removed ${identity.listingSku} from the shared group and restored its original group.`
       );
 
       clearPendingExplicitUnlink();
