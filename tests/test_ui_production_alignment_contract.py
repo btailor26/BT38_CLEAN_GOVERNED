@@ -37,15 +37,36 @@ def test_product_linking_session_uses_daily_snapshot_then_paginates_locally():
     assert "perPage: 25" in source
 
 
-def test_product_linking_changes_refresh_only_affected_record():
+def test_product_linking_changes_reload_authoritative_server_state():
     source = _source(PRODUCT_LINKING_SESSION)
 
-    assert "TARGETED_DATASET_LIMIT = 25" in source
-    assert "async function refreshAffectedRecord(identity)" in source
-    assert "return applyMutationContract({ changed: true }, identity)" in source
-    assert "await applyMutationContract(data, {" in source
-    assert "await hydrate(true)" not in source
+    # Successful relationship mutations must reload Product Linking from
+    # authoritative server/Neon state instead of reconstructing the changed
+    # relationship from stale browser cache/session state.
+    assert "window.linkListingToWarehouse = async function" in source
+    assert "window.unlinkListing = async function" in source
 
+    # Both successful Link and Unlink paths force a full reload.
+    assert source.count("window.location.reload();") >= 2
+
+    # The old mutation-side targeted rehydration must not be used by Link/Unlink.
+    link_start = source.index("window.linkListingToWarehouse = async function")
+    unlink_start = source.index("window.unlinkListing = async function", link_start)
+
+    link_block = source[link_start:unlink_start]
+
+    next_section = source.find("\n  function ", unlink_start + 1)
+    if next_section == -1:
+        next_section = len(source)
+
+    unlink_block = source[unlink_start:next_section]
+
+    assert "await applyMutationContract(data, {" not in link_block
+    assert "await applyMutationContract(data, {" not in unlink_block
+
+    # Full forced hydrate is also not used; browser refresh causes a normal
+    # fresh page load against server truth.
+    assert "await hydrate(true)" not in source
 
 def test_shared_page_controller_searches_cached_rows_then_paginates_locally():
     source = _source(CONTROLLER)
