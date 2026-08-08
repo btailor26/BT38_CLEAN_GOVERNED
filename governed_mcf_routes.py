@@ -1,7 +1,13 @@
-"""Governed manual MCF workflow.
+"""Governed MCF workflow.
 
 Page reads are database-only. Marketplace writes happen only through explicit
-POST actions and the existing runtime push guard.
+POST actions or the existing exact governed runtime event path.
+
+Lifecycle:
+- eligible external marketplace sale -> Amazon MCF immediately
+- Amazon acceptance -> one-hour cancellation window
+- one-hour event -> source marketplace dispatch if still valid
+- Amazon tracking later -> enrich the existing marketplace dispatch
 """
 from __future__ import annotations
 
@@ -40,6 +46,14 @@ from services.runtime_action_guard import is_runtime_action_allowed
 governed_mcf_bp = Blueprint("governed_mcf", __name__)
 
 
+CANCELLED_ORDER_STATUSES = {
+    "cancelled",
+    "canceled",
+    "cancellation",
+    "cancel_requested",
+}
+
+
 def _order_lines(anchor: MarketplaceOrder) -> list[MarketplaceOrder]:
     return (
         MarketplaceOrder.query
@@ -65,11 +79,6 @@ def _amazon_store_ids() -> list[int]:
 
 
 def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
-    """
-    MCF only applies to an explicitly linked Product Linking group.
-
-    Ungrouped and non-FBA warehouse stock must never enter the MCF path.
-    """
     stock = order.warehouse_stock
     if stock is None or not stock.master_product_group_id:
         return []
@@ -88,15 +97,6 @@ def _group_stock_ids(order: MarketplaceOrder) -> list[int]:
 
 
 def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
-    """
-    Resolve the canonical Amazon FBA inventory row through the existing links:
-
-    MarketplaceOrder
-      -> WarehouseStock
-      -> Product Linking group
-      -> Amazon MarketplaceListing
-      -> AmazonFBAInventory
-    """
     stock_ids = _group_stock_ids(order)
     if not stock_ids:
         return None
@@ -120,7 +120,6 @@ def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
         for listing in amazon_listings
         if str(listing.external_sku or "").strip()
     }
-
     fnskus = {
         str(listing.fnsku or "").strip()
         for listing in amazon_listings
@@ -145,13 +144,9 @@ def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
             )
         )
     elif seller_skus:
-        query = query.filter(
-            AmazonFBAInventory.seller_sku.in_(seller_skus)
-        )
+        query = query.filter(AmazonFBAInventory.seller_sku.in_(seller_skus))
     else:
-        query = query.filter(
-            AmazonFBAInventory.fnsku.in_(fnskus)
-        )
+        query = query.filter(AmazonFBAInventory.fnsku.in_(fnskus))
 
     return (
         query
@@ -166,7 +161,11 @@ def _fba_candidate(order: MarketplaceOrder) -> AmazonFBAInventory | None:
 
 def _line_view(line: MarketplaceOrder) -> dict:
     fba = _fba_candidate(line)
-    group_id = getattr(line.warehouse_stock, "master_product_group_id", None) if line.warehouse_stock else None
+    group_id = (
+        getattr(line.warehouse_stock, "master_product_group_id", None)
+        if line.warehouse_stock
+        else None
+    )
     return {
         "line": line,
         "group_id": group_id,
@@ -179,34 +178,15 @@ def _line_view(line: MarketplaceOrder) -> dict:
     }
 
 
-def _source_is_non_amazon_marketplace(
-    order: MarketplaceOrder,
-) -> bool:
-    """
-    Amazon-origin orders must never enter Amazon MCF again.
-
-    MCF work is only for orders received from an external/non-Amazon
-    marketplace whose linked Product Linking group resolves to canonical
-    Amazon FBA inventory.
-    """
+def _source_is_non_amazon_marketplace(order: MarketplaceOrder) -> bool:
     store = order.store
-
     if store is None:
         return False
-
     platform = str(store.platform or "").strip().lower()
-
     return bool(platform) and "amazon" not in platform
 
 
 def _bulk_orders(limit: int = 100) -> list[dict]:
-    """
-    Bulk-load external marketplace orders only when their complete linked group
-    resolves to canonical, MCF-enabled Amazon FBA inventory.
-
-    Amazon-origin orders are already within Amazon fulfilment and must never be
-    presented as new MCF work. Search, filtering and paging remain browser-local.
-    """
     seed_rows = (
         MarketplaceOrder.query
         .order_by(
@@ -219,7 +199,6 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
 
     keys = []
     seen = set()
-
     for row in seed_rows:
         key = (row.store_id, row.marketplace_order_id)
         if key not in seen:
@@ -251,32 +230,23 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
 
     lines_by_key = defaultdict(list)
     group_ids = set()
-
     for line in lines:
-        lines_by_key[
-            (line.store_id, line.marketplace_order_id)
-        ].append(line)
-
+        lines_by_key[(line.store_id, line.marketplace_order_id)].append(line)
         stock = line.warehouse_stock
         if stock and stock.master_product_group_id:
             group_ids.add(int(stock.master_product_group_id))
 
     group_members = (
         WarehouseStock.query
-        .filter(
-            WarehouseStock.master_product_group_id.in_(group_ids)
-        )
+        .filter(WarehouseStock.master_product_group_id.in_(group_ids))
         .all()
         if group_ids else []
     )
 
     stock_ids_by_group = defaultdict(set)
-
     for stock in group_members:
         if stock.master_product_group_id:
-            stock_ids_by_group[
-                int(stock.master_product_group_id)
-            ].add(int(stock.id))
+            stock_ids_by_group[int(stock.master_product_group_id)].add(int(stock.id))
 
     all_group_stock_ids = {
         stock_id
@@ -285,14 +255,11 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
     }
 
     amazon_store_ids = _amazon_store_ids()
-
     amazon_listings = (
         MarketplaceListing.query
         .filter(
             MarketplaceListing.store_id.in_(amazon_store_ids),
-            MarketplaceListing.warehouse_stock_id.in_(
-                all_group_stock_ids
-            ),
+            MarketplaceListing.warehouse_stock_id.in_(all_group_stock_ids),
             MarketplaceListing.is_active == True,  # noqa: E712
         )
         .all()
@@ -301,13 +268,10 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
 
     listing_skus_by_stock = defaultdict(set)
     listing_fnskus_by_stock = defaultdict(set)
-
     for listing in amazon_listings:
         stock_id = int(listing.warehouse_stock_id)
-
         seller_sku = str(listing.external_sku or "").strip()
         fnsku = str(listing.fnsku or "").strip()
-
         if seller_sku:
             listing_skus_by_stock[stock_id].add(seller_sku)
         if fnsku:
@@ -318,7 +282,6 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
         for values in listing_skus_by_stock.values()
         for sku in values
     }
-
     all_fnskus = {
         fnsku
         for values in listing_fnskus_by_stock.values()
@@ -326,7 +289,6 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
     }
 
     inventory_rows = []
-
     if amazon_store_ids and (all_seller_skus or all_fnskus):
         inventory_query = AmazonFBAInventory.query.filter(
             AmazonFBAInventory.store_id.in_(amazon_store_ids),
@@ -334,66 +296,46 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
             AmazonFBAInventory.is_archived == False,  # noqa: E712
             AmazonFBAInventory.mcf_enabled == True,  # noqa: E712
         )
-
         if all_seller_skus and all_fnskus:
             inventory_query = inventory_query.filter(
                 db.or_(
-                    AmazonFBAInventory.seller_sku.in_(
-                        all_seller_skus
-                    ),
+                    AmazonFBAInventory.seller_sku.in_(all_seller_skus),
                     AmazonFBAInventory.fnsku.in_(all_fnskus),
                 )
             )
         elif all_seller_skus:
             inventory_query = inventory_query.filter(
-                AmazonFBAInventory.seller_sku.in_(
-                    all_seller_skus
-                )
+                AmazonFBAInventory.seller_sku.in_(all_seller_skus)
             )
         else:
             inventory_query = inventory_query.filter(
                 AmazonFBAInventory.fnsku.in_(all_fnskus)
             )
-
         inventory_rows = inventory_query.all()
 
     inventory_by_sku = defaultdict(list)
     inventory_by_fnsku = defaultdict(list)
-
     for inventory in inventory_rows:
         seller_sku = str(inventory.seller_sku or "").strip()
         fnsku = str(inventory.fnsku or "").strip()
-
         if seller_sku:
             inventory_by_sku[seller_sku].append(inventory)
         if fnsku:
             inventory_by_fnsku[fnsku].append(inventory)
 
     orders = []
-
     for key in keys:
         order_lines = lines_by_key.get(key, [])
         if not order_lines:
             continue
 
         anchor = order_lines[0]
-
-        # MCF is only for external/non-Amazon marketplace sales. Amazon orders
-        # must not be sent back into Amazon through MCF, even when their SKU is
-        # linked to an FBA-backed Product Linking group.
         if not _source_is_non_amazon_marketplace(anchor):
             continue
-
-        # Persistent queue cleanup. The marketplace order and any linked MCF
-        # record remain untouched and available for audit/tracking.
-        if any(
-            bool(line.mcf_queue_hidden)
-            for line in order_lines
-        ):
+        if any(bool(line.mcf_queue_hidden) for line in order_lines):
             continue
 
         views = []
-
         for line in order_lines:
             stock = line.warehouse_stock
             group_id = (
@@ -401,35 +343,16 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
                 if stock and stock.master_product_group_id
                 else None
             )
-
             candidates = []
-
             if group_id:
-                for stock_id in stock_ids_by_group.get(
-                    group_id,
-                    set(),
-                ):
-                    for seller_sku in listing_skus_by_stock.get(
-                        stock_id,
-                        set(),
-                    ):
-                        candidates.extend(
-                            inventory_by_sku.get(seller_sku, [])
-                        )
-
-                    for fnsku in listing_fnskus_by_stock.get(
-                        stock_id,
-                        set(),
-                    ):
-                        candidates.extend(
-                            inventory_by_fnsku.get(fnsku, [])
-                        )
+                for stock_id in stock_ids_by_group.get(group_id, set()):
+                    for seller_sku in listing_skus_by_stock.get(stock_id, set()):
+                        candidates.extend(inventory_by_sku.get(seller_sku, []))
+                    for fnsku in listing_fnskus_by_stock.get(stock_id, set()):
+                        candidates.extend(inventory_by_fnsku.get(fnsku, []))
 
             candidates = sorted(
-                {
-                    int(row.id): row
-                    for row in candidates
-                }.values(),
+                {int(row.id): row for row in candidates}.values(),
                 key=lambda row: (
                     int(row.available_quantity or 0),
                     row.updated_at or datetime.min,
@@ -437,9 +360,7 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
                 ),
                 reverse=True,
             )
-
             fba = candidates[0] if candidates else None
-
             views.append({
                 "line": line,
                 "group_id": group_id,
@@ -452,19 +373,10 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
             })
 
         mcf = next(
-            (
-                line.mcf_order
-                for line in order_lines
-                if line.mcf_order_id
-            ),
+            (line.mcf_order for line in order_lines if line.mcf_order_id),
             None,
         )
-
-        eligible = bool(views) and all(
-            view["eligible"] for view in views
-        )
-
-        # Non-FBA and partially resolved groups never appear as new MCF work.
+        eligible = bool(views) and all(view["eligible"] for view in views)
         if not eligible and not mcf:
             continue
 
@@ -499,7 +411,10 @@ def _bulk_orders(limit: int = 100) -> list[dict]:
 
 
 def _source_is_ebay(order: MarketplaceOrder) -> bool:
-    return bool(order.store and "ebay" in str(order.store.platform or "").lower())
+    return bool(
+        order.store
+        and "ebay" in str(order.store.platform or "").lower()
+    )
 
 
 def _active_fba_store() -> Store | None:
@@ -519,9 +434,7 @@ def _guard(
     actor_user=None,
     manual: bool = True,
 ) -> dict:
-    """Apply the existing governed push guard for UI or runtime callers."""
     resolved_actor = actor_user
-
     if resolved_actor is None and has_request_context():
         resolved_actor = current_user
 
@@ -536,91 +449,44 @@ def _guard(
     )
 
 
-def _mcf_auto_release_at(
-    order: MarketplaceOrder,
-) -> datetime | None:
-    """Return the server-controlled MCF release time.
-
-    The existing governed runtime wakes for the exact order identity when this
-    time is reached. No browser page is required.
-    """
-    if order.created_at is None:
+def _mcf_auto_release_at(order: MarketplaceOrder) -> datetime | None:
+    """Legacy/source-order deadline used only to identify overdue recovery."""
+    base = (
+        getattr(order, "marketplace_created_at", None)
+        or order.created_at
+    )
+    if base is None:
         return None
+    return base + timedelta(hours=1)
 
-    return order.created_at + timedelta(hours=1)
 
-
-def _resolve_mcf_submission_inputs(
-    anchor: MarketplaceOrder,
-    *,
-    form_data=None,
-) -> dict:
-    """Resolve delivery and speed inputs without requiring a Flask request."""
+def _resolve_mcf_submission_inputs(anchor: MarketplaceOrder, *, form_data=None) -> dict:
     data = dict(form_data or {})
-
     address = {
-        "name": str(
-            data.get("name")
-            or anchor.ship_to_name
-            or ""
-        ).strip(),
+        "name": str(data.get("name") or anchor.ship_to_name or "").strip(),
         "address_line1": str(
-            data.get("address_line1")
-            or anchor.ship_to_address
-            or ""
+            data.get("address_line1") or anchor.ship_to_address or ""
         ).strip(),
-        "address_line2": str(
-            data.get("address_line2")
-            or ""
-        ).strip(),
-        "city": str(
-            data.get("city")
-            or anchor.ship_to_city
-            or ""
-        ).strip(),
-        "state": str(
-            data.get("state")
-            or ""
-        ).strip(),
+        "address_line2": str(data.get("address_line2") or "").strip(),
+        "city": str(data.get("city") or anchor.ship_to_city or "").strip(),
+        "state": str(data.get("state") or "").strip(),
         "postcode": str(
-            data.get("postcode")
-            or anchor.ship_to_postcode
-            or ""
+            data.get("postcode") or anchor.ship_to_postcode or ""
         ).strip(),
         "country": str(
-            data.get("country")
-            or anchor.ship_to_country
-            or "GB"
+            data.get("country") or anchor.ship_to_country or "GB"
         ).strip().upper(),
-        "email": str(
-            data.get("email")
-            or anchor.ship_to_email
-            or ""
-        ).strip(),
-        "phone": str(
-            data.get("phone")
-            or anchor.ship_to_phone
-            or ""
-        ).strip(),
+        "email": str(data.get("email") or anchor.ship_to_email or "").strip(),
+        "phone": str(data.get("phone") or anchor.ship_to_phone or "").strip(),
     }
 
-    speed = str(
-        data.get("shipping_speed")
-        or "Standard"
-    ).strip().title()
-
+    speed = str(data.get("shipping_speed") or "Standard").strip().title()
     if speed not in {"Standard", "Expedited", "Priority"}:
         speed = "Standard"
 
     missing = [
         key
-        for key in (
-            "name",
-            "address_line1",
-            "city",
-            "postcode",
-            "country",
-        )
+        for key in ("name", "address_line1", "city", "postcode", "country")
         if not address[key]
     ]
 
@@ -643,14 +509,11 @@ def orders_mcf_page():
     return render_template("mcf_orders.html", orders=orders)
 
 
-@governed_mcf_bp.post(
-    "/governed/orders-mcf/remove-selected"
-)
+@governed_mcf_bp.post("/governed/orders-mcf/remove-selected")
 @login_required
 def remove_selected_mcf_orders():
     raw_ids = request.form.getlist("order_ids")
     order_ids = []
-
     for value in raw_ids[:100]:
         try:
             order_ids.append(int(value))
@@ -659,46 +522,27 @@ def remove_selected_mcf_orders():
 
     if not order_ids:
         flash("Select at least one order.", "warning")
-        return redirect(
-            url_for("governed_mcf.orders_mcf_page")
-        )
+        return redirect(url_for("governed_mcf.orders_mcf_page"))
 
-    anchors = (
-        MarketplaceOrder.query
-        .filter(MarketplaceOrder.id.in_(order_ids))
-        .all()
-    )
-
+    anchors = MarketplaceOrder.query.filter(MarketplaceOrder.id.in_(order_ids)).all()
     removed_orders = 0
     seen_keys = set()
-
     for anchor in anchors:
-        key = (
-            anchor.store_id,
-            anchor.marketplace_order_id,
-        )
-
+        key = (anchor.store_id, anchor.marketplace_order_id)
         if key in seen_keys:
             continue
-
         seen_keys.add(key)
-
         for line in _order_lines(anchor):
             line.mcf_queue_hidden = True
-
         removed_orders += 1
 
     db.session.commit()
-
     flash(
         f"Removed {removed_orders} order(s) from the MCF queue. "
         "Marketplace orders and MCF records were not deleted.",
         "success",
     )
-
-    return redirect(
-        url_for("governed_mcf.orders_mcf_page")
-    )
+    return redirect(url_for("governed_mcf.orders_mcf_page"))
 
 
 @governed_mcf_bp.get("/orders-mcf/<int:order_id>")
@@ -707,9 +551,7 @@ def order_mcf_detail_page(order_id: int):
     anchor = db.session.get(MarketplaceOrder, order_id)
     if anchor is None:
         flash("Order not found.", "danger")
-        return redirect(
-            url_for("governed_mcf.orders_mcf_page")
-        )
+        return redirect(url_for("governed_mcf.orders_mcf_page"))
 
     lines = _order_lines(anchor)
     views = [_line_view(line) for line in lines]
@@ -722,6 +564,114 @@ def order_mcf_detail_page(order_id: int):
         mcf=mcf,
         eligible=bool(views) and all(view["eligible"] for view in views),
     )
+
+
+def run_governed_mcf_marketplace_dispatch(
+    order_id: int,
+    *,
+    actor_user=None,
+    automatic: bool = True,
+) -> dict:
+    """Dispatch one exact Amazon-accepted MCF source order without tracking."""
+    anchor = db.session.get(MarketplaceOrder, order_id)
+    if anchor is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "marketplace_order_missing",
+        }
+
+    lines = _order_lines(anchor)
+    if any(
+        str(line.status or "").strip().lower() in CANCELLED_ORDER_STATUSES
+        for line in lines
+    ):
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "source_order_cancelled",
+            "marketplace_order_row_id": anchor.id,
+        }
+
+    mcf = next((line.mcf_order for line in lines if line.mcf_order_id), None)
+    if mcf is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "mcf_order_missing",
+            "marketplace_order_row_id": anchor.id,
+        }
+
+    mcf_status = str(mcf.status or "").strip().lower()
+    amazon_status = str(mcf.amazon_status or "").strip().upper()
+    if mcf_status in {"cancelled", "failed"} or amazon_status in {"CANCELLED", "INVALID"}:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "mcf_not_dispatchable",
+            "mcf_status": mcf.status,
+            "amazon_status": mcf.amazon_status,
+        }
+
+    if any(getattr(line, "shipped_at", None) for line in lines):
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "source_marketplace_already_dispatched",
+            "marketplace_order_row_id": anchor.id,
+        }
+
+    if not _source_is_ebay(anchor):
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "source_marketplace_not_supported_for_dispatch",
+        }
+
+    ebay_guard = _guard(
+        anchor.store,
+        (
+            "mcf_one_hour_ebay_dispatch"
+            if automatic
+            else "manual_mcf_acceptance_ebay_dispatch"
+        ),
+        actor_user=actor_user,
+        manual=not automatic,
+    )
+    if not ebay_guard.get("allowed"):
+        return {
+            "success": False,
+            "skipped": False,
+            "reason": "ebay_dispatch_blocked",
+            "error": ebay_guard.get("reason"),
+        }
+
+    dispatch = complete_sale(anchor)
+    if dispatch.get("success"):
+        for line in lines:
+            line.shipped_at = anchor.shipped_at or datetime.utcnow()
+            line.status = "mcf_dispatched_tracking_pending"
+            line.error_message = None
+        db.session.commit()
+        return {
+            "success": True,
+            "skipped": False,
+            "marketplace_order_row_id": anchor.id,
+            "mcf_order_id": mcf.id,
+            "status": "mcf_dispatched_tracking_pending",
+            "tracking_pending": True,
+        }
+
+    for line in lines:
+        line.status = "mcf_accepted_dispatch_failed"
+        line.error_message = dispatch.get("error")
+    db.session.commit()
+    return {
+        "success": False,
+        "skipped": False,
+        "reason": "ebay_dispatch_failed",
+        "error": dispatch.get("error"),
+    }
 
 
 def run_governed_mcf_submission(
@@ -742,23 +692,15 @@ def run_governed_mcf_submission(
         })
 
     def _capture_url_for(endpoint, **kwargs):
-        return {
-            "endpoint": endpoint,
-            "kwargs": kwargs,
-        }
+        return {"endpoint": endpoint, "kwargs": kwargs}
 
     def _capture_redirect(target):
         latest = (
             captured_messages[-1]
             if captured_messages
-            else {
-                "message": "MCF action completed.",
-                "category": "info",
-            }
+            else {"message": "MCF action completed.", "category": "info"}
         )
-
         category = latest["category"]
-
         return {
             "success": category == "success",
             "skipped": category in {"warning", "info"},
@@ -769,8 +711,6 @@ def run_governed_mcf_submission(
             "marketplace_order_row_id": order_id,
         }
 
-    # Preserve the established route control flow while converting its
-    # presentation effects into a plain result contract.
     flash = _capture_flash
     url_for = _capture_url_for
     redirect = _capture_redirect
@@ -781,17 +721,8 @@ def run_governed_mcf_submission(
         return redirect(url_for("governed_mcf.orders_mcf_page"))
 
     lines = _order_lines(anchor)
-
-    cancelled_statuses = {
-        "cancelled",
-        "canceled",
-        "cancellation",
-        "cancel_requested",
-    }
-
     if any(
-        str(line.status or "").strip().lower()
-        in cancelled_statuses
+        str(line.status or "").strip().lower() in CANCELLED_ORDER_STATUSES
         for line in lines
     ):
         flash(
@@ -799,37 +730,13 @@ def run_governed_mcf_submission(
             "warning",
         )
         return redirect(
-            url_for(
-                "governed_mcf.order_mcf_detail_page",
-                order_id=anchor.id,
-            )
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
         )
 
-    if auto_release:
-        release_at = _mcf_auto_release_at(anchor)
-
-        if release_at is None or datetime.utcnow() < release_at:
-            flash(
-                "The one-hour MCF cancellation window has not completed.",
-                "warning",
-            )
-            return redirect(
-                url_for("governed_mcf.orders_mcf_page")
-            )
-
-    existing = next(
-        (
-            line.mcf_order
-            for line in lines
-            if line.mcf_order_id
-        ),
-        None,
-    )
-
+    existing = next((line.mcf_order for line in lines if line.mcf_order_id), None)
     retry_existing = bool(
         existing
-        and str(existing.status or "").lower()
-        == "failed"
+        and str(existing.status or "").lower() == "failed"
     )
 
     if existing and not retry_existing:
@@ -839,66 +746,67 @@ def run_governed_mcf_submission(
             "warning",
         )
         return redirect(
-            url_for(
-                "governed_mcf.order_mcf_detail_page",
-                order_id=anchor.id,
-            )
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
         )
 
     if not _source_is_ebay(anchor):
-        flash("The first governed MCF path currently accepts eBay source orders only.", "danger")
+        flash(
+            "The first governed MCF path currently accepts eBay source orders only.",
+            "danger",
+        )
         return redirect(
-            url_for(
-                "governed_mcf.order_mcf_detail_page",
-                order_id=anchor.id,
-            )
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
         )
 
     fba_store = _active_fba_store()
     if fba_store is None:
         flash("No active Amazon FBA store is configured.", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        return redirect(
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
+        )
 
     amazon_guard = _guard(
         fba_store,
         (
-            "warehouse_one_hour_auto_mcf_submit"
+            "warehouse_immediate_auto_mcf_submit"
             if auto_release
             else "manual_mcf_submit"
         ),
         actor_user=actor_user,
         manual=not auto_release,
     )
-    ebay_guard = _guard(
-        anchor.store,
-        "mcf_acceptance_ebay_dispatch",
-        actor_user=actor_user,
-        manual=not auto_release,
-    )
     if not amazon_guard.get("allowed"):
-        flash(f"Amazon MCF blocked: {amazon_guard.get('reason')}", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
-    if not ebay_guard.get("allowed"):
-        flash(f"eBay dispatch blocked: {ebay_guard.get('reason')}", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        flash(
+            f"Amazon MCF blocked: {amazon_guard.get('reason')}",
+            "danger",
+        )
+        return redirect(
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
+        )
 
     views = [_line_view(line) for line in lines]
     if not views or not all(view["eligible"] for view in views):
-        flash("Every order line must resolve to an MCF-enabled FBA listing with enough available stock.", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        flash(
+            "Every order line must resolve to an MCF-enabled FBA listing "
+            "with enough available stock.",
+            "danger",
+        )
+        return redirect(
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
+        )
 
-    submission_inputs = _resolve_mcf_submission_inputs(
-        anchor,
-        form_data=data,
-    )
+    submission_inputs = _resolve_mcf_submission_inputs(anchor, form_data=data)
     address = submission_inputs["address"]
     missing = submission_inputs["missing"]
     if missing:
-        flash(f"Complete the delivery address before sending: {', '.join(missing)}.", "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        flash(
+            f"Complete the delivery address before sending: {', '.join(missing)}.",
+            "danger",
+        )
+        return redirect(
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
+        )
 
-    # Preserve any reviewed/manual contact corrections on every line of the
-    # source marketplace order.
     for line in lines:
         if address["email"]:
             line.ship_to_email = address["email"]
@@ -906,20 +814,14 @@ def run_governed_mcf_submission(
             line.ship_to_phone = address["phone"]
 
     speed = submission_inputs["shipping_speed"]
-
     service = MCFService()
 
     if retry_existing:
         mcf = existing
-
         mcf.fba_store_id = fba_store.id
         mcf.destination_name = address["name"]
-        mcf.destination_address_line1 = (
-            address["address_line1"]
-        )
-        mcf.destination_address_line2 = (
-            address["address_line2"]
-        )
+        mcf.destination_address_line1 = address["address_line1"]
+        mcf.destination_address_line2 = address["address_line2"]
         mcf.destination_city = address["city"]
         mcf.destination_state = address["state"]
         mcf.destination_postcode = address["postcode"]
@@ -928,10 +830,8 @@ def run_governed_mcf_submission(
         mcf.shipping_speed = speed
         mcf.status = "pending"
         mcf.last_error = None
-
         for item in mcf.items.all():
             item.status = "pending"
-
         db.session.commit()
     else:
         mcf = MCFOrder(
@@ -939,23 +839,12 @@ def run_governed_mcf_submission(
             source_channel="eBay",
             source_store_id=anchor.store_id,
             fba_store_id=fba_store.id,
-            seller_fulfillment_order_id=(
-                _safe_seller_fulfillment_id(anchor)
-            ),
-            displayable_order_id=(
-                anchor.marketplace_order_id or ""
-            )[:50],
-            displayable_comment=(
-                f"eBay order "
-                f"{anchor.marketplace_order_id}"
-            ),
+            seller_fulfillment_order_id=_safe_seller_fulfillment_id(anchor),
+            displayable_order_id=(anchor.marketplace_order_id or "")[:50],
+            displayable_comment=f"eBay order {anchor.marketplace_order_id}",
             destination_name=address["name"],
-            destination_address_line1=(
-                address["address_line1"]
-            ),
-            destination_address_line2=(
-                address["address_line2"]
-            ),
+            destination_address_line1=address["address_line1"],
+            destination_address_line2=address["address_line2"],
             destination_city=address["city"],
             destination_state=address["state"],
             destination_postcode=address["postcode"],
@@ -963,41 +852,24 @@ def run_governed_mcf_submission(
             destination_phone=address["phone"],
             shipping_speed=speed,
             status="pending",
-            order_total=sum(
-                (line.line_total or 0)
-                for line in lines
-            ),
-            platform_fees=sum(
-                (line.platform_fee or 0)
-                for line in lines
-            ),
+            order_total=sum((line.line_total or 0) for line in lines),
+            platform_fees=sum((line.platform_fee or 0) for line in lines),
             currency="GBP",
-            created_by_id=getattr(
-                actor_user,
-                "id",
-                None,
-            ),
+            created_by_id=getattr(actor_user, "id", None),
         )
-
         db.session.add(mcf)
         db.session.flush()
 
         fee_items = []
         total_product_cost = 0.0
-
         for view in views:
             line = view["line"]
             fba = view["fba"]
-
-            fee = (
-                service.fee_calculator
-                .calculate_item_fee(
-                    line.quantity or 1,
-                    speed,
-                    0.3,
-                )
+            fee = service.fee_calculator.calculate_item_fee(
+                line.quantity or 1,
+                speed,
+                0.3,
             )
-
             db.session.add(
                 MCFOrderItem(
                     mcf_order_id=mcf.id,
@@ -1009,94 +881,107 @@ def run_governed_mcf_submission(
                     quantity=line.quantity or 1,
                     unit_price=line.unit_price or 0,
                     product_cost=line.product_cost or 0,
-                    mcf_fulfillment_fee=(
-                        fee["total_fee"]
-                    ),
-                    mcf_first_unit_fee=(
-                        fee["first_unit_fee"]
-                    ),
-                    mcf_additional_unit_fee=(
-                        fee["additional_unit_fee"]
-                    ),
+                    mcf_fulfillment_fee=fee["total_fee"],
+                    mcf_first_unit_fee=fee["first_unit_fee"],
+                    mcf_additional_unit_fee=fee["additional_unit_fee"],
                     status="pending",
                 )
             )
-
-            fee_items.append({
-                "quantity": line.quantity or 1,
-                "weight_kg": 0.3,
-            })
-
+            fee_items.append({"quantity": line.quantity or 1, "weight_kg": 0.3})
             total_product_cost += (
-                (line.product_cost or 0)
-                * (line.quantity or 1)
+                (line.product_cost or 0) * (line.quantity or 1)
             )
 
-        order_fee = (
-            service.fee_calculator
-            .calculate_order_fee(
-                fee_items,
-                speed,
-            )
-        )
-
-        mcf.mcf_per_shipment_fee = (
-            order_fee["per_shipment_fee"]
-        )
-        mcf.mcf_fulfillment_fee = (
-            order_fee["fulfillment_fee"]
-        )
+        order_fee = service.fee_calculator.calculate_order_fee(fee_items, speed)
+        mcf.mcf_per_shipment_fee = order_fee["per_shipment_fee"]
+        mcf.mcf_fulfillment_fee = order_fee["fulfillment_fee"]
         mcf.total_mcf_fee = order_fee["total_fee"]
         mcf.product_cost = total_product_cost
         mcf.calculate_totals()
-
         db.session.commit()
 
     submitted, message = service.submit_mcf_to_amazon(mcf)
     if not submitted:
         flash(message, "danger")
-        return redirect(url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id))
+        return redirect(
+            url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
+        )
 
     for line in lines:
         line.mcf_order_id = mcf.id
         line.fulfillment_type = "FBA"
         line.status = "mcf_accepted"
         line.processed_at = datetime.utcnow()
+        line.error_message = None
     db.session.commit()
 
-    dispatch = complete_sale(anchor)
-    if dispatch.get("success"):
-        for line in lines:
-            line.shipped_at = anchor.shipped_at
-            line.status = "mcf_dispatched_tracking_pending"
-        db.session.commit()
-        flash("Amazon accepted the MCF order and eBay was marked dispatched. Tracking is pending.", "success")
-    else:
-        for line in lines:
-            line.status = "mcf_accepted_dispatch_failed"
-            line.error_message = dispatch.get("error")
-        db.session.commit()
-        flash(f"Amazon accepted MCF, but eBay dispatch failed: {dispatch.get('error')}", "danger")
-
     if auto_release:
-        return redirect(
-            url_for("governed_mcf.orders_mcf_page")
+        accepted_at = mcf.amazon_status_updated_at or datetime.utcnow()
+        dispatch_at = accepted_at + timedelta(hours=1)
+
+        from services.governed_runtime_engine import notify_governed_runtime_work
+
+        event_result = notify_governed_runtime_work(
+            source="warehouse_mcf_one_hour_dispatch",
+            event={
+                "event_type": "mcf_auto_release",
+                "marketplace": "ebay",
+                "store_id": anchor.store_id,
+                "order_id": anchor.marketplace_order_id,
+                "warehouse_stock_id": anchor.warehouse_stock_id,
+                "verify_after": dispatch_at,
+                "payload": {
+                    "marketplace_order_row_id": anchor.id,
+                    "idempotency_key": anchor.idempotency_key,
+                    "mcf_order_id": mcf.id,
+                    "phase": "dispatch",
+                },
+            },
+        )
+
+        for line in lines:
+            line.status = "mcf_accepted_dispatch_pending"
+        db.session.commit()
+
+        flash(
+            "Amazon accepted the MCF order. The one-hour cancellation window "
+            "is active; marketplace dispatch is pending.",
+            "success",
+        )
+        result = redirect(url_for("governed_mcf.orders_mcf_page"))
+        result["mcf_order_id"] = mcf.id
+        result["amazon_status"] = mcf.amazon_status
+        result["amazon_accepted_at"] = accepted_at.isoformat()
+        result["dispatch_after"] = dispatch_at.isoformat()
+        result["dispatch_event"] = event_result
+        return result
+
+    dispatch = run_governed_mcf_marketplace_dispatch(
+        anchor.id,
+        actor_user=actor_user,
+        automatic=False,
+    )
+    if dispatch.get("success"):
+        flash(
+            "Amazon accepted the MCF order and eBay was marked dispatched. "
+            "Tracking is pending.",
+            "success",
+        )
+    else:
+        flash(
+            f"Amazon accepted MCF, but eBay dispatch failed: "
+            f"{dispatch.get('error') or dispatch.get('reason')}",
+            "danger",
         )
 
     return redirect(
-        url_for(
-            "governed_mcf.order_mcf_detail_page",
-            order_id=anchor.id,
-        )
+        url_for("governed_mcf.order_mcf_detail_page", order_id=anchor.id)
     )
 
 
-@governed_mcf_bp.post(
-    "/governed/orders-mcf/<int:order_id>/send"
-)
+@governed_mcf_bp.post("/governed/orders-mcf/<int:order_id>/send")
 @login_required
 def send_order_to_mcf(order_id: int):
-    """HTTP adapter into the shared governed MCF submission process."""
     auto_release = (
         str(request.form.get("auto_release") or "")
         .strip()
@@ -1117,15 +1002,10 @@ def send_order_to_mcf(order_id: int):
     )
 
     target = result.get("redirect") or {}
-    endpoint = (
-        target.get("endpoint")
-        or "governed_mcf.order_mcf_detail_page"
-    )
+    endpoint = target.get("endpoint") or "governed_mcf.order_mcf_detail_page"
     kwargs = dict(target.get("kwargs") or {})
-
     if endpoint.endswith("order_mcf_detail_page"):
         kwargs.setdefault("order_id", order_id)
-
     return redirect(url_for(endpoint, **kwargs))
 
 
@@ -1139,21 +1019,12 @@ def refresh_mcf_order(order_id: int):
 
     def _refresh_redirect(anchor_id: int | None = None):
         if return_to_list:
-            return redirect(
-                url_for("governed_mcf.orders_mcf_page")
-            )
-
+            return redirect(url_for("governed_mcf.orders_mcf_page"))
         if anchor_id is not None:
             return redirect(
-                url_for(
-                    "governed_mcf.order_mcf_detail_page",
-                    order_id=anchor_id,
-                )
+                url_for("governed_mcf.order_mcf_detail_page", order_id=anchor_id)
             )
-
-        return redirect(
-            url_for("governed_mcf.orders_mcf_page")
-        )
+        return redirect(url_for("governed_mcf.orders_mcf_page"))
 
     anchor = db.session.get(MarketplaceOrder, order_id)
     if anchor is None or not anchor.mcf_order:
@@ -1164,16 +1035,30 @@ def refresh_mcf_order(order_id: int):
     service = MCFService()
     success, result = service.get_mcf_order_status(mcf)
     if not success:
-        flash(f"Amazon MCF status refresh failed: {result.get('error')}", "danger")
+        flash(
+            f"Amazon MCF status refresh failed: {result.get('error')}",
+            "danger",
+        )
         return _refresh_redirect(anchor.id)
 
     lines = _order_lines(anchor)
     if mcf.tracking_number:
-        ebay_guard = _guard(anchor.store, "mcf_tracking_ebay_enrichment")
+        ebay_guard = _guard(
+            anchor.store,
+            "mcf_tracking_ebay_enrichment",
+        )
         if not ebay_guard.get("allowed"):
-            flash(f"Tracking received, but eBay update is blocked: {ebay_guard.get('reason')}", "warning")
+            flash(
+                "Tracking received, but eBay update is blocked: "
+                f"{ebay_guard.get('reason')}",
+                "warning",
+            )
         else:
-            dispatch = complete_sale(anchor, carrier=mcf.carrier or "Other", tracking_number=mcf.tracking_number)
+            dispatch = complete_sale(
+                anchor,
+                carrier=mcf.carrier or "Other",
+                tracking_number=mcf.tracking_number,
+            )
             if dispatch.get("success"):
                 for line in lines:
                     line.carrier = mcf.carrier
@@ -1182,14 +1067,25 @@ def refresh_mcf_order(order_id: int):
                     line.status = "mcf_tracking_updated"
                     line.error_message = None
                 db.session.commit()
-                flash("Amazon tracking was added to the existing eBay dispatch.", "success")
+                flash(
+                    "Amazon tracking was added to the existing eBay dispatch.",
+                    "success",
+                )
             else:
                 for line in lines:
                     line.status = "mcf_tracking_update_failed"
                     line.error_message = dispatch.get("error")
                 db.session.commit()
-                flash(f"Amazon tracking received, but eBay update failed: {dispatch.get('error')}", "danger")
+                flash(
+                    "Amazon tracking received, but eBay update failed: "
+                    f"{dispatch.get('error')}",
+                    "danger",
+                )
     else:
-        flash(f"Amazon status updated to {mcf.amazon_status or mcf.status}; tracking is not available yet.", "info")
+        flash(
+            f"Amazon status updated to {mcf.amazon_status or mcf.status}; "
+            "tracking is not available yet.",
+            "info",
+        )
 
     return _refresh_redirect(anchor.id)
