@@ -24,12 +24,14 @@ def test_product_linking_has_one_authoritative_session_controller():
     assert "window.filterFlatListings = function" in session
 
 
-def test_product_linking_session_uses_daily_snapshot_then_paginates_locally():
+def test_product_linking_session_persists_until_an_exact_change_then_paginates_locally():
     source = _source(PRODUCT_LINKING_SESSION)
 
     assert "FULL_DATASET_LIMIT = 5000" in source
-    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
-    assert "fetchFullSnapshotOnceDaily" in source
+    assert "CACHE_TTL_MS" not in source
+    assert "fetchFullSnapshotOnceDaily" not in source
+    assert "fetchInitialSnapshotOnce" in source
+    assert "snapshotExists" in source
     assert "window.indexedDB.open" in source
     assert "state.filtered = state.products.filter" in source
     assert "state.filtered.slice(start, start + state.perPage)" in source
@@ -37,16 +39,10 @@ def test_product_linking_session_uses_daily_snapshot_then_paginates_locally():
     assert "perPage: 25" in source
 
 
-def test_product_linking_changes_reload_authoritative_server_state():
+def test_product_linking_changes_merge_only_affected_server_state():
     source = _source(PRODUCT_LINKING_SESSION)
 
-    # Link commits through the governed route, then reloads Product Linking
-    # from authoritative server/Neon state.
     assert "window.linkListingToWarehouse = async function" in source
-
-    # Unlink is intentionally two-stage: the row action only prepares the
-    # dedicated confirmation modal, and only the explicit confirmation
-    # function may issue the governed unlink POST.
     assert "window.unlinkListing = function" in source
     assert "async function confirmExplicitUnlink()" in source
 
@@ -59,29 +55,32 @@ def test_product_linking_changes_reload_authoritative_server_state():
     unlink_prepare_block = source[unlink_prepare_start:unlink_confirm_start]
     unlink_confirm_block = source[unlink_confirm_start:wire_start]
 
-    # Clicking a listing's Unlink control must never mutate the relationship.
     assert "fetch(" not in unlink_prepare_block
     assert "pendingExplicitUnlink = {" in unlink_prepare_block
 
-    # Only explicit confirmation may POST the unlink mutation.
     assert "/unlink" in unlink_confirm_block
     assert "user_confirmed: true" in unlink_confirm_block
 
-    # Link and confirmed Unlink both clear stale browser state and reload
-    # from committed server/Neon truth.
-    assert "await clearSnapshot();" in link_block
-    assert "window.location.reload();" in link_block
-    assert "await clearSnapshot();" in unlink_confirm_block
-    assert "window.location.reload();" in unlink_confirm_block
+    assert "await applyMutationContract(data, {" in link_block
+    assert "await applyMutationContract(data, {" in unlink_confirm_block
 
-    # Old mutation-side targeted rehydration must not be used by either
-    # relationship mutation path.
-    assert "await applyMutationContract(data, {" not in link_block
-    assert "await applyMutationContract(data, {" not in unlink_confirm_block
+    assert "await clearSnapshot();" not in link_block
+    assert "window.location.reload();" not in link_block
+    assert "await clearSnapshot();" not in unlink_confirm_block
+    assert "window.location.reload();" not in unlink_confirm_block
 
-    # Full forced hydrate is also not used; browser reload performs the fresh
-    # authoritative read after a committed mutation.
     assert "await hydrate(true)" not in source
+
+
+def test_product_linking_has_no_timer_or_focus_refresh_path():
+    source = _source(PRODUCT_LINKING_SESSION)
+    boot = source[source.index("function boot()") :]
+
+    assert "setTimeout" not in source
+    assert "setInterval" not in source
+    assert "visibilitychange" not in boot
+    assert 'addEventListener("focus"' not in boot
+    assert "refreshVisibleProductLinkingOnce" not in source
 
 
 def test_shared_page_controller_searches_cached_rows_then_paginates_locally():
