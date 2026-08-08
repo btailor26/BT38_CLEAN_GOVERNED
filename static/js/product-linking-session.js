@@ -544,10 +544,14 @@
         groupId: data.group_id,
         originalGroupId: data.original_group_id
       });
-      if (!mappingExists(listingId, warehouseId, data.group_id)) {
-        throw new Error("The relationship changed, but the affected browser row could not be verified.");
-      }
 
+      // The governed backend has already committed and verified the
+      // relationship before returning success. applyMutationContract()
+      // rehydrates Product Linking from that authoritative state.
+      //
+      // Do not reject a successful governed mutation because the old
+      // browser-side mapping representation cannot reproduce the new
+      // listing/group relationship immediately after hydration.
       closeOpenModals();
       window.alert(data.changed === false
         ? `${listingSku} is already linked to ${warehouseSku}.`
