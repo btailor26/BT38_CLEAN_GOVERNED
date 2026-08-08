@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from app import db
-from models import MarketplaceListing, Store, Warehouse, WarehouseStock
+from models import MarketplaceListing, MasterProductGroup, Store, Warehouse, WarehouseStock
 
 ALLOWED_MARKETPLACES = {"amazon"}
 ALLOWED_FULFILLMENT_CHANNELS = {"MFN", "FBM", "AFN", "FBA"}
@@ -35,6 +35,38 @@ def _warehouse_location_for_fulfillment(fulfillment: str) -> str:
     if fulfillment in {"MFN", "FBM"}:
         return "Amazon FBM"
     return "Warehouse"
+
+
+def ensure_permanent_original_group(stock: WarehouseStock) -> int:
+    """Ensure one permanent original group for the exact Warehouse identity.
+
+    Product Linking uses MarketplaceListing.master_product_group_id only for a
+    current/shared relationship. The Warehouse row owns the permanent/original
+    group and that identity is assigned once, then preserved.
+    """
+    existing_group_id = getattr(stock, "master_product_group_id", None)
+    if existing_group_id is not None:
+        return int(existing_group_id)
+
+    now = datetime.utcnow()
+    group = MasterProductGroup(
+        display_title=(
+            stock.product_name
+            or stock.group_title
+            or stock.sku
+            or "Untitled Master Group"
+        )[:500],
+        display_image_url=stock.image_url or None,
+    )
+    db.session.add(group)
+    db.session.flush()
+
+    stock.master_product_group_id = int(group.id)
+    stock.is_group_controlled = True
+    stock.group_controlled_at = stock.group_controlled_at or now
+    stock.updated_at = now
+
+    return int(group.id)
 
 
 def _find_or_create_warehouse_stock_for_listing(*, sku: str, title: str | None, fulfillment: str) -> WarehouseStock:
@@ -172,6 +204,10 @@ def refresh_governed_listing_from_snapshot(
             title=title,
             fulfillment=fulfillment,
         )
+
+    # Every governed Warehouse identity owns one permanent/original group from
+    # first import. This does not create Product Linking shared membership.
+    ensure_permanent_original_group(warehouse_stock)
 
     # The permanent listing was resolved once by store + seller SKU.
     # No second listing identity lookup is permitted.
