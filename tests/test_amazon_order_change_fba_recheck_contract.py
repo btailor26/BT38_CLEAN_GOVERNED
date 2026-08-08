@@ -78,9 +78,10 @@ def test_order_change_does_not_apply_order_quantity_as_fba_inventory():
     )
 
     guard_start = process.index('event_type == "order_change"')
-    quantity_start = process.index("quantity = _extract_quantity(payload)")
-    guard_section = process[guard_start:quantity_start]
+    explicit_inventory_start = process.index("explicit_inventory_quantity = any(")
+    guard_section = process[guard_start:explicit_inventory_start]
 
-    assert "apply_governed_amazon_fba_event" not in guard_section
+    assert "_extract_quantity" not in guard_section
+    assert "_import_marketplace_order_from_notification" not in guard_section
     assert "process_exact_marketplace_order_line" not in guard_section
     assert "push_group_listings" not in guard_section
