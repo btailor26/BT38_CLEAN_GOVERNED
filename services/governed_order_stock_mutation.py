@@ -75,6 +75,7 @@ def _line_idempotency_key(line: Any) -> str:
 
     return f"order_stock:fallback:{platform}:{row_id}:{sku}:{qty}"
 
+
 def _already_mutated(line: Any, key: str) -> bool:
     """Block new canonical keys and historical item-specific ledger keys."""
     if not key:
@@ -116,6 +117,7 @@ def _already_mutated(line: Any, key: str) -> bool:
         .first()
         is not None
     )
+
 
 def _line_sku(line: Any) -> str:
     return (
@@ -358,6 +360,40 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
     }
 
 
+def _attempt_immediate_mcf_handoff(line: Any) -> dict[str, Any]:
+    """Hand one exact processed external sale to the existing MCF authority.
+
+    The MCF route remains the only builder/submission path. Non-MCF orders are
+    simply skipped by its existing eligibility guards. No scan or queue is
+    introduced here.
+    """
+    row_id = _safe_int(getattr(line, "id", None), 0)
+    if row_id <= 0:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "marketplace_order_row_id_missing",
+        }
+
+    try:
+        from governed_mcf_routes import run_governed_mcf_submission
+
+        return run_governed_mcf_submission(
+            row_id,
+            auto_release=True,
+            form_data={},
+            actor_user=None,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "skipped": False,
+            "reason": "automatic_mcf_handoff_failed",
+            "error": str(exc),
+            "marketplace_order_row_id": row_id,
+        }
+
+
 def process_exact_marketplace_order_line(
     line: Any,
     source: str = "governed_exact_order",
@@ -366,7 +402,8 @@ def process_exact_marketplace_order_line(
     Single exact-row order processing entry point.
 
     FBM/eBay:
-      mutate the linked WarehouseStock row once.
+      mutate the linked WarehouseStock row once, then hand the exact sale to
+      the existing MCF eligibility/submission path immediately.
 
     Amazon FBA/AFN:
       retain Amazon inventory as read-only authority and mark the exact
@@ -417,11 +454,24 @@ def process_exact_marketplace_order_line(
             "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
         }
 
+    # Capture the business event before the mutation changes the operational
+    # MarketplaceOrder status to "processed".
+    should_attempt_mcf = bool(is_sale(line) and not _is_return(line))
+
     # FBM and eBay use the existing idempotent warehouse mutation.
-    return mutate_warehouse_stock_from_order_line(
+    result = mutate_warehouse_stock_from_order_line(
         line,
         source=source,
     )
+
+    if (
+        should_attempt_mcf
+        and result.get("success")
+        and not result.get("skipped")
+    ):
+        result["mcf_handoff"] = _attempt_immediate_mcf_handoff(line)
+
+    return result
 
 
 def mutate_recent_marketplace_order_lines(limit: int = 100, source: str = "governed_order_bridge") -> dict[str, Any]:
@@ -508,7 +558,7 @@ def replay_failed_grouped_marketplace_orders(limit: int = 100, source: str = "go
 
         key = _line_idempotency_key(order)
 
-        if _already_mutated(line, key):
+        if _already_mutated(order, key):
             skipped += 1
             results.append({
                 "order_id": getattr(order, "marketplace_order_id", None),
@@ -587,4 +637,3 @@ def replay_failed_grouped_marketplace_orders(limit: int = 100, source: str = "go
         "skipped": skipped,
         "results": results[:50],
     }
-
