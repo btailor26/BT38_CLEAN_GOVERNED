@@ -3,6 +3,7 @@ from pathlib import Path
 
 ORDER_IMPORT = Path("services/governed_marketplace_order_import.py").read_text(encoding="utf-8")
 WEBHOOK = Path("services/governed_webhook_execution.py").read_text(encoding="utf-8")
+MCF_ROUTES = Path("governed_mcf_routes.py").read_text(encoding="utf-8")
 
 
 def test_order_import_preserves_marketplace_time_and_bt38_arrival_time_separately():
@@ -20,9 +21,11 @@ def test_ebay_and_amazon_copy_marketplace_order_time_into_canonical_upsert():
     assert "import_source=source" in ORDER_IMPORT
 
 
-def test_mcf_release_prefers_marketplace_time_with_legacy_bt38_fallback():
-    assert "release_base = marketplace_created_at or order.created_at" in ORDER_IMPORT
-    assert "release_at = release_base + timedelta(hours=1)" in ORDER_IMPORT
+def test_mcf_dispatch_clock_starts_only_after_amazon_acceptance():
+    assert 'source="warehouse_mcf_one_hour_release"' not in ORDER_IMPORT
+    assert "release_at = release_base + timedelta(hours=1)" not in ORDER_IMPORT
+    assert "amazon_status_updated_at" in MCF_ROUTES
+    assert "timedelta(hours=1)" in MCF_ROUTES
 
 
 def test_webhook_hands_marketplace_time_and_source_to_same_canonical_upsert():
