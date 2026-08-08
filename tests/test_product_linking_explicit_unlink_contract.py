@@ -31,7 +31,7 @@ def test_row_unlink_does_not_post_directly():
     assert ".show();" in block
 
 
-def test_only_explicit_confirmation_posts_unlink():
+def test_only_explicit_confirmation_posts_unlink_and_merges_exact_delta():
     start = SESSION.index(
         "async function confirmExplicitUnlink()"
     )
@@ -45,8 +45,9 @@ def test_only_explicit_confirmation_posts_unlink():
     assert "/unlink" in block
     assert "user_confirmed: true" in block
     assert "explicitUnlinkInFlight" in block
-    assert "await clearSnapshot();" in block
-    assert "window.location.reload();" in block
+    assert "await applyMutationContract(data, {" in block
+    assert "await clearSnapshot();" not in block
+    assert "window.location.reload();" not in block
 
 
 def test_no_timer_can_unlink_relationship():
@@ -59,11 +60,13 @@ def test_no_timer_can_unlink_relationship():
     assert "setInterval" not in block
 
 
-def test_visibility_and_focus_refresh_never_call_unlink():
+def test_idle_product_linking_boot_does_not_poll_or_refresh():
     boot = SESSION[
         SESSION.index("function boot()"):
     ]
 
-    assert "refreshVisibleProductLinkingOnce" in boot
+    assert "visibilitychange" not in boot
+    assert 'addEventListener("focus"' not in boot
+    assert "refreshVisibleProductLinkingOnce" not in boot
     assert "confirmExplicitUnlink" not in boot
     assert "/unlink" not in boot
