@@ -1,32 +1,37 @@
 """
-Gunicorn configuration for multi-channel inventory management system.
-Handles long-running sync operations that can take 5+ minutes.
+Gunicorn configuration for the governed BT38 runtime.
+
+The governed event queue is process-memory only, so HTTP requests and the
+single runtime owner must share one process. Threaded concurrency keeps normal
+page/API requests concurrent without creating a second process-local event
+queue that the runtime cannot see.
 """
 
-# Worker count: 2 workers for better concurrency
-# Each Fly machine has 512MB, ~200MB per worker is safe
-workers = 2
+# One process is required while the governed event queue remains in memory.
+# Multiple Gunicorn processes would create isolated queues, while only one
+# process owns the governed runtime lock.
+workers = 1
 
-# Threads per worker: Allows handling concurrent requests within each worker
-threads = 2
+# Preserve the previous four-request concurrency using threads in the same
+# process so every request can signal the same governed runtime queue.
+threads = 4
 
-# Worker timeout: Allow sync operations to complete
-# eBay sync with 641 items can take 5+ minutes
+# Worker timeout: allow explicit marketplace operations to complete.
 timeout = 600  # 10 minutes
 
-# Graceful timeout: Allow workers to finish current requests
+# Graceful timeout: allow the worker to finish current requests.
 graceful_timeout = 60  # 1 minute
 
-# Keep-alive: Prevent connection timeout during long operations
+# Keep-alive for normal browser/API connections.
 keepalive = 120  # 2 minutes
 
-# Worker class: Use gthread for thread support
+# Threaded worker class for concurrent I/O-bound marketplace operations.
 worker_class = 'gthread'
 
 # Logging
 loglevel = 'info'
-accesslog = '-'  # Log to stdout
-errorlog = '-'   # Log to stdout
+accesslog = '-'
+errorlog = '-'
 
-# Bind address (will be overridden by command line --bind)
+# Bind address (may be overridden by command line --bind).
 bind = '0.0.0.0:5000'
