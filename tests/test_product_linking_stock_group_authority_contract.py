@@ -20,32 +20,31 @@ def _function_block(source: str, name: str) -> str:
     return source[start:next_function]
 
 
-def test_product_linking_dataset_uses_warehouse_stock_group_authority():
+def test_product_linking_dataset_uses_two_role_relationship_authority():
     block = _function_block(
         ROUTES,
         "governed_product_linking_data_compat",
     )
 
-    assert (
-        "MarketplaceListing.warehouse_stock_id.in_("
-        in block
-    )
+    # Permanent Warehouse identity remains warehouse_stock_id.
+    assert "MarketplaceListing.warehouse_stock_id.in_(" in block
+
+    # Current Product Linking membership comes from MarketplaceListing.
+    assert "current_group_id" in block
+    assert "listing.master_product_group_id" in block
+    assert "if current_group_id:" in block
+    assert "listings_by_group.setdefault(" in block
+
+    # An unlinked listing falls back to its permanent Warehouse row.
+    assert "elif listing.warehouse_stock_id:" in block
+    assert "listings_by_stock.setdefault(" in block
+
+    # The old Warehouse-group-as-current-membership rule must not return.
     assert (
         'stock_group_id = (\n'
         '            getattr(stock, "master_product_group_id", None)'
-        in block
+        not in block
     )
-
-    forbidden = (
-        "MarketplaceListing.master_product_group_id.in_(",
-        'current_group_id = getattr(\n'
-        '            listing,\n'
-        '            "master_product_group_id"',
-    )
-
-    for value in forbidden:
-        assert value not in block
-
 
 def test_group_push_members_use_current_listing_relationship():
     block = _function_block(PUSH, "push_group_listings")

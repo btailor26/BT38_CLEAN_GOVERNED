@@ -2580,13 +2580,16 @@ def governed_product_linking_data_compat():
             if getattr(row, "warehouse_stock_id", None):
                 fba_qty_by_stock_id[int(row.warehouse_stock_id)] = qty
 
-    # Product Linking group membership follows WarehouseStock only:
+    # Product Linking uses two distinct relationship roles:
     #
-    # marketplace_listing.warehouse_stock_id
-    #     -> warehouse_stock.master_product_group_id
+    # MarketplaceListing.warehouse_stock_id
+    #     = permanent Warehouse identity
     #
-    # MarketplaceListing.master_product_group_id is historical compatibility
-    # data and is not a Product Linking display authority.
+    # WarehouseStock.master_product_group_id
+    #     = permanent/original group for that Warehouse product
+    #
+    # MarketplaceListing.master_product_group_id
+    #     = current/shared Product Linking membership
     listings_by_stock = {}
     listings_by_group = {}
     unlinked_listings = []
@@ -2647,11 +2650,7 @@ def governed_product_linking_data_compat():
             "asin": listing.asin,
             "fnsku": listing.fnsku,
             "warehouse_stock_id": listing.warehouse_stock_id,
-            "master_product_group_id": (
-                listing.warehouse_stock.master_product_group_id
-                if listing.warehouse_stock
-                else None
-            ),
+            "master_product_group_id": listing.master_product_group_id,
             "store_id": listing.store_id,
             "store_name": listing.store.name if listing.store else "",
             "platform": listing_platform,
@@ -2674,16 +2673,15 @@ def governed_product_linking_data_compat():
             "fba_available_quantity": fba_available_quantity,
         }
 
-        stock = listing.warehouse_stock
-        stock_group_id = (
-            getattr(stock, "master_product_group_id", None)
-            if stock is not None
-            else None
+        current_group_id = getattr(
+            listing,
+            "master_product_group_id",
+            None,
         )
 
-        if stock_group_id:
+        if current_group_id:
             listings_by_group.setdefault(
-                int(stock_group_id),
+                int(current_group_id),
                 [],
             ).append(listing_payload)
         elif listing.warehouse_stock_id:
