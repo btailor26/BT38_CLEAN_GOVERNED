@@ -21,6 +21,7 @@ import json
 import os
 
 import requests
+from sqlalchemy import text
 
 from extensions import db
 from models import Store, MarketplaceOrder, MarketplaceListing, SyncLog
@@ -101,6 +102,8 @@ def upsert_governed_marketplace_order_line(
     ship_to_country: str | None = None,
     ship_to_email: str | None = None,
     ship_to_phone: str | None = None,
+    marketplace_created_at: datetime | None = None,
+    import_source: str | None = None,
     listing: MarketplaceListing | None = None,
 ) -> dict[str, Any]:
     sku = _text(sku)
@@ -152,8 +155,6 @@ def upsert_governed_marketplace_order_line(
     order.fulfillment_type = fulfillment_type
     order.unit_price = _safe_float(unit_price)
     order.line_total = _safe_float(unit_price) * qty
-    # Repeat marketplace reads must not reopen an order that has already
-    # passed through governed processing.
     if created or not getattr(order, "processed_at", None):
         order.status = status or "pending"
 
@@ -161,8 +162,6 @@ def upsert_governed_marketplace_order_line(
     order.tracking_number = tracking_number or order.tracking_number
     order.shipped_at = shipped_at or order.shipped_at
 
-    # Delivery data is required for Amazon MCF. Preserve existing values when
-    # marketplace payloads omit a field on later reads.
     resolved_name = _text(ship_to_name)
     resolved_address = _text(ship_to_address)
     resolved_city = _text(ship_to_city)
@@ -187,19 +186,31 @@ def upsert_governed_marketplace_order_line(
         order.ship_to_phone = resolved_phone
 
     order.updated_at = datetime.utcnow()
-
     db.session.flush()
 
-    mcf_release_event = None
+    resolved_import_source = _text(import_source)
+    if marketplace_created_at is not None or resolved_import_source:
+        db.session.execute(
+            text(
+                """
+                UPDATE marketplace_orders
+                SET marketplace_created_at = COALESCE(:marketplace_created_at, marketplace_created_at),
+                    import_source = CASE
+                        WHEN :import_source <> '' THEN :import_source
+                        ELSE import_source
+                    END
+                WHERE id = :order_id
+                """
+            ),
+            {
+                "marketplace_created_at": marketplace_created_at,
+                "import_source": resolved_import_source,
+                "order_id": order.id,
+            },
+        )
 
-    # Queue one exact server-side due event only when an external order row
-    # is first created. This does not submit MCF and does not scan orders.
-    #
-    # The runtime sleeps until created_at + one hour, then reloads only this
-    # exact MarketplaceOrder identity.
-    platform = str(
-        getattr(store, "platform", "") or ""
-    ).strip().lower()
+    mcf_release_event = None
+    platform = str(getattr(store, "platform", "") or "").strip().lower()
 
     cancelled_statuses = {
         "cancelled",
@@ -208,30 +219,19 @@ def upsert_governed_marketplace_order_line(
         "cancel_requested",
     }
 
-    order_status = str(
-        getattr(order, "status", "") or ""
-    ).strip().lower()
+    order_status = str(getattr(order, "status", "") or "").strip().lower()
+    release_base = marketplace_created_at or order.created_at
 
-    # Arm or re-arm the exact automatic MCF release whenever the canonical
-    # importer sees an eligible external order without an existing MCF record.
-    #
-    # This preserves the original server-controlled release time:
-    # MarketplaceOrder.created_at + one hour.
-    #
-    # Re-reading the order after a restart restores the process-memory event
-    # without creating another order, another queue table, or another MCF path.
     if (
         "amazon" not in platform
-        and order.created_at is not None
+        and release_base is not None
         and not getattr(order, "mcf_order_id", None)
         and not bool(getattr(order, "mcf_queue_hidden", False))
         and order_status not in cancelled_statuses
     ):
-        from services.governed_runtime_engine import (
-            notify_governed_runtime_work,
-        )
+        from services.governed_runtime_engine import notify_governed_runtime_work
 
-        release_at = order.created_at + timedelta(hours=1)
+        release_at = release_base + timedelta(hours=1)
 
         mcf_release_event = notify_governed_runtime_work(
             source="warehouse_mcf_one_hour_release",
@@ -258,10 +258,14 @@ def upsert_governed_marketplace_order_line(
         "quantity": order.quantity,
         "warehouse_stock_id": order.warehouse_stock_id,
         "idempotency_key": order.idempotency_key,
+        "marketplace_created_at": (
+            marketplace_created_at.isoformat()
+            if marketplace_created_at is not None
+            else None
+        ),
+        "import_source": resolved_import_source or None,
         "listing_matched": bool(listing),
         "mcf_release_event": mcf_release_event,
-        # Internal hand-off only. Import callers remove this before returning
-        # JSON so the exact row can be processed without another DB query.
         "_order_row": order,
     }
 
@@ -271,14 +275,6 @@ def _process_exact_imported_order(
     *,
     source: str,
 ) -> dict[str, Any]:
-    """
-    Process only the exact MarketplaceOrder row returned by the upsert.
-
-    No MarketplaceOrder status scan.
-    No pending-row sweep.
-    No separate queue/table.
-    """
-
     order = result.pop("_order_row", None)
 
     if order is None:
@@ -288,14 +284,9 @@ def _process_exact_imported_order(
             "reason": "exact_order_row_missing",
         }
 
-    from services.governed_order_stock_mutation import (
-        process_exact_marketplace_order_line,
-    )
+    from services.governed_order_stock_mutation import process_exact_marketplace_order_line
 
-    return process_exact_marketplace_order_line(
-        order,
-        source=source,
-    )
+    return process_exact_marketplace_order_line(order, source=source)
 
 
 def _write_sync_log(store: Store, *, status: str, message: str, items_synced: int = 0) -> None:
@@ -360,18 +351,17 @@ def _ebay_access_token(store: Store) -> str:
 
 
 def _parse_ebay_datetime(value: Any) -> datetime | None:
-    text = _text(value)
-    if not text:
+    text_value = _text(value)
+    if not text_value:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        return datetime.fromisoformat(text_value.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         return None
 
 
 def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
     access_token = _ebay_access_token(store)
-
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     response = requests.get(
@@ -380,10 +370,7 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         },
-        params={
-            "filter": f"creationdate:[{since}..]",
-            "limit": "100",
-        },
+        params={"filter": f"creationdate:[{since}..]", "limit": "100"},
         timeout=30,
     )
 
@@ -401,6 +388,7 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
 
     for order in orders:
         order_id = _text(order.get("orderId"))
+        marketplace_created_at = _parse_ebay_datetime(order.get("creationDate"))
         payment_status = _text(order.get("orderPaymentStatus")).upper()
         fulfillment_status = _text(order.get("orderFulfillmentStatus")).upper()
 
@@ -412,14 +400,9 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
         shipped_at = None
 
         if fulfillment_status == "FULFILLED":
-            # Fulfilment state does not bypass stock processing. The exact
-            # imported line still enters the single governed intake path.
             status = "pending"
             shipped_at = _parse_ebay_datetime(order.get("lastModifiedDate"))
 
-        # eBay Fulfillment API exposes the delivery contact under the order's
-        # fulfillment start instruction. Store it once on every line so any
-        # line may act as the MCF order anchor.
         instructions = order.get("fulfillmentStartInstructions") or []
         instruction = instructions[0] if instructions else {}
         shipping_step = instruction.get("shippingStep") or {}
@@ -435,17 +418,10 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
         delivery_name = _text(ship_to.get("fullName"))
         delivery_city = _text(contact_address.get("city"))
         delivery_postcode = _text(contact_address.get("postalCode"))
-        delivery_country = _text(
-            contact_address.get("countryCode")
-        ).upper()[:2]
-
+        delivery_country = _text(contact_address.get("countryCode")).upper()[:2]
         delivery_email = _text(ship_to.get("email"))
-
         primary_phone = ship_to.get("primaryPhone") or {}
-        delivery_phone = (
-            _text(primary_phone.get("phoneNumber"))
-            or _text(ship_to.get("phoneNumber"))
-        )
+        delivery_phone = _text(primary_phone.get("phoneNumber")) or _text(ship_to.get("phoneNumber"))
 
         for item in order.get("lineItems") or []:
             sku = _text(item.get("sku")) or _text(item.get("legacyItemId"))
@@ -474,6 +450,8 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 ship_to_country=delivery_country,
                 ship_to_email=delivery_email,
                 ship_to_phone=delivery_phone,
+                marketplace_created_at=marketplace_created_at,
+                import_source=source,
             )
 
             processing_result = _process_exact_imported_order(
@@ -518,7 +496,6 @@ def _run_ebay_order_import(store: Store, *, source: str) -> dict[str, Any]:
     }
 
 
-
 def _amazon_credentials(store: Store) -> dict[str, Any]:
     creds = _store_credentials(store)
 
@@ -560,7 +537,7 @@ def _amazon_credentials(store: Store) -> dict[str, Any]:
         creds.get("role_arn")
         or creds.get("aws_user_arn")
         or os.getenv("AMAZON_AWS_ROLE_ARN")
-        or os.getenv("SP_API_ROLE_ARN")
+        or os.getenv("SP_API_AWS_ROLE_ARN")
     )
 
     if aws_access_key:
@@ -581,18 +558,6 @@ def _amazon_credentials(store: Store) -> dict[str, Any]:
 
 
 def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
-    """
-    Amazon order verification path.
-
-    This is used by the 15-minute light reconcile as a safety net for missed
-    marketplace events. It must not re-scan 7 days of Amazon orders every cycle.
-
-    Rules:
-    - Webhook remains the immediate path.
-    - 15-minute reconcile verifies recent/missed Amazon orders only.
-    - Existing imported orders are skipped before get_order_items().
-    - get_order_items() is only called for new order IDs.
-    """
     from sp_api.api import Orders
     from sp_api.base import Marketplaces
     from models import MarketplaceOrder
@@ -605,8 +570,6 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         credentials=_amazon_credentials(store),
     )
 
-    # Keep the 15-minute verifier lightweight. Use a short safety window so
-    # missed webhooks are recovered without re-reading the same 7 days forever.
     created_after = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
 
     response = client.get_orders(
@@ -629,6 +592,7 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
 
     for order in orders:
         order_id = _text(order.get("AmazonOrderId"))
+        marketplace_created_at = _parse_ebay_datetime(order.get("PurchaseDate"))
         order_status = _text(order.get("OrderStatus")).upper()
         fulfillment_channel = _text(order.get("FulfillmentChannel")).upper()
 
@@ -689,6 +653,8 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 unit_price=price_value,
                 fulfillment_type=fulfillment_type,
                 status="pending",
+                marketplace_created_at=marketplace_created_at,
+                import_source=source,
             )
 
             processing_result = _process_exact_imported_order(
