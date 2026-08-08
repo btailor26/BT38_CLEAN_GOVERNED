@@ -259,6 +259,7 @@ def capture_amazon_notification(
     Persist the raw Amazon/SNS request before validation or parsing.
 
     Both the SNS envelope and decoded notification payload are retained.
+    Direct SQS/SP-API notification bodies are also accepted as the payload.
     """
 
     raw_body, envelope = _request_payload(request)
@@ -277,6 +278,11 @@ def capture_amazon_notification(
             payload = json.loads(message)
         except (TypeError, ValueError, json.JSONDecodeError):
             payload = {"raw_message": message}
+    elif message is None and isinstance(envelope, dict):
+        # The governed SQS runtime already unwraps Amazon's transport and
+        # forwards the SP-API notification body directly. Preserve that same
+        # body as the parsed payload so indexed metadata is not lost.
+        payload = envelope
 
     payload = _safe_json(payload)
 
