@@ -217,7 +217,7 @@ def governed_group_link_listing(group_id: int):
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    """Remove one mutable listing from shared Product Linking membership."""
+    """Remove one mutable listing from a shared group and restore its original group."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup
 
@@ -371,16 +371,15 @@ def governed_group_unlink(group_id: int):
 
         recovered_missing_original = False
 
-    # Unlink removes only the temporary/shared Product Linking membership.
-    # The listing's permanent Warehouse identity remains warehouse_stock_id,
-    # and WarehouseStock.master_product_group_id continues to identify the
-    # Warehouse product/group under which the unlinked listing is displayed.
-    resulting_group_id = None
-    listing.master_product_group_id = None
+    # Unlink removes only temporary/shared membership. The listing must return
+    # to its own permanent Warehouse group; NULL is not a valid post-unlink
+    # Product Linking identity.
+    resulting_group_id = int(original_group_id)
+    listing.master_product_group_id = resulting_group_id
 
     original_group.updated_at = now
-    restored_original_group = False
-    message = "Listing removed from shared Product Linking group."
+    restored_original_group = True
+    message = "Listing removed from shared Product Linking group and restored to its permanent original group."
 
     listing.updated_at = now
     group.updated_at = now
@@ -397,7 +396,7 @@ def governed_group_unlink(group_id: int):
             f"warehouse_stock_id={getattr(listing, 'warehouse_stock_id', None)} "
             f"previous_group_id={previous_group_id} "
             f"group_id={resulting_group_id} "
-            f"restored_original={resulting_group_id is not None}"
+            f"restored_original=True"
         )[:500],
         items_synced=1,
         created_at=datetime.utcnow(),
@@ -419,13 +418,9 @@ def governed_group_unlink(group_id: int):
         else None
     )
 
-    committed_group = (
-        db.session.get(
-            MasterProductGroup,
-            int(resulting_group_id),
-        )
-        if resulting_group_id is not None
-        else None
+    committed_group = db.session.get(
+        MasterProductGroup,
+        int(resulting_group_id),
     )
 
     committed_stock_group_id = (
@@ -452,15 +447,15 @@ def governed_group_unlink(group_id: int):
         or int(committed_listing.warehouse_stock_id or 0)
            != int(original_stock.id)
         or committed_stock_group_id != int(original_group_id)
-        or committed_listing_group_id is not None
-        or committed_group is not None
+        or committed_listing_group_id != int(resulting_group_id)
+        or committed_group is None
     ):
         return jsonify(_blocked(
             "Neon did not confirm the committed unlink relationship.",
             group_id=previous_group_id,
             listing_id=listing_id,
             expected_group_id=resulting_group_id,
-            committed_group_id=committed_stock_group_id,
+            committed_group_id=committed_listing_group_id,
             warehouse_stock_id=(
                 committed_listing.warehouse_stock_id
                 if committed_listing
@@ -477,23 +472,14 @@ def governed_group_unlink(group_id: int):
         previous_group_id,
         source="product_linking_unlink_previous_group_auto_push",
     )
-    restored_group_push = None
-
-    if resulting_group_id is not None:
-        restored_group_push = _push_group_safely(
-            resulting_group_id,
-            source="product_linking_unlink_original_group_auto_push",
-        )
-
-    response_group = committed_group or db.session.get(
-        MasterProductGroup,
-        previous_group_id,
+    restored_group_push = _push_group_safely(
+        resulting_group_id,
+        source="product_linking_unlink_original_group_auto_push",
     )
 
-    affected_group_ids = [previous_group_id]
+    response_group = committed_group
 
-    if resulting_group_id is not None:
-        affected_group_ids.append(resulting_group_id)
+    affected_group_ids = [previous_group_id, resulting_group_id]
 
     payload = _serialize_master_group(response_group)
     payload.update({
@@ -501,22 +487,17 @@ def governed_group_unlink(group_id: int):
         "listing_id": int(listing_id),
         "previous_group_id": previous_group_id,
         "group_id": resulting_group_id,
-        "original_group_id": (
-            int(original_group_id)
-            if original_group_id is not None
-            else None
-        ),
+        "original_group_id": int(original_group_id),
         "warehouse_stock_id": committed_listing.warehouse_stock_id,
         "restored_original_group": restored_original_group,
-        "released_to_unlinked": True,
+        "released_from_shared_group": True,
+        "released_to_unlinked": False,
+        "recovered_missing_original": recovered_missing_original,
         "neon_relationship_confirmed": True,
         "auto_push_attempted": True,
         "auto_push_success": (
             _push_succeeded(previous_group_push)
-            and (
-                restored_group_push is None
-                or _push_succeeded(restored_group_push)
-            )
+            and _push_succeeded(restored_group_push)
         ),
         "push_results": {
             "previous_group": previous_group_push,
@@ -672,6 +653,7 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
         "stock_group_authority": False,
         "listing_group_mutated": True,
     }
+
 
 def _push_group_safely(group_id: int, *, source: str) -> dict:
     try:
