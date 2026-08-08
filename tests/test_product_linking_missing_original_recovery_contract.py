@@ -22,17 +22,9 @@ def function_source(name):
 def test_unlink_has_missing_original_recovery_path():
     block = function_source("governed_group_unlink")
 
-    # Unlink must have access to the permanent Warehouse relationship.
     assert "warehouse_stock" in block
-
-    # Missing Warehouse original group must enter recovery rather
-    # than releasing the listing into an ungrouped state.
     assert "master_product_group_id" in block
-
-    # Unlink deliberately removes only temporary/shared membership.
-    assert "listing.master_product_group_id = None" in block
-
-    # Permanent Warehouse identity must never be cleared.
+    assert "listing.master_product_group_id = resulting_group_id" in block
     assert "listing.warehouse_stock_id = None" not in block
     assert "original_stock.master_product_group_id = None" not in block
 
@@ -40,10 +32,8 @@ def test_unlink_has_missing_original_recovery_path():
 def test_recovery_is_anchored_to_exact_warehouse_identity():
     block = function_source("governed_group_unlink")
 
-    # Recovery identity is the persisted Warehouse relationship.
     assert "warehouse_stock_id" in block
 
-    # Never recover identity by fuzzy marketplace/product matching.
     forbidden = (
         "ilike(",
         "contains(",
@@ -65,25 +55,26 @@ def test_recovery_never_clears_permanent_identity():
     forbidden_assignments = (
         "listing.warehouse_stock_id = None",
         "original_stock.master_product_group_id = None",
+        "listing.master_product_group_id = None",
     )
 
     for assignment in forbidden_assignments:
         assert assignment not in block
 
 
-def test_unlink_reports_shared_membership_release_without_losing_warehouse_identity():
+def test_unlink_releases_shared_membership_and_restores_original_group():
     block = function_source("governed_group_unlink")
 
-    assert '"released_to_unlinked": True' in block
-    assert "listing.master_product_group_id = None" in block
+    assert '"released_from_shared_group": True' in block
+    assert '"released_to_unlinked": False' in block
+    assert "resulting_group_id = int(original_group_id)" in block
+    assert "listing.master_product_group_id = resulting_group_id" in block
     assert "listing.warehouse_stock_id = None" not in block
-    assert "original_stock.master_product_group_id = None" not in block
 
 
 def test_missing_original_must_be_recoverable_not_terminally_blocked():
     block = function_source("governed_group_unlink")
 
-    # Once recovery is implemented, this old terminal failure must disappear.
     assert (
         "Warehouse product has no permanent original group."
         not in block
@@ -93,19 +84,22 @@ def test_missing_original_must_be_recoverable_not_terminally_blocked():
     )
 
 
-def test_recovery_must_persist_original_before_restoring_listing():
+def test_recovery_persists_original_before_restoring_listing():
     block = function_source("governed_group_unlink")
 
-    # Required lifecycle:
-    #
-    # missing Warehouse original
-    # -> resolve/create one real group
-    # -> persist Warehouse original
-    # -> restore listing current relationship to same group
-    #
-    # These field roles must both be present in the recovery implementation.
-    assert "original_stock.master_product_group_id" in block
-    assert "listing.master_product_group_id" in block
+    stock_assignment = block.index("original_stock.master_product_group_id = int(original_group.id)")
+    listing_assignment = block.index("listing.master_product_group_id = resulting_group_id")
+
+    assert stock_assignment < listing_assignment
+    assert "resulting_group_id = int(original_group_id)" in block
+
+
+def test_committed_neon_state_requires_listing_and_warehouse_same_original_group():
+    block = function_source("governed_group_unlink")
+
+    assert "committed_stock_group_id != int(original_group_id)" in block
+    assert "committed_listing_group_id != int(resulting_group_id)" in block
+    assert "committed_group is None" in block
 
 
 def test_recovery_does_not_create_identity_from_marketplace_metadata():
