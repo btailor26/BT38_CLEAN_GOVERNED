@@ -43,11 +43,29 @@ def test_existing_original_group_is_preserved_without_new_group_creation():
     assert existing_guard < existing_return < create_group
 
 
-def test_listing_import_does_not_create_shared_product_linking_membership():
+def test_listing_import_places_listing_in_its_original_group_by_default():
     refresh = _function_source("refresh_governed_listing_from_snapshot")
 
-    assert "listing.master_product_group_id =" not in refresh
-    assert "warehouse_stock.master_product_group_id =" not in refresh
+    assert "original_group_id = ensure_permanent_original_group(warehouse_stock)" in refresh
+    assert "master_product_group_id=int(original_group_id)" in refresh
+    assert "if getattr(listing, \"master_product_group_id\", None) is None:" in refresh
+    assert "listing.master_product_group_id = int(original_group_id)" in refresh
+
+
+def test_listing_refresh_preserves_existing_shared_product_linking_membership():
+    refresh = _function_source("refresh_governed_listing_from_snapshot")
+
+    repair_guard = refresh.index(
+        'if getattr(listing, "master_product_group_id", None) is None:'
+    )
+    repair_assignment = refresh.index(
+        "listing.master_product_group_id = int(original_group_id)",
+        repair_guard,
+    )
+
+    assert repair_guard < repair_assignment
+    assert "listing.master_product_group_id = int(original_group_id)" in refresh
+    assert "listing.master_product_group_id = None" not in refresh
 
 
 def test_group_identity_is_not_derived_from_marketplace_metadata():
