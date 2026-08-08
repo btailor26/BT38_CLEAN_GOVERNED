@@ -9,6 +9,11 @@ or bypass governed routes.
 
 from __future__ import annotations
 
+OLD_SYNC_DISABLED = True
+MARKETPLACE_EXECUTION_DISABLED = True
+GOVERNED_PATH_REQUIRED = True
+QUEUE_MANAGER_DISABLED = True
+
 JOB_PUSH_ITEM = "push_item"
 JOB_FULL_SYNC = "full_sync"
 JOB_AUTO_PUSH_DRY_RUN = "auto_push_dry_run"
@@ -18,6 +23,18 @@ PRIORITY_MEDIUM = 5
 PRIORITY_HIGH = 10
 
 
+def _blocked(reason: str) -> dict:
+    return {
+        "ok": False,
+        "success": False,
+        "governed": True,
+        "execution_blocked": True,
+        "execution_started": False,
+        "queue_job_created": False,
+        "reason": reason,
+    }
+
+
 def enqueue_sync_job(*args, **kwargs):
     """Disabled legacy queue entrypoint.
 
@@ -25,7 +42,9 @@ def enqueue_sync_job(*args, **kwargs):
     Real execution must go through:
     UI -> governed route -> fuse box -> governed execution -> adapter
     """
-    return None
+    return _blocked(
+        "Legacy queue enqueue is disabled. Use the governed event/action path."
+    )
 
 
 def cancel_stale_push_jobs_for_warehouse(*args, **kwargs):
@@ -41,21 +60,15 @@ def cancel_stale_push_jobs_for_warehouse(*args, **kwargs):
 
 def process_next_job(*args, **kwargs):
     """Disabled worker processor placeholder."""
-    return {
-        "ok": False,
-        "success": False,
-        "governed": True,
-        "execution_started": False,
-        "reason": "Legacy queue processing is disabled. Use governed routes.",
-    }
+    return _blocked(
+        "Legacy queue processing is disabled. Use governed routes."
+    )
 
 
 def start_worker(*args, **kwargs):
     """Disabled worker startup placeholder."""
-    return {
-        "ok": False,
-        "success": False,
-        "governed": True,
-        "worker_started": False,
-        "reason": "Legacy workers are disabled. Fuse box controls execution.",
-    }
+    result = _blocked(
+        "Legacy workers are disabled. Fuse box controls execution."
+    )
+    result["worker_started"] = False
+    return result
