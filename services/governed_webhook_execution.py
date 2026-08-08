@@ -154,6 +154,56 @@ def process_marketplace_notification(
         and listing_channel not in {"MFN", "FBM", "MERCHANT"}
     )
 
+    payload_change = (
+        payload.get("Payload", {})
+        .get("OrderChangeNotification", {})
+    )
+    payload_summary = payload_change.get("Summary", {})
+    payload_fulfillment_type = str(
+        payload_summary.get("FulfillmentType")
+        or payload_summary.get("fulfillmentType")
+        or ""
+    ).strip().upper()
+
+    # Amazon AFN/FBA ORDER_CHANGE quantity is the order-line quantity, not an
+    # inventory snapshot. Treat it only as an exact-SKU signal for the existing
+    # FBA verification path. governed_routes performs the immediate Amazon
+    # inventory reread and the existing delayed settlement recheck.
+    if (
+        is_amazon_fba
+        and event_type == "order_change"
+        and payload_fulfillment_type in {"AFN", "FBA", "AMAZON"}
+    ):
+        seller_sku = (
+            _deep_get(payload, "SellerSKU")
+            or getattr(listing, "external_sku", None)
+            or getattr(stock, "sku", None)
+        )
+
+        return _log_result(
+            status="fba_pending_stored",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="fba_pending",
+            reason=(
+                "Amazon AFN/FBA ORDER_CHANGE stored as an exact inventory "
+                "verification signal. Order quantity was not treated as FBA "
+                "inventory; Amazon remains inventory authority."
+            ),
+            payload=payload,
+            store_id=getattr(listing, "store_id", None),
+            listing_id=listing.id,
+            warehouse_stock_id=stock.id,
+            seller_sku=(
+                str(seller_sku).strip()
+                if seller_sku not in (None, "")
+                else None
+            ),
+            order_id=_extract_marketplace_order_id(payload),
+            stock_changed=False,
+            correction_started=False,
+        )
+
     explicit_inventory_quantity = any(
         _deep_get(payload, key) is not None
         for key in (
@@ -875,6 +925,7 @@ def _event_type(payload: dict) -> str:
         payload.get("event_type")
         or payload.get("eventType")
         or payload.get("notificationType")
+        or payload.get("NotificationType")
         or payload.get("type")
         or payload.get("topic")
         or "marketplace_notification"
