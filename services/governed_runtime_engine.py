@@ -974,8 +974,8 @@ def _engine_loop(app):
             _safe_error("MCF startup recovery failed", exc)
 
     hydration_enabled = _truthy(
-        os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "true"),
-        True,
+        os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
+        False,
     )
 
     while not _stop_event.is_set():
@@ -1104,8 +1104,8 @@ def get_governed_runtime_status():
         "last_event_source": _last_event_source,
         "last_verification_result": _last_verification_result,
         "automatic_8h_hydration_enabled": _truthy(
-            os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "true"),
-            True,
+            os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false"),
+            False,
         ),
         "idle_db_activity": False,
     }
