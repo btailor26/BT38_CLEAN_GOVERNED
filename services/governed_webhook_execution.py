@@ -1,18 +1,13 @@
 """BT38 governed webhook execution bridge.
 
-Step 1 notification wiring only.
-
-Three-step operating model:
-1. Notification = immediate awareness and DB/log classification.
-2. 15-minute light sync = verification/alignment.
-3. 8-hour full sync = reconciliation.
-
 Rules:
-- Existing stock-changing notification path is preserved.
-- Non-stock business notifications are classified and logged.
-- FBA pending is classified and logged, but does not change warehouse stock.
-- Notification never calls marketplace adapters directly.
-- No dashboard, route, sync, Product Linking, or adapter changes live here.
+- Webhook payloads are immediate marketplace truth.
+- Exact sale/order events use the canonical MarketplaceOrder + stock path.
+- Exact cancellation events update the existing MarketplaceOrder first, then
+  cancel the linked Amazon MCF order when one exists.
+- Amazon FBA inventory remains Amazon-controlled and is updated only from
+  Amazon inventory events.
+- Missing listings use the existing marketplace listing recovery/import path.
 """
 
 from __future__ import annotations
@@ -30,18 +25,36 @@ def process_marketplace_notification(
 ) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing
-    from services.governed_push_execution import push_group_listings, push_marketplace_listing
+    from services.governed_push_execution import (
+        push_group_listings,
+        push_marketplace_listing,
+    )
 
     payload = dict(payload or {})
 
     if notification_record_id is not None:
-        payload["_bt38_notification_record_id"] = int(notification_record_id)
+        payload["_bt38_notification_record_id"] = int(
+            notification_record_id
+        )
 
     marketplace = str(
         marketplace or payload.get("marketplace") or ""
     ).strip().lower()
     event_type = _event_type(payload)
-    business_event = _classify_business_event(event_type, payload)
+    business_event = _classify_business_event(
+        event_type,
+        payload,
+    )
+
+    # Cancellation is an order-state event, not a stock-decrement event. It
+    # must be persisted before any Amazon MCF consequence is attempted and it
+    # does not require a listing lookup to identify the exact order.
+    if business_event == "cancellation":
+        return _handle_marketplace_cancellation(
+            marketplace=marketplace,
+            event_type=event_type,
+            payload=payload,
+        )
 
     listing = _find_listing(
         MarketplaceListing,
@@ -99,7 +112,10 @@ def process_marketplace_notification(
             listing_discovery=listing_discovery,
             event_type=event_type,
             business_event=business_event,
-            reason="Notification received but no marketplace listing could be matched.",
+            reason=(
+                "Notification received but no marketplace listing "
+                "could be matched."
+            ),
             payload=payload,
         )
 
@@ -110,15 +126,26 @@ def process_marketplace_notification(
             marketplace=marketplace,
             event_type=event_type,
             business_event=business_event,
-            reason="Notification matched listing but listing is not linked to warehouse stock.",
+            reason=(
+                "Notification matched listing but listing is not linked "
+                "to warehouse stock."
+            ),
             payload=payload,
             listing_id=listing.id,
         )
 
     platform_name = str(marketplace or "").strip().lower()
     listing_channel = str(
-        getattr(listing, "normalized_amazon_fulfillment_channel", None)
-        or getattr(listing, "amazon_fulfillment_channel", None)
+        getattr(
+            listing,
+            "normalized_amazon_fulfillment_channel",
+            None,
+        )
+        or getattr(
+            listing,
+            "amazon_fulfillment_channel",
+            None,
+        )
         or ""
     ).strip().upper()
 
@@ -168,7 +195,10 @@ def process_marketplace_notification(
             )
 
     quantity = _extract_quantity(payload)
-    is_stock_event = _is_stock_decrement_event(event_type, payload)
+    is_stock_event = _is_stock_decrement_event(
+        event_type,
+        payload,
+    )
 
     if not is_stock_event or quantity <= 0:
         return _log_result(
@@ -184,11 +214,16 @@ def process_marketplace_notification(
             correction_started=False,
         )
 
-    group_context = _resolve_group_context(listing=listing, stock=stock)
+    group_context = _resolve_group_context(
+        listing=listing,
+        stock=stock,
+    )
     grouped = bool(group_context.get("grouped"))
     group_id = group_context.get("group_id")
 
-    before_qty = int(getattr(stock, "available_quantity", 0) or 0)
+    before_qty = int(
+        getattr(stock, "available_quantity", 0) or 0
+    )
 
     order_intake = _import_marketplace_order_from_notification(
         marketplace=marketplace,
@@ -245,7 +280,10 @@ def process_marketplace_notification(
                 marketplace=marketplace,
                 event_type=event_type,
                 business_event=business_event,
-                reason="DB says listing/stock is grouped but no group_id could be resolved.",
+                reason=(
+                    "DB says listing/stock is grouped but no group_id "
+                    "could be resolved."
+                ),
                 payload=payload,
                 listing_id=listing.id,
                 warehouse_stock_id=stock.id,
@@ -267,7 +305,11 @@ def process_marketplace_notification(
             marketplace=marketplace,
             event_type=event_type,
             business_event=business_event,
-            reason="Grouped sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing group correction path.",
+            reason=(
+                "Grouped sale notification created MarketplaceOrder, "
+                "updated stock through governed order mutation, and "
+                "triggered the existing group correction path."
+            ),
             payload=payload,
             store_id=getattr(listing, "store_id", None),
             listing_id=listing.id,
@@ -279,9 +321,16 @@ def process_marketplace_notification(
             ),
             group_context=group_context,
             before_qty=before_qty,
-            after_qty=int(getattr(stock, "available_quantity", 0) or 0),
-            expected_quantity=int(getattr(stock, "available_quantity", 0) or 0),
-            stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
+            after_qty=int(
+                getattr(stock, "available_quantity", 0) or 0
+            ),
+            expected_quantity=int(
+                getattr(stock, "available_quantity", 0) or 0
+            ),
+            stock_changed=bool(
+                mutation_result.get("success")
+                and not mutation_result.get("skipped")
+            ),
             correction_started=True,
             order_id=order_intake.get("marketplace_order_id"),
             order_intake=order_intake.get("result"),
@@ -301,7 +350,11 @@ def process_marketplace_notification(
         marketplace=marketplace,
         event_type=event_type,
         business_event=business_event,
-        reason="Sale notification created MarketplaceOrder, updated stock through governed order mutation, and triggered existing listing correction path.",
+        reason=(
+            "Sale notification created MarketplaceOrder, updated stock "
+            "through governed order mutation, and triggered the existing "
+            "listing correction path."
+        ),
         payload=payload,
         store_id=getattr(listing, "store_id", None),
         listing_id=listing.id,
@@ -311,14 +364,159 @@ def process_marketplace_notification(
             or getattr(stock, "sku", None)
         ),
         before_qty=before_qty,
-        after_qty=int(getattr(stock, "available_quantity", 0) or 0),
-        expected_quantity=int(getattr(stock, "available_quantity", 0) or 0),
-        stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
+        after_qty=int(
+            getattr(stock, "available_quantity", 0) or 0
+        ),
+        expected_quantity=int(
+            getattr(stock, "available_quantity", 0) or 0
+        ),
+        stock_changed=bool(
+            mutation_result.get("success")
+            and not mutation_result.get("skipped")
+        ),
         correction_started=True,
         order_id=order_intake.get("marketplace_order_id"),
         order_intake=order_intake.get("result"),
         stock_mutation=mutation_result,
         push_result=push_result,
+    )
+
+
+def _extract_marketplace_order_id(payload: dict) -> str | None:
+    value = (
+        _deep_get(payload, "marketplace_order_id")
+        or _deep_get(payload, "order_id")
+        or _deep_get(payload, "orderId")
+        or _deep_get(payload, "order_number")
+        or _deep_get(payload, "orderNumber")
+        or _deep_get(payload, "amazonOrderId")
+        or _deep_get(payload, "ebayOrderId")
+    )
+    text = str(value or "").strip()
+    return text or None
+
+
+def _handle_marketplace_cancellation(
+    *,
+    marketplace: str,
+    event_type: str,
+    payload: dict,
+) -> Dict[str, Any]:
+    from extensions import db
+    from models import MarketplaceOrder, Store
+
+    order_id = _extract_marketplace_order_id(payload)
+    if not order_id:
+        return _log_result(
+            status="cancellation_unresolved",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="cancellation",
+            reason="Cancellation payload did not include a marketplace order ID.",
+            payload=payload,
+        )
+
+    query = MarketplaceOrder.query.filter(
+        MarketplaceOrder.marketplace_order_id == order_id
+    )
+
+    store_id = _deep_get(payload, "_bt38_store_id")
+    try:
+        store_id = int(store_id) if store_id is not None else None
+    except (TypeError, ValueError):
+        store_id = None
+
+    if store_id is not None:
+        query = query.filter(MarketplaceOrder.store_id == store_id)
+    elif marketplace:
+        query = query.join(
+            Store,
+            Store.id == MarketplaceOrder.store_id,
+        ).filter(Store.platform.ilike(f"%{marketplace}%"))
+
+    lines = query.order_by(MarketplaceOrder.id).all()
+    if not lines:
+        return _log_result(
+            status="cancellation_unresolved",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="cancellation",
+            reason="No existing MarketplaceOrder matched the cancellation.",
+            payload=payload,
+            order_id=order_id,
+        )
+
+    now = datetime.utcnow()
+    for line in lines:
+        line.status = "cancel_requested"
+        line.updated_at = now
+        line.error_message = None
+    db.session.commit()
+
+    mcf = next(
+        (line.mcf_order for line in lines if line.mcf_order_id),
+        None,
+    )
+
+    if mcf is None:
+        for line in lines:
+            line.status = "cancelled"
+            line.updated_at = datetime.utcnow()
+        db.session.commit()
+        return _log_result(
+            status="cancellation_processed",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="cancellation",
+            reason=(
+                "Marketplace cancellation stored on the exact order. "
+                "No Amazon MCF order was linked."
+            ),
+            payload=payload,
+            order_id=order_id,
+            marketplace_order_row_ids=[line.id for line in lines],
+            mcf_order_id=None,
+            amazon_cancelled=False,
+        )
+
+    from services.governed_mcf_execution import cancel_mcf_order
+
+    cancelled, cancel_result = cancel_mcf_order(mcf)
+    if not cancelled:
+        for line in lines:
+            line.status = "cancel_requested"
+            line.error_message = cancel_result.get("error")
+            line.updated_at = datetime.utcnow()
+        db.session.commit()
+        return _log_result(
+            status="cancellation_cancel_failed",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="cancellation",
+            reason="Marketplace cancellation stored but Amazon MCF cancellation failed.",
+            payload=payload,
+            order_id=order_id,
+            marketplace_order_row_ids=[line.id for line in lines],
+            mcf_order_id=mcf.id,
+            amazon_cancelled=False,
+            cancel_result=cancel_result,
+        )
+
+    return _log_result(
+        status="cancellation_processed",
+        marketplace=marketplace,
+        event_type=event_type,
+        business_event="cancellation",
+        reason=(
+            "Marketplace cancellation stored and the linked Amazon MCF "
+            "order was cancelled through the existing MCF client."
+        ),
+        payload=payload,
+        order_id=order_id,
+        marketplace_order_row_ids=[line.id for line in lines],
+        mcf_order_id=mcf.id,
+        amazon_cancelled=True,
+        cancel_result=cancel_result,
     )
 
 
@@ -361,15 +559,7 @@ def _import_marketplace_order_from_notification(
         upsert_governed_marketplace_order_line,
     )
 
-    order_id = (
-        _deep_get(payload, "marketplace_order_id")
-        or _deep_get(payload, "order_id")
-        or _deep_get(payload, "orderId")
-        or _deep_get(payload, "order_number")
-        or _deep_get(payload, "orderNumber")
-        or _deep_get(payload, "amazonOrderId")
-        or _deep_get(payload, "ebayOrderId")
-    )
+    order_id = _extract_marketplace_order_id(payload)
 
     item_id = (
         _deep_get(payload, "marketplace_order_item_id")
@@ -392,8 +582,14 @@ def _import_marketplace_order_from_notification(
     )
 
     if not order_id:
-        raw = json.dumps(payload or {}, sort_keys=True, default=str)
-        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+        raw = json.dumps(
+            payload or {},
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha1(
+            raw.encode("utf-8")
+        ).hexdigest()[:16]
         order_id = f"webhook-{marketplace}-{digest}"
 
     order_id = str(order_id)
@@ -401,10 +597,13 @@ def _import_marketplace_order_from_notification(
     sku = str(sku or "").strip()
 
     store = getattr(listing, "store", None)
-
     if store is None:
-        store_id = getattr(listing, "store_id", None)
-        store = db.session.get(Store, store_id) if store_id else None
+        listing_store_id = getattr(listing, "store_id", None)
+        store = (
+            db.session.get(Store, listing_store_id)
+            if listing_store_id
+            else None
+        )
 
     if store is None:
         return {
@@ -415,7 +614,7 @@ def _import_marketplace_order_from_notification(
             "sku": sku,
         }
 
-    channel = (
+    channel = str(
         getattr(
             listing,
             "normalized_amazon_fulfillment_channel",
@@ -424,7 +623,7 @@ def _import_marketplace_order_from_notification(
         or ""
     ).upper()
 
-    platform = (
+    platform = str(
         getattr(store, "platform", None)
         or marketplace
         or ""
@@ -457,13 +656,14 @@ def _import_marketplace_order_from_notification(
         unit_price=unit_price,
         fulfillment_type=fulfillment_type,
         status="pending",
-        marketplace_created_at=_parse_marketplace_order_timestamp(payload),
+        marketplace_created_at=(
+            _parse_marketplace_order_timestamp(payload)
+        ),
         import_source=f"webhook_{marketplace}",
         listing=listing,
     )
 
     order = result.get("_order_row")
-
     public_result = {
         key: value
         for key, value in result.items()
@@ -477,7 +677,9 @@ def _import_marketplace_order_from_notification(
         "reason": result.get("reason"),
         "order": order,
         "result": public_result,
-        "marketplace_order_id": result.get("order_id") or order_id,
+        "marketplace_order_id": (
+            result.get("order_id") or order_id
+        ),
     }
 
 
@@ -485,19 +687,31 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing
 
-    listing_group_id = getattr(listing, "master_product_group_id", None)
-    stock_group_id = getattr(stock, "master_product_group_id", None)
-    stock_group_controlled = bool(getattr(stock, "is_group_controlled", False))
+    listing_group_id = getattr(
+        listing,
+        "master_product_group_id",
+        None,
+    )
+    stock_group_id = getattr(
+        stock,
+        "master_product_group_id",
+        None,
+    )
+    stock_group_controlled = bool(
+        getattr(stock, "is_group_controlled", False)
+    )
 
     group_id = stock_group_id or listing_group_id
-
     linked_group_members = []
     linked_stock_members = []
 
     if group_id:
         linked_group_members = (
             db.session.query(MarketplaceListing.id)
-            .filter(MarketplaceListing.master_product_group_id == int(group_id))
+            .filter(
+                MarketplaceListing.master_product_group_id
+                == int(group_id)
+            )
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
             .all()
         )
@@ -505,7 +719,10 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
     if getattr(stock, "id", None):
         linked_stock_members = (
             db.session.query(MarketplaceListing.id)
-            .filter(MarketplaceListing.warehouse_stock_id == int(stock.id))
+            .filter(
+                MarketplaceListing.warehouse_stock_id
+                == int(stock.id)
+            )
             .filter(MarketplaceListing.is_active == True)  # noqa: E712
             .all()
         )
@@ -521,9 +738,17 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
         "grouped": grouped,
         "group_id": int(group_id) if group_id else None,
         "listing_id": getattr(listing, "id", None),
-        "listing_group_id": int(listing_group_id) if listing_group_id else None,
+        "listing_group_id": (
+            int(listing_group_id)
+            if listing_group_id
+            else None
+        ),
         "warehouse_stock_id": getattr(stock, "id", None),
-        "stock_group_id": int(stock_group_id) if stock_group_id else None,
+        "stock_group_id": (
+            int(stock_group_id)
+            if stock_group_id
+            else None
+        ),
         "stock_is_group_controlled": stock_group_controlled,
         "linked_group_member_count": len(linked_group_members),
         "linked_stock_member_count": len(linked_stock_members),
@@ -531,9 +756,13 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
     }
 
 
-def _apply_group_stock_change(warehouse_stock_id: int, quantity_delta: int) -> None:
+def _apply_group_stock_change(
+    warehouse_stock_id: int,
+    quantity_delta: int,
+) -> None:
     try:
         from group_resolution import apply_group_quantity_change
+
         apply_group_quantity_change(
             warehouse_stock_id=int(warehouse_stock_id),
             quantity_delta=int(quantity_delta),
@@ -546,23 +775,49 @@ def _apply_group_stock_change(warehouse_stock_id: int, quantity_delta: int) -> N
     from extensions import db
     from models import WarehouseStock
 
-    stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
+    stock = db.session.get(
+        WarehouseStock,
+        int(warehouse_stock_id),
+    )
     if stock:
-        before = int(getattr(stock, "available_quantity", 0) or 0)
+        before = int(
+            getattr(stock, "available_quantity", 0) or 0
+        )
+        _ = before
 
 
-def _find_listing(MarketplaceListing, marketplace: str, payload: dict):
+def _find_listing(
+    MarketplaceListing,
+    marketplace: str,
+    payload: dict,
+):
     identifiers = _flatten_values(payload)
 
-    listing_id_keys = {"listing_id", "marketplace_listing_id"}
-    external_keys = {"external_listing_id", "item_id", "itemid", "listingid", "orderlineitemid"}
-    sku_keys = {"sku", "seller_sku", "sellersku", "external_sku"}
+    listing_id_keys = {
+        "listing_id",
+        "marketplace_listing_id",
+    }
+    external_keys = {
+        "external_listing_id",
+        "item_id",
+        "itemid",
+        "listingid",
+        "orderlineitemid",
+    }
+    sku_keys = {
+        "sku",
+        "seller_sku",
+        "sellersku",
+        "external_sku",
+    }
 
     for key in listing_id_keys:
         value = _deep_get(payload, key)
         if value:
             try:
-                listing = MarketplaceListing.query.get(int(value))
+                listing = MarketplaceListing.query.get(
+                    int(value)
+                )
                 if listing:
                     return listing
             except Exception:
@@ -573,7 +828,10 @@ def _find_listing(MarketplaceListing, marketplace: str, payload: dict):
         if value:
             listing = (
                 MarketplaceListing.query
-                .filter(MarketplaceListing.external_listing_id == str(value))
+                .filter(
+                    MarketplaceListing.external_listing_id
+                    == str(value)
+                )
                 .first()
             )
             if listing:
@@ -582,9 +840,14 @@ def _find_listing(MarketplaceListing, marketplace: str, payload: dict):
     for key in sku_keys:
         value = _deep_get(payload, key)
         if value:
-            query = MarketplaceListing.query.filter(MarketplaceListing.external_sku == str(value))
+            query = MarketplaceListing.query.filter(
+                MarketplaceListing.external_sku
+                == str(value)
+            )
             if marketplace:
-                query = query.join(MarketplaceListing.store).filter_by(platform=marketplace)
+                query = query.join(
+                    MarketplaceListing.store
+                ).filter_by(platform=marketplace)
             listing = query.first()
             if listing:
                 return listing
@@ -618,28 +881,174 @@ def _event_type(payload: dict) -> str:
     ).strip().lower()
 
 
-def _classify_business_event(event_type: str, payload: dict) -> str:
-    text = " ".join(str(v).lower() for v in _flatten_values(payload))
+def _classify_business_event(
+    event_type: str,
+    payload: dict,
+) -> str:
+    text = " ".join(
+        str(v).lower()
+        for v in _flatten_values(payload)
+    )
     combined = f"{event_type} {text}"
 
     checks = [
-        ("fba_pending", ["fba pending", "afn pending", "pending fba", "pending inventory", "inbound pending"]),
-        ("fba_received", ["fba received", "afn received", "received by amazon", "inbound received"]),
-        ("fba_adjustment", ["fba adjustment", "inventory adjustment", "afn adjustment"]),
-        ("fba_lost", ["fba lost", "lost inventory", "inventory lost"]),
-        ("fba_damaged", ["fba damaged", "damaged inventory", "warehouse damaged"]),
-        ("fba_reimbursement", ["fba reimbursement", "reimbursement", "reimbursed"]),
-        ("customer_message", ["message", "buyer message", "customer message", "inbox", "unread"]),
-        ("return", ["return", "return request", "refund requested"]),
-        ("case", ["case", "dispute", "claim", "a-to-z", "chargeback"]),
-        ("listing_created", ["listing created", "item listed", "offer created", "new listing"]),
-        ("listing_removed", ["listing removed", "listing ended", "item ended", "offer deleted", "listing blocked", "suppressed"]),
-        ("payment_deferred", ["deferred", "reserve", "hold", "held", "pending payout"]),
-        ("payout", ["payout", "disbursement", "settlement", "payment released", "paid out"]),
-        ("tracking", ["tracking", "tracking uploaded", "shipment confirmed", "carrier"]),
-        ("delivery", ["delivered", "delivery confirmed"]),
-        ("policy", ["policy", "violation", "warning", "account health", "performance notification"]),
-        ("stock_decrement", ["order", "sale", "sold", "transaction", "paid", "purchase"]),
+        (
+            "cancellation",
+            [
+                "order cancelled",
+                "order canceled",
+                "order cancellation",
+                "cancel request",
+                "cancel_requested",
+                "cancelled",
+                "canceled",
+            ],
+        ),
+        (
+            "fba_pending",
+            [
+                "fba pending",
+                "afn pending",
+                "pending fba",
+                "pending inventory",
+                "inbound pending",
+            ],
+        ),
+        (
+            "fba_received",
+            [
+                "fba received",
+                "afn received",
+                "received by amazon",
+                "inbound received",
+            ],
+        ),
+        (
+            "fba_adjustment",
+            [
+                "fba adjustment",
+                "inventory adjustment",
+                "afn adjustment",
+            ],
+        ),
+        (
+            "fba_lost",
+            ["fba lost", "lost inventory", "inventory lost"],
+        ),
+        (
+            "fba_damaged",
+            [
+                "fba damaged",
+                "damaged inventory",
+                "warehouse damaged",
+            ],
+        ),
+        (
+            "fba_reimbursement",
+            [
+                "fba reimbursement",
+                "reimbursement",
+                "reimbursed",
+            ],
+        ),
+        (
+            "customer_message",
+            [
+                "message",
+                "buyer message",
+                "customer message",
+                "inbox",
+                "unread",
+            ],
+        ),
+        (
+            "return",
+            ["return", "return request", "refund requested"],
+        ),
+        (
+            "case",
+            [
+                "case",
+                "dispute",
+                "claim",
+                "a-to-z",
+                "chargeback",
+            ],
+        ),
+        (
+            "listing_created",
+            [
+                "listing created",
+                "item listed",
+                "offer created",
+                "new listing",
+            ],
+        ),
+        (
+            "listing_removed",
+            [
+                "listing removed",
+                "listing ended",
+                "item ended",
+                "offer deleted",
+                "listing blocked",
+                "suppressed",
+            ],
+        ),
+        (
+            "payment_deferred",
+            [
+                "deferred",
+                "reserve",
+                "hold",
+                "held",
+                "pending payout",
+            ],
+        ),
+        (
+            "payout",
+            [
+                "payout",
+                "disbursement",
+                "settlement",
+                "payment released",
+                "paid out",
+            ],
+        ),
+        (
+            "tracking",
+            [
+                "tracking",
+                "tracking uploaded",
+                "shipment confirmed",
+                "carrier",
+            ],
+        ),
+        (
+            "delivery",
+            ["delivered", "delivery confirmed"],
+        ),
+        (
+            "policy",
+            [
+                "policy",
+                "violation",
+                "warning",
+                "account health",
+                "performance notification",
+            ],
+        ),
+        (
+            "stock_decrement",
+            [
+                "order",
+                "sale",
+                "sold",
+                "transaction",
+                "paid",
+                "purchase",
+            ],
+        ),
     ]
 
     for label, words in checks:
@@ -651,22 +1060,29 @@ def _classify_business_event(event_type: str, payload: dict) -> str:
 
 def _business_reason(business_event: str) -> str:
     reasons = {
-        "fba_pending": "FBA pending notification stored. No warehouse stock change is made until confirmed by later sync/received/adjustment state.",
-        "fba_received": "FBA received notification stored for verification by light/full sync.",
-        "fba_adjustment": "FBA adjustment notification stored for verification by light/full sync.",
-        "fba_lost": "FBA lost notification stored for verification by light/full sync.",
-        "fba_damaged": "FBA damaged notification stored for verification by light/full sync.",
-        "fba_reimbursement": "FBA reimbursement notification stored for verification by light/full sync.",
-        "customer_message": "Customer message notification stored for Step 1 awareness.",
-        "return": "Return notification stored for Step 1 awareness.",
-        "case": "Case/dispute notification stored for Step 1 awareness.",
-        "listing_created": "Listing-created notification stored for Step 1 awareness.",
-        "listing_removed": "Listing removed/blocked/ended notification stored for Step 1 awareness.",
-        "payout": "Payout notification stored for Step 1 awareness.",
-        "payment_deferred": "Deferred/held payment notification stored for Step 1 awareness.",
-        "tracking": "Tracking notification stored for Step 1 awareness.",
-        "delivery": "Delivery notification stored for Step 1 awareness.",
-        "policy": "Policy/account-health notification stored for Step 1 awareness.",
+        "cancellation": (
+            "Cancellation notification stored against the exact existing "
+            "MarketplaceOrder and propagated to Amazon MCF when linked."
+        ),
+        "fba_pending": (
+            "FBA pending notification stored. No warehouse stock change is "
+            "made until Amazon supplies confirmed inventory state."
+        ),
+        "fba_received": "FBA received notification stored for exact verification.",
+        "fba_adjustment": "FBA adjustment notification stored for exact verification.",
+        "fba_lost": "FBA lost notification stored for exact verification.",
+        "fba_damaged": "FBA damaged notification stored for exact verification.",
+        "fba_reimbursement": "FBA reimbursement notification stored for exact verification.",
+        "customer_message": "Customer message notification stored for awareness.",
+        "return": "Return notification stored for awareness.",
+        "case": "Case/dispute notification stored for awareness.",
+        "listing_created": "Listing-created notification stored for awareness.",
+        "listing_removed": "Listing removed/blocked/ended notification stored for awareness.",
+        "payout": "Payout notification stored for awareness.",
+        "payment_deferred": "Deferred/held payment notification stored for awareness.",
+        "tracking": "Tracking notification stored for awareness.",
+        "delivery": "Delivery notification stored for awareness.",
+        "policy": "Policy/account-health notification stored for awareness.",
     }
     return reasons.get(
         business_event,
@@ -674,12 +1090,25 @@ def _business_reason(business_event: str) -> str:
     )
 
 
-def _is_stock_decrement_event(event_type: str, payload: dict) -> bool:
-    return _classify_business_event(event_type, payload) == "stock_decrement"
+def _is_stock_decrement_event(
+    event_type: str,
+    payload: dict,
+) -> bool:
+    return (
+        _classify_business_event(event_type, payload)
+        == "stock_decrement"
+    )
 
 
 def _extract_quantity(payload: dict) -> int:
-    for key in ["quantity", "qty", "quantity_sold", "quantitySold", "orderQuantity", "amount"]:
+    for key in [
+        "quantity",
+        "qty",
+        "quantity_sold",
+        "quantitySold",
+        "orderQuantity",
+        "amount",
+    ]:
         value = _deep_get(payload, key)
         if value is not None:
             try:
@@ -711,8 +1140,8 @@ def _deep_get(obj: Any, key: str):
 def _flatten_values(obj: Any):
     values = []
     if isinstance(obj, dict):
-        for v in obj.values():
-            values.extend(_flatten_values(v))
+        for value in obj.values():
+            values.extend(_flatten_values(value))
     elif isinstance(obj, list):
         for item in obj:
             values.extend(_flatten_values(item))
@@ -732,17 +1161,28 @@ def _log_result(**data) -> Dict[str, Any]:
         safe.get("notification_record_id")
         or payload.pop("_bt38_notification_record_id", None)
     )
-
     if notification_record_id is not None:
-        safe["notification_record_id"] = int(notification_record_id)
+        safe["notification_record_id"] = int(
+            notification_record_id
+        )
 
     try:
-        db.session.add(SystemLog(
-            log_type="governed_webhook_execution",
-            message=f"{safe.get('marketplace')} webhook execution {safe.get('status')}: {safe.get('event_type')}",
-            details=str({**safe, "payload_keys": list(payload.keys())})[:1000],
-            created_at=datetime.utcnow(),
-        ))
+        db.session.add(
+            SystemLog(
+                log_type="governed_webhook_execution",
+                message=(
+                    f"{safe.get('marketplace')} webhook execution "
+                    f"{safe.get('status')}: {safe.get('event_type')}"
+                ),
+                details=str(
+                    {
+                        **safe,
+                        "payload_keys": list(payload.keys()),
+                    }
+                )[:1000],
+                created_at=datetime.utcnow(),
+            )
+        )
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -768,6 +1208,9 @@ def _log_result(**data) -> Dict[str, Any]:
         "fba_lost_stored",
         "fba_damaged_stored",
         "fba_reimbursement_stored",
+        "fba_inventory_updated",
+        "fba_inventory_unchanged",
+        "cancellation_processed",
     }
 
     return {
