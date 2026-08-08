@@ -1,6 +1,6 @@
 // Product Linking browser-session controller.
-// One full governed snapshot is kept for up to 24 hours. Mutations refresh only
-// the exact affected identities and merge those rows back into IndexedDB.
+// One governed snapshot is bootstrapped once and then kept aligned by exact
+// affected-record deltas. No timer-based expiry or routine full refresh.
 (function () {
   "use strict";
 
@@ -10,7 +10,6 @@
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
   const CACHE_KEY = "product-linking-v3";
-  const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
 
@@ -144,9 +143,13 @@
     }
   }
 
-  function snapshotIsFresh(snapshot) {
-    const loadedAt = Number(snapshot?.fullLoadedAt || 0);
-    return loadedAt > 0 && (Date.now() - loadedAt) < CACHE_TTL_MS;
+  function snapshotExists(snapshot) {
+    return Boolean(
+      snapshot
+      && Array.isArray(snapshot.products)
+      && Array.isArray(snapshot.unlinked)
+      && Array.isArray(snapshot.listings)
+    );
   }
 
   function applySnapshot(snapshot) {
@@ -193,14 +196,14 @@
     await writeSnapshot();
   }
 
-  async function fetchFullSnapshotOnceDaily() {
+  async function fetchInitialSnapshotOnce() {
     const work = async () => {
       const latest = await readSnapshot();
-      if (snapshotIsFresh(latest)) applySnapshot(latest);
+      if (snapshotExists(latest)) applySnapshot(latest);
       else await fetchFullSnapshot();
     };
     if (navigator.locks?.request) {
-      return navigator.locks.request("bt38-product-linking-daily-snapshot", { mode: "exclusive" }, work);
+      return navigator.locks.request("bt38-product-linking-initial-snapshot", { mode: "exclusive" }, work);
     }
     return work();
   }
@@ -221,8 +224,8 @@
       if (container) container.classList.add("d-none");
       try {
         const cached = await readSnapshot();
-        if (snapshotIsFresh(cached)) applySnapshot(cached);
-        else await fetchFullSnapshotOnceDaily();
+        if (snapshotExists(cached)) applySnapshot(cached);
+        else await fetchInitialSnapshotOnce();
         render();
         if (loading) loading.classList.add("d-none");
         if (container) container.classList.remove("d-none");
@@ -319,45 +322,6 @@
 
   async function refreshAffectedRecord(identity) {
     return applyMutationContract({ changed: true }, identity);
-  }
-
-  let visibleRefreshRunning = false;
-
-  async function refreshVisibleProductLinkingOnce() {
-    if (
-      visibleRefreshRunning
-      || document.hidden
-      || !state.hydrated
-    ) {
-      return;
-    }
-
-    const filters = getFilters();
-    const search = String(filters.search || "").trim();
-
-    if (!search) {
-      return;
-    }
-
-    visibleRefreshRunning = true;
-
-    try {
-      const data = await fetchDataset(
-        search,
-        TARGETED_DATASET_LIMIT
-      );
-
-      mergeTargetedData(data, []);
-      render();
-      await writeSnapshot();
-    } catch (error) {
-      console.warn(
-        "[ProductLinkingSession] targeted visible refresh failed",
-        error
-      );
-    } finally {
-      visibleRefreshRunning = false;
-    }
   }
 
   function getFilters() {
@@ -507,32 +471,7 @@
     state.hydrated = false;
     state.hydrating = null;
 
-    try {
-      const database = await openCacheDatabase();
-      if (database) {
-        await new Promise((resolve, reject) => {
-          const transaction = database.transaction(
-            CACHE_STORE_NAME,
-            "readwrite"
-          );
-          transaction.objectStore(CACHE_STORE_NAME).delete(CACHE_KEY);
-          transaction.oncomplete = () => {
-            database.close();
-            resolve();
-          };
-          transaction.onerror = () => reject(
-            transaction.error
-            || new Error("Unable to invalidate Product Linking cache")
-          );
-        });
-      }
-    } catch (error) {
-      console.warn(
-        "[ProductLinkingSession] cache invalidation unavailable",
-        error
-      );
-    }
-
+    await clearSnapshot();
     return hydrate();
   };
 
@@ -577,17 +516,25 @@
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      // A successful governed relationship mutation is committed in Neon.
-      // Product Linking must then reload from server truth rather than trying
-      // to reconstruct the changed group from stale browser/session state.
+      await applyMutationContract(data, {
+        listingId,
+        warehouseId,
+        listingSku,
+        warehouseSku,
+        groupId: data.group_id,
+        previousGroupId: data.previous_group_id,
+        originalGroupId: data.original_group_id
+      });
+
+      if (!mappingExists(listingId, warehouseId, data.group_id)) {
+        throw new Error("The relationship changed, but the affected browser row could not be verified.");
+      }
+
       closeOpenModals();
 
       window.alert(data.changed === false
         ? `${listingSku} is already linked to ${warehouseSku}.`
         : `Successfully linked ${listingSku} to ${warehouseSku}.`);
-
-      await clearSnapshot();
-      window.location.reload();
       return;
     } catch (error) {
       console.error("[ProductLinkingSession] verified link failed", error);
@@ -706,6 +653,15 @@
         );
       }
 
+      await applyMutationContract(data, {
+        listingId: identity.listingId,
+        listingSku: identity.listingSku,
+        warehouseId: data.warehouse_stock_id || identity.warehouseStockId,
+        groupId: data.group_id,
+        previousGroupId: data.previous_group_id || identity.groupId,
+        originalGroupId: data.original_group_id
+      });
+
       closeOpenModals();
 
       window.alert(
@@ -714,10 +670,7 @@
           : `Successfully unlinked ${identity.listingSku}.`
       );
 
-      await clearSnapshot();
       clearPendingExplicitUnlink();
-
-      window.location.reload();
       return;
 
     } catch (error) {
@@ -816,16 +769,6 @@
   function boot() {
     wire();
     hydrate();
-
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) {
-        void refreshVisibleProductLinkingOnce();
-      }
-    });
-
-    window.addEventListener("focus", () => {
-      void refreshVisibleProductLinkingOnce();
-    });
   }
 
   if (document.readyState === "loading") {
