@@ -2770,6 +2770,81 @@ def governed_product_linking_data_compat():
 
             current_group_listings.append(item)
 
+        # If this permanent/original Warehouse group currently has no
+        # Product Linking members because its listing has been shared into
+        # another group, do not render an empty duplicate row. The permanent
+        # Warehouse group remains intact and will reappear automatically when
+        # that listing is unlinked.
+        group_stock_ids = {
+            int(stock.id)
+            for stock in group_stocks
+            if getattr(stock, "id", None) is not None
+        }
+
+        members_temporarily_shared_elsewhere = any(
+            listing.warehouse_stock_id is not None
+            and int(listing.warehouse_stock_id) in group_stock_ids
+            and listing.master_product_group_id is not None
+            and int(listing.master_product_group_id) != int(group_id)
+            for listing in listing_rows
+        )
+
+        if (
+            not current_group_listings
+            and members_temporarily_shared_elsewhere
+        ):
+            continue
+
+        # If this permanent/original Warehouse group currently has no
+        # Product Linking members because its listing has been shared into
+        # another group, do not render an empty duplicate row. The permanent
+        # Warehouse group remains intact and will reappear automatically when
+        # that listing is unlinked.
+        group_stock_ids = {
+            int(stock.id)
+            for stock in group_stocks
+            if getattr(stock, "id", None) is not None
+        }
+
+        members_temporarily_shared_elsewhere = any(
+            listing.warehouse_stock_id is not None
+            and int(listing.warehouse_stock_id) in group_stock_ids
+            and listing.master_product_group_id is not None
+            and int(listing.master_product_group_id) != int(group_id)
+            for listing in listing_rows
+        )
+
+        if (
+            not current_group_listings
+            and members_temporarily_shared_elsewhere
+        ):
+            continue
+
+        # If this permanent/original Warehouse group currently has no
+        # Product Linking members because its listing has been shared into
+        # another group, do not render an empty duplicate row. The permanent
+        # Warehouse group remains intact and will reappear automatically when
+        # that listing is unlinked.
+        group_stock_ids = {
+            int(stock.id)
+            for stock in group_stocks
+            if getattr(stock, "id", None) is not None
+        }
+
+        members_temporarily_shared_elsewhere = any(
+            listing.warehouse_stock_id is not None
+            and int(listing.warehouse_stock_id) in group_stock_ids
+            and listing.master_product_group_id is not None
+            and int(listing.master_product_group_id) != int(group_id)
+            for listing in listing_rows
+        )
+
+        if (
+            not current_group_listings
+            and members_temporarily_shared_elsewhere
+        ):
+            continue
+
         group_has_fba_listing = any(
             bool(item.get("is_fba"))
             or str(

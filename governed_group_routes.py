@@ -246,6 +246,70 @@ def governed_group_unlink(group_id: int):
             current_group_id=listing.master_product_group_id,
         )), 409
 
+    # The group's permanent/original Warehouse member is the master.
+    # A master cannot be unlinked from the group it owns. Only listings whose
+    # permanent Warehouse group differs from the current shared group may leave.
+    permanent_group_id = (
+        int(listing.warehouse_stock.master_product_group_id)
+        if (
+            listing.warehouse_stock is not None
+            and listing.warehouse_stock.master_product_group_id is not None
+        )
+        else None
+    )
+
+    if permanent_group_id == int(group_id):
+        group_members = (
+            db.session.query(MarketplaceListing)
+            .filter(
+                MarketplaceListing.master_product_group_id == int(group_id)
+            )
+            .order_by(MarketplaceListing.id)
+            .all()
+        )
+
+        unlinkable_skus = []
+        for member in group_members:
+            member_stock = member.warehouse_stock
+            member_original_group_id = (
+                int(member_stock.master_product_group_id)
+                if (
+                    member_stock is not None
+                    and member_stock.master_product_group_id is not None
+                )
+                else None
+            )
+
+            if member_original_group_id != int(group_id):
+                sku = str(
+                    member.external_sku
+                    or getattr(member_stock, "sku", "")
+                    or ""
+                ).strip()
+                if sku:
+                    unlinkable_skus.append(sku)
+
+        unlinkable_skus = sorted(set(unlinkable_skus))
+
+        allowed_text = (
+            ", ".join(unlinkable_skus)
+            if unlinkable_skus
+            else "No other SKU is currently available to unlink."
+        )
+
+        return jsonify(_blocked(
+            (
+                f"{listing.external_sku or 'This listing'} is the master of "
+                f"Product Linking group {group_id} and cannot be unlinked. "
+                f"SKU(s) that can be unlinked: {allowed_text}"
+            ),
+            group_id=group_id,
+            listing_id=listing_id,
+            master_listing=True,
+            master_sku=listing.external_sku,
+            unlinkable_skus=unlinkable_skus,
+        )), 409
+
     if bool(getattr(listing, "is_fba", False)):
         return jsonify(_blocked(
             "FBA/AFN listings are read-only. Unlink a mutable listing from the group instead.",
