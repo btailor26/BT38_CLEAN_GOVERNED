@@ -40,33 +40,49 @@ def test_product_linking_session_uses_daily_snapshot_then_paginates_locally():
 def test_product_linking_changes_reload_authoritative_server_state():
     source = _source(PRODUCT_LINKING_SESSION)
 
-    # Successful relationship mutations must reload Product Linking from
-    # authoritative server/Neon state instead of reconstructing the changed
-    # relationship from stale browser cache/session state.
+    # Link commits through the governed route, then reloads Product Linking
+    # from authoritative server/Neon state.
     assert "window.linkListingToWarehouse = async function" in source
-    assert "window.unlinkListing = async function" in source
 
-    # Both successful Link and Unlink paths force a full reload.
-    assert source.count("window.location.reload();") >= 2
+    # Unlink is intentionally two-stage: the row action only prepares the
+    # dedicated confirmation modal, and only the explicit confirmation
+    # function may issue the governed unlink POST.
+    assert "window.unlinkListing = function" in source
+    assert "async function confirmExplicitUnlink()" in source
 
-    # The old mutation-side targeted rehydration must not be used by Link/Unlink.
     link_start = source.index("window.linkListingToWarehouse = async function")
-    unlink_start = source.index("window.unlinkListing = async function", link_start)
+    unlink_prepare_start = source.index("window.unlinkListing = function", link_start)
+    unlink_confirm_start = source.index("async function confirmExplicitUnlink()", unlink_prepare_start)
+    wire_start = source.index("function wire()", unlink_confirm_start)
 
-    link_block = source[link_start:unlink_start]
+    link_block = source[link_start:unlink_prepare_start]
+    unlink_prepare_block = source[unlink_prepare_start:unlink_confirm_start]
+    unlink_confirm_block = source[unlink_confirm_start:wire_start]
 
-    next_section = source.find("\n  function ", unlink_start + 1)
-    if next_section == -1:
-        next_section = len(source)
+    # Clicking a listing's Unlink control must never mutate the relationship.
+    assert "fetch(" not in unlink_prepare_block
+    assert "pendingExplicitUnlink = {" in unlink_prepare_block
 
-    unlink_block = source[unlink_start:next_section]
+    # Only explicit confirmation may POST the unlink mutation.
+    assert "/unlink" in unlink_confirm_block
+    assert "user_confirmed: true" in unlink_confirm_block
 
+    # Link and confirmed Unlink both clear stale browser state and reload
+    # from committed server/Neon truth.
+    assert "await clearSnapshot();" in link_block
+    assert "window.location.reload();" in link_block
+    assert "await clearSnapshot();" in unlink_confirm_block
+    assert "window.location.reload();" in unlink_confirm_block
+
+    # Old mutation-side targeted rehydration must not be used by either
+    # relationship mutation path.
     assert "await applyMutationContract(data, {" not in link_block
-    assert "await applyMutationContract(data, {" not in unlink_block
+    assert "await applyMutationContract(data, {" not in unlink_confirm_block
 
-    # Full forced hydrate is also not used; browser refresh causes a normal
-    # fresh page load against server truth.
+    # Full forced hydrate is also not used; browser reload performs the fresh
+    # authoritative read after a committed mutation.
     assert "await hydrate(true)" not in source
+
 
 def test_shared_page_controller_searches_cached_rows_then_paginates_locally():
     source = _source(CONTROLLER)
