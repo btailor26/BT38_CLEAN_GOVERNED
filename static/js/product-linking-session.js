@@ -448,6 +448,23 @@
     });
   }
 
+  let pendingExplicitUnlink = null;
+  let explicitUnlinkInFlight = false;
+
+  function clearPendingExplicitUnlink() {
+    pendingExplicitUnlink = null;
+    explicitUnlinkInFlight = false;
+
+    const button = document.getElementById(
+      "confirmExplicitUnlinkButton"
+    );
+
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Confirm Unlink";
+    }
+  }
+
   function closeOpenModals() {
     document.querySelectorAll(".modal.show").forEach((modal) => {
       const instance = window.bootstrap?.Modal?.getInstance(modal);
@@ -578,47 +595,192 @@
     }
   };
 
-  window.unlinkListing = async function (listingId, listingSku, userConfirmed = false, groupId = null, warehouseStockId = null) {
+  window.unlinkListing = function (
+    listingId,
+    listingSku,
+    userConfirmed = false,
+    groupId = null,
+    warehouseStockId = null
+  ) {
     if (!groupId) {
-      window.alert("This listing has no governed group ID and cannot be safely restored.");
+      window.alert(
+        "This listing has no governed group ID and cannot be safely unlinked."
+      );
       return;
     }
-    if (!userConfirmed && !window.confirm(`Unlink ${listingSku} and restore it to its original group ID?`)) return;
 
-    try {
-      const response = await fetch(`/governed/groups/${encodeURIComponent(groupId)}/unlink`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          listing_id: listingId,
-          warehouse_stock_id: warehouseStockId,
-          user_confirmed: true
-        })
-      });
-      const data = await response.json();
-      if (!response.ok || (!data.success && !data.ok)) {
-        throw new Error(data.error || data.message || `HTTP ${response.status}`);
-      }
+    // Clicking a listing's Unlink control NEVER performs the mutation.
+    // It only records the exact identity and opens the confirmation modal.
+    pendingExplicitUnlink = {
+      listingId,
+      listingSku,
+      groupId,
+      warehouseStockId
+    };
 
-      // Unlink changes relationship state in Neon. Always rebuild Product
-      // Linking from the committed server state after success.
-      closeOpenModals();
+    const skuElement = document.getElementById(
+      "unlinkConfirmSku"
+    );
 
-      window.alert(data.changed === false
-        ? `${listingSku} is already unlinked.`
-        : `Successfully unlinked ${listingSku}.`);
+    const groupElement = document.getElementById(
+      "unlinkConfirmGroup"
+    );
 
-      await clearSnapshot();
-      window.location.reload();
-      return;
-    } catch (error) {
-      console.error("[ProductLinkingSession] verified unlink failed", error);
-      window.alert(`Unlink failed: ${error.message || error}`);
+    if (skuElement) {
+      skuElement.textContent = String(listingSku || "");
     }
+
+    if (groupElement) {
+      groupElement.textContent = String(groupId);
+    }
+
+    const modalElement = document.getElementById(
+      "unlinkListingConfirmModal"
+    );
+
+    if (!modalElement || !window.bootstrap?.Modal) {
+      clearPendingExplicitUnlink();
+
+      window.alert(
+        "Unlink confirmation is unavailable. No relationship was changed."
+      );
+      return;
+    }
+
+    window.bootstrap.Modal
+      .getOrCreateInstance(modalElement)
+      .show();
   };
 
+  async function confirmExplicitUnlink() {
+    if (!pendingExplicitUnlink) {
+      return;
+    }
+
+    if (explicitUnlinkInFlight) {
+      return;
+    }
+
+    const identity = {
+      ...pendingExplicitUnlink
+    };
+
+    explicitUnlinkInFlight = true;
+
+    const button = document.getElementById(
+      "confirmExplicitUnlinkButton"
+    );
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Unlinking...";
+    }
+
+    try {
+      const response = await fetch(
+        `/governed/groups/${encodeURIComponent(identity.groupId)}/unlink`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            listing_id: identity.listingId,
+            warehouse_stock_id: identity.warehouseStockId,
+            user_confirmed: true
+          })
+        }
+      );
+
+      const data = await response.json();
+
+      if (
+        !response.ok
+        || (!data.success && !data.ok)
+      ) {
+        throw new Error(
+          data.error
+          || data.message
+          || `HTTP ${response.status}`
+        );
+      }
+
+      closeOpenModals();
+
+      window.alert(
+        data.changed === false
+          ? `${identity.listingSku} is already unlinked.`
+          : `Successfully unlinked ${identity.listingSku}.`
+      );
+
+      await clearSnapshot();
+      clearPendingExplicitUnlink();
+
+      window.location.reload();
+      return;
+
+    } catch (error) {
+      console.error(
+        "[ProductLinkingSession] explicit unlink failed",
+        error
+      );
+
+      window.alert(
+        `Unlink failed: ${error.message || error}`
+      );
+
+      explicitUnlinkInFlight = false;
+
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Confirm Unlink";
+      }
+    }
+  }
+
   function wire() {
+    const unlinkConfirmButton = document.getElementById(
+      "confirmExplicitUnlinkButton"
+    );
+
+    if (
+      unlinkConfirmButton
+      && !unlinkConfirmButton.dataset.bt38ExplicitUnlinkWired
+    ) {
+      unlinkConfirmButton.dataset.bt38ExplicitUnlinkWired = "1";
+
+      unlinkConfirmButton.addEventListener(
+        "click",
+        (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+
+          void confirmExplicitUnlink();
+        }
+      );
+    }
+
+    const unlinkConfirmModal = document.getElementById(
+      "unlinkListingConfirmModal"
+    );
+
+    if (
+      unlinkConfirmModal
+      && !unlinkConfirmModal.dataset.bt38ExplicitUnlinkWired
+    ) {
+      unlinkConfirmModal.dataset.bt38ExplicitUnlinkWired = "1";
+
+      unlinkConfirmModal.addEventListener(
+        "hidden.bs.modal",
+        () => {
+          if (!explicitUnlinkInFlight) {
+            clearPendingExplicitUnlink();
+          }
+        }
+      );
+    }
+
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (form && !form.dataset.bt38SessionWired) {
       form.dataset.bt38SessionWired = "1";

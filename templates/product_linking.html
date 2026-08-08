@@ -472,6 +472,63 @@
     </div>
 </div>
 
+
+<!-- Explicit Product Linking unlink confirmation -->
+<div class="modal fade"
+     id="unlinkListingConfirmModal"
+     tabindex="-1"
+     aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+
+            <div class="modal-header">
+                <h5 class="modal-title">Confirm Unlink</h5>
+                <button type="button"
+                        class="btn-close"
+                        data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body">
+                <div class="alert alert-warning">
+                    This listing will remain linked unless you press
+                    <strong>Confirm Unlink</strong>.
+                </div>
+
+                <div>
+                    <strong>SKU:</strong>
+                    <code id="unlinkConfirmSku"></code>
+                </div>
+
+                <div class="mt-2">
+                    <strong>Current Group:</strong>
+                    <span id="unlinkConfirmGroup"></span>
+                </div>
+
+                <div class="mt-3 small text-muted">
+                    Unlinking returns this marketplace listing to its
+                    permanent original Warehouse/Product Linking position.
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button"
+                        class="btn btn-secondary"
+                        data-bs-dismiss="modal">
+                    Keep Linked
+                </button>
+
+                <button type="button"
+                        class="btn btn-danger"
+                        id="confirmExplicitUnlinkButton">
+                    Confirm Unlink
+                </button>
+            </div>
+
+        </div>
+    </div>
+</div>
+
 <!-- Modal for selecting marketplace listing to link (Warehouse → Marketplace flow) -->
 <!-- Simple flat searchable list of unlinked listings -->
 <div class="modal fade" id="linkListingModal" tabindex="-1">
