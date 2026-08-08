@@ -81,8 +81,6 @@ def process_marketplace_notification(
             or (listing_discovery or {}).get("result")
         )
 
-        # Retry the existing DB listing lookup once only after a successful
-        # marketplace-specific recovery. There is no loop or second writer.
         if (
             bool((listing_discovery or {}).get("applicable"))
             and bool((listing_discovery or {}).get("success"))
@@ -117,13 +115,6 @@ def process_marketplace_notification(
             listing_id=listing.id,
         )
 
-    # Existing targeted FBA inventory notifications already contain the
-    # authoritative inventory quantities. Hand those notifications into the
-    # existing AmazonFBAInventory writer and return its normal mutation contract.
-    #
-    # Amazon ORDER_CHANGE only contains ordered quantity, so it must continue
-    # through the existing order/runtime verification path and must never be
-    # treated as current fulfillable inventory.
     platform_name = str(marketplace or "").strip().lower()
     listing_channel = str(
         getattr(listing, "normalized_amazon_fulfillment_channel", None)
@@ -247,7 +238,6 @@ def process_marketplace_notification(
         order.updated_at = datetime.utcnow()
         db.session.commit()
 
-
     if grouped:
         if not group_id:
             return _log_result(
@@ -290,9 +280,7 @@ def process_marketplace_notification(
             group_context=group_context,
             before_qty=before_qty,
             after_qty=int(getattr(stock, "available_quantity", 0) or 0),
-            expected_quantity=int(
-                getattr(stock, "available_quantity", 0) or 0
-            ),
+            expected_quantity=int(getattr(stock, "available_quantity", 0) or 0),
             stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
             correction_started=True,
             order_id=order_intake.get("marketplace_order_id"),
@@ -324,9 +312,7 @@ def process_marketplace_notification(
         ),
         before_qty=before_qty,
         after_qty=int(getattr(stock, "available_quantity", 0) or 0),
-        expected_quantity=int(
-            getattr(stock, "available_quantity", 0) or 0
-        ),
+        expected_quantity=int(getattr(stock, "available_quantity", 0) or 0),
         stock_changed=bool(mutation_result.get("success") and not mutation_result.get("skipped")),
         correction_started=True,
         order_id=order_intake.get("marketplace_order_id"),
@@ -334,6 +320,27 @@ def process_marketplace_notification(
         stock_mutation=mutation_result,
         push_result=push_result,
     )
+
+
+def _parse_marketplace_order_timestamp(payload: dict) -> datetime | None:
+    for key in (
+        "creationDate",
+        "orderCreationDate",
+        "PurchaseDate",
+        "purchaseDate",
+        "orderCreatedAt",
+        "order_created_at",
+    ):
+        value = _deep_get(payload, key)
+        if value in (None, ""):
+            continue
+        try:
+            return datetime.fromisoformat(
+                str(value).strip().replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except Exception:
+            continue
+    return None
 
 
 def _import_marketplace_order_from_notification(
@@ -345,13 +352,6 @@ def _import_marketplace_order_from_notification(
     stock,
     quantity: int,
 ) -> Dict[str, Any]:
-    """
-    Translate one resolved webhook notification into the canonical
-    MarketplaceOrder import authority.
-
-    Webhook execution extracts provider identifiers only. It does not create,
-    query or update MarketplaceOrder directly.
-    """
     import hashlib
     import json
 
@@ -457,6 +457,8 @@ def _import_marketplace_order_from_notification(
         unit_price=unit_price,
         fulfillment_type=fulfillment_type,
         status="pending",
+        marketplace_created_at=_parse_marketplace_order_timestamp(payload),
+        import_source=f"webhook_{marketplace}",
         listing=listing,
     )
 
@@ -480,7 +482,6 @@ def _import_marketplace_order_from_notification(
 
 
 def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
-    """Resolve grouped/not-grouped from DB authority only."""
     from extensions import db
     from models import MarketplaceListing
 
