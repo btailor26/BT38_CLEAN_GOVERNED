@@ -536,26 +536,17 @@
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      await applyMutationContract(data, {
-        listingId,
-        warehouseId,
-        listingSku,
-        warehouseSku,
-        groupId: data.group_id,
-        originalGroupId: data.original_group_id
-      });
-
-      // The governed backend has already committed and verified the
-      // relationship before returning success. applyMutationContract()
-      // rehydrates Product Linking from that authoritative state.
-      //
-      // Do not reject a successful governed mutation because the old
-      // browser-side mapping representation cannot reproduce the new
-      // listing/group relationship immediately after hydration.
+      // A successful governed relationship mutation is committed in Neon.
+      // Product Linking must then reload from server truth rather than trying
+      // to reconstruct the changed group from stale browser/session state.
       closeOpenModals();
+
       window.alert(data.changed === false
         ? `${listingSku} is already linked to ${warehouseSku}.`
         : `Successfully linked ${listingSku} to ${warehouseSku}.`);
+
+      window.location.reload();
+      return;
     } catch (error) {
       console.error("[ProductLinkingSession] verified link failed", error);
       window.alert(`Link failed: ${error.message || error}`);
@@ -585,19 +576,16 @@
         throw new Error(data.error || data.message || `HTTP ${response.status}`);
       }
 
-      await applyMutationContract(data, {
-        listingId,
-        listingSku,
-        warehouseId: data.warehouse_stock_id || warehouseStockId,
-        groupId: data.group_id,
-        previousGroupId: data.previous_group_id || groupId,
-        originalGroupId: data.original_group_id
-      });
-
+      // Unlink changes relationship state in Neon. Always rebuild Product
+      // Linking from the committed server state after success.
       closeOpenModals();
+
       window.alert(data.changed === false
-        ? `${listingSku} is already in its original group.`
-        : `${listingSku} was restored to original group ${data.original_group_id || data.group_id}.`);
+        ? `${listingSku} is already unlinked.`
+        : `Successfully unlinked ${listingSku}.`);
+
+      window.location.reload();
+      return;
     } catch (error) {
       console.error("[ProductLinkingSession] verified unlink failed", error);
       window.alert(`Unlink failed: ${error.message || error}`);
