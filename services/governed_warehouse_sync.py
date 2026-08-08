@@ -1,7 +1,9 @@
-"""BT38 governed marketplace refresh entry point.
+"""BT38 governed Warehouse manual order-recovery entry point.
 
-All manual store-sync shortcuts delegate to the same governed marketplace
-import-refresh orchestrator used by the runtime engine.
+The Warehouse Sync Now shortcut must stay lightweight: it verifies recent
+marketplace orders through the existing governed order importer and then lets
+the Warehouse page re-read database truth. Full marketplace listing/inventory
+hydration remains a separate initial-connection/manual-recovery capability.
 """
 
 from services.runtime_action_guard import is_runtime_action_allowed
@@ -27,8 +29,8 @@ def run_governed_warehouse_sync(
 ):
     from extensions import db
     from models import Store
-    from services.governed_runtime_engine import (
-        run_governed_marketplace_import_refresh,
+    from services.governed_marketplace_order_import import (
+        run_governed_marketplace_order_import,
     )
 
     if store_id:
@@ -46,6 +48,9 @@ def run_governed_warehouse_sync(
     import_results = []
 
     for store in stores:
+        if store is None:
+            continue
+
         guard = _guard_store_sync(store, actor)
         guard_results.append({
             "store_id": getattr(store, "id", None),
@@ -65,7 +70,7 @@ def run_governed_warehouse_sync(
             })
             continue
 
-        result = run_governed_marketplace_import_refresh(
+        result = run_governed_marketplace_order_import(
             store_id=store.id,
             source=actor,
         )
@@ -96,7 +101,7 @@ def run_governed_warehouse_sync(
         "manual": True,
         "execution_blocked": bool(stores) and blocked == len(stores),
         "fuse_box_checked": True,
-        "mode": "governed_marketplace_import_refresh",
+        "mode": "governed_recent_order_recovery",
         "store_id": store_id,
         "stores_checked": len(stores),
         "stores_blocked": blocked,
