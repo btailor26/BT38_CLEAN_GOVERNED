@@ -29,11 +29,11 @@ def test_ebay_recovery_reuses_canonical_marketplace_order_importer():
     assert '"order_recovery": order_recovery' in function_source
 
 
-def test_eight_hour_recovery_is_enabled_by_default():
+def test_eight_hour_recovery_remains_explicitly_gated():
     engine_source = _function_source("_engine_loop")
     status_source = _function_source("get_governed_runtime_status")
 
-    expected = 'os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "true")'
+    expected = 'os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false")'
     assert expected in engine_source
     assert expected in status_source
 
