@@ -209,45 +209,11 @@ def upsert_governed_marketplace_order_line(
             },
         )
 
+    # MCF timing is owned by the MCF lifecycle only.
+    # The exact sale is handed to the existing MCF submission authority after
+    # stock processing. Only successful Amazon acceptance may arm the one-hour
+    # source-marketplace dispatch window.
     mcf_release_event = None
-    platform = str(getattr(store, "platform", "") or "").strip().lower()
-
-    cancelled_statuses = {
-        "cancelled",
-        "canceled",
-        "cancellation",
-        "cancel_requested",
-    }
-
-    order_status = str(getattr(order, "status", "") or "").strip().lower()
-    release_base = marketplace_created_at or order.created_at
-
-    if (
-        "amazon" not in platform
-        and release_base is not None
-        and not getattr(order, "mcf_order_id", None)
-        and not bool(getattr(order, "mcf_queue_hidden", False))
-        and order_status not in cancelled_statuses
-    ):
-        from services.governed_runtime_engine import notify_governed_runtime_work
-
-        release_at = release_base + timedelta(hours=1)
-
-        mcf_release_event = notify_governed_runtime_work(
-            source="warehouse_mcf_one_hour_release",
-            event={
-                "event_type": "mcf_auto_release",
-                "marketplace": platform,
-                "store_id": store.id,
-                "order_id": order.marketplace_order_id,
-                "warehouse_stock_id": order.warehouse_stock_id,
-                "verify_after": release_at,
-                "payload": {
-                    "marketplace_order_row_id": order.id,
-                    "idempotency_key": order.idempotency_key,
-                },
-            },
-        )
 
     return {
         "success": True,
@@ -537,6 +503,7 @@ def _amazon_credentials(store: Store) -> dict[str, Any]:
         creds.get("role_arn")
         or creds.get("aws_user_arn")
         or os.getenv("AMAZON_AWS_ROLE_ARN")
+        or os.getenv("SP_API_ROLE_ARN")
         or os.getenv("SP_API_AWS_ROLE_ARN")
     )
 
