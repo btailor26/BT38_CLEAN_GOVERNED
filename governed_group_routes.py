@@ -196,12 +196,12 @@ def governed_group_link_listing(group_id: int):
     push_result = _push_group_safely(group.id, source="product_linking_auto_push")
     payload = _serialize_master_group(group)
     payload.update({
-        "message": "Warehouse row linked to the Product Linking group.",
+        "message": "Marketplace listing linked to the Product Linking group.",
         "original_group_id": result.get("original_group_id"),
         "previous_group_id": result.get("previous_group_id"),
         "warehouse_stock_id": result.get("warehouse_stock_id"),
-        "stock_group_authority": True,
-        "listing_group_mutated": False,
+        "stock_group_authority": False,
+        "listing_group_mutated": True,
         "auto_push_attempted": True,
         "auto_push_success": _push_succeeded(push_result),
         "push_result": push_result,
