@@ -3,12 +3,11 @@ BT38 GOVERNED RUNTIME ENGINE
 
 Runtime contract:
 - Webhooks perform immediate targeted work through the existing governed path.
-- The existing webhook push arms one 15-minute verification for its exact
-  Warehouse and marketplace-listing identities.
-- Verification checks only those rows and reuses the existing governed push path
-  when those exact rows are not aligned.
-- No recent-order, Warehouse, group, listing, or marketplace-wide scan is allowed.
-- No webhook means no database access.
+- Exact due events are process-memory only and wake the single Gunicorn process.
+- The 15-minute path verifies only identities supplied by events.
+- MCF uses the same exact event for lifecycle continuation/recovery.
+- No recent-order, Warehouse, group, listing, or marketplace-wide scan is
+  allowed during normal event processing.
 - Full marketplace hydration is manual/recovery only.
 - Amazon FBA remains read-only.
 """
@@ -16,18 +15,18 @@ Runtime contract:
 from __future__ import annotations
 
 import json
-
 import logging
 import os
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
+
 from flask import has_app_context
+
 
 _started = False
 _started_at = None
 _status_lock = threading.Lock()
-
 _runtime_lock_handle = None
 _RUNTIME_LOCK_PATH = os.getenv(
     "BT38_GOVERNED_RUNTIME_LOCK",
@@ -47,22 +46,16 @@ _last_verification_result = None
 FULL_SYNC_SECONDS = 8 * 60 * 60
 LIGHT_RECONCILE_SECONDS = 15 * 60
 
-# Process-memory only. These objects never touch Neon while idle.
 _pending_notification_event = threading.Event()
 
-# RETIRED GOVERNED PATH
-#
-# The governed runtime uses one exact in-process event path.
-# services/governed_runtime_job_store.py remains in the repository only for
-# historical compatibility. It must never initialise, enqueue, claim or
-# complete runtime jobs.
+# The historical DB runtime-job path remains retired. Exact events stay in the
+# single governed process; bounded startup recovery reconstructs only MCF work
+# that must survive a deployment/restart.
 DURABLE_RUNTIME_JOB_PATH_ENABLED = False
 _stop_event = threading.Event()
 _pending_events = deque()
 _pending_events_lock = threading.Lock()
 
-# Amazon SQS is transport only. Each message is handed to the existing
-# governed Amazon webhook intake and does not create another execution path.
 _amazon_sqs_client = None
 _amazon_sqs_queue_url = None
 
@@ -70,7 +63,13 @@ _amazon_sqs_queue_url = None
 def _truthy(value, default=False):
     if value is None:
         return default
-    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return str(value).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+    }
 
 
 def _clean(value):
@@ -97,13 +96,22 @@ def _safe_error(message: str, exc: Exception):
 
 def _normalise_webhook_event(source, event=None, **identifiers):
     raw = dict(event or {})
-    raw.update({key: value for key, value in identifiers.items() if value is not None})
+    raw.update(
+        {
+            key: value
+            for key, value in identifiers.items()
+            if value is not None
+        }
+    )
 
     event_type = _clean(raw.get("event_type") or raw.get("type"))
     marketplace = _clean(raw.get("marketplace") or raw.get("platform"))
     store_id = _safe_int(raw.get("store_id"))
     warehouse_stock_id = _safe_int(raw.get("warehouse_stock_id"))
-    group_id = _safe_int(raw.get("group_id") or raw.get("master_product_group_id"))
+    group_id = _safe_int(
+        raw.get("group_id")
+        or raw.get("master_product_group_id")
+    )
     expected_quantity = _safe_int(raw.get("expected_quantity"))
 
     seller_sku = _clean(raw.get("seller_sku") or raw.get("sku"))
@@ -143,7 +151,6 @@ def _normalise_webhook_event(source, event=None, **identifiers):
     )
 
     requested_verify_after = raw.get("verify_after")
-
     if isinstance(requested_verify_after, str):
         try:
             requested_verify_after = datetime.fromisoformat(
@@ -202,8 +209,12 @@ def _event_key(event):
     )
 
 
-def notify_governed_runtime_work(source: str = "webhook", event=None, **identifiers):
-    """Persist one exact webhook verification as a durable DB job."""
+def notify_governed_runtime_work(
+    source: str = "webhook",
+    event=None,
+    **identifiers,
+):
+    """Queue one exact in-process governed event."""
     global _last_event_at, _last_event_source
 
     item = _normalise_webhook_event(
@@ -215,31 +226,37 @@ def notify_governed_runtime_work(source: str = "webhook", event=None, **identifi
     _last_event_at = item["received_at"]
     _last_event_source = item["source"]
 
-    result = {
-        "queued": True,
-        "durable": False,
-        "status": "GOVERNED_MEMORY_EVENT",
-        "verify_after": item["verify_after"].isoformat(),
-    }
-
     with _pending_events_lock:
         key = _event_key(item)
-
         for queued in _pending_events:
             if _event_key(queued) == key:
                 queued["verify_after"] = item["verify_after"]
-                queued["payload"] = item.get("payload") or queued.get("payload")
-                queued["expected_quantity"] = item.get("expected_quantity")
+                queued["payload"] = (
+                    item.get("payload")
+                    or queued.get("payload")
+                )
+                queued["expected_quantity"] = item.get(
+                    "expected_quantity"
+                )
                 break
         else:
             _pending_events.append(item)
 
     _pending_notification_event.set()
 
-    return {**result, "scoped": item["scope_present"]}
+    return {
+        "queued": True,
+        "durable": False,
+        "status": "GOVERNED_MEMORY_EVENT",
+        "verify_after": item["verify_after"].isoformat(),
+        "scoped": item["scope_present"],
+    }
 
 
-def _config_on_for_explicit_work(key: str, default: bool = False) -> bool:
+def _config_on_for_explicit_work(
+    key: str,
+    default: bool = False,
+) -> bool:
     try:
         from models import SystemConfig
 
@@ -254,9 +271,15 @@ def _config_on_for_explicit_work(key: str, default: bool = False) -> bool:
 def _import_fuses_on() -> bool:
     if not _config_on_for_explicit_work("import_enabled", True):
         return False
-    if not _config_on_for_explicit_work("runtime_import_enabled", True):
+    if not _config_on_for_explicit_work(
+        "runtime_import_enabled",
+        True,
+    ):
         return False
-    if not _config_on_for_explicit_work("marketplace_import_enabled", True):
+    if not _config_on_for_explicit_work(
+        "marketplace_import_enabled",
+        True,
+    ):
         return False
     return True
 
@@ -292,13 +315,19 @@ def run_governed_marketplace_import_refresh(
     results = []
     stores = _stores_for_marketplace_import()
     if store_id:
-        stores = [store for store in stores if int(store.id) == int(store_id)]
+        stores = [
+            store
+            for store in stores
+            if int(store.id) == int(store_id)
+        ]
 
     for store in stores:
         platform = str(store.platform or "").strip().lower()
         try:
             if "amazon" in platform:
-                if not bool(getattr(store, "fba_import_enabled", False)):
+                if not bool(
+                    getattr(store, "fba_import_enabled", False)
+                ):
                     results.append({
                         "store_id": store.id,
                         "platform": store.platform,
@@ -319,8 +348,10 @@ def run_governed_marketplace_import_refresh(
                     full_refresh=True,
                     source=source,
                 )
-                listing_fulfillment = run_governed_amazon_listing_fulfillment_refresh(
-                    store_id=store.id,
+                listing_fulfillment = (
+                    run_governed_amazon_listing_fulfillment_refresh(
+                        store_id=store.id,
+                    )
                 )
                 _last_fba_import = datetime.utcnow()
                 results.append({
@@ -340,7 +371,9 @@ def run_governed_marketplace_import_refresh(
                     run_governed_marketplace_order_import,
                 )
 
-                result = run_governed_ebay_inventory_import(store_id=store.id)
+                result = run_governed_ebay_inventory_import(
+                    store_id=store.id
+                )
                 order_recovery = run_governed_marketplace_order_import(
                     store_id=store.id,
                     source=f"{source}:ebay_order_recovery",
@@ -349,7 +382,9 @@ def run_governed_marketplace_import_refresh(
                 results.append({
                     "store_id": store.id,
                     "platform": store.platform,
-                    "success": bool(order_recovery.get("success", True)),
+                    "success": bool(
+                        order_recovery.get("success", True)
+                    ),
                     "result": result,
                     "order_recovery": order_recovery,
                 })
@@ -362,7 +397,10 @@ def run_governed_marketplace_import_refresh(
                 "reason": "unsupported_marketplace_import",
             })
         except Exception as exc:
-            _safe_error(f"marketplace hydration failed store_id={store.id}", exc)
+            _safe_error(
+                f"marketplace hydration failed store_id={store.id}",
+                exc,
+            )
             results.append({
                 "store_id": store.id,
                 "platform": store.platform,
@@ -394,14 +432,26 @@ def _verify_exact_order(event):
 
     order_column, order_field = _first_existing_attribute(
         MarketplaceOrder,
-        ("external_order_id", "marketplace_order_id", "amazon_order_id", "order_id"),
+        (
+            "external_order_id",
+            "marketplace_order_id",
+            "amazon_order_id",
+            "order_id",
+        ),
     )
     if order_column is None or not event.get("order_id"):
-        return {"verified": False, "reason": "exact_order_identity_unavailable"}
+        return {
+            "verified": False,
+            "reason": "exact_order_identity_unavailable",
+        }
 
-    query = MarketplaceOrder.query.filter(order_column == event["order_id"])
+    query = MarketplaceOrder.query.filter(
+        order_column == event["order_id"]
+    )
     if hasattr(MarketplaceOrder, "store_id"):
-        query = query.filter(MarketplaceOrder.store_id == event["store_id"])
+        query = query.filter(
+            MarketplaceOrder.store_id == event["store_id"]
+        )
 
     row = query.first()
     return {
@@ -414,7 +464,6 @@ def _verify_exact_order(event):
 
 
 def _verify_exact_fba(event):
-    """Refresh and verify one exact Amazon FBA seller SKU only."""
     from extensions import db
     from models import Store
     from backend.adapters.amazon_sp_api_adapter import AmazonSPAPIAdapter
@@ -441,7 +490,6 @@ def _verify_exact_fba(event):
         )
         .first()
     )
-
     if store is None:
         return {
             "verified": False,
@@ -451,9 +499,14 @@ def _verify_exact_fba(event):
             "full_scan_started": False,
         }
 
-    rows = AmazonSPAPIAdapter(store).get_inventory(seller_skus=[seller_sku])
-    matching_rows = [row for row in rows if _clean(row.get("seller_sku")) == seller_sku]
-
+    rows = AmazonSPAPIAdapter(store).get_inventory(
+        seller_skus=[seller_sku]
+    )
+    matching_rows = [
+        row
+        for row in rows
+        if _clean(row.get("seller_sku")) == seller_sku
+    ]
     if not matching_rows:
         return {
             "verified": False,
@@ -477,9 +530,16 @@ def _verify_exact_fba(event):
     if group_id is None and warehouse_stock_id is not None:
         from models import WarehouseStock
 
-        linked_stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
+        linked_stock = db.session.get(
+            WarehouseStock,
+            int(warehouse_stock_id),
+        )
         if linked_stock is not None:
-            group_id = getattr(linked_stock, "master_product_group_id", None)
+            group_id = getattr(
+                linked_stock,
+                "master_product_group_id",
+                None,
+            )
             if group_id is not None:
                 group_id = int(group_id)
                 fba_result["group_id"] = group_id
@@ -496,7 +556,9 @@ def _verify_exact_fba(event):
         and group_id is not None
         and warehouse_stock_id is not None
     ):
-        from governed_group_propagation_routes import run_governed_group_propagation
+        from governed_group_propagation_routes import (
+            run_governed_group_propagation,
+        )
 
         response = run_governed_group_propagation(
             int(group_id),
@@ -505,7 +567,11 @@ def _verify_exact_fba(event):
                 "source": "amazon_webhook_exact_fba_handoff",
             },
         )
-        response_object = response[0] if isinstance(response, tuple) else response
+        response_object = (
+            response[0]
+            if isinstance(response, tuple)
+            else response
+        )
         if hasattr(response_object, "get_json"):
             group_result = response_object.get_json(silent=True)
         elif isinstance(response_object, dict):
@@ -534,7 +600,9 @@ def _verify_exact_fba(event):
 def _verify_exact_listing(event):
     from models import MarketplaceListing
 
-    query = MarketplaceListing.query.filter(MarketplaceListing.store_id == event["store_id"])
+    query = MarketplaceListing.query.filter(
+        MarketplaceListing.store_id == event["store_id"]
+    )
     identity = None
     identity_field = None
     candidates = (
@@ -545,13 +613,18 @@ def _verify_exact_listing(event):
     )
     for field, value in candidates:
         if value and hasattr(MarketplaceListing, field):
-            query = query.filter(getattr(MarketplaceListing, field) == value)
+            query = query.filter(
+                getattr(MarketplaceListing, field) == value
+            )
             identity = value
             identity_field = field
             break
 
     if identity is None:
-        return {"verified": False, "reason": "exact_listing_identity_unavailable"}
+        return {
+            "verified": False,
+            "reason": "exact_listing_identity_unavailable",
+        }
 
     row = query.first()
     return {
@@ -564,9 +637,11 @@ def _verify_exact_listing(event):
 
 
 def _execute_mcf_auto_release_event(event):
-    """Submit one exact due MCF order through the shared governed process."""
+    """Continue one exact MCF lifecycle from current DB state."""
     payload = dict(event.get("payload") or {})
-    marketplace_order_row_id = _safe_int(payload.get("marketplace_order_row_id"))
+    marketplace_order_row_id = _safe_int(
+        payload.get("marketplace_order_row_id")
+    )
     if marketplace_order_row_id is None:
         return {
             "success": False,
@@ -577,7 +652,81 @@ def _execute_mcf_auto_release_event(event):
             "database_touched": False,
         }
 
-    from governed_mcf_routes import run_governed_mcf_submission
+    from extensions import db
+    from models import MarketplaceOrder
+    from governed_mcf_routes import (
+        CANCELLED_ORDER_STATUSES,
+        run_governed_mcf_marketplace_dispatch,
+        run_governed_mcf_submission,
+    )
+
+    order = db.session.get(
+        MarketplaceOrder,
+        marketplace_order_row_id,
+    )
+    if order is None:
+        return {
+            "success": False,
+            "verified": True,
+            "aligned": False,
+            "skipped": True,
+            "reason": "mcf_marketplace_order_missing",
+            "database_touched": True,
+        }
+
+    order_lines = (
+        MarketplaceOrder.query
+        .filter(
+            MarketplaceOrder.store_id == order.store_id,
+            MarketplaceOrder.marketplace_order_id
+            == order.marketplace_order_id,
+        )
+        .all()
+    )
+    if any(
+        str(line.status or "").strip().lower()
+        in CANCELLED_ORDER_STATUSES
+        for line in order_lines
+    ):
+        return {
+            "success": True,
+            "verified": True,
+            "aligned": True,
+            "skipped": True,
+            "reason": "source_order_cancelled",
+            "database_touched": True,
+        }
+
+    mcf = next(
+        (
+            line.mcf_order
+            for line in order_lines
+            if line.mcf_order_id
+        ),
+        None,
+    )
+
+    if mcf is not None and str(mcf.status or "").lower() != "failed":
+        result = run_governed_mcf_marketplace_dispatch(
+            marketplace_order_row_id,
+            actor_user=None,
+            automatic=True,
+        )
+        return {
+            **result,
+            "verified": True,
+            "aligned": bool(
+                result.get("success")
+                or result.get("skipped")
+            ),
+            "event_type": "mcf_auto_release",
+            "mcf_phase": "dispatch",
+            "database_touched": True,
+            "full_scan_started": False,
+            "recent_order_import_started": False,
+            "warehouse_scan_started": False,
+            "marketplace_hydration_started": False,
+        }
 
     result = run_governed_mcf_submission(
         marketplace_order_row_id,
@@ -585,33 +734,79 @@ def _execute_mcf_auto_release_event(event):
         form_data={},
         actor_user=None,
     )
+
     success = bool(result.get("success"))
     skipped = bool(result.get("skipped"))
-    retry_count = _safe_int(payload.get("mcf_auto_retry_count"), 0) or 0
+    retry_count = (
+        _safe_int(payload.get("mcf_auto_retry_count"), 0)
+        or 0
+    )
     retry_queued = False
     retry_after = None
+
+    overdue_recovery_dispatch = None
+    if success and bool(payload.get("startup_recovered")):
+        db.session.expire_all()
+        refreshed = db.session.get(
+            MarketplaceOrder,
+            marketplace_order_row_id,
+        )
+        legacy_base = (
+            getattr(refreshed, "marketplace_created_at", None)
+            or getattr(refreshed, "created_at", None)
+        )
+        if (
+            legacy_base is not None
+            and datetime.utcnow()
+            >= legacy_base + timedelta(hours=1)
+        ):
+            overdue_recovery_dispatch = (
+                run_governed_mcf_marketplace_dispatch(
+                    marketplace_order_row_id,
+                    actor_user=None,
+                    automatic=True,
+                )
+            )
 
     if not success and not skipped and retry_count < 3:
         retry_after = datetime.utcnow() + timedelta(minutes=15)
         retry_event = dict(event)
         retry_payload = dict(payload)
-        retry_payload["mcf_auto_retry_count"] = retry_count + 1
+        retry_payload["mcf_auto_retry_count"] = (
+            retry_count + 1
+        )
         retry_event["payload"] = retry_payload
         retry_event["verify_after"] = retry_after
         notify_governed_runtime_work(
-            source=event.get("source") or "warehouse_mcf_one_hour_release",
+            source=(
+                event.get("source")
+                or "warehouse_mcf_immediate_submit"
+            ),
             event=retry_event,
         )
         retry_queued = True
 
+    aligned = success or skipped
+    if overdue_recovery_dispatch is not None:
+        aligned = aligned and bool(
+            overdue_recovery_dispatch.get("success")
+            or overdue_recovery_dispatch.get("skipped")
+        )
+
     return {
         **result,
         "verified": True,
-        "aligned": success or skipped,
+        "aligned": aligned,
         "event_type": "mcf_auto_release",
+        "mcf_phase": "submit",
         "mcf_auto_retry_count": retry_count,
         "mcf_auto_retry_queued": retry_queued,
-        "mcf_auto_retry_after": retry_after.isoformat() if retry_after else None,
+        "mcf_auto_retry_after": (
+            retry_after.isoformat()
+            if retry_after
+            else None
+        ),
+        "overdue_recovery_dispatch": overdue_recovery_dispatch,
         "database_touched": True,
         "full_scan_started": False,
         "recent_order_import_started": False,
@@ -621,7 +816,6 @@ def _execute_mcf_auto_release_event(event):
 
 
 def _verify_webhook_event(event):
-    """Verify only the exact identity and alignment supplied by the webhook."""
     if not event.get("scope_present"):
         return {
             "verified": False,
@@ -631,13 +825,23 @@ def _verify_webhook_event(event):
         }
 
     if event.get("warehouse_stock_id") and event.get("listing_ids"):
-        from services.governed_webhook_alignment import verify_existing_webhook_alignment
+        from services.governed_webhook_alignment import (
+            verify_existing_webhook_alignment,
+        )
+
         result = verify_existing_webhook_alignment(event)
     else:
-        event_type = str(event.get("event_type") or "").lower()
-        marketplace = str(event.get("marketplace") or "").lower()
+        event_type = str(
+            event.get("event_type") or ""
+        ).lower()
+        marketplace = str(
+            event.get("marketplace") or ""
+        ).lower()
         payload = event.get("payload") or {}
-        notification = payload.get("Payload", {}).get("OrderChangeNotification", {})
+        notification = (
+            payload.get("Payload", {})
+            .get("OrderChangeNotification", {})
+        )
         summary = notification.get("Summary", {})
         fulfillment_type = str(
             summary.get("FulfillmentType")
@@ -656,7 +860,11 @@ def _verify_webhook_event(event):
             result = _verify_exact_fba(event)
         elif event.get("order_id") or "order" in event_type:
             result = _verify_exact_order(event)
-        elif "fba" in event_type or "afn" in event_type or marketplace == "amazon_fba":
+        elif (
+            "fba" in event_type
+            or "afn" in event_type
+            or marketplace == "amazon_fba"
+        ):
             result = _verify_exact_fba(event)
         else:
             result = _verify_exact_listing(event)
@@ -689,22 +897,34 @@ def _pop_due_events(now=None):
     return due
 
 
-def _seconds_until_next_due(default=LIGHT_RECONCILE_SECONDS):
+def _seconds_until_next_due(
+    default=LIGHT_RECONCILE_SECONDS,
+):
     with _pending_events_lock:
         if not _pending_events:
             return default
-        due_at = min(event["verify_after"] for event in _pending_events)
-    return max(0.0, (due_at - datetime.utcnow()).total_seconds())
+        due_at = min(
+            event["verify_after"]
+            for event in _pending_events
+        )
+    return max(
+        0.0,
+        (due_at - datetime.utcnow()).total_seconds(),
+    )
 
 
-def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
-    """Verify only webhook-provided identities; never perform broad imports."""
+def _run_light_reconcile_cycle(
+    events=None,
+    source="webhook_verification_15m",
+):
     global _last_light_reconcile, _last_verification_result
 
     events = list(events or [])
     results = []
     for event in events:
-        event_type = str(event.get("event_type") or "").strip().lower()
+        event_type = str(
+            event.get("event_type") or ""
+        ).strip().lower()
         if event_type == "mcf_auto_release":
             result = _execute_mcf_auto_release_event(event)
         else:
@@ -717,8 +937,16 @@ def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
         "governed": True,
         "source": source,
         "events_received": len(events),
-        "events_verified": sum(1 for item in results if item.get("verified")),
-        "events_aligned": sum(1 for item in results if item.get("aligned")),
+        "events_verified": sum(
+            1
+            for item in results
+            if item.get("verified")
+        ),
+        "events_aligned": sum(
+            1
+            for item in results
+            if item.get("aligned")
+        ),
         "full_scan_started": False,
         "recent_order_import_started": False,
         "order_stock_bridge_started": False,
@@ -727,20 +955,26 @@ def _run_light_reconcile_cycle(events=None, source="webhook_verification_15m"):
         "results": results,
     }
     _safe_log(
-        "15-minute webhook alignment verification complete "
-        f"events={len(events)} verified={_last_verification_result['events_verified']}"
+        "Exact event alignment complete "
+        f"events={len(events)} "
+        f"verified={_last_verification_result['events_verified']}"
     )
     return _last_verification_result
 
 
 def _run_full_sync_cycle():
     global _last_full_sync
-    run_governed_marketplace_import_refresh(source="full_sync_8h_recovery")
+    run_governed_marketplace_import_refresh(
+        source="full_sync_8h_recovery"
+    )
     _last_full_sync = datetime.utcnow()
 
 
 def _amazon_sqs_consumer_enabled() -> bool:
-    if not _truthy(os.getenv("ENABLE_AMAZON_SQS_CONSUMER", "true"), True):
+    if not _truthy(
+        os.getenv("ENABLE_AMAZON_SQS_CONSUMER", "true"),
+        True,
+    ):
         return False
     return bool(
         _clean(os.getenv("AMAZON_SQS_QUEUE_URL"))
@@ -750,7 +984,10 @@ def _amazon_sqs_consumer_enabled() -> bool:
 
 def _amazon_sqs_connection():
     global _amazon_sqs_client, _amazon_sqs_queue_url
-    if _amazon_sqs_client is not None and _amazon_sqs_queue_url:
+    if (
+        _amazon_sqs_client is not None
+        and _amazon_sqs_queue_url
+    ):
         return _amazon_sqs_client, _amazon_sqs_queue_url
 
     import boto3
@@ -765,8 +1002,13 @@ def _amazon_sqs_connection():
     if not queue_url:
         queue_name = _clean(os.getenv("AMAZON_SQS_QUEUE_NAME"))
         if not queue_name:
-            raise RuntimeError("AMAZON_SQS_QUEUE_URL or AMAZON_SQS_QUEUE_NAME is required")
-        queue_url = client.get_queue_url(QueueName=queue_name)["QueueUrl"]
+            raise RuntimeError(
+                "AMAZON_SQS_QUEUE_URL or "
+                "AMAZON_SQS_QUEUE_NAME is required"
+            )
+        queue_url = client.get_queue_url(
+            QueueName=queue_name
+        )["QueueUrl"]
 
     _amazon_sqs_client = client
     _amazon_sqs_queue_url = queue_url
@@ -777,32 +1019,53 @@ def _amazon_sqs_message_payload(message: dict) -> dict:
     body = message.get("Body") or ""
     try:
         decoded = json.loads(body)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("Amazon SQS message body is not valid JSON") from exc
+    except (
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise ValueError(
+            "Amazon SQS message body is not valid JSON"
+        ) from exc
     if not isinstance(decoded, dict):
-        raise ValueError("Amazon SQS message body must decode to a JSON object")
+        raise ValueError(
+            "Amazon SQS message body must decode to a JSON object"
+        )
     return decoded
 
 
-def _send_amazon_sqs_message_to_governed_intake(app, payload: dict) -> dict:
+def _send_amazon_sqs_message_to_governed_intake(
+    app,
+    payload: dict,
+) -> dict:
     from governed_routes import governed_marketplace_webhook_intake
 
     with app.test_request_context(
         "/governed/webhooks/amazon",
         method="POST",
         json=payload,
-        headers={"X-BT38-Notification-Transport": "amazon_sqs"},
+        headers={
+            "X-BT38-Notification-Transport": "amazon_sqs"
+        },
     ):
-        result = governed_marketplace_webhook_intake("amazon")
+        result = governed_marketplace_webhook_intake(
+            "amazon"
+        )
 
     if isinstance(result, tuple):
         response = result[0]
         status_code = int(result[1])
     else:
         response = result
-        status_code = int(getattr(response, "status_code", 200))
+        status_code = int(
+            getattr(response, "status_code", 200)
+        )
 
-    response_payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+    response_payload = (
+        response.get_json(silent=True)
+        if hasattr(response, "get_json")
+        else None
+    )
     return {
         "success": 200 <= status_code < 300,
         "status_code": status_code,
@@ -810,15 +1073,26 @@ def _send_amazon_sqs_message_to_governed_intake(app, payload: dict) -> dict:
     }
 
 
-def _poll_amazon_sqs_once(app, wait_seconds: int = 20) -> dict:
+def _poll_amazon_sqs_once(
+    app,
+    wait_seconds: int = 20,
+) -> dict:
     if not _amazon_sqs_consumer_enabled():
-        return {"enabled": False, "received": 0, "deleted": 0, "failed": 0}
+        return {
+            "enabled": False,
+            "received": 0,
+            "deleted": 0,
+            "failed": 0,
+        }
 
     client, queue_url = _amazon_sqs_connection()
     response = client.receive_message(
         QueueUrl=queue_url,
         MaxNumberOfMessages=10,
-        WaitTimeSeconds=max(0, min(int(wait_seconds), 20)),
+        WaitTimeSeconds=max(
+            0,
+            min(int(wait_seconds), 20),
+        ),
         VisibilityTimeout=120,
         MessageAttributeNames=["All"],
         AttributeNames=["All"],
@@ -830,15 +1104,24 @@ def _poll_amazon_sqs_once(app, wait_seconds: int = 20) -> dict:
         receipt_handle = message.get("ReceiptHandle")
         try:
             payload = _amazon_sqs_message_payload(message)
-            result = _send_amazon_sqs_message_to_governed_intake(app, payload)
+            result = _send_amazon_sqs_message_to_governed_intake(
+                app,
+                payload,
+            )
             if not result.get("success"):
                 raise RuntimeError(
                     "Governed Amazon intake returned "
-                    f"HTTP {result.get('status_code')}: {result.get('response')}"
+                    f"HTTP {result.get('status_code')}: "
+                    f"{result.get('response')}"
                 )
             if not receipt_handle:
-                raise RuntimeError("Amazon SQS receipt handle is missing")
-            client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+                raise RuntimeError(
+                    "Amazon SQS receipt handle is missing"
+                )
+            client.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=receipt_handle,
+            )
             deleted += 1
         except Exception as exc:
             failed += 1
@@ -848,61 +1131,133 @@ def _poll_amazon_sqs_once(app, wait_seconds: int = 20) -> dict:
                 exc,
             )
 
-    return {"enabled": True, "received": len(messages), "deleted": deleted, "failed": failed}
+    return {
+        "enabled": True,
+        "received": len(messages),
+        "deleted": deleted,
+        "failed": failed,
+    }
 
 
 def _recover_mcf_auto_release_events(app) -> dict:
+    """Rebuild only exact unfinished MCF lifecycle events after restart."""
     from models import MarketplaceOrder
 
     now = datetime.utcnow()
     recovery_since = now - timedelta(hours=48)
 
     with app.app_context():
-        query = (
+        rows = (
             MarketplaceOrder.query
             .filter(MarketplaceOrder.created_at >= recovery_since)
-            .order_by(MarketplaceOrder.created_at.asc(), MarketplaceOrder.id.asc())
+            .order_by(
+                MarketplaceOrder.created_at.asc(),
+                MarketplaceOrder.id.asc(),
+            )
             .limit(250)
+            .all()
         )
-        if hasattr(MarketplaceOrder, "mcf_order_id"):
-            query = query.filter(MarketplaceOrder.mcf_order_id.is_(None))
-        if hasattr(MarketplaceOrder, "mcf_queue_hidden"):
-            query = query.filter(MarketplaceOrder.mcf_queue_hidden == False)  # noqa: E712
 
-        rows = query.all()
-        cancelled_statuses = {"cancelled", "canceled", "cancellation", "cancel_requested"}
+        cancelled_statuses = {
+            "cancelled",
+            "canceled",
+            "cancellation",
+            "cancel_requested",
+        }
         seen_orders = set()
         queued = 0
         skipped = 0
 
         for row in rows:
             store = getattr(row, "store", None)
-            platform = str(getattr(store, "platform", "") or "").strip().lower()
+            platform = str(
+                getattr(store, "platform", "") or ""
+            ).strip().lower()
             if not platform or "amazon" in platform:
                 skipped += 1
                 continue
-            status = str(getattr(row, "status", "") or "").strip().lower()
-            if status in cancelled_statuses or getattr(row, "created_at", None) is None:
-                skipped += 1
-                continue
-            order_key = (getattr(row, "store_id", None), getattr(row, "marketplace_order_id", None))
+
+            order_key = (
+                getattr(row, "store_id", None),
+                getattr(row, "marketplace_order_id", None),
+            )
             if order_key in seen_orders:
                 continue
             seen_orders.add(order_key)
-            completed_line = (
+
+            lines = (
                 MarketplaceOrder.query
                 .filter(
                     MarketplaceOrder.store_id == row.store_id,
-                    MarketplaceOrder.marketplace_order_id == row.marketplace_order_id,
-                    MarketplaceOrder.mcf_order_id.isnot(None),
+                    MarketplaceOrder.marketplace_order_id
+                    == row.marketplace_order_id,
                 )
-                .first()
+                .all()
             )
-            if completed_line is not None:
+
+            if any(
+                str(line.status or "").strip().lower()
+                in cancelled_statuses
+                for line in lines
+            ):
                 skipped += 1
                 continue
 
-            release_at = row.created_at + timedelta(hours=1)
+            if any(
+                bool(getattr(line, "mcf_queue_hidden", False))
+                for line in lines
+            ):
+                skipped += 1
+                continue
+
+            if any(
+                getattr(line, "shipped_at", None)
+                for line in lines
+            ):
+                skipped += 1
+                continue
+
+            mcf = next(
+                (
+                    line.mcf_order
+                    for line in lines
+                    if line.mcf_order_id
+                ),
+                None,
+            )
+
+            if (
+                mcf is not None
+                and str(mcf.status or "").lower()
+                in {"cancelled"}
+            ):
+                skipped += 1
+                continue
+
+            if (
+                mcf is not None
+                and str(mcf.status or "").lower()
+                != "failed"
+            ):
+                accepted_at = (
+                    getattr(
+                        mcf,
+                        "amazon_status_updated_at",
+                        None,
+                    )
+                    or getattr(mcf, "updated_at", None)
+                    or getattr(mcf, "created_at", None)
+                    or now
+                )
+                due_at = max(
+                    accepted_at + timedelta(hours=1),
+                    now,
+                )
+                phase = "dispatch"
+            else:
+                due_at = now
+                phase = "submit"
+
             notify_governed_runtime_work(
                 source="warehouse_mcf_startup_recovery",
                 event={
@@ -910,11 +1265,25 @@ def _recover_mcf_auto_release_events(app) -> dict:
                     "marketplace": platform,
                     "store_id": row.store_id,
                     "order_id": row.marketplace_order_id,
-                    "warehouse_stock_id": getattr(row, "warehouse_stock_id", None),
-                    "verify_after": max(release_at, now),
+                    "warehouse_stock_id": getattr(
+                        row,
+                        "warehouse_stock_id",
+                        None,
+                    ),
+                    "verify_after": due_at,
                     "payload": {
                         "marketplace_order_row_id": row.id,
-                        "idempotency_key": getattr(row, "idempotency_key", None),
+                        "idempotency_key": getattr(
+                            row,
+                            "idempotency_key",
+                            None,
+                        ),
+                        "mcf_order_id": (
+                            getattr(mcf, "id", None)
+                            if mcf is not None
+                            else None
+                        ),
+                        "phase": phase,
                         "startup_recovered": True,
                     },
                 },
@@ -945,26 +1314,47 @@ def _engine_loop(app):
     except Exception:
         runtime_database_enabled = False
 
+    # Historical durable-job recovery remains disabled and independent from
+    # MCF lifecycle recovery.
     if DURABLE_RUNTIME_JOB_PATH_ENABLED and runtime_database_enabled:
         try:
             with app.app_context():
-                from services.governed_runtime_job_store import ensure_runtime_job_table
+                from services.governed_runtime_job_store import (
+                    ensure_runtime_job_table,
+                    load_pending_runtime_job_hints,
+                )
+
                 ensure_runtime_job_table()
-                from services.governed_runtime_job_store import load_pending_runtime_job_hints
-                recovered_hints = load_pending_runtime_job_hints(limit=250)
+                recovered_hints = load_pending_runtime_job_hints(
+                    limit=250
+                )
                 with _pending_events_lock:
                     for recovered in recovered_hints:
                         key = _event_key(recovered)
-                        if not any(_event_key(existing) == key for existing in _pending_events):
+                        if not any(
+                            _event_key(existing) == key
+                            for existing in _pending_events
+                        ):
                             _pending_events.append(recovered)
                     if _pending_events:
                         _pending_notification_event.set()
-                _safe_log(f"Durable runtime job recovery complete pending={len(recovered_hints)}")
+                _safe_log(
+                    "Durable runtime job recovery complete "
+                    f"pending={len(recovered_hints)}"
+                )
         except Exception as exc:
-            _safe_error("Durable runtime job table initialisation failed", exc)
+            _safe_error(
+                "Durable runtime job table initialisation failed",
+                exc,
+            )
 
+    # MCF startup recovery is part of the active governed lifecycle and must
+    # not depend on the retired durable-job flag.
+    if runtime_database_enabled:
         try:
-            recovery_result = _recover_mcf_auto_release_events(app)
+            recovery_result = _recover_mcf_auto_release_events(
+                app
+            )
             _safe_log(
                 "MCF startup recovery complete "
                 f"queued={recovery_result.get('orders_queued', 0)} "
@@ -982,26 +1372,38 @@ def _engine_loop(app):
         try:
             seconds_until_due = _seconds_until_next_due()
             if _amazon_sqs_consumer_enabled():
-                sqs_wait = max(0, min(20, int(seconds_until_due)))
-                _poll_amazon_sqs_once(app, wait_seconds=sqs_wait)
+                sqs_wait = max(
+                    0,
+                    min(20, int(seconds_until_due)),
+                )
+                _poll_amazon_sqs_once(
+                    app,
+                    wait_seconds=sqs_wait,
+                )
             else:
-                _pending_notification_event.wait(timeout=seconds_until_due)
+                _pending_notification_event.wait(
+                    timeout=seconds_until_due
+                )
 
             if _stop_event.is_set():
                 break
 
             due_hints = _pop_due_events()
             if due_hints:
-                _run_light_reconcile_cycle(
-                    events=due_hints,
-                    source="governed_exact_event",
-                )
+                with app.app_context():
+                    _run_light_reconcile_cycle(
+                        events=due_hints,
+                        source="governed_exact_event",
+                    )
 
             if hydration_enabled:
                 now = datetime.utcnow()
                 if (
                     _last_full_sync is None
-                    or (now - _last_full_sync).total_seconds() >= FULL_SYNC_SECONDS
+                    or (
+                        now - _last_full_sync
+                    ).total_seconds()
+                    >= FULL_SYNC_SECONDS
                 ):
                     with app.app_context():
                         _run_full_sync_cycle()
@@ -1020,15 +1422,26 @@ def _acquire_runtime_owner_lock() -> bool:
 
     try:
         import fcntl
-        handle = open(_RUNTIME_LOCK_PATH, "a+", encoding="utf-8")
+
+        handle = open(
+            _RUNTIME_LOCK_PATH,
+            "a+",
+            encoding="utf-8",
+        )
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(
+                handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
         except BlockingIOError:
             handle.close()
             return False
         handle.seek(0)
         handle.truncate()
-        handle.write(f"pid={os.getpid()} started_at={datetime.utcnow().isoformat()}Z\n")
+        handle.write(
+            f"pid={os.getpid()} "
+            f"started_at={datetime.utcnow().isoformat()}Z\n"
+        )
         handle.flush()
         _runtime_lock_handle = handle
         return True
@@ -1043,7 +1456,10 @@ def start_governed_runtime_engine(app):
     with _status_lock:
         if _started:
             return False
-        if not _truthy(os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"), True):
+        if not _truthy(
+            os.getenv("ENABLE_GOVERNED_RUNTIME_ENGINE", "true"),
+            True,
+        ):
             return False
         if not _acquire_runtime_owner_lock():
             return False
@@ -1060,7 +1476,10 @@ def start_governed_runtime_engine(app):
         thread.start()
         return True
     except Exception as exc:
-        _safe_error("Governed runtime engine failed to start", exc)
+        _safe_error(
+            "Governed runtime engine failed to start",
+            exc,
+        )
         return False
 
 
@@ -1070,37 +1489,89 @@ def get_governed_runtime_status():
     with _pending_events_lock:
         pending_count = len(_pending_events)
         next_due = min(
-            (event["verify_after"] for event in _pending_events),
+            (
+                event["verify_after"]
+                for event in _pending_events
+            ),
             default=None,
         )
 
     return {
         "engine_started": engine_live,
-        "runtime_mode": "EVENT-DRIVEN GOVERNED" if engine_live else "MANUAL GOVERNED",
-        "execution_mode": "EVENT + MANUAL GOVERNED" if engine_live else "MANUAL ONLY",
+        "runtime_mode": (
+            "EVENT-DRIVEN GOVERNED"
+            if engine_live
+            else "MANUAL GOVERNED"
+        ),
+        "execution_mode": (
+            "EVENT + MANUAL GOVERNED"
+            if engine_live
+            else "MANUAL ONLY"
+        ),
         "workers_running": engine_live,
         "schedulers_running": engine_live,
         "queue_consumers_running": engine_live,
-        "started_at": _started_at.isoformat() if _started_at else None,
-        "last_full_sync": _last_full_sync.isoformat() if _last_full_sync else None,
-        "last_light_reconcile": _last_light_reconcile.isoformat() if _last_light_reconcile else None,
-        "last_marketplace_import": _last_marketplace_import.isoformat() if _last_marketplace_import else None,
-        "last_fba_import": _last_fba_import.isoformat() if _last_fba_import else None,
-        "last_ebay_import": _last_ebay_import.isoformat() if _last_ebay_import else None,
+        "started_at": (
+            _started_at.isoformat()
+            if _started_at
+            else None
+        ),
+        "last_full_sync": (
+            _last_full_sync.isoformat()
+            if _last_full_sync
+            else None
+        ),
+        "last_light_reconcile": (
+            _last_light_reconcile.isoformat()
+            if _last_light_reconcile
+            else None
+        ),
+        "last_marketplace_import": (
+            _last_marketplace_import.isoformat()
+            if _last_marketplace_import
+            else None
+        ),
+        "last_fba_import": (
+            _last_fba_import.isoformat()
+            if _last_fba_import
+            else None
+        ),
+        "last_ebay_import": (
+            _last_ebay_import.isoformat()
+            if _last_ebay_import
+            else None
+        ),
         "next_full_sync_seconds": (
-            max(0, FULL_SYNC_SECONDS - int((now - _last_full_sync).total_seconds()))
+            max(
+                0,
+                FULL_SYNC_SECONDS
+                - int(
+                    (
+                        now - _last_full_sync
+                    ).total_seconds()
+                ),
+            )
             if _last_full_sync
             else 0
         ),
         "next_light_reconcile_seconds": (
-            max(0, int((next_due - now).total_seconds())) if next_due else 0
+            max(
+                0,
+                int((next_due - now).total_seconds()),
+            )
+            if next_due
+            else 0
         ),
         "last_error": _last_error,
         "runtime_heartbeat": None,
         "runtime_status_source": "process_memory",
         "pending_notification": pending_count > 0,
         "pending_webhook_verifications": pending_count,
-        "last_event_at": _last_event_at.isoformat() if _last_event_at else None,
+        "last_event_at": (
+            _last_event_at.isoformat()
+            if _last_event_at
+            else None
+        ),
         "last_event_source": _last_event_source,
         "last_verification_result": _last_verification_result,
         "automatic_8h_hydration_enabled": _truthy(
