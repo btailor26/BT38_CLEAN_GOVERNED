@@ -55,8 +55,10 @@ def test_link_and_unlink_use_two_distinct_group_roles():
     assert "original_stock = listing.warehouse_stock" in unlink
     assert "original_group_id = original_stock.master_product_group_id" in unlink
 
-    # Listing current relationship is restored to that original group.
-    assert "listing.master_product_group_id = resulting_group_id" in unlink
+    # Unlink removes temporary/shared Product Linking membership.
+    # Permanent Warehouse identity determines where the independent
+    # listing is displayed again.
+    assert "listing.master_product_group_id = None" in unlink
 
     # Permanent Warehouse relationship must never be destroyed.
     assert "listing.warehouse_stock_id = None" not in unlink
@@ -77,9 +79,10 @@ def test_missing_original_recovery_is_persisted_on_same_warehouse_row():
         in unlink
     )
 
-    # Listing is then restored to that persisted group.
+    # The recovered group becomes the permanent Warehouse original,
+    # while the listing remains unlinked from any shared group.
     assert "original_group_id = int(original_group.id)" in unlink
-    assert "listing.master_product_group_id = resulting_group_id" in unlink
+    assert "listing.master_product_group_id = None" in unlink
 
 
 def test_recovery_cannot_create_group_when_original_already_exists():
@@ -137,9 +140,9 @@ def test_committed_state_is_verified_after_recovery():
     assert "committed_stock.master_product_group_id" in unlink
     assert "committed_stock_group_id != int(original_group_id)" in unlink
 
-    # Listing current relationship equals restored original.
+    # Listing current/shared relationship must be NULL after unlink.
     assert "committed_listing.master_product_group_id" in unlink
-    assert "committed_listing_group_id != resulting_group_id" in unlink
+    assert "committed_listing_group_id is not None" in unlink
 
 
 def test_repeated_recovery_is_structurally_idempotent():
@@ -156,7 +159,7 @@ def test_repeated_recovery_is_structurally_idempotent():
       later unlink:
           reads Warehouse C
           skips creation branch
-          restores listing to C
+          removes temporary/shared membership
     """
 
     unlink = _source("governed_group_unlink")
@@ -180,8 +183,9 @@ def test_repeated_recovery_is_structurally_idempotent():
     # Creation remains conditional on NULL only.
     assert "if original_group_id is None:" in unlink
 
-    # Listing returns to C.
-    assert "listing.master_product_group_id = resulting_group_id" in unlink
+    # Listing returns to independent/unlinked state. Warehouse C remains
+    # the permanent original identity.
+    assert "listing.master_product_group_id = None" in unlink
 
 
 def test_marketplace_metadata_cannot_choose_recovery_identity():

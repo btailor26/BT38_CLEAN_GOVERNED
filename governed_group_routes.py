@@ -217,7 +217,7 @@ def governed_group_link_listing(group_id: int):
 
 @governed_group_bp.post("/governed/groups/<int:group_id>/unlink")
 def governed_group_unlink(group_id: int):
-    """Restore one mutable listing to its permanent original group."""
+    """Remove one mutable listing from shared Product Linking membership."""
     from extensions import db
     from models import MarketplaceListing, MasterProductGroup
 
@@ -307,14 +307,16 @@ def governed_group_unlink(group_id: int):
 
         recovered_missing_original = False
 
-    resulting_group_id = int(original_group_id)
+    # Unlink removes only the temporary/shared Product Linking membership.
+    # The listing's permanent Warehouse identity remains warehouse_stock_id,
+    # and WarehouseStock.master_product_group_id continues to identify the
+    # Warehouse product/group under which the unlinked listing is displayed.
+    resulting_group_id = None
+    listing.master_product_group_id = None
 
-    # Restore current Product Linking relationship only.
-    # Never mutate permanent Warehouse identity here.
-    listing.master_product_group_id = resulting_group_id
     original_group.updated_at = now
-    restored_original_group = True
-    message = "Listing restored to its permanent original group ID."
+    restored_original_group = False
+    message = "Listing removed from shared Product Linking group."
 
     listing.updated_at = now
     group.updated_at = now
@@ -386,8 +388,8 @@ def governed_group_unlink(group_id: int):
         or int(committed_listing.warehouse_stock_id or 0)
            != int(original_stock.id)
         or committed_stock_group_id != int(original_group_id)
-        or committed_listing_group_id != resulting_group_id
-        or committed_group is None
+        or committed_listing_group_id is not None
+        or committed_group is not None
     ):
         return jsonify(_blocked(
             "Neon did not confirm the committed unlink relationship.",
@@ -442,7 +444,7 @@ def governed_group_unlink(group_id: int):
         ),
         "warehouse_stock_id": committed_listing.warehouse_stock_id,
         "restored_original_group": restored_original_group,
-        "released_to_unlinked": False,
+        "released_to_unlinked": True,
         "neon_relationship_confirmed": True,
         "auto_push_attempted": True,
         "auto_push_success": (

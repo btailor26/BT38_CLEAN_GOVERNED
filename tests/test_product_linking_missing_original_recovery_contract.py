@@ -29,7 +29,10 @@ def test_unlink_has_missing_original_recovery_path():
     # than releasing the listing into an ungrouped state.
     assert "master_product_group_id" in block
 
-    assert "listing.master_product_group_id = None" not in block
+    # Unlink deliberately removes only temporary/shared membership.
+    assert "listing.master_product_group_id = None" in block
+
+    # Permanent Warehouse identity must never be cleared.
     assert "listing.warehouse_stock_id = None" not in block
     assert "original_stock.master_product_group_id = None" not in block
 
@@ -68,10 +71,13 @@ def test_recovery_never_clears_permanent_identity():
         assert assignment not in block
 
 
-def test_unlink_never_reports_identityless_release():
+def test_unlink_reports_shared_membership_release_without_losing_warehouse_identity():
     block = function_source("governed_group_unlink")
 
-    assert '"released_to_unlinked": False' in block
+    assert '"released_to_unlinked": True' in block
+    assert "listing.master_product_group_id = None" in block
+    assert "listing.warehouse_stock_id = None" not in block
+    assert "original_stock.master_product_group_id = None" not in block
 
 
 def test_missing_original_must_be_recoverable_not_terminally_blocked():

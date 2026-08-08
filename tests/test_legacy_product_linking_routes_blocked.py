@@ -19,8 +19,11 @@ def test_unlink_never_clears_permanent_relationship_identity():
     source = open("governed_group_routes.py", encoding="utf-8").read()
     unlink_source = source.split("def governed_group_unlink", 1)[1].split("def _link_stock_to_group", 1)[0]
 
+    # Shared/current Product Linking membership is intentionally removable.
+    assert "listing.master_product_group_id = None" in unlink_source
+
+    # Permanent Warehouse identity is never released.
     assert "listing.warehouse_stock_id = None" not in unlink_source
-    assert "listing.master_product_group_id = None" not in unlink_source
     assert "original_stock.master_product_group_id = None" not in unlink_source
-    assert "listing.master_product_group_id = resulting_group_id" in unlink_source
-    assert '"released_to_unlinked": False' in unlink_source
+    assert "listing.master_product_group_id = None" in unlink_source
+    assert '"released_to_unlinked": True' in unlink_source
