@@ -2795,56 +2795,6 @@ def governed_product_linking_data_compat():
         ):
             continue
 
-        # If this permanent/original Warehouse group currently has no
-        # Product Linking members because its listing has been shared into
-        # another group, do not render an empty duplicate row. The permanent
-        # Warehouse group remains intact and will reappear automatically when
-        # that listing is unlinked.
-        group_stock_ids = {
-            int(stock.id)
-            for stock in group_stocks
-            if getattr(stock, "id", None) is not None
-        }
-
-        members_temporarily_shared_elsewhere = any(
-            listing.warehouse_stock_id is not None
-            and int(listing.warehouse_stock_id) in group_stock_ids
-            and listing.master_product_group_id is not None
-            and int(listing.master_product_group_id) != int(group_id)
-            for listing in listing_rows
-        )
-
-        if (
-            not current_group_listings
-            and members_temporarily_shared_elsewhere
-        ):
-            continue
-
-        # If this permanent/original Warehouse group currently has no
-        # Product Linking members because its listing has been shared into
-        # another group, do not render an empty duplicate row. The permanent
-        # Warehouse group remains intact and will reappear automatically when
-        # that listing is unlinked.
-        group_stock_ids = {
-            int(stock.id)
-            for stock in group_stocks
-            if getattr(stock, "id", None) is not None
-        }
-
-        members_temporarily_shared_elsewhere = any(
-            listing.warehouse_stock_id is not None
-            and int(listing.warehouse_stock_id) in group_stock_ids
-            and listing.master_product_group_id is not None
-            and int(listing.master_product_group_id) != int(group_id)
-            for listing in listing_rows
-        )
-
-        if (
-            not current_group_listings
-            and members_temporarily_shared_elsewhere
-        ):
-            continue
-
         group_has_fba_listing = any(
             bool(item.get("is_fba"))
             or str(
@@ -2878,7 +2828,19 @@ def governed_product_linking_data_compat():
         )[0]
 
         display_stock_rows.append(authority_stock)
-        listings_by_stock[authority_stock.id] = current_group_listings
+
+        # Current shared Product Linking membership wins while the group has
+        # active shared members. After unlink, current_group_listings is empty,
+        # so preserve the listing already attached to its permanent Warehouse
+        # row instead of wiping it out.
+        original_stock_listings = list(
+            listings_by_stock.get(authority_stock.id, [])
+        )
+
+        if current_group_listings:
+            listings_by_stock[authority_stock.id] = current_group_listings
+        else:
+            listings_by_stock[authority_stock.id] = original_stock_listings
 
         # One displayed row per current Product Group.
         for group_stock in group_stocks:

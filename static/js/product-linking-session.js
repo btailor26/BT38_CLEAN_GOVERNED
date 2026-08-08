@@ -99,6 +99,30 @@
     }
   }
 
+  async function clearSnapshot() {
+    try {
+      const database = await openCacheDatabase();
+      if (!database) return;
+
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
+        transaction.objectStore(CACHE_STORE_NAME).delete(CACHE_KEY);
+        transaction.oncomplete = () => {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = () => reject(
+          transaction.error ||
+          new Error("Unable to clear Product Linking cache")
+        );
+      });
+    } catch (error) {
+      console.warn("[ProductLinkingSession] cache clear unavailable", error);
+    }
+
+    state.fullLoadedAt = 0;
+  }
+
   async function writeSnapshot() {
     const snapshot = {
       fullLoadedAt: state.fullLoadedAt,
@@ -545,6 +569,7 @@
         ? `${listingSku} is already linked to ${warehouseSku}.`
         : `Successfully linked ${listingSku} to ${warehouseSku}.`);
 
+      await clearSnapshot();
       window.location.reload();
       return;
     } catch (error) {
@@ -584,6 +609,7 @@
         ? `${listingSku} is already unlinked.`
         : `Successfully unlinked ${listingSku}.`);
 
+      await clearSnapshot();
       window.location.reload();
       return;
     } catch (error) {
