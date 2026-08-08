@@ -6,6 +6,8 @@ PUSH_PATH = Path("services/governed_push_execution.py")
 RUNTIME_PATH = Path("services/governed_runtime_engine.py")
 ALIGNMENT_PATH = Path("services/governed_webhook_alignment.py")
 WEBHOOK_PATH = Path("services/governed_webhook_execution.py")
+GOVERNED_ROUTES_PATH = Path("governed_routes.py")
+MAIN_PATH = Path("main.py")
 
 
 def _source(path):
@@ -59,3 +61,33 @@ def test_alignment_checks_only_saved_stock_and_listing_ids():
     assert '"full_scan_started": False' in source
     assert "MarketplaceListing.query.all" not in source
     assert "WarehouseStock.query.all" not in source
+
+
+def test_ebay_challenge_handler_is_installed_on_deployed_entrypoint():
+    source = _source(MAIN_PATH)
+    assert "install_ebay_notification_challenge_handler(app)" in source
+
+
+def test_ebay_processing_failure_is_acknowledged_only_after_capture():
+    source = _source(MAIN_PATH)
+    assert "def acknowledge_captured_ebay_webhook(response):" in source
+    assert 'request.path.rstrip("/") != "/governed/webhooks/ebay"' in source
+    assert 'payload.get("status") != "processing_failed"' in source
+    assert 'payload.get("notification_record_id") is None' in source
+    assert "response.status_code = 200" in source
+    assert 'response.headers["X-BT38-Webhook-Capture"] = "stored"' in source
+
+
+def test_ebay_capture_failure_is_not_forced_to_success():
+    source = _source(MAIN_PATH)
+    assert 'payload.get("status") != "processing_failed"' in source
+    assert 'payload.get("notification_record_id") is None' in source
+    assert '"capture_failed"' not in source
+
+
+def test_current_post_path_preserves_store_resolution_and_governed_execution():
+    source = _source(GOVERNED_ROUTES_PATH)
+    assert "capture_ebay_notification(request)" in source
+    assert "store = _bt38_match_webhook_store(platform, payload)" in source
+    assert 'payload["_bt38_store_id"] = int(store.id)' in source
+    assert "process_marketplace_notification(" in source
