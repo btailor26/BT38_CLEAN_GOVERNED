@@ -40,9 +40,9 @@ def _warehouse_location_for_fulfillment(fulfillment: str) -> str:
 def ensure_permanent_original_group(stock: WarehouseStock) -> int:
     """Ensure one permanent original group for the exact Warehouse identity.
 
-    Product Linking uses MarketplaceListing.master_product_group_id only for a
-    current/shared relationship. The Warehouse row owns the permanent/original
-    group and that identity is assigned once, then preserved.
+    Every Warehouse identity owns one permanent/original group. Product Linking
+    may temporarily move a MarketplaceListing into another shared group, but the
+    Warehouse group remains the listing's deterministic return destination.
     """
     existing_group_id = getattr(stock, "master_product_group_id", None)
     if existing_group_id is not None:
@@ -227,10 +227,10 @@ def refresh_governed_listing_from_snapshot(
         )
 
     # Every governed Warehouse identity owns one permanent/original group from
-    # first import. This reuses the same relationship contract as Product
-    # Linking recovery, but moves that responsibility to the correct boundary.
-    # It never assigns MarketplaceListing.master_product_group_id.
-    ensure_permanent_original_group(warehouse_stock)
+    # first import. A listing occupies that same group by default. Product
+    # Linking is allowed to move only MarketplaceListing.master_product_group_id
+    # temporarily; WarehouseStock.master_product_group_id never moves.
+    original_group_id = ensure_permanent_original_group(warehouse_stock)
 
     # The permanent listing was resolved once by store + marketplace ID,
     # with a restricted blank-ID legacy SKU fallback.
@@ -247,6 +247,7 @@ def refresh_governed_listing_from_snapshot(
             currency=currency or "GBP",
             amazon_fulfillment_channel=fulfillment,
             warehouse_stock_id=warehouse_stock.id,
+            master_product_group_id=int(original_group_id),
             is_active=True,
             push_state="needs_review" if transfer_status == TRANSFER_PENDING_REVIEW else "active",
             last_push_status="pending",
@@ -284,6 +285,12 @@ def refresh_governed_listing_from_snapshot(
     ):
         listing.warehouse_stock_id = warehouse_stock.id
 
+    # Legacy/missing current-group repair is safe only when there is no active
+    # shared Product Linking membership. A non-NULL different group is a saved
+    # user relationship and must remain untouched by marketplace refresh.
+    if getattr(listing, "master_product_group_id", None) is None:
+        listing.master_product_group_id = int(original_group_id)
+
     normalized_live_channel = str(
         getattr(listing, "normalized_amazon_fulfillment_channel", "") or ""
     ).strip().upper()
@@ -318,6 +325,12 @@ def refresh_governed_listing_from_snapshot(
         "amazon_fulfillment_channel": listing.amazon_fulfillment_channel,
         "push_state": listing.push_state,
         "warehouse_stock_id": listing.warehouse_stock_id,
+        "original_group_id": int(original_group_id),
+        "current_group_id": (
+            int(listing.master_product_group_id)
+            if listing.master_product_group_id is not None
+            else None
+        ),
         "actor": actor,
     }
 
