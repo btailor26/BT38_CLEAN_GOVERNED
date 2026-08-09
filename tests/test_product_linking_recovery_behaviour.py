@@ -10,10 +10,8 @@ Required behaviour:
         permanent/original Product Linking group
 
     MarketplaceListing.master_product_group_id
-        current/shared Product Linking relationship
-
-This test deliberately exercises the relationship state rather than merely
-searching source strings.
+        current Product Linking relationship; defaults to the original group,
+        may temporarily move to a shared group, and returns to the original on unlink.
 """
 
 from pathlib import Path
@@ -42,23 +40,21 @@ def test_link_and_unlink_use_two_distinct_group_roles():
     link = _source("_link_listing_to_group")
     unlink = _source("governed_group_unlink")
 
-    # LINK:
-    # only current listing relationship moves to requested shared group.
+    # LINK: only current listing relationship moves to requested shared group.
     assert "listing.master_product_group_id = requested_group_id" in link
 
     # Permanent Warehouse identity must not move with the listing.
     assert "listing.warehouse_stock_id =" not in link
     assert "stock.master_product_group_id = requested_group_id" not in link
 
-    # UNLINK:
-    # original identity is resolved from the permanently linked Warehouse row.
+    # UNLINK: original identity is resolved from the permanently linked Warehouse row.
     assert "original_stock = listing.warehouse_stock" in unlink
     assert "original_group_id = original_stock.master_product_group_id" in unlink
 
-    # Unlink removes temporary/shared Product Linking membership.
-    # Permanent Warehouse identity determines where the independent
-    # listing is displayed again.
-    assert "listing.master_product_group_id = None" in unlink
+    # Unlink removes shared membership by restoring current membership to original.
+    assert "resulting_group_id = int(original_group_id)" in unlink
+    assert "listing.master_product_group_id = resulting_group_id" in unlink
+    assert "listing.master_product_group_id = None" not in unlink
 
     # Permanent Warehouse relationship must never be destroyed.
     assert "listing.warehouse_stock_id = None" not in unlink
@@ -72,17 +68,16 @@ def test_missing_original_recovery_is_persisted_on_same_warehouse_row():
     assert "MasterProductGroup(" in unlink
     assert "db.session.flush()" in unlink
 
-    # Critical idempotency mechanism:
-    # the recovered group ID is persisted back onto the same Warehouse row.
+    # Critical idempotency mechanism: recovered group is persisted on same Warehouse row.
     assert (
         "original_stock.master_product_group_id = int(original_group.id)"
         in unlink
     )
 
-    # The recovered group becomes the permanent Warehouse original,
-    # while the listing remains unlinked from any shared group.
+    # The recovered group becomes both permanent Warehouse original and listing return group.
     assert "original_group_id = int(original_group.id)" in unlink
-    assert "listing.master_product_group_id = None" in unlink
+    assert "resulting_group_id = int(original_group_id)" in unlink
+    assert "listing.master_product_group_id = resulting_group_id" in unlink
 
 
 def test_recovery_cannot_create_group_when_original_already_exists():
@@ -104,9 +99,6 @@ def test_recovery_cannot_create_group_when_original_already_exists():
     )
 
     create = create_calls[0]
-
-    # Creation must live beneath:
-    # if original_group_id is None
     parent_if = None
 
     for candidate in ast.walk(unlink):
@@ -121,8 +113,7 @@ def test_recovery_cannot_create_group_when_original_already_exists():
                 break
 
     assert parent_if is not None, (
-        "Recovery group creation is not restricted to the "
-        "missing-original condition."
+        "Recovery group creation is not restricted to the missing-original condition."
     )
 
 
@@ -140,52 +131,30 @@ def test_committed_state_is_verified_after_recovery():
     assert "committed_stock.master_product_group_id" in unlink
     assert "committed_stock_group_id != int(original_group_id)" in unlink
 
-    # Listing current/shared relationship must be NULL after unlink.
+    # Listing current group must equal the restored original group after unlink.
     assert "committed_listing.master_product_group_id" in unlink
-    assert "committed_listing_group_id is not None" in unlink
+    assert "committed_listing_group_id != int(resulting_group_id)" in unlink
 
 
 def test_repeated_recovery_is_structurally_idempotent():
-    """
-    Prove the recovery mechanism itself is idempotent:
-
-      first missing-original unlink:
-          NULL -> create group C -> persist C on Warehouse
-
-      later link:
-          Warehouse remains C
-          listing may move to B
-
-      later unlink:
-          reads Warehouse C
-          skips creation branch
-          removes temporary/shared membership
-    """
+    """First recovery creates C; later shared link may move to B; unlink returns to C."""
 
     unlink = _source("governed_group_unlink")
     link = _source("_link_listing_to_group")
 
-    # Recovery persists C.
     assert (
         "original_stock.master_product_group_id = int(original_group.id)"
         in unlink
     )
 
-    # Link must not replace C with B.
+    # Link must not replace permanent C with shared B.
     assert "stock.master_product_group_id = requested_group_id" not in link
 
-    # Later unlink reads C back from Warehouse.
-    assert (
-        "original_group_id = original_stock.master_product_group_id"
-        in unlink
-    )
-
-    # Creation remains conditional on NULL only.
+    # Later unlink reads C back from Warehouse and returns listing to C.
+    assert "original_group_id = original_stock.master_product_group_id" in unlink
     assert "if original_group_id is None:" in unlink
-
-    # Listing returns to independent/unlinked state. Warehouse C remains
-    # the permanent original identity.
-    assert "listing.master_product_group_id = None" in unlink
+    assert "resulting_group_id = int(original_group_id)" in unlink
+    assert "listing.master_product_group_id = resulting_group_id" in unlink
 
 
 def test_marketplace_metadata_cannot_choose_recovery_identity():
