@@ -48,7 +48,7 @@ def test_master_unlink_is_blocked_before_relationship_mutation():
     )
 
     guard = block.index("if permanent_group_id == int(group_id):")
-    mutation = block.index("listing.master_product_group_id = None")
+    mutation = block.index("listing.master_product_group_id = resulting_group_id")
 
     assert guard < mutation
 
