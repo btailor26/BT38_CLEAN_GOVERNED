@@ -1,23 +1,25 @@
-"""BT38 governed Warehouse manual order-recovery entry point.
+"""BT38 governed Warehouse recent-order recovery entry point.
 
-The Warehouse Sync Now shortcut must stay lightweight: it verifies recent
+The Warehouse Sync Now shortcut stays lightweight: it verifies recent
 marketplace orders through the existing governed order importer and then lets
-the Warehouse page re-read database truth. Full marketplace listing/inventory
+the Warehouse page re-read database truth. The same bounded authority may be
+used automatically after a rejected webhook; full marketplace listing/inventory
 hydration remains a separate initial-connection/manual-recovery capability.
 """
 
 from services.runtime_action_guard import is_runtime_action_allowed
 
 
-def _guard_store_sync(store, actor):
+def _guard_store_sync(store, actor, *, manual=True):
     return is_runtime_action_allowed(
         store=store,
         action_type="sync",
-        manual=True,
+        manual=bool(manual),
         context={
             "source": actor,
             "store_id": getattr(store, "id", None),
             "single_governed_path": True,
+            "webhook_recovery": not bool(manual),
         },
     )
 
@@ -26,6 +28,7 @@ def run_governed_warehouse_sync(
     store_id=None,
     actor="manual-warehouse-sync",
     limit=5,
+    manual=True,
 ):
     from extensions import db
     from models import Store
@@ -51,7 +54,11 @@ def run_governed_warehouse_sync(
         if store is None:
             continue
 
-        guard = _guard_store_sync(store, actor)
+        guard = _guard_store_sync(
+            store,
+            actor,
+            manual=manual,
+        )
         guard_results.append({
             "store_id": getattr(store, "id", None),
             "store": getattr(store, "name", None),
@@ -98,7 +105,8 @@ def run_governed_warehouse_sync(
         "success": success,
         "ok": success,
         "governed": True,
-        "manual": True,
+        "manual": bool(manual),
+        "automatic_recovery": not bool(manual),
         "execution_blocked": bool(stores) and blocked == len(stores),
         "fuse_box_checked": True,
         "mode": "governed_recent_order_recovery",
