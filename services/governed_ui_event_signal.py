@@ -5,6 +5,8 @@ Contract:
 - Open governed pages keep one sleeping Server-Sent Events connection.
 - A completed Amazon/eBay webhook publishes one in-process UI signal.
 - The browser rereads BT38 truth only after that signal.
+- The live listener starts only after the normal page load has completed so the
+  long-lived SSE request never holds the browser's initial loading state open.
 
 The governed Gunicorn runtime intentionally uses one process, so this small
 in-memory condition is shared by all request threads without creating a second
@@ -136,15 +138,21 @@ def publish_completed_webhook_and_attach_live_ui(response):
   window.bt38WebhookLiveEventsInstalled = true;
 
   let pendingRefresh = false;
-  const source = new EventSource("/governed/ui/events", {withCredentials: true});
+  let source = null;
 
-  source.addEventListener("bt38-update", function(){
-    if (document.hidden) {
-      pendingRefresh = true;
-      return;
-    }
-    window.location.reload();
-  });
+  function startLiveEvents(){
+    if (source) return;
+
+    source = new EventSource("/governed/ui/events", {withCredentials: true});
+
+    source.addEventListener("bt38-update", function(){
+      if (document.hidden) {
+        pendingRefresh = true;
+        return;
+      }
+      window.location.reload();
+    });
+  }
 
   document.addEventListener("visibilitychange", function(){
     if (!document.hidden && pendingRefresh) {
@@ -154,8 +162,19 @@ def publish_completed_webhook_and_attach_live_ui(response):
   });
 
   window.addEventListener("beforeunload", function(){
-    source.close();
+    if (source) source.close();
   }, {once: true});
+
+  // Do not open the long-lived stream while the browser is still completing
+  // the page navigation. The normal Warehouse/Product Linking/etc. page load
+  // finishes first; then the sleeping webhook listener is attached.
+  if (document.readyState === "complete") {
+    window.setTimeout(startLiveEvents, 0);
+  } else {
+    window.addEventListener("load", function(){
+      window.setTimeout(startLiveEvents, 0);
+    }, {once: true});
+  }
 })();
 </script>
 '''
