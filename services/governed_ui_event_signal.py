@@ -1,26 +1,21 @@
-"""Event-driven UI freshness signal for completed marketplace webhooks.
+"""Shared event-driven UI freshness for governed BT38 pages.
 
 Contract:
-- No webhook means no database polling and no marketplace polling.
-- Open governed pages keep one sleeping Server-Sent Events connection.
-- A completed Amazon/eBay webhook publishes one in-process UI signal.
-- The signal carries only the exact affected marketplace/DB identity.
-- Open pages refresh only the affected record/group from BT38 DB truth.
-- Governed data pages use 15/25/50/100 session paging; no unbounded page load.
-- The live listener starts only after the normal page load has completed so the
-  long-lived SSE request never holds the browser's initial loading state open.
-
-The governed Gunicorn runtime intentionally uses one process, so this small
-in-memory condition is shared by all request threads without creating a second
-runtime or database authority.
+- No marketplace event means no Neon polling and no marketplace polling.
+- Governed pages finish their normal navigation before event waiting starts.
+- One ordinary sleeping request waits for the next in-process event revision.
+- The wait response closes on event or timeout, so no permanent HTTP stream is
+  attached to the page lifecycle.
+- Marketplace events carry exact affected identities; open pages refresh only
+  that record/group from BT38 DB truth.
+- Governed data pages use 15/25/50/100 paging.
 """
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime
 
-from flask import Response, g, has_request_context, request, stream_with_context
+from flask import g, has_request_context, jsonify, request
 from flask_login import login_required
 
 from app import app
@@ -96,7 +91,7 @@ def publish_webhook_ui_event(
     notification_record_id: int,
     scope: dict | None = None,
 ) -> int:
-    """Wake open UI listeners after governed webhook processing completes."""
+    """Wake sleeping UI waits after governed webhook processing completes."""
     global _revision, _latest_event
 
     safe_scope = {
@@ -118,37 +113,27 @@ def publish_webhook_ui_event(
         return _revision
 
 
-def _event_stream():
-    """Sleep until a webhook event exists; keepalive never touches Neon."""
-    seen_revision = 0
-
-    yield "retry: 2000\n\n"
-
-    while True:
-        with _condition:
-            if _revision <= seen_revision:
-                _condition.wait(timeout=60.0)
-
-            current_revision = _revision
-            event = dict(_latest_event or {})
-
-        if current_revision > seen_revision and event:
-            seen_revision = current_revision
-            yield "event: bt38-update\n"
-            yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
-        else:
-            yield ": sleep\n\n"
-
-
 @app.get("/governed/ui/events")
 @login_required
 def governed_ui_events():
-    response = Response(
-        stream_with_context(_event_stream()),
-        mimetype="text/event-stream",
-    )
+    """Wait for one later event revision without touching Neon."""
+    try:
+        seen_revision = max(0, int(request.args.get("after") or 0))
+    except Exception:
+        seen_revision = 0
+
+    with _condition:
+        if _revision <= seen_revision:
+            _condition.wait(timeout=25.0)
+        current_revision = _revision
+        event = dict(_latest_event or {})
+
+    response = jsonify({
+        "ok": True,
+        "revision": current_revision,
+        "event": event if current_revision > seen_revision and event else None,
+    })
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["X-Accel-Buffering"] = "no"
     return response
 
 
@@ -169,7 +154,10 @@ def _ui_scope_from_response(payload) -> dict:
     refresh_scope = result.get("refresh_scope")
     if isinstance(refresh_scope, dict):
         for key in _UI_SCOPE_KEYS:
-            if scope.get(key) in (None, "") and refresh_scope.get(key) not in (None, ""):
+            if (
+                scope.get(key) in (None, "")
+                and refresh_scope.get(key) not in (None, "")
+            ):
                 scope[key] = refresh_scope.get(key)
 
     return scope
@@ -177,7 +165,7 @@ def _ui_scope_from_response(payload) -> dict:
 
 @app.after_request
 def publish_completed_webhook_and_attach_live_ui(response):
-    """Publish after webhook completion and attach a sleeping browser listener."""
+    """Publish completed webhook events and attach the shared sleeping waiter."""
     path = request.path.rstrip("/") or "/"
 
     if request.method == "POST" and path in _WEBHOOK_PATHS:
@@ -215,15 +203,18 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if "bt38WebhookLiveEvents" in body or "</body>" not in body:
         return response
 
+    revision_seed = int(_revision)
     script = r'''
 <script id="bt38WebhookLiveEvents">
 (function(){
-  if (!window.EventSource || window.bt38WebhookLiveEventsInstalled) return;
+  if (window.bt38WebhookLiveEventsInstalled) return;
   window.bt38WebhookLiveEventsInstalled = true;
 
   const PAGE_SIZES = [15, 25, 50, 100];
+  let revision = __BT38_REVISION__;
   let pendingEvent = null;
-  let source = null;
+  let waiting = false;
+  let stopped = false;
   let targetedRefreshRunning = false;
 
   function escapeSelector(value){
@@ -247,7 +238,9 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if (currentPath() !== "/amazon-fba-stock") return;
 
     const currentUrl = new URL(window.location.href);
-    const pageSize = normalisePageSize(currentUrl.searchParams.get("per_page") || 15);
+    const pageSize = normalisePageSize(
+      currentUrl.searchParams.get("per_page") || 15
+    );
 
     document.querySelectorAll('form[action*="amazon-fba-stock"]').forEach(function(form){
       let hidden = form.querySelector('input[name="per_page"]');
@@ -260,7 +253,9 @@ def publish_completed_webhook_and_attach_live_ui(response):
       hidden.value = String(pageSize);
     });
 
-    document.querySelectorAll('.nav-pills a[href*="amazon-fba-stock"], .pagination a.page-link').forEach(function(link){
+    document.querySelectorAll(
+      '.nav-pills a[href*="amazon-fba-stock"], .pagination a.page-link'
+    ).forEach(function(link){
       try {
         const url = new URL(link.href, window.location.origin);
         url.searchParams.set("per_page", String(pageSize));
@@ -268,18 +263,22 @@ def publish_completed_webhook_and_attach_live_ui(response):
       } catch (_) {}
     });
 
-    const inventoryHeaders = Array.from(document.querySelectorAll(".card-header"));
-    const inventoryHeader = inventoryHeaders.find(function(node){
+    const inventoryHeader = Array.from(
+      document.querySelectorAll(".card-header")
+    ).find(function(node){
       return String(node.textContent || "").includes("FBA Inventory");
     });
+
     if (!inventoryHeader || document.getElementById("bt38FbaPageSize")) return;
 
     const wrapper = document.createElement("div");
     wrapper.className = "d-flex align-items-center gap-2 ms-2";
-    wrapper.innerHTML = '<label class="small text-muted mb-0" for="bt38FbaPageSize">Rows</label>' +
+    wrapper.innerHTML =
+      '<label class="small text-muted mb-0" for="bt38FbaPageSize">Rows</label>' +
       '<select id="bt38FbaPageSize" class="form-select form-select-sm" style="width:auto">' +
       PAGE_SIZES.map(function(size){
-        return '<option value="' + size + '"' + (size === pageSize ? ' selected' : '') + '>' + size + '</option>';
+        return '<option value="' + size + '"' +
+          (size === pageSize ? ' selected' : '') + '>' + size + '</option>';
       }).join("") + '</select>';
     inventoryHeader.appendChild(wrapper);
 
@@ -364,7 +363,6 @@ def publish_completed_webhook_and_attach_live_ui(response):
   async function refreshAffectedHtmlRecord(detail){
     const path = currentPath();
 
-    // Product Linking and Orders/MCF own their exact session merge locally.
     if (path === "/product-linking" || path === "/orders-mcf") return;
 
     markRows(document);
@@ -409,30 +407,42 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if (!detail || targetedRefreshRunning) return;
     targetedRefreshRunning = true;
     try {
-      window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: detail}));
+      window.dispatchEvent(
+        new CustomEvent("bt38-marketplace-event", {detail: detail})
+      );
       await refreshAffectedHtmlRecord(detail);
     } finally {
       targetedRefreshRunning = false;
     }
   }
 
-  function startLiveEvents(){
-    if (source) return;
+  async function waitForNextEvent(){
+    if (stopped || waiting) return;
+    waiting = true;
 
-    markRows(document);
-    source = new EventSource("/governed/ui/events", {withCredentials: true});
+    try {
+      const response = await fetch(
+        "/governed/ui/events?after=" + encodeURIComponent(revision),
+        {credentials: "same-origin", cache: "no-store"}
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    source.addEventListener("bt38-update", function(event){
-      let detail = {};
-      try { detail = JSON.parse(event.data || "{}"); } catch (_) {}
+      const payload = await response.json();
+      revision = Math.max(revision, Number(payload?.revision || 0));
+      const detail = payload?.event || null;
 
-      if (document.hidden) {
-        pendingEvent = detail;
-        return;
+      if (detail) {
+        if (document.hidden) pendingEvent = detail;
+        else await handleEvent(detail);
       }
-
-      void handleEvent(detail);
-    });
+    } catch (error) {
+      if (!stopped) {
+        console.warn("[BT38 UI] event wait unavailable", error);
+      }
+    } finally {
+      waiting = false;
+      if (!stopped) window.setTimeout(waitForNextEvent, 100);
+    }
   }
 
   document.addEventListener("visibilitychange", function(){
@@ -444,21 +454,25 @@ def publish_completed_webhook_and_attach_live_ui(response):
   });
 
   window.addEventListener("beforeunload", function(){
-    if (source) source.close();
+    stopped = true;
   }, {once: true});
 
-  if (document.readyState === "complete") {
+  function start(){
     setupFbaPaging();
-    window.setTimeout(startLiveEvents, 0);
+    markRows(document);
+    void waitForNextEvent();
+  }
+
+  if (document.readyState === "complete") {
+    window.setTimeout(start, 0);
   } else {
     window.addEventListener("load", function(){
-      setupFbaPaging();
-      window.setTimeout(startLiveEvents, 0);
+      window.setTimeout(start, 0);
     }, {once: true});
   }
 })();
 </script>
-'''
+'''.replace("__BT38_REVISION__", str(revision_seed))
 
     response.set_data(body.replace("</body>", script + "\n</body>", 1))
     return response
