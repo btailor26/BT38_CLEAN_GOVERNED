@@ -19,10 +19,14 @@ def _install_governed_webhook_runtime_alignment():
 
     import governed_routes
     import services.governed_webhook_capture as webhook_capture
+    import services.governed_webhook_execution as webhook_execution
 
     original_ebay_capture = webhook_capture.capture_ebay_notification
     original_amazon_capture = webhook_capture.capture_amazon_notification
     original_diagnostic = governed_routes._bt38_record_webhook_event
+    original_webhook_execution = (
+        webhook_execution.process_marketplace_notification
+    )
 
     def _capture_and_arm(platform, capture_function, request):
         notification_record_id = int(capture_function(request))
@@ -84,9 +88,50 @@ def _install_governed_webhook_runtime_alignment():
             )
             return SimpleNamespace(id=None, error=str(exc))
 
+    def _execute_with_mcf_signal_alignment(
+        marketplace,
+        payload,
+        actor="webhook",
+        notification_record_id=None,
+    ):
+        result = original_webhook_execution(
+            marketplace=marketplace,
+            payload=payload,
+            actor=actor,
+            notification_record_id=notification_record_id,
+        )
+
+        if str(marketplace or "").strip().lower() != "amazon":
+            return result
+
+        from services.governed_mcf_execution import (
+            refresh_mcf_from_amazon_signal,
+        )
+
+        mcf_result = refresh_mcf_from_amazon_signal(payload or {})
+        result["mcf_signal_refresh"] = mcf_result
+
+        # An exact MCF signal must not be acknowledged as fully processed when
+        # Amazon status/tracking refresh or the governed marketplace enrichment
+        # failed. SQS can then retain/retry the same durable commercial event.
+        if (
+            not mcf_result.get("success", False)
+            and not mcf_result.get("skipped", False)
+        ):
+            raise RuntimeError(
+                "amazon_mcf_signal_continuation_failed:"
+                f"{mcf_result.get('reason')}:"
+                f"{mcf_result.get('error') or ''}"
+            )
+
+        return result
+
     webhook_capture.capture_ebay_notification = _capture_ebay_and_arm
     webhook_capture.capture_amazon_notification = _capture_amazon_and_arm
     governed_routes._bt38_record_webhook_event = _record_diagnostic_without_blocking
+    webhook_execution.process_marketplace_notification = (
+        _execute_with_mcf_signal_alignment
+    )
 
 
 _install_governed_webhook_runtime_alignment()
