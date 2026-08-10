@@ -6,6 +6,7 @@ Contract:
 - A completed Amazon/eBay webhook publishes one in-process UI signal.
 - The signal carries only the exact affected marketplace/DB identity.
 - Open pages refresh only the affected record/group from BT38 DB truth.
+- Governed data pages use 15/25/50/100 session paging; no unbounded page load.
 - The live listener starts only after the normal page load has completed so the
   long-lived SSE request never holds the browser's initial loading state open.
 
@@ -19,7 +20,7 @@ import json
 import threading
 from datetime import datetime
 
-from flask import Response, g, request, stream_with_context
+from flask import Response, g, has_request_context, request, stream_with_context
 from flask_login import login_required
 
 from app import app
@@ -51,6 +52,42 @@ _UI_SCOPE_KEYS = (
     "group_id",
     "store_id",
 )
+
+_PAGE_SIZES = {15, 25, 50, 100}
+
+
+def _requested_page_size(default: int = 15) -> int:
+    try:
+        value = int(request.args.get("per_page") or default)
+    except Exception:
+        value = default
+    return value if value in _PAGE_SIZES else default
+
+
+def _install_fba_paging_alignment() -> None:
+    """Keep the existing FBA query path but align its page-size contract."""
+    try:
+        from flask_sqlalchemy.query import Query
+    except Exception:
+        return
+
+    current = Query.paginate
+    if getattr(current, "_bt38_fba_paging_aligned", False):
+        return
+
+    def aligned_paginate(self, *args, **kwargs):
+        if (
+            has_request_context()
+            and (request.path.rstrip("/") or "/") == "/amazon-fba-stock"
+        ):
+            kwargs["per_page"] = _requested_page_size(15)
+        return current(self, *args, **kwargs)
+
+    aligned_paginate._bt38_fba_paging_aligned = True
+    Query.paginate = aligned_paginate
+
+
+_install_fba_paging_alignment()
 
 
 def publish_webhook_ui_event(
@@ -184,6 +221,7 @@ def publish_completed_webhook_and_attach_live_ui(response):
   if (!window.EventSource || window.bt38WebhookLiveEventsInstalled) return;
   window.bt38WebhookLiveEventsInstalled = true;
 
+  const PAGE_SIZES = [15, 25, 50, 100];
   let pendingEvent = null;
   let source = null;
   let targetedRefreshRunning = false;
@@ -196,8 +234,66 @@ def publish_completed_webhook_and_attach_live_ui(response):
     return text.replace(/["\\]/g, "\\$&");
   }
 
+  function currentPath(){
+    return window.location.pathname.replace(/\/$/, "") || "/";
+  }
+
+  function normalisePageSize(value){
+    const parsed = Number.parseInt(value, 10);
+    return PAGE_SIZES.includes(parsed) ? parsed : 15;
+  }
+
+  function setupFbaPaging(){
+    if (currentPath() !== "/amazon-fba-stock") return;
+
+    const currentUrl = new URL(window.location.href);
+    const pageSize = normalisePageSize(currentUrl.searchParams.get("per_page") || 15);
+
+    document.querySelectorAll('form[action*="amazon-fba-stock"]').forEach(function(form){
+      let hidden = form.querySelector('input[name="per_page"]');
+      if (!hidden) {
+        hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "per_page";
+        form.appendChild(hidden);
+      }
+      hidden.value = String(pageSize);
+    });
+
+    document.querySelectorAll('.nav-pills a[href*="amazon-fba-stock"], .pagination a.page-link').forEach(function(link){
+      try {
+        const url = new URL(link.href, window.location.origin);
+        url.searchParams.set("per_page", String(pageSize));
+        link.href = url.toString();
+      } catch (_) {}
+    });
+
+    const inventoryHeaders = Array.from(document.querySelectorAll(".card-header"));
+    const inventoryHeader = inventoryHeaders.find(function(node){
+      return String(node.textContent || "").includes("FBA Inventory");
+    });
+    if (!inventoryHeader || document.getElementById("bt38FbaPageSize")) return;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "d-flex align-items-center gap-2 ms-2";
+    wrapper.innerHTML = '<label class="small text-muted mb-0" for="bt38FbaPageSize">Rows</label>' +
+      '<select id="bt38FbaPageSize" class="form-select form-select-sm" style="width:auto">' +
+      PAGE_SIZES.map(function(size){
+        return '<option value="' + size + '"' + (size === pageSize ? ' selected' : '') + '>' + size + '</option>';
+      }).join("") + '</select>';
+    inventoryHeader.appendChild(wrapper);
+
+    wrapper.querySelector("select").addEventListener("change", function(event){
+      const size = normalisePageSize(event.target.value);
+      const url = new URL(window.location.href);
+      url.searchParams.set("per_page", String(size));
+      url.searchParams.set("page", "1");
+      window.location.assign(url.toString());
+    });
+  }
+
   function markRows(root){
-    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const path = currentPath();
 
     if (path === "/amazon-fba-stock") {
       root.querySelectorAll("table tbody tr").forEach(function(row){
@@ -215,7 +311,7 @@ def publish_completed_webhook_and_attach_live_ui(response):
   }
 
   function selectorFor(detail){
-    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const path = currentPath();
     const stockId = detail?.warehouse_stock_id;
     const listingId = detail?.listing_id;
     const groupId = detail?.group_id;
@@ -246,7 +342,7 @@ def publish_completed_webhook_and_attach_live_ui(response):
   }
 
   function targetedUrl(detail){
-    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const path = currentPath();
     const url = new URL(window.location.href);
 
     if (path === "/warehouse" && detail?.seller_sku) {
@@ -259,13 +355,14 @@ def publish_completed_webhook_and_attach_live_ui(response):
       url.searchParams.set("search", String(detail.seller_sku));
       url.searchParams.set("status", "all");
       url.searchParams.set("page", "1");
+      url.searchParams.set("per_page", "15");
     }
 
     return url.toString();
   }
 
   async function refreshAffectedHtmlRecord(detail){
-    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const path = currentPath();
 
     // Product Linking owns its exact-record merge in product-linking-session.js.
     if (path === "/product-linking") return;
@@ -353,9 +450,11 @@ def publish_completed_webhook_and_attach_live_ui(response):
   // The normal page navigation finishes first. The sleeping listener is then
   // attached and never participates in the page's loading/spinner lifecycle.
   if (document.readyState === "complete") {
+    setupFbaPaging();
     window.setTimeout(startLiveEvents, 0);
   } else {
     window.addEventListener("load", function(){
+      setupFbaPaging();
       window.setTimeout(startLiveEvents, 0);
     }, {once: true});
   }
