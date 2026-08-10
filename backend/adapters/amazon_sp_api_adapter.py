@@ -67,7 +67,7 @@ class AmazonSPAPIAdapter:
             creds.get("role_arn")
             or creds.get("aws_user_arn")
             or os.getenv("AMAZON_AWS_ROLE_ARN")
-            or os.getenv("SP_API_ROLE_ARN")
+            or os.getenv("SP_API_AWS_ROLE_ARN")
         )
 
         if aws_access_key:
@@ -97,8 +97,8 @@ class AmazonSPAPIAdapter:
         while True:
             page_count += 1
             # Full FBA truth refresh must not be restricted to a recent/change window.
-            # Light/recent sync can add a startDateTime mode later, but default inventory
-            # refresh must read the complete marketplace inventory summary.
+            # Targeted event handoff supplies seller_skus and therefore reads only the
+            # affected Amazon inventory identity.
             kwargs = {
                 "details": True,
                 "granularityType": "Marketplace",
@@ -125,18 +125,14 @@ class AmazonSPAPIAdapter:
                     or "Timeout" in message
                     or "timeout" in message
                 ):
-                    # Keep already fetched pages and let the next governed cycle continue later.
-                    # Runtime automation must never block forever on Amazon inventory pagination.
+                    # Keep already fetched pages and let the next governed event/recovery
+                    # continue later. Runtime automation must never block forever.
                     break
 
                 raise
 
             payload = response.payload or {}
             rows.extend(payload.get("inventorySummaries") or [])
-
-            # Amazon SP-API inventory calls are quota limited. Pace page requests so
-            # full refresh does not hammer the endpoint.
-            time.sleep(2)
 
             pagination = payload.get("pagination") or {}
             next_token = (
@@ -154,6 +150,11 @@ class AmazonSPAPIAdapter:
 
             if len(rows) >= 5000:
                 break
+
+            # Amazon SP-API inventory calls are quota limited. Pace only when
+            # another page is actually required. A targeted one-SKU handoff must
+            # not sleep for two seconds after Amazon has already returned truth.
+            time.sleep(2)
 
         def quantity_value(value, nested_key=None):
             if isinstance(value, dict):
