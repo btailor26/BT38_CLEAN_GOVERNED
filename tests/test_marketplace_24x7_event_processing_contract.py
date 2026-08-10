@@ -6,6 +6,7 @@ ROUTES = Path("governed_routes.py").read_text(encoding="utf-8")
 RUNTIME = Path("services/governed_runtime_engine.py").read_text(encoding="utf-8")
 CAPTURE = Path("services/governed_webhook_capture.py").read_text(encoding="utf-8")
 EXECUTION = Path("services/governed_webhook_execution.py").read_text(encoding="utf-8")
+MAIN = Path("main.py").read_text(encoding="utf-8")
 
 
 def _function_source(source: str, name: str) -> str:
@@ -27,50 +28,48 @@ def test_marketplace_events_use_existing_single_governed_path():
     assert "MarketplaceOrder(" not in route
 
 
-def test_durable_capture_is_first_and_processing_state_is_armed_before_diagnostics():
-    route = _function_source(ROUTES, "governed_marketplace_webhook_intake")
-
-    capture_pos = min(
-        route.index("capture_ebay_notification(request)"),
-        route.index("capture_amazon_notification(request)"),
+def test_durable_capture_immediately_arms_exact_notification_as_processing():
+    installer = _function_source(
+        MAIN,
+        "_install_governed_webhook_runtime_alignment",
     )
-    processing_pos = route.index('processing_status="PROCESSING"')
-    diagnostics_pos = route.index("_bt38_record_webhook_event(")
-    execution_pos = route.index("process_marketplace_notification(")
 
-    assert capture_pos < processing_pos < diagnostics_pos < execution_pos
+    capture_pos = installer.index("notification_record_id = capture_function(request)")
+    processing_pos = installer.index('processing_status="PROCESSING"')
+    context_pos = installer.index("g.bt38_notification_record_id")
+
+    assert capture_pos < processing_pos < context_pos
+    assert 'verification_status="PENDING"' in installer
+    assert "parsed=True" in installer
 
 
 def test_diagnostic_logging_cannot_be_execution_authority():
+    installer = _function_source(
+        MAIN,
+        "_install_governed_webhook_runtime_alignment",
+    )
     route = _function_source(ROUTES, "governed_marketplace_webhook_intake")
 
-    assert "system_log_id" in route
+    assert "def _record_diagnostic_without_blocking" in installer
+    assert "original_diagnostic(**kwargs)" in installer
+    assert "except Exception as exc:" in installer
+    assert "db.session.rollback()" in installer
+    assert "SimpleNamespace(id=None" in installer
+
+    # The original governed execution path remains the only commercial path.
     assert "process_marketplace_notification(" in route
 
-    diagnostics_pos = route.index("_bt38_record_webhook_event(")
-    execution_pos = route.index("process_marketplace_notification(")
-    assert diagnostics_pos < execution_pos
 
-    # Diagnostic logging may provide evidence, but a logging failure must not
-    # be able to strand a durably captured commercial event in RECEIVED.
-    diagnostics_section = route[diagnostics_pos:execution_pos]
-    assert "try:" in diagnostics_section
-    assert "except Exception" in diagnostics_section
+def test_uncaught_post_capture_failure_is_terminal_failed_state():
+    handler = _function_source(MAIN, "record_captured_webhook_failure")
 
-
-def test_allowed_event_has_only_terminal_processing_outcomes():
-    route = _function_source(ROUTES, "governed_marketplace_webhook_intake")
-
-    assert 'processing_status="PROCESSING"' in route
-    assert 'processing_status="COMPLETED"' in route
-    assert 'processing_status="FAILED"' in route
-    assert 'last_error=str(exc)[:4000]' in route
-
-    # RECEIVED is capture state only. Once execution is allowed, the route must
-    # not intentionally return while leaving the event in RECEIVED.
-    allowed_start = route.index('status = "received" if allowed else "blocked_by_fuse"')
-    allowed_section = route[allowed_start:]
-    assert 'processing_status="RECEIVED"' not in allowed_section
+    assert '"/governed/webhooks/ebay"' in handler
+    assert '"/governed/webhooks/amazon"' in handler
+    assert "g.bt38_notification_record_id" in handler
+    assert 'processing_status="FAILED"' in handler
+    assert 'last_error=str(exception)[:4000]' in handler
+    assert "completed=True" in handler
+    assert '"status": "processing_failed"' in handler
 
 
 def test_fuse_block_is_explicit_terminal_state_not_silent_sleep():
@@ -112,9 +111,11 @@ def test_capture_and_execution_remain_separate_existing_responsibilities():
 
 
 def test_24x7_contract_does_not_create_parallel_worker_or_queue():
-    combined = "\n".join((ROUTES, RUNTIME, EXECUTION))
+    combined = "\n".join((ROUTES, RUNTIME, EXECUTION, MAIN))
 
     assert "DURABLE_RUNTIME_JOB_PATH_ENABLED = False" in RUNTIME
     assert "QUEUE_MANAGER_DISABLED" not in ROUTES
     assert "enqueue_sync_job(" not in ROUTES
     assert "start_worker(" not in ROUTES
+    assert "Thread(" not in MAIN
+    assert "Queue(" not in MAIN
