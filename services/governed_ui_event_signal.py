@@ -122,14 +122,11 @@ def _event_stream():
     """Sleep until a webhook event exists; keepalive never touches Neon."""
     seen_revision = 0
 
-    # Tell EventSource to reconnect quickly if Fly/proxy closes the socket.
     yield "retry: 2000\n\n"
 
     while True:
         with _condition:
             if _revision <= seen_revision:
-                # Condition.wait releases the lock and sleeps the thread. The
-                # timeout is only an HTTP keepalive; it performs no DB read.
                 _condition.wait(timeout=60.0)
 
             current_revision = _revision
@@ -364,8 +361,8 @@ def publish_completed_webhook_and_attach_live_ui(response):
   async function refreshAffectedHtmlRecord(detail){
     const path = currentPath();
 
-    // Product Linking owns its exact-record merge in product-linking-session.js.
-    if (path === "/product-linking") return;
+    // Product Linking and Orders/MCF own their exact session merge locally.
+    if (path === "/product-linking" || path === "/orders-mcf") return;
 
     markRows(document);
     const selector = selectorFor(detail);
@@ -447,8 +444,6 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if (source) source.close();
   }, {once: true});
 
-  // The normal page navigation finishes first. The sleeping listener is then
-  // attached and never participates in the page's loading/spinner lifecycle.
   if (document.readyState === "complete") {
     setupFbaPaging();
     window.setTimeout(startLiveEvents, 0);
