@@ -525,7 +525,7 @@ class MCFService:
             if not fba_store:
                 return False, "No active Amazon FBA store configured"
             
-            credentials = fba_store.get_amazon_credentials()
+            credentials = fba_store.amazon_credentials
             if not credentials:
                 return False, "Amazon FBA credentials not configured"
             
@@ -603,7 +603,7 @@ class MCFService:
             if not fba_store:
                 return False, {'error': 'No active Amazon FBA store'}
             
-            credentials = fba_store.get_amazon_credentials()
+            credentials = fba_store.amazon_credentials
             if not credentials:
                 return False, {'error': 'Amazon FBA credentials not configured'}
             
@@ -670,7 +670,7 @@ class MCFService:
             if not fba_store:
                 return False, "No active Amazon FBA store"
             
-            credentials = fba_store.get_amazon_credentials()
+            credentials = fba_store.amazon_credentials
             if not credentials:
                 return False, "Amazon FBA credentials not configured"
             
