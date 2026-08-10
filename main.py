@@ -7,6 +7,136 @@ from services.governed_ebay_notification_challenge import (
 install_ebay_notification_challenge_handler(app)
 
 
+# Webhook runtime alignment only.
+#
+# Keep the existing governed webhook route and execution path intact, but make
+# durable capture the point where the exact notification becomes active work.
+# Diagnostic logging remains evidence only and must never strand a commercial
+# event before governed execution begins.
+def _install_governed_webhook_runtime_alignment():
+    from flask import g
+    from types import SimpleNamespace
+
+    import governed_routes
+    import services.governed_webhook_capture as webhook_capture
+
+    original_ebay_capture = webhook_capture.capture_ebay_notification
+    original_amazon_capture = webhook_capture.capture_amazon_notification
+    original_diagnostic = governed_routes._bt38_record_webhook_event
+
+    def _capture_and_arm(platform, capture_function, request):
+        notification_record_id = capture_function(request)
+
+        # Durable capture has succeeded. From this point the exact event is
+        # active governed work and must never remain silently in RECEIVED.
+        webhook_capture.mark_notification_status(
+            platform,
+            notification_record_id,
+            processing_status="PROCESSING",
+            verification_status="PENDING",
+            parsed=True,
+        )
+
+        g.bt38_notification_record_id = int(notification_record_id)
+        g.bt38_notification_platform = platform
+        return int(notification_record_id)
+
+    def _capture_ebay_and_arm(request, *, commit=True):
+        return _capture_and_arm(
+            "ebay",
+            lambda req: original_ebay_capture(req, commit=commit),
+            request,
+        )
+
+    def _capture_amazon_and_arm(request, *, commit=True):
+        return _capture_and_arm(
+            "amazon",
+            lambda req: original_amazon_capture(req, commit=commit),
+            request,
+        )
+
+    def _record_diagnostic_without_blocking(**kwargs):
+        try:
+            return original_diagnostic(**kwargs)
+        except Exception as exc:
+            # SystemLog is diagnostic evidence, never execution authority.
+            # Clear any failed logging transaction and allow the already
+            # captured exact event to continue through the existing path.
+            from extensions import db
+
+            db.session.rollback()
+            app.logger.exception(
+                "Webhook diagnostic logging failed after durable capture; "
+                "governed execution will continue"
+            )
+            return SimpleNamespace(id=None, error=str(exc))
+
+    webhook_capture.capture_ebay_notification = _capture_ebay_and_arm
+    webhook_capture.capture_amazon_notification = _capture_amazon_and_arm
+    governed_routes._bt38_record_webhook_event = _record_diagnostic_without_blocking
+
+
+_install_governed_webhook_runtime_alignment()
+
+
+@app.errorhandler(Exception)
+def record_captured_webhook_failure(exception):
+    """Persist an uncaught post-capture webhook failure on the exact raw row.
+
+    This handler is deliberately scoped to governed marketplace webhook POSTs.
+    All non-webhook exceptions retain Flask's normal error handling.
+    """
+    from flask import g, jsonify, request
+
+    if (
+        request.method == "POST"
+        and request.path.rstrip("/") in {
+            "/governed/webhooks/ebay",
+            "/governed/webhooks/amazon",
+        }
+        and getattr(g, "bt38_notification_record_id", None) is not None
+    ):
+        from extensions import db
+        from services.governed_webhook_capture import mark_notification_status
+
+        platform = str(
+            getattr(g, "bt38_notification_platform", "") or ""
+        ).strip().lower()
+        notification_record_id = int(g.bt38_notification_record_id)
+
+        db.session.rollback()
+        try:
+            mark_notification_status(
+                platform,
+                notification_record_id,
+                processing_status="FAILED",
+                last_error=str(exception)[:4000],
+                completed=True,
+            )
+        except Exception:
+            db.session.rollback()
+            app.logger.exception(
+                "Failed to persist captured webhook failure state"
+            )
+
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "governed": True,
+            "marketplace": platform,
+            "status": "processing_failed",
+            "notification_record_id": notification_record_id,
+            "error": str(exception),
+            "message": (
+                "Webhook was captured permanently, but governed downstream "
+                "processing failed."
+            ),
+        }), 500
+
+    # Preserve Flask's normal exception handling outside the governed webhook.
+    raise exception
+
+
 @app.after_request
 def acknowledge_captured_ebay_webhook(response):
     """Acknowledge eBay once its notification is durably captured.
