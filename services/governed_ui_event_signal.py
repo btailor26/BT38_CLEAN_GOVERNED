@@ -1,13 +1,14 @@
 """Shared event-driven UI freshness for governed BT38 pages.
 
 Contract:
-- No marketplace event means no Neon polling and no marketplace polling.
+- No committed marketplace change means no UI wake, no Neon polling and no
+  marketplace polling.
 - Governed pages finish their normal navigation before event waiting starts.
-- One ordinary sleeping request waits for the next in-process event revision.
+- One ordinary sleeping request waits for the next committed event revision.
 - The wait response closes on event or timeout, so no permanent HTTP stream is
   attached to the page lifecycle.
-- Marketplace events carry exact affected identities; open pages refresh only
-  that record/group from BT38 DB truth.
+- Changed events carry exact affected identities; open pages refresh only that
+  record/group from BT38 DB truth and then return to sleep.
 - Governed data pages use 15/25/50/100 paging.
 """
 from __future__ import annotations
@@ -91,7 +92,7 @@ def publish_webhook_ui_event(
     notification_record_id: int,
     scope: dict | None = None,
 ) -> int:
-    """Wake sleeping UI waits after governed webhook processing completes."""
+    """Wake sleeping UI waits only after a committed governed change."""
     global _revision, _latest_event
 
     safe_scope = {
@@ -116,7 +117,7 @@ def publish_webhook_ui_event(
 @app.get("/governed/ui/events")
 @login_required
 def governed_ui_events():
-    """Wait for one later event revision without touching Neon."""
+    """Wait for one later committed event revision without touching Neon."""
     try:
         seen_revision = max(0, int(request.args.get("after") or 0))
     except Exception:
@@ -135,6 +136,64 @@ def governed_ui_events():
     })
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
+
+
+def _result_has_committed_change(value) -> bool:
+    """Recognise only explicit mutation evidence; success alone is not change."""
+    if not isinstance(value, dict):
+        return False
+
+    for key in (
+        "changed",
+        "stock_changed",
+        "fba_inventory_changed",
+        "page_refresh_required",
+        "warehouse_refresh_required",
+        "created",
+        "inserted",
+        "imported",
+    ):
+        if value.get(key) is True:
+            return True
+
+    for key in ("rows_updated", "rows_inserted", "created_count", "updated_count"):
+        try:
+            if int(value.get(key) or 0) > 0:
+                return True
+        except Exception:
+            pass
+
+    status = str(value.get("status") or "").strip().lower()
+    if status in {
+        "cancellation_processed",
+        "group_processed",
+        "warehouse_processed",
+        "fba_inventory_updated",
+    }:
+        return True
+
+    # Exact FBA authority is refreshed inside verification_queue.immediate.
+    # Canonical order intake/mutation results can also carry explicit creation
+    # or change evidence. Inspect only known governed result containers.
+    for key in (
+        "verification_queue",
+        "immediate",
+        "order_intake",
+        "stock_mutation",
+        "result",
+    ):
+        nested = value.get(key)
+        if isinstance(nested, dict) and _result_has_committed_change(nested):
+            return True
+
+    return False
+
+
+def _response_has_committed_change(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    result = payload.get("notification_result")
+    return _result_has_committed_change(result)
 
 
 def _ui_scope_from_response(payload) -> dict:
@@ -160,12 +219,25 @@ def _ui_scope_from_response(payload) -> dict:
             ):
                 scope[key] = refresh_scope.get(key)
 
+    verification = result.get("verification_queue")
+    if isinstance(verification, dict):
+        immediate = verification.get("immediate")
+        if isinstance(immediate, dict):
+            for key in _UI_SCOPE_KEYS:
+                if scope.get(key) in (None, "") and immediate.get(key) not in (None, ""):
+                    scope[key] = immediate.get(key)
+            immediate_scope = immediate.get("refresh_scope")
+            if isinstance(immediate_scope, dict):
+                for key in _UI_SCOPE_KEYS:
+                    if scope.get(key) in (None, "") and immediate_scope.get(key) not in (None, ""):
+                        scope[key] = immediate_scope.get(key)
+
     return scope
 
 
 @app.after_request
 def publish_completed_webhook_and_attach_live_ui(response):
-    """Publish completed webhook events and attach the shared sleeping waiter."""
+    """Publish changed webhook events and attach the shared sleeping waiter."""
     path = request.path.rstrip("/") or "/"
 
     if request.method == "POST" and path in _WEBHOOK_PATHS:
@@ -178,11 +250,13 @@ def publish_completed_webhook_and_attach_live_ui(response):
             isinstance(payload, dict)
             and payload.get("status") == "processing_failed"
         )
+        committed_change = _response_has_committed_change(payload)
 
         if (
             record_id is not None
             and response.status_code < 400
             and not failed_after_capture
+            and committed_change
         ):
             publish_webhook_ui_event(
                 platform=_WEBHOOK_PATHS[path],
@@ -190,6 +264,8 @@ def publish_completed_webhook_and_attach_live_ui(response):
                 scope=_ui_scope_from_response(payload),
             )
 
+        # A successful no-op/duplicate notification deliberately leaves the
+        # revision untouched. Every open page remains asleep.
         return response
 
     if request.method != "GET" or path not in _LIVE_UI_PATHS:
