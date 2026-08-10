@@ -12,6 +12,7 @@
   const CACHE_KEY = "product-linking-v3";
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
+  const PAGE_SIZES = [15, 25, 50, 100];
 
   const state = {
     hydrated: false,
@@ -21,7 +22,7 @@
     listings: [],
     fullLoadedAt: 0,
     page: 1,
-    perPage: 25,
+    perPage: 15,
     filtered: [],
     pushSettingsLoaded: false,
     pushSettings: { config: {}, stores: [] }
@@ -59,6 +60,11 @@
     return result;
   }
 
+  function normalisePageSize(value) {
+    const parsed = Number.parseInt(value, 10);
+    return PAGE_SIZES.includes(parsed) ? parsed : 15;
+  }
+
   function settingOn(value) {
     if (value === true || value === 1) return true;
     return ["1", "true", "yes", "on", "enabled"].includes(String(value ?? "").trim().toLowerCase());
@@ -73,7 +79,18 @@
   async function fetchPushSettingsState() {
     if (state.pushSettingsLoaded) return state.pushSettings;
     try {
-      const response = await fetch("/governed/settings/state", { credentials: "same-origin", cache: "no-store" });
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      let response;
+      try {
+        response = await fetch("/governed/settings/state", {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
       if (!response.ok) throw new Error(`Push settings state failed: HTTP ${response.status}`);
       const data = await response.json();
       if (!data || (!data.success && !data.ok)) throw new Error(data?.error || "Push settings state unavailable");
@@ -200,17 +217,23 @@
   }
 
   async function hydrate() {
-    if (state.hydrated) { await fetchPushSettingsState(); render(); return; }
+    if (state.hydrated) { render(); void fetchPushSettingsState().then(render); return; }
     if (state.hydrating) return state.hydrating;
     state.hydrating = (async () => {
       const loading = document.getElementById("warehouseLoadingState"), errorBox = document.getElementById("warehouseErrorState"), container = document.getElementById("warehouseDataContainer");
       if (loading) loading.classList.remove("d-none"); if (errorBox) errorBox.classList.add("d-none"); if (container) container.classList.add("d-none");
       try {
         const cached = await readSnapshot(); if (snapshotExists(cached)) applySnapshot(cached); else await fetchInitialSnapshotOnce();
-        await fetchPushSettingsState(); render(); if (loading) loading.classList.add("d-none"); if (container) container.classList.remove("d-none");
+        render();
+        if (loading) loading.classList.add("d-none");
+        if (container) container.classList.remove("d-none");
+        void fetchPushSettingsState().then(render);
       } catch (error) {
-        console.error("[ProductLinkingSession] hydration failed", error); if (loading) loading.classList.add("d-none"); if (errorBox) errorBox.classList.remove("d-none"); const message = document.getElementById("warehouseErrorMessage"); if (message) message.textContent = error.message || "Failed to load product groups."; throw error;
-      } finally { state.hydrating = null; }
+        console.error("[ProductLinkingSession] hydration failed", error); if (errorBox) errorBox.classList.remove("d-none"); const message = document.getElementById("warehouseErrorMessage"); if (message) message.textContent = error.message || "Failed to load product groups."; throw error;
+      } finally {
+        if (loading) loading.classList.add("d-none");
+        state.hydrating = null;
+      }
     })(); return state.hydrating;
   }
 
@@ -293,9 +316,11 @@
   function closeOpenModals() { document.querySelectorAll(".modal.show").forEach((modal) => { const instance = window.bootstrap?.Modal?.getInstance(modal); if (instance) instance.hide(); }); }
 
   window.bt38ProductLinkingSetPage = function (page) { state.page = Number.parseInt(page || 1, 10) || 1; render(); return false; };
+  window.bt38ProductLinkingSetPageSize = function (size) { state.perPage = normalisePageSize(size); state.page = 1; render(); return false; };
   window.renderProductLinkingPagination = function () {
     const total = state.filtered.length, totalPages = Math.max(1, Math.ceil(total / state.perPage)); const start = total === 0 ? 0 : ((state.page - 1) * state.perPage) + 1; const end = Math.min(total, state.page * state.perPage);
-    return `<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 border rounded p-2 mt-3 bg-light"><small class="text-muted">Showing ${start} to ${end} of ${total} warehouse products</small><div class="btn-group btn-group-sm" role="group" aria-label="Product linking pagination"><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(1)">First</button><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.max(1, state.page - 1)})">← Prev</button><button type="button" class="btn btn-primary" disabled>Page ${state.page} of ${totalPages}</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.min(totalPages, state.page + 1)})">Next →</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${totalPages})">Last</button></div></div>`;
+    const options = PAGE_SIZES.map((size) => `<option value="${size}" ${state.perPage === size ? "selected" : ""}>${size}</option>`).join("");
+    return `<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 border rounded p-2 mt-3 bg-light"><small class="text-muted">Showing ${start} to ${end} of ${total} warehouse products</small><div class="d-flex align-items-center gap-2"><label class="small text-muted mb-0" for="bt38ProductLinkingPageSize">Rows</label><select id="bt38ProductLinkingPageSize" class="form-select form-select-sm" style="width:auto" onchange="bt38ProductLinkingSetPageSize(this.value)">${options}</select><div class="btn-group btn-group-sm" role="group" aria-label="Product linking pagination"><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(1)">First</button><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.max(1, state.page - 1)})">← Prev</button><button type="button" class="btn btn-primary" disabled>Page ${state.page} of ${totalPages}</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.min(totalPages, state.page + 1)})">Next →</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${totalPages})">Last</button></div></div></div>`;
   };
   window.loadProductLinkingData = function () { return hydrate(); };
   window.bt38RefreshProductLinkingRecord = refreshAffectedRecord;
@@ -365,6 +390,21 @@
     }
     const clear = form?.querySelector('a[href="/product-linking"]');
     if (clear && !clear.dataset.bt38SessionWired) { clear.dataset.bt38SessionWired = "1"; clear.addEventListener("click", (event) => { event.preventDefault(); event.stopImmediatePropagation(); form.reset(); state.page = 1; render(); }, true); }
+
+    window.addEventListener("bt38-marketplace-event", (event) => {
+      const detail = event?.detail || {};
+      const identity = {
+        warehouseId: detail.warehouse_stock_id,
+        groupId: detail.group_id,
+        listingId: detail.listing_id,
+        listingSku: detail.seller_sku,
+        warehouseSku: detail.seller_sku
+      };
+      if (!identity.warehouseId && !identity.groupId && !identity.listingId && !identity.listingSku) return;
+      void refreshAffectedRecord(identity).catch((error) => {
+        console.warn("[ProductLinkingSession] marketplace event targeted refresh failed", error);
+      });
+    });
   }
 
   function boot() { wire(); hydrate(); }
