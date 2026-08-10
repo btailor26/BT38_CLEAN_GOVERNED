@@ -167,7 +167,7 @@ def recover_processed_ebay_orders_for_mcf(
     MCF order itself. Each exact order is hydrated through the existing eBay
     reader and then handed to the existing governed MCF submission authority.
     """
-    from models import MarketplaceOrder, Store
+    from models import MCFOrder, MarketplaceOrder, Store
     from governed_mcf_routes import run_governed_mcf_submission
     from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
 
@@ -229,6 +229,43 @@ def recover_processed_ebay_orders_for_mcf(
                 continue
 
             db.session.refresh(anchor)
+
+            # A previous automatic attempt may have staged the local MCF row
+            # but failed before Amazon acceptance and before the source order
+            # was linked back to it. Reuse that exact row; never create a
+            # second MCF identity for the same marketplace order.
+            interrupted = (
+                MCFOrder.query
+                .filter(
+                    MCFOrder.source_store_id == anchor.store_id,
+                    MCFOrder.source_order_id == anchor.marketplace_order_id,
+                    MCFOrder.amazon_status.is_(None),
+                    MCFOrder.status == "pending",
+                )
+                .order_by(MCFOrder.id.desc())
+                .first()
+            )
+
+            if interrupted is not None:
+                source_lines = (
+                    MarketplaceOrder.query
+                    .filter(
+                        MarketplaceOrder.store_id == anchor.store_id,
+                        MarketplaceOrder.marketplace_order_id
+                        == anchor.marketplace_order_id,
+                    )
+                    .all()
+                )
+                for source_line in source_lines:
+                    source_line.mcf_order_id = interrupted.id
+
+                interrupted.status = "failed"
+                interrupted.last_error = (
+                    "startup_recovery_interrupted_before_amazon_acceptance"
+                )
+                db.session.commit()
+                db.session.refresh(anchor)
+
             result = run_governed_mcf_submission(
                 int(anchor.id),
                 auto_release=True,

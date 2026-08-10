@@ -163,6 +163,27 @@ class MCFService:
     
     def __init__(self):
         self.fee_calculator = MCFFeeCalculator()
+
+    def _resolve_mcf_fba_store(self, mcf_order):
+        """Use the Amazon store already resolved by governed MCF."""
+        store_id = getattr(mcf_order, "fba_store_id", None)
+
+        if store_id:
+            store = db.session.get(Store, int(store_id))
+            if (
+                store is not None
+                and bool(getattr(store, "is_active", False))
+                and "amazon" in str(getattr(store, "platform", "") or "").lower()
+            ):
+                return store
+
+        return (
+            Store.query
+            .filter(Store.is_active == True)
+            .filter(Store.platform.ilike("%amazon%"))
+            .order_by(Store.id.asc())
+            .first()
+        )
     
     def find_fba_listing_for_sku(
         self,
@@ -500,7 +521,7 @@ class MCFService:
         Uses the FBA store's credentials to call the Fulfillment Outbound API.
         """
         try:
-            fba_store = Store.query.filter_by(platform='AmazonFBA', is_active=True).first()
+            fba_store = self._resolve_mcf_fba_store(mcf_order)
             if not fba_store:
                 return False, "No active Amazon FBA store configured"
             
@@ -578,7 +599,7 @@ class MCFService:
         Get updated status for an MCF order from Amazon.
         """
         try:
-            fba_store = Store.query.filter_by(platform='AmazonFBA', is_active=True).first()
+            fba_store = self._resolve_mcf_fba_store(mcf_order)
             if not fba_store:
                 return False, {'error': 'No active Amazon FBA store'}
             
@@ -645,7 +666,7 @@ class MCFService:
             if mcf_order.status in ['completed', 'cancelled']:
                 return False, f"Cannot cancel order in status: {mcf_order.status}"
             
-            fba_store = Store.query.filter_by(platform='AmazonFBA', is_active=True).first()
+            fba_store = self._resolve_mcf_fba_store(mcf_order)
             if not fba_store:
                 return False, "No active Amazon FBA store"
             
