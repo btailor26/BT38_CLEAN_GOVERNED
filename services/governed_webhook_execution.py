@@ -119,21 +119,6 @@ def process_marketplace_notification(
             payload=payload,
         )
 
-    stock = listing.warehouse_stock
-    if not stock:
-        return _log_result(
-            status="unlinked",
-            marketplace=marketplace,
-            event_type=event_type,
-            business_event=business_event,
-            reason=(
-                "Notification matched listing but listing is not linked "
-                "to warehouse stock."
-            ),
-            payload=payload,
-            listing_id=listing.id,
-        )
-
     platform_name = str(marketplace or "").strip().lower()
     listing_channel = str(
         getattr(
@@ -167,8 +152,10 @@ def process_marketplace_notification(
 
     # Amazon AFN/FBA ORDER_CHANGE quantity is the order-line quantity, not an
     # inventory snapshot. Treat it only as an exact-SKU signal for the existing
-    # FBA verification path. governed_routes performs the immediate Amazon
-    # inventory reread and the existing delayed settlement recheck.
+    # FBA verification path. This happens before the Warehouse-link guard:
+    # Amazon inventory truth does not depend on a Product Linking relationship.
+    # governed_routes performs the immediate exact Amazon reread and the
+    # existing delayed settlement recheck.
     if (
         is_amazon_fba
         and event_type == "order_change"
@@ -177,7 +164,6 @@ def process_marketplace_notification(
         seller_sku = (
             _deep_get(payload, "SellerSKU")
             or getattr(listing, "external_sku", None)
-            or getattr(stock, "sku", None)
         )
 
         return _log_result(
@@ -191,9 +177,12 @@ def process_marketplace_notification(
                 "inventory; Amazon remains inventory authority."
             ),
             payload=payload,
-            store_id=getattr(listing, "store_id", None),
+            store_id=(
+                payload.get("_bt38_store_id")
+                or getattr(listing, "store_id", None)
+            ),
             listing_id=listing.id,
-            warehouse_stock_id=stock.id,
+            warehouse_stock_id=getattr(listing, "warehouse_stock_id", None),
             seller_sku=(
                 str(seller_sku).strip()
                 if seller_sku not in (None, "")
@@ -202,6 +191,21 @@ def process_marketplace_notification(
             order_id=_extract_marketplace_order_id(payload),
             stock_changed=False,
             correction_started=False,
+        )
+
+    stock = listing.warehouse_stock
+    if not stock:
+        return _log_result(
+            status="unlinked",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            reason=(
+                "Notification matched listing but listing is not linked "
+                "to warehouse stock."
+            ),
+            payload=payload,
+            listing_id=listing.id,
         )
 
     explicit_inventory_quantity = any(
@@ -861,13 +865,25 @@ def _find_listing(
         "external_sku",
     }
 
+    def _active_query():
+        return MarketplaceListing.query.filter(
+            MarketplaceListing.is_active == True  # noqa: E712
+        )
+
+    def _best(query):
+        return query.order_by(
+            MarketplaceListing.warehouse_stock_id.is_(None),
+            MarketplaceListing.updated_at.desc(),
+            MarketplaceListing.id.desc(),
+        ).first()
+
     for key in listing_id_keys:
         value = _deep_get(payload, key)
         if value:
             try:
-                listing = MarketplaceListing.query.get(
-                    int(value)
-                )
+                listing = _active_query().filter(
+                    MarketplaceListing.id == int(value)
+                ).first()
                 if listing:
                     return listing
             except Exception:
@@ -876,13 +892,10 @@ def _find_listing(
     for key in external_keys:
         value = _deep_get(payload, key)
         if value:
-            listing = (
-                MarketplaceListing.query
-                .filter(
-                    MarketplaceListing.external_listing_id
-                    == str(value)
+            listing = _best(
+                _active_query().filter(
+                    MarketplaceListing.external_listing_id == str(value)
                 )
-                .first()
             )
             if listing:
                 return listing
@@ -890,15 +903,14 @@ def _find_listing(
     for key in sku_keys:
         value = _deep_get(payload, key)
         if value:
-            query = MarketplaceListing.query.filter(
-                MarketplaceListing.external_sku
-                == str(value)
+            query = _active_query().filter(
+                MarketplaceListing.external_sku == str(value)
             )
             if marketplace:
                 query = query.join(
                     MarketplaceListing.store
                 ).filter_by(platform=marketplace)
-            listing = query.first()
+            listing = _best(query)
             if listing:
                 return listing
 
@@ -906,13 +918,11 @@ def _find_listing(
         text = str(value).strip()
         if not text:
             continue
-        listing = (
-            MarketplaceListing.query
-            .filter(
+        listing = _best(
+            _active_query().filter(
                 (MarketplaceListing.external_listing_id == text)
                 | (MarketplaceListing.external_sku == text)
             )
-            .first()
         )
         if listing:
             return listing
