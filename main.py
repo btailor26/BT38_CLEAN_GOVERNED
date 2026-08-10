@@ -4,6 +4,7 @@ from app import app
 # attempt Amazon submission. This keeps MCFService UI/fee compatibility while
 # all live Amazon execution remains on services.governed_mcf_execution.
 import services.governed_mcf_compat  # noqa: F401
+import services.governed_ui_event_signal  # noqa: F401
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
@@ -195,42 +196,6 @@ except Exception:
 
     db.session.rollback()
     app.logger.exception("BT38 bounded recovery alignment failed")
-
-
-@app.get("/governed/ui/webhook-revision")
-def governed_ui_webhook_revision():
-    """Expose only the latest completed webhook revision for open BT38 pages.
-
-    This is a read-only UI freshness signal. It never calls a marketplace,
-    mutates stock, or starts reconciliation. A revision changes only after the
-    durable Amazon/eBay notification has reached its completed state, so an
-    open UI can safely reread BT38 database truth without racing webhook work.
-    """
-    from flask import jsonify
-    from sqlalchemy import text
-    from extensions import db
-
-    revision = db.session.execute(
-        text(
-            """
-            SELECT COALESCE(MAX(completed_at), TIMESTAMP '1970-01-01')
-            FROM (
-                SELECT completed_at
-                FROM webhooks.amazon_notifications
-                WHERE completed_at IS NOT NULL
-                UNION ALL
-                SELECT completed_at
-                FROM webhooks.ebay_notifications
-                WHERE completed_at IS NOT NULL
-            ) AS completed_webhooks
-            """
-        )
-    ).scalar_one()
-
-    return jsonify({
-        "success": True,
-        "revision": revision.isoformat() if revision else "1970-01-01T00:00:00",
-    })
 
 
 @app.teardown_request
