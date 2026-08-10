@@ -18,6 +18,7 @@ def _install_governed_webhook_runtime_alignment():
     from types import SimpleNamespace
 
     import governed_routes
+    import services.governed_mcf_execution as mcf_execution
     import services.governed_webhook_capture as webhook_capture
     import services.governed_webhook_execution as webhook_execution
 
@@ -27,6 +28,7 @@ def _install_governed_webhook_runtime_alignment():
     original_webhook_execution = (
         webhook_execution.process_marketplace_notification
     )
+    original_mcf_status_refresh = mcf_execution.refresh_mcf_status
 
     def _capture_and_arm(platform, capture_function, request):
         notification_record_id = int(capture_function(request))
@@ -88,6 +90,19 @@ def _install_governed_webhook_runtime_alignment():
             )
             return SimpleNamespace(id=None, error=str(exc))
 
+    def _refresh_mcf_status_preserving_acceptance_clock(mcf_order):
+        """Keep the first Amazon acceptance time stable across later refreshes."""
+        accepted_at_before_refresh = mcf_order.amazon_status_updated_at
+        success, result = original_mcf_status_refresh(mcf_order)
+
+        if accepted_at_before_refresh is not None:
+            from extensions import db
+
+            mcf_order.amazon_status_updated_at = accepted_at_before_refresh
+            db.session.commit()
+
+        return success, result
+
     def _execute_with_mcf_signal_alignment(
         marketplace,
         payload,
@@ -129,12 +144,32 @@ def _install_governed_webhook_runtime_alignment():
     webhook_capture.capture_ebay_notification = _capture_ebay_and_arm
     webhook_capture.capture_amazon_notification = _capture_amazon_and_arm
     governed_routes._bt38_record_webhook_event = _record_diagnostic_without_blocking
+    mcf_execution.refresh_mcf_status = (
+        _refresh_mcf_status_preserving_acceptance_clock
+    )
     webhook_execution.process_marketplace_notification = (
         _execute_with_mcf_signal_alignment
     )
 
 
 _install_governed_webhook_runtime_alignment()
+
+
+try:
+    from services.governed_recovery_alignment import (
+        run_bounded_startup_recovery_alignment,
+    )
+
+    recovery_result = run_bounded_startup_recovery_alignment(app)
+    app.logger.info(
+        "BT38 bounded recovery alignment: %s",
+        recovery_result,
+    )
+except Exception:
+    from extensions import db
+
+    db.session.rollback()
+    app.logger.exception("BT38 bounded recovery alignment failed")
 
 
 @app.teardown_request
