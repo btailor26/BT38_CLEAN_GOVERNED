@@ -906,6 +906,20 @@ function renderWarehouseProducts(products) {
         const linkBtn = !hasListings
             ? `<button class="btn btn-sm btn-primary" onclick="showLinkModal(${product.id}, '${escapeHtml(product.sku)}')" title="Link marketplace listings"><i data-feather="link" class="feather-sm me-1"></i>Link</button>`
             : `<button class="btn btn-sm btn-outline-secondary" onclick="showLinkModal(${product.id}, '${escapeHtml(product.sku)}')" title="Link more"><i data-feather="plus" class="feather-sm me-1"></i>Add</button>`;
+
+        const visiblePushBtn = product.master_product_group_id
+            ? `<button type="button"
+                    class="btn btn-sm btn-primary ms-1 bt38-qty-push-open"
+                    data-warehouse-id="${product.id}"
+                    data-group-id="${product.master_product_group_id}"
+                    data-sku="${escapeHtml(product.sku)}"
+                    data-name="${escapeHtml(product.name || '')}"
+                    data-qty="${displayStockQuantity}"
+                    data-is-fba="${Boolean((product.listings || []).some(listing => listing.is_fba))}"
+                    title="Push saved Warehouse quantity to this group">
+                    <i data-feather="upload-cloud" class="feather-sm me-1"></i>Push
+               </button>`
+            : '';
         
         let listingsHtml = '';
         const groupLabel = isGrouped
@@ -974,7 +988,7 @@ function renderWarehouseProducts(products) {
                     </button>
                 </td>
                 <td>${statusBadge}${groupLabel}</td>
-                <td>${linkBtn}</td>
+                <td><div class="d-flex flex-wrap align-items-center gap-1">${linkBtn}${visiblePushBtn}</div></td>
                 <td>${listingsHtml || '<small class="text-muted">No listings linked</small>'}</td>
                 <td>
                     <div class="btn-group btn-group-sm">
@@ -1116,8 +1130,6 @@ function showAdjustPushModal(warehouseId, groupId, sku, name, currentQty, isFbaG
         isFbaGroup,
         at: new Date().toISOString()
     };
-    alert("BT38 QTY CLICK FIRED: warehouse=" + warehouseId + " group=" + groupId);
-
     adjustPushWarehouseId = warehouseId;
     adjustPushGroupId = groupId || null;
 
