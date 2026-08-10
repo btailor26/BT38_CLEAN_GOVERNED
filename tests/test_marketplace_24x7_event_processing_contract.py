@@ -61,15 +61,20 @@ def test_diagnostic_logging_cannot_be_execution_authority():
 
 
 def test_uncaught_post_capture_failure_is_terminal_failed_state():
-    handler = _function_source(MAIN, "record_captured_webhook_failure")
+    observer = _function_source(MAIN, "record_captured_webhook_failure")
 
-    assert '"/governed/webhooks/ebay"' in handler
-    assert '"/governed/webhooks/amazon"' in handler
-    assert "g.bt38_notification_record_id" in handler
-    assert 'processing_status="FAILED"' in handler
-    assert 'last_error=str(exception)[:4000]' in handler
-    assert "completed=True" in handler
-    assert '"status": "processing_failed"' in handler
+    assert '"/governed/webhooks/ebay"' in observer
+    assert '"/governed/webhooks/amazon"' in observer
+    assert "bt38_notification_record_id" in observer
+    assert 'processing_status="FAILED"' in observer
+    assert 'last_error=str(exception)[:4000]' in observer
+    assert "completed=True" in observer
+
+    # Failure recording observes Flask teardown only; it does not replace the
+    # existing webhook response/exception authority.
+    assert "@app.errorhandler" not in MAIN
+    assert "raise exception" not in observer
+    assert "return jsonify" not in observer
 
 
 def test_fuse_block_is_explicit_terminal_state_not_silent_sleep():
