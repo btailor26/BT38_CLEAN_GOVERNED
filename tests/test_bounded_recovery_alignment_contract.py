@@ -18,6 +18,22 @@ def test_stranded_webhook_recovery_is_bounded_and_reuses_existing_execution():
     assert "MarketplaceOrder(" not in RECOVERY
 
 
+def test_processed_ebay_mcf_recovery_is_bounded_and_reuses_existing_authorities():
+    assert "def recover_processed_ebay_orders_for_mcf" in RECOVERY
+    assert "limit: int = 10" in RECOVERY
+    assert "max_age_hours: int = 72" in RECOVERY
+    assert "MarketplaceOrder.processed_at.isnot(None)" in RECOVERY
+    assert "MarketplaceOrder.mcf_order_id.is_(None)" in RECOVERY
+    assert "MarketplaceOrder.shipped_at.is_(None)" in RECOVERY
+    assert 'Store.platform.ilike("%ebay%")' in RECOVERY
+    assert "hydrate_exact_ebay_order(" in RECOVERY
+    assert "run_governed_mcf_submission(" in RECOVERY
+    assert "auto_release=True" in RECOVERY
+    assert "form_data={}" in RECOVERY
+    assert "MCFOrder(" not in RECOVERY
+    assert "create_fulfillment_order(" not in RECOVERY
+
+
 def test_tracking_recovery_selects_only_dispatched_missing_tracking_mcf():
     assert "def recover_tracking_pending_mcf" in RECOVERY
     assert "limit: int = 10" in RECOVERY
