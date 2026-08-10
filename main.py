@@ -79,62 +79,58 @@ def _install_governed_webhook_runtime_alignment():
 _install_governed_webhook_runtime_alignment()
 
 
-@app.errorhandler(Exception)
-def record_captured_webhook_failure(exception):
-    """Persist an uncaught post-capture webhook failure on the exact raw row.
+@app.teardown_request
+def record_captured_webhook_failure(exception=None):
+    """Record an uncaught post-capture failure on the exact raw notification.
 
-    This handler is deliberately scoped to governed marketplace webhook POSTs.
-    All non-webhook exceptions retain Flask's normal error handling.
+    This observes Flask's existing request lifecycle only. It does not replace
+    Flask error handling and does nothing for non-webhook requests.
     """
-    from flask import g, jsonify, request
+    if exception is None:
+        return None
 
-    if (
-        request.method == "POST"
-        and request.path.rstrip("/") in {
-            "/governed/webhooks/ebay",
-            "/governed/webhooks/amazon",
-        }
-        and getattr(g, "bt38_notification_record_id", None) is not None
-    ):
-        from extensions import db
-        from services.governed_webhook_capture import mark_notification_status
+    from flask import g, request
 
-        platform = str(
-            getattr(g, "bt38_notification_platform", "") or ""
-        ).strip().lower()
-        notification_record_id = int(g.bt38_notification_record_id)
+    if request.method != "POST":
+        return None
 
+    if request.path.rstrip("/") not in {
+        "/governed/webhooks/ebay",
+        "/governed/webhooks/amazon",
+    }:
+        return None
+
+    notification_record_id = getattr(
+        g,
+        "bt38_notification_record_id",
+        None,
+    )
+    if notification_record_id is None:
+        return None
+
+    from extensions import db
+    from services.governed_webhook_capture import mark_notification_status
+
+    platform = str(
+        getattr(g, "bt38_notification_platform", "") or ""
+    ).strip().lower()
+
+    db.session.rollback()
+    try:
+        mark_notification_status(
+            platform,
+            int(notification_record_id),
+            processing_status="FAILED",
+            last_error=str(exception)[:4000],
+            completed=True,
+        )
+    except Exception:
         db.session.rollback()
-        try:
-            mark_notification_status(
-                platform,
-                notification_record_id,
-                processing_status="FAILED",
-                last_error=str(exception)[:4000],
-                completed=True,
-            )
-        except Exception:
-            db.session.rollback()
-            app.logger.exception(
-                "Failed to persist captured webhook failure state"
-            )
+        app.logger.exception(
+            "Failed to persist captured webhook failure state"
+        )
 
-        return jsonify({
-            "ok": False,
-            "success": False,
-            "governed": True,
-            "marketplace": platform,
-            "status": "processing_failed",
-            "notification_record_id": notification_record_id,
-            "error": str(exception),
-            "message": (
-                "Webhook was captured permanently, but governed downstream "
-                "processing failed."
-            ),
-        }), 500
-
-    # Preserve Flask's normal exception handling outside the governed webhook.
-    raise exception
+    return None
 
 
 @app.after_request
