@@ -5,6 +5,7 @@ from app import app
 # all live Amazon execution remains on services.governed_mcf_execution.
 import services.governed_mcf_compat  # noqa: F401
 import services.governed_ui_event_signal  # noqa: F401
+import services.governed_webhook_rejection_recovery  # noqa: F401
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
