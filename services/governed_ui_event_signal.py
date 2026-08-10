@@ -181,8 +181,11 @@ def publish_completed_webhook_and_attach_live_ui(response):
     path = request.path.rstrip("/") or "/"
 
     if request.method == "POST" and path in _WEBHOOK_PATHS:
-        record_id = getattr(g, "bt38_notification_record_id", None)
         payload = response.get_json(silent=True)
+        record_id = getattr(g, "bt38_notification_record_id", None)
+        if record_id is None and isinstance(payload, dict):
+            record_id = payload.get("notification_record_id")
+
         failed_after_capture = (
             isinstance(payload, dict)
             and payload.get("status") == "processing_failed"
