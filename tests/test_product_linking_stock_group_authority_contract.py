@@ -9,6 +9,7 @@ PUSH = Path(
 PROPAGATION = Path(
     "governed_group_propagation_routes.py"
 ).read_text(encoding="utf-8")
+TEMPLATE = Path("templates/product_linking.html").read_text(encoding="utf-8")
 
 
 def _function_block(source: str, name: str) -> str:
@@ -45,6 +46,7 @@ def test_product_linking_dataset_uses_two_role_relationship_authority():
         '            getattr(stock, "master_product_group_id", None)'
         not in block
     )
+
 
 def test_group_push_members_use_current_listing_relationship():
     block = _function_block(PUSH, "push_group_listings")
@@ -124,7 +126,7 @@ def test_push_does_not_assign_relationship_fields():
     assert assigned_relationship_fields == set()
 
 
-def test_group_propagation_uses_exact_warehouse_sellable_authority():
+def test_product_linking_shortcut_resolves_one_selected_warehouse_quantity():
     block = _function_block(
         PROPAGATION,
         "run_governed_group_propagation",
@@ -139,17 +141,35 @@ def test_group_propagation_uses_exact_warehouse_sellable_authority():
         "MarketplaceListing.warehouse_stock_id"
         in block
     )
-    assert '"sellable_quantity"' in block
+    assert "target_quantity = None" in block
+    assert (
+        'target_quantity = int(\n            getattr(requested_stock, "sellable_quantity", 0) or 0\n        )'
+        in block
+    )
+    assert "int(target_quantity)" in block
+    assert '"target_quantity": target_quantity' in block
+    assert '"affected_listing_ids": affected_listing_ids' in block
+    assert '"affected_warehouse_stock_ids": affected_warehouse_stock_ids' in block
 
     stale_authorities = (
         "AmazonFBAInventory",
         "requested_quantity",
         "group_has_fba_authority",
-        "target_quantity",
-     )
+    )
 
     for stale_authority in stale_authorities:
         assert stale_authority not in block
+
+
+def test_product_linking_visible_push_declares_display_quantity_before_use():
+    render_start = TEMPLATE.index("function renderWarehouseProducts(products)")
+    render_end = TEMPLATE.index("function renderProductLinkingPagination()", render_start)
+    block = TEMPLATE[render_start:render_end]
+
+    declaration = block.index("const displayStockQuantity =")
+    visible_push = block.index("const visiblePushBtn =")
+
+    assert declaration < visible_push
 
 
 def test_group_propagation_skips_fba_per_listing():

@@ -902,6 +902,9 @@ function renderWarehouseProducts(products) {
             : (!hasListings 
                 ? '<span class="badge bg-warning text-dark"><i data-feather="alert-circle" class="feather-xs me-1"></i>Unlinked</span>'
                 : `<span class="badge bg-success"><i data-feather="check-circle" class="feather-xs me-1"></i>${product.linked_count}</span>`);
+
+        const fbaListingForStock = (product.listings || []).find(listing => listing.is_fba && listing.fba_available_quantity !== null && listing.fba_available_quantity !== undefined);
+        const displayStockQuantity = fbaListingForStock ? fbaListingForStock.fba_available_quantity : product.quantity;
         
         const linkBtn = !hasListings
             ? `<button class="btn btn-sm btn-primary" onclick="showLinkModal(${product.id}, '${escapeHtml(product.sku)}')" title="Link marketplace listings"><i data-feather="link" class="feather-sm me-1"></i>Link</button>`
@@ -966,9 +969,6 @@ function renderWarehouseProducts(products) {
             });
         }
         
-        const fbaListingForStock = (product.listings || []).find(listing => listing.is_fba && listing.fba_available_quantity !== null && listing.fba_available_quantity !== undefined);
-        const displayStockQuantity = fbaListingForStock ? fbaListingForStock.fba_available_quantity : product.quantity;
-
         html += `
             <tr data-group-id="${product.master_product_group_id || ''}" data-warehouse-id="${product.id}" data-group-name="${escapeHtml(product.group_name)}" data-sku="${escapeHtml(product.sku)}">
                 <td>

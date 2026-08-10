@@ -49,6 +49,8 @@ def run_governed_group_propagation(
 
     Locked rules:
     - WarehouseStock.sellable_quantity is the authority.
+    - A validated Warehouse shortcut row supplies one target quantity for the
+      entire requested Product Linking group.
     - Amazon FBA/AFN is skipped before push runtime.
     - MCF remains FBA-only visibility/fulfilment routing, not a stock push path.
     - FBM/MFN and non-Amazon pushable marketplace rows may be pushed.
@@ -72,6 +74,7 @@ def run_governed_group_propagation(
         return jsonify(_blocked("Master product group was not found.", group_id=group_id)), 404
 
     requested_stock = None
+    target_quantity = None
     if requested_warehouse_stock_id not in (None, ""):
         try:
             requested_stock_id = int(requested_warehouse_stock_id)
@@ -124,6 +127,13 @@ def run_governed_group_propagation(
                 )
             ), 409
 
+        # The shortcut reports relationship identity only. Once the selected
+        # Warehouse row is proven to belong to the current Product Linking
+        # group, its saved sellable quantity becomes the single group target.
+        target_quantity = int(
+            getattr(requested_stock, "sellable_quantity", 0) or 0
+        )
+
     # Current Product Linking membership belongs to MarketplaceListing.
     # Permanent Warehouse identity remains warehouse_stock_id.
     listings = (
@@ -161,6 +171,7 @@ def run_governed_group_propagation(
 
             results.append({
                 "listing_id": listing.id,
+                "warehouse_stock_id": listing.warehouse_stock_id,
                 "sku": listing.external_sku,
                 "status": (
                     "read_only"
@@ -173,16 +184,20 @@ def run_governed_group_propagation(
             })
             continue
 
-        # Each pushable member receives the sellable quantity from its exact
-        # linked Warehouse row. Caller, listing, FBA, and MCF quantities are
-        # never inventory authority here.
-        quantity = int(
-            getattr(
-                listing.warehouse_stock,
-                "sellable_quantity",
-                0,
+        # Product Linking/Warehouse shortcut: every writable member receives
+        # the one quantity resolved from the validated selected Warehouse row.
+        # Other callers without a selected row retain their exact-row fallback.
+        quantity = (
+            int(target_quantity)
+            if target_quantity is not None
+            else int(
+                getattr(
+                    listing.warehouse_stock,
+                    "sellable_quantity",
+                    0,
+                )
+                or 0
             )
-            or 0
         )
 
         sku = (listing.external_sku or (listing.warehouse_stock.sku if listing.warehouse_stock else "") or "").strip()
@@ -237,6 +252,7 @@ def run_governed_group_propagation(
 
         results.append({
             "listing_id": listing.id,
+            "warehouse_stock_id": listing.warehouse_stock_id,
             "sku": sku,
             "marketplace": marketplace,
             "quantity": quantity,
@@ -257,6 +273,8 @@ def run_governed_group_propagation(
             status="success" if failed == 0 else "error",
             message=(
                 f"governed_group_propagation group_id={group_id} "
+                f"warehouse_stock_id={requested_warehouse_stock_id} "
+                f"target_quantity={target_quantity} "
                 f"pushed={pushed} skipped={skipped} failed={failed} dry_run={dry_run}"
             )[:500],
             items_synced=pushed,
@@ -264,16 +282,33 @@ def run_governed_group_propagation(
         ))
     db.session.commit()
 
+    affected_listing_ids = [int(listing.id) for listing in listings]
+    affected_warehouse_stock_ids = sorted({
+        int(listing.warehouse_stock_id)
+        for listing in listings
+        if listing.warehouse_stock_id is not None
+    })
+
     return jsonify({
         "success": failed == 0,
         "ok": failed == 0,
         "governed": True,
+        "changed": True,
         "group_id": group_id,
+        "warehouse_stock_id": (
+            int(requested_warehouse_stock_id)
+            if requested_warehouse_stock_id not in (None, "")
+            else None
+        ),
+        "target_quantity": target_quantity,
         "dry_run": dry_run,
         "total_listings": len(listings),
         "pushed": pushed,
         "skipped": skipped,
         "failed": failed,
+        "affected_group_ids": [int(group_id)],
+        "affected_listing_ids": affected_listing_ids,
+        "affected_warehouse_stock_ids": affected_warehouse_stock_ids,
         "results": results,
     }), 200 if failed == 0 else 400
 
