@@ -25,21 +25,34 @@ def _install_governed_webhook_runtime_alignment():
     original_diagnostic = governed_routes._bt38_record_webhook_event
 
     def _capture_and_arm(platform, capture_function, request):
-        notification_record_id = capture_function(request)
+        notification_record_id = int(capture_function(request))
 
-        # Durable capture has succeeded. From this point the exact event is
-        # active governed work and must never remain silently in RECEIVED.
-        webhook_capture.mark_notification_status(
-            platform,
-            notification_record_id,
-            processing_status="PROCESSING",
-            verification_status="PENDING",
-            parsed=True,
-        )
-
-        g.bt38_notification_record_id = int(notification_record_id)
+        # Durable capture is already committed by the existing capture helper.
+        # Store the exact identity on the current request before any later work
+        # so an uncaught post-capture failure can always be written back to the
+        # same raw notification.
+        g.bt38_notification_record_id = notification_record_id
         g.bt38_notification_platform = platform
-        return int(notification_record_id)
+
+        # Arming is state only, not parsing. parsed_at remains untouched until
+        # the existing governed route actually parses/resolves the event.
+        try:
+            webhook_capture.mark_notification_status(
+                platform,
+                notification_record_id,
+                processing_status="PROCESSING",
+                verification_status="PENDING",
+            )
+        except Exception:
+            from extensions import db
+
+            db.session.rollback()
+            app.logger.exception(
+                "Webhook was captured but immediate PROCESSING status could "
+                "not be recorded; governed execution will continue"
+            )
+
+        return notification_record_id
 
     def _capture_ebay_and_arm(request, *, commit=True):
         return _capture_and_arm(
