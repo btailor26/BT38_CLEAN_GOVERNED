@@ -82,6 +82,7 @@
         <tbody id="mcf-orders-body">
           {% for row in orders %}
           <tr class="mcf-order-row"
+              data-order-id="{{ row.anchor.marketplace_order_id }}"
               data-state="{{ row.state }}"
               data-search="{{ ([row.anchor.marketplace_order_id, row.anchor.store.name if row.anchor.store else '', row.group_ids|join(' ')] + (row.lines|map(attribute='sku')|list))|join(' ')|lower }}">
             <td>
@@ -168,7 +169,7 @@
 
 <script>
 (() => {
-  const rows = Array.from(document.querySelectorAll('.mcf-order-row'));
+  let rows = Array.from(document.querySelectorAll('.mcf-order-row'));
   const status = document.getElementById('mcf-status-filter');
   const search = document.getElementById('mcf-search');
   const size = document.getElementById('mcf-page-size');
@@ -179,7 +180,7 @@
   const noMatch = document.getElementById('mcf-no-match-row');
   const selectAll = document.getElementById('mcf-select-all');
   const removeButton = document.getElementById('mcf-remove-selected');
-  const selections = Array.from(
+  let selections = Array.from(
     document.querySelectorAll('.mcf-order-select')
   );
 
@@ -219,6 +220,12 @@
         page
       });
     }
+  }
+
+  function refreshCollections() {
+    rows = Array.from(document.querySelectorAll('.mcf-order-row'));
+    selections = Array.from(document.querySelectorAll('.mcf-order-select'));
+    wireSelectionCheckboxes();
   }
 
   function updateSelectionState() {
@@ -270,6 +277,14 @@
     savePageState();
   }
 
+  function wireSelectionCheckboxes() {
+    selections.forEach((checkbox) => {
+      if (checkbox.dataset.bt38SelectionWired) return;
+      checkbox.dataset.bt38SelectionWired = '1';
+      checkbox.addEventListener('change', updateSelectionState);
+    });
+  }
+
   selectAll.addEventListener('change', () => {
     selections.forEach((checkbox) => {
       const row = checkbox.closest('tr');
@@ -280,12 +295,7 @@
     updateSelectionState();
   });
 
-  selections.forEach((checkbox) => {
-    checkbox.addEventListener(
-      'change',
-      updateSelectionState,
-    );
-  });
+  wireSelectionCheckboxes();
 
   [status, search, size].forEach((control) => control.addEventListener('input', () => {
     page = 1;
@@ -293,6 +303,54 @@
   }));
   prev.addEventListener('click', () => { if (page > 1) { page -= 1; render(); } });
   next.addEventListener('click', () => { page += 1; render(); });
+
+  window.addEventListener('bt38-marketplace-event', async (event) => {
+    const orderId = String(event?.detail?.order_id || '').trim();
+    if (!orderId) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+
+    try {
+      const response = await fetch(window.location.href, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {'X-BT38-UI-Refresh': 'mcf-exact-order'},
+        signal: controller.signal
+      });
+      if (!response.ok) return;
+
+      const html = await response.text();
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      const escaped = window.CSS?.escape ? window.CSS.escape(orderId) : orderId.replace(/["\\]/g, '\\$&');
+      const freshRow = parsed.querySelector(`.mcf-order-row[data-order-id="${escaped}"]`);
+      if (!freshRow) return;
+
+      const currentRow = document.querySelector(`.mcf-order-row[data-order-id="${escaped}"]`);
+      const imported = document.importNode(freshRow, true);
+      if (currentRow) {
+        currentRow.replaceWith(imported);
+      } else {
+        const body = document.getElementById('mcf-orders-body');
+        const noMatchRow = document.getElementById('mcf-no-match-row');
+        body.insertBefore(imported, noMatchRow || body.firstChild);
+      }
+
+      refreshCollections();
+      page = 1;
+      render();
+      if (window.feather && typeof window.feather.replace === 'function') {
+        window.feather.replace();
+      }
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        console.warn('[Orders/MCF] exact event refresh failed', error);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  });
+
   render();
 })();
 </script>
