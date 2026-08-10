@@ -34,13 +34,31 @@ def test_durable_capture_immediately_arms_exact_notification_as_processing():
         "_install_governed_webhook_runtime_alignment",
     )
 
-    capture_pos = installer.index("notification_record_id = capture_function(request)")
-    processing_pos = installer.index('processing_status="PROCESSING"')
+    capture_pos = installer.index("notification_record_id = int(capture_function(request))")
     context_pos = installer.index("g.bt38_notification_record_id")
+    processing_pos = installer.index('processing_status="PROCESSING"')
 
-    assert capture_pos < processing_pos < context_pos
+    # Capture commits first, then the exact ID is retained on the request, then
+    # processing state is armed. The existing route owns the later parsed_at.
+    assert capture_pos < context_pos < processing_pos
     assert 'verification_status="PENDING"' in installer
-    assert "parsed=True" in installer
+    assert "parsed=True" not in installer
+
+
+def test_processing_arm_failure_does_not_reclassify_durable_capture_as_failed_capture():
+    installer = _function_source(
+        MAIN,
+        "_install_governed_webhook_runtime_alignment",
+    )
+
+    arm_start = installer.index("# Arming is state only")
+    arm_end = installer.index("return notification_record_id", arm_start)
+    arm = installer[arm_start:arm_end]
+
+    assert "try:" in arm
+    assert "except Exception:" in arm
+    assert "db.session.rollback()" in arm
+    assert "governed execution will continue" in arm
 
 
 def test_diagnostic_logging_cannot_be_execution_authority():
