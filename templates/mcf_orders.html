@@ -109,7 +109,11 @@
               {% endif %}
             </td>
             <td>
-              {% if row.eligible %}
+              {% if row.state == 'submitted' %}
+                <span class="badge bg-info text-dark">Submitted / processing</span>
+              {% elif row.state == 'failed' %}
+                <span class="badge bg-danger">Failed</span>
+              {% elif row.state == 'ready' %}
                 <span class="badge bg-success">Ready for MCF</span>
               {% else %}
                 <span class="badge bg-secondary">Not eligible</span>
