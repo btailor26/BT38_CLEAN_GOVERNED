@@ -1,0 +1,67 @@
+from pathlib import Path
+
+
+RECOVERY = Path("services/governed_recovery_alignment.py").read_text(
+    encoding="utf-8"
+)
+MAIN = Path("main.py").read_text(encoding="utf-8")
+
+
+def test_stranded_webhook_recovery_is_bounded_and_reuses_existing_execution():
+    assert "def recover_stranded_ebay_notifications" in RECOVERY
+    assert "limit: int = 25" in RECOVERY
+    assert "max_age_hours: int = 48" in RECOVERY
+    assert "completed_at IS NULL" in RECOVERY
+    assert "received_at <= NOW() - INTERVAL '2 minutes'" in RECOVERY
+    assert "process_marketplace_notification(" in RECOVERY
+    assert "mark_notification_status(" in RECOVERY
+    assert "MarketplaceOrder(" not in RECOVERY
+
+
+def test_tracking_recovery_selects_only_dispatched_missing_tracking_mcf():
+    assert "def recover_tracking_pending_mcf" in RECOVERY
+    assert "limit: int = 10" in RECOVERY
+    assert "MCFOrder.tracking_number.is_(None)" in RECOVERY
+    assert "MarketplaceOrder.shipped_at.isnot(None)" in RECOVERY
+    assert "refresh_mcf_from_amazon_signal" in RECOVERY
+    assert '"sellerFulfillmentOrderId": seller_id' in RECOVERY
+    assert "complete_sale(" not in RECOVERY
+
+
+def test_group_recovery_reuses_existing_permanent_group_authority():
+    assert "def recover_missing_original_groups" in RECOVERY
+    assert "limit: int = 50" in RECOVERY
+    assert "WarehouseStock.master_product_group_id.is_(None)" in RECOVERY
+    assert "ensure_permanent_original_group" in RECOVERY
+    assert "if listing.master_product_group_id is None:" in RECOVERY
+    assert "MasterProductGroup(" not in RECOVERY
+
+
+def test_recovery_alignment_creates_no_parallel_runtime():
+    forbidden = (
+        "Thread(",
+        "Queue(",
+        "start_worker(",
+        "enqueue_sync_job(",
+        "create_fulfillment_order(",
+        "get_fulfillment_order(",
+        "cancel_fulfillment_order(",
+    )
+    for fragment in forbidden:
+        assert fragment not in RECOVERY
+
+    assert '"full_scan_started": False' in RECOVERY
+    assert '"new_worker_started": False' in RECOVERY
+    assert '"new_queue_created": False' in RECOVERY
+
+
+def test_deployed_entrypoint_runs_bounded_recovery_once():
+    assert "run_bounded_startup_recovery_alignment" in MAIN
+    assert "BT38 bounded recovery alignment" in MAIN
+
+
+def test_mcf_tracking_refresh_preserves_original_amazon_acceptance_clock():
+    assert "original_mcf_status_refresh" in MAIN
+    assert "accepted_at_before_refresh" in MAIN
+    assert "mcf_order.amazon_status_updated_at = accepted_at_before_refresh" in MAIN
+    assert "mcf_execution.refresh_mcf_status =" in MAIN
