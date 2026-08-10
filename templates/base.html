@@ -285,60 +285,7 @@
 })();
 </script>
 
-<script id="bt38WebhookUiFreshness">
-(function(){
-  const livePaths = new Set([
-    "/warehouse",
-    "/product-linking",
-    "/amazon-fba-stock",
-    "/listings",
-    "/orders-mcf"
-  ]);
 
-  if (!livePaths.has(window.location.pathname)) return;
-
-  let revision = null;
-  let checking = false;
-
-  async function checkWebhookRevision(){
-    if (checking || document.hidden) return;
-    checking = true;
-
-    try {
-      const response = await fetch("/governed/ui/webhook-revision", {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: {"Accept": "application/json"}
-      });
-      if (!response.ok) return;
-
-      const data = await response.json();
-      if (!data || !data.success || !data.revision) return;
-
-      if (revision === null) {
-        revision = data.revision;
-        return;
-      }
-
-      if (data.revision !== revision) {
-        revision = data.revision;
-        window.location.reload();
-      }
-    } catch (error) {
-      console.debug("BT38 webhook UI freshness check unavailable", error);
-    } finally {
-      checking = false;
-    }
-  }
-
-  checkWebhookRevision();
-  window.setInterval(checkWebhookRevision, 2000);
-  document.addEventListener("visibilitychange", function(){
-    if (!document.hidden) checkWebhookRevision();
-  });
-})();
-</script>
 
 </body>
 </html>
