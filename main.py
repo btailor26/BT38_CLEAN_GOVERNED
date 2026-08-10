@@ -176,11 +176,19 @@ try:
     from services.governed_recovery_alignment import (
         run_bounded_startup_recovery_alignment,
     )
+    from services.governed_failed_mcf_retry import retry_failed_linked_mcf
 
     recovery_result = run_bounded_startup_recovery_alignment(app)
     app.logger.info(
         "BT38 bounded recovery alignment: %s",
         recovery_result,
+    )
+
+    with app.app_context():
+        failed_mcf_retry_result = retry_failed_linked_mcf()
+    app.logger.info(
+        "BT38 failed linked MCF retry alignment: %s",
+        failed_mcf_retry_result,
     )
 except Exception:
     from extensions import db
