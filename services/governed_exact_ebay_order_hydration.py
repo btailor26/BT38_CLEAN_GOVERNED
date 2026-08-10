@@ -1,9 +1,9 @@
-"""Exact eBay order hydration for the governed webhook path.
+"""Exact eBay order hydration for the governed webhook -> MCF path.
 
-This is not a second order importer. It reuses the existing eBay credential
-reader and MarketplaceOrder upsert authority, but reads only the order ID that
-the durable webhook has already identified. It never mutates Warehouse stock,
-never pushes a marketplace, and never submits MCF itself.
+The durable webhook already identifies and creates the MarketplaceOrder. This
+module reads only that exact eBay order and fills missing delivery/timestamp
+fields on those existing rows. It does not create orders, mutate Warehouse
+stock, push marketplaces, or submit MCF.
 """
 from __future__ import annotations
 
@@ -11,23 +11,39 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from sqlalchemy import text
 
+from extensions import db
+from models import MarketplaceOrder
 from services.governed_marketplace_order_import import (
     EBAY_ORDERS_URL,
     _ebay_access_token,
     _parse_ebay_datetime,
-    _safe_float,
-    _safe_int,
     _text,
-    upsert_governed_marketplace_order_line,
 )
 
 
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
-    """Hydrate one webhook-identified eBay order through existing DB authority."""
     order_id = _text(marketplace_order_id)
     if not order_id:
         return {"success": False, "skipped": True, "reason": "ebay_order_id_missing"}
+
+    rows = (
+        MarketplaceOrder.query
+        .filter(
+            MarketplaceOrder.store_id == store.id,
+            MarketplaceOrder.marketplace_order_id == order_id,
+        )
+        .order_by(MarketplaceOrder.id)
+        .all()
+    )
+    if not rows:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "existing_marketplace_order_missing",
+            "order_id": order_id,
+        }
 
     access_token = _ebay_access_token(store)
     response = requests.get(
@@ -49,81 +65,95 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         }
 
     order = response.json() or {}
-    if _text(order.get("orderId")) and _text(order.get("orderId")) != order_id:
+    returned_id = _text(order.get("orderId"))
+    if returned_id and returned_id != order_id:
         return {
             "success": False,
             "skipped": False,
             "reason": "exact_ebay_order_identity_mismatch",
             "order_id": order_id,
+            "returned_order_id": returned_id,
         }
 
     instructions = order.get("fulfillmentStartInstructions") or []
     instruction = instructions[0] if instructions else {}
     shipping_step = instruction.get("shippingStep") or {}
     ship_to = shipping_step.get("shipTo") or {}
-    contact_address = ship_to.get("contactAddress") or {}
+    address = ship_to.get("contactAddress") or {}
 
-    address_parts = [
-        _text(contact_address.get("addressLine1")),
-        _text(contact_address.get("addressLine2")),
-    ]
-    delivery_address = ", ".join(part for part in address_parts if part)
-    delivery_name = _text(ship_to.get("fullName"))
-    delivery_city = _text(contact_address.get("city"))
-    delivery_postcode = _text(contact_address.get("postalCode"))
-    delivery_country = _text(contact_address.get("countryCode")).upper()[:2]
-    delivery_email = _text(ship_to.get("email"))
-    primary_phone = ship_to.get("primaryPhone") or {}
-    delivery_phone = (
-        _text(primary_phone.get("phoneNumber"))
-        or _text(ship_to.get("phoneNumber"))
+    delivery_address = ", ".join(
+        part for part in (
+            _text(address.get("addressLine1")),
+            _text(address.get("addressLine2")),
+        ) if part
     )
+    values = {
+        "ship_to_name": _text(ship_to.get("fullName")),
+        "ship_to_address": delivery_address,
+        "ship_to_city": _text(address.get("city")),
+        "ship_to_postcode": _text(address.get("postalCode")),
+        "ship_to_country": _text(address.get("countryCode")).upper()[:2],
+        "ship_to_email": _text(ship_to.get("email")),
+        "ship_to_phone": _text((ship_to.get("primaryPhone") or {}).get("phoneNumber"))
+        or _text(ship_to.get("phoneNumber")),
+    }
     marketplace_created_at = _parse_ebay_datetime(order.get("creationDate"))
 
-    results = []
-    rows = []
-    for item in order.get("lineItems") or []:
-        sku = _text(item.get("sku")) or _text(item.get("legacyItemId"))
-        line_id = _text(item.get("lineItemId")) or f"{order_id}:{sku}"
-        price = item.get("lineItemCost") or {}
-        unit_price = _safe_float(price.get("value")) if isinstance(price, dict) else 0.0
+    item_by_line_id = {
+        _text(item.get("lineItemId")): item
+        for item in (order.get("lineItems") or [])
+        if _text(item.get("lineItemId"))
+    }
+    item_by_sku = {
+        _text(item.get("sku")): item
+        for item in (order.get("lineItems") or [])
+        if _text(item.get("sku"))
+    }
 
-        result = upsert_governed_marketplace_order_line(
-            store=store,
-            marketplace_order_id=order_id,
-            marketplace_order_item_id=line_id,
-            sku=sku,
-            quantity=_safe_int(item.get("quantity")),
-            unit_price=unit_price,
-            fulfillment_type="FBM",
-            status="pending",
-            ship_to_name=delivery_name,
-            ship_to_address=delivery_address,
-            ship_to_city=delivery_city,
-            ship_to_postcode=delivery_postcode,
-            ship_to_country=delivery_country,
-            ship_to_email=delivery_email,
-            ship_to_phone=delivery_phone,
-            marketplace_created_at=marketplace_created_at,
-            import_source=source,
+    for row in rows:
+        for field, value in values.items():
+            if value:
+                setattr(row, field, value)
+
+        item = (
+            item_by_line_id.get(_text(row.marketplace_order_item_id))
+            or item_by_sku.get(_text(row.sku))
         )
-        row = result.pop("_order_row", None)
-        if row is not None:
-            rows.append(row)
-        results.append(result)
+        if item:
+            line_id = _text(item.get("lineItemId"))
+            if line_id:
+                row.marketplace_order_item_id = line_id
+
+        db.session.execute(
+            text(
+                """
+                UPDATE marketplace_orders
+                SET marketplace_created_at = COALESCE(:created_at, marketplace_created_at),
+                    import_source = :source
+                WHERE id = :row_id
+                """
+            ),
+            {
+                "created_at": marketplace_created_at,
+                "source": source,
+                "row_id": row.id,
+            },
+        )
+
+    db.session.commit()
 
     required_address_complete = bool(
-        delivery_name
-        and delivery_address
-        and delivery_city
-        and delivery_postcode
-        and delivery_country
+        values["ship_to_name"]
+        and values["ship_to_address"]
+        and values["ship_to_city"]
+        and values["ship_to_postcode"]
+        and values["ship_to_country"]
     )
     return {
-        "success": bool(rows) and required_address_complete,
+        "success": required_address_complete,
         "skipped": False,
         "reason": (
-            None if rows and required_address_complete
+            None if required_address_complete
             else "exact_ebay_order_missing_mcf_delivery_fields"
         ),
         "order_id": order_id,
@@ -131,6 +161,5 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
             marketplace_created_at.isoformat() if marketplace_created_at else None
         ),
         "required_address_complete": required_address_complete,
-        "rows": rows,
-        "results": results,
+        "rows_hydrated": len(rows),
     }
