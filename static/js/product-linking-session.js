@@ -9,7 +9,9 @@
 
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
-  const CACHE_KEY = "product-linking-v3";
+  // v4 invalidates the stale relationship snapshot generation once. After the
+  // fresh governed DB snapshot is stored, the page returns to event-only deltas.
+  const CACHE_KEY = "product-linking-v4";
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
   const PAGE_SIZES = [15, 25, 50, 100];
@@ -264,12 +266,38 @@
   }
 
   function mutationSearchKeys(contract, identity) {
-    const keys = []; const add = (value) => { const text = String(value ?? "").trim(); if (text && !keys.includes(text)) keys.push(text); };
-    normaliseIds(contract?.affected_warehouse_stock_ids).forEach(add); normaliseIds(contract?.affected_group_ids).forEach(add); normaliseIds(contract?.affected_listing_ids).forEach(add);
-    add(identity?.warehouseSku); add(identity?.listingSku); add(identity?.warehouseId); add(identity?.groupId); add(identity?.previousGroupId); add(identity?.originalGroupId); add(identity?.listingId); return keys;
+    const cleanup = [];
+    const authority = [];
+    const seen = new Set();
+    const add = (bucket, value) => {
+      const text = String(value ?? "").trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      bucket.push(text);
+    };
+
+    // A relationship mutation can affect an old group and a new/current group.
+    // Clean historical rows first. The current committed relationship is read
+    // last so it always wins the browser-session merge.
+    add(cleanup, identity?.previousGroupId);
+    add(cleanup, identity?.originalGroupId);
+    normaliseIds(contract?.affected_group_ids).forEach((value) => {
+      if (!sameId(value, identity?.groupId)) add(cleanup, value);
+    });
+
+    normaliseIds(contract?.affected_warehouse_stock_ids).forEach((value) => add(authority, value));
+    normaliseIds(contract?.affected_listing_ids).forEach((value) => add(authority, value));
+    add(authority, identity?.warehouseSku);
+    add(authority, identity?.warehouseId);
+    add(authority, identity?.groupId);
+    add(authority, identity?.listingId);
+    add(authority, identity?.listingSku);
+
+    return cleanup.concat(authority);
   }
 
   async function applyMutationContract(contract, identity) {
+    // Same contract as every governed page: no committed change means sleep.
     if (contract && contract.changed === false) return contract;
     const listingIds = normaliseIds([...(contract?.affected_listing_ids || []), identity?.listingId]);
     const keys = mutationSearchKeys(contract, identity); if (!keys.length) throw new Error("Affected Product Linking rows could not be identified");
