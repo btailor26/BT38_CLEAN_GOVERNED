@@ -4,7 +4,8 @@ Contract:
 - No webhook means no database polling and no marketplace polling.
 - Open governed pages keep one sleeping Server-Sent Events connection.
 - A completed Amazon/eBay webhook publishes one in-process UI signal.
-- The browser rereads BT38 truth only after that signal.
+- The signal carries only the exact affected marketplace/DB identity.
+- Open pages refresh only the affected record/group from BT38 DB truth.
 - The live listener starts only after the normal page load has completed so the
   long-lived SSE request never holds the browser's initial loading state open.
 
@@ -41,10 +42,31 @@ _WEBHOOK_PATHS = {
     "/governed/webhooks/ebay": "ebay",
 }
 
+_UI_SCOPE_KEYS = (
+    "event_type",
+    "seller_sku",
+    "listing_id",
+    "order_id",
+    "warehouse_stock_id",
+    "group_id",
+    "store_id",
+)
 
-def publish_webhook_ui_event(*, platform: str, notification_record_id: int) -> int:
+
+def publish_webhook_ui_event(
+    *,
+    platform: str,
+    notification_record_id: int,
+    scope: dict | None = None,
+) -> int:
     """Wake open UI listeners after governed webhook processing completes."""
     global _revision, _latest_event
+
+    safe_scope = {
+        key: value
+        for key, value in dict(scope or {}).items()
+        if key in _UI_SCOPE_KEYS and value not in (None, "")
+    }
 
     with _condition:
         _revision += 1
@@ -53,6 +75,7 @@ def publish_webhook_ui_event(*, platform: str, notification_record_id: int) -> i
             "platform": str(platform or "").strip().lower(),
             "notification_record_id": int(notification_record_id),
             "published_at": datetime.utcnow().isoformat() + "Z",
+            **safe_scope,
         }
         _condition.notify_all()
         return _revision
@@ -95,6 +118,29 @@ def governed_ui_events():
     return response
 
 
+def _ui_scope_from_response(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+
+    result = payload.get("notification_result")
+    if not isinstance(result, dict):
+        return {}
+
+    scope = {
+        key: result.get(key)
+        for key in _UI_SCOPE_KEYS
+        if result.get(key) not in (None, "")
+    }
+
+    refresh_scope = result.get("refresh_scope")
+    if isinstance(refresh_scope, dict):
+        for key in _UI_SCOPE_KEYS:
+            if scope.get(key) in (None, "") and refresh_scope.get(key) not in (None, ""):
+                scope[key] = refresh_scope.get(key)
+
+    return scope
+
+
 @app.after_request
 def publish_completed_webhook_and_attach_live_ui(response):
     """Publish after webhook completion and attach a sleeping browser listener."""
@@ -116,6 +162,7 @@ def publish_completed_webhook_and_attach_live_ui(response):
             publish_webhook_ui_event(
                 platform=_WEBHOOK_PATHS[path],
                 notification_record_id=int(record_id),
+                scope=_ui_scope_from_response(payload),
             )
 
         return response
@@ -137,27 +184,165 @@ def publish_completed_webhook_and_attach_live_ui(response):
   if (!window.EventSource || window.bt38WebhookLiveEventsInstalled) return;
   window.bt38WebhookLiveEventsInstalled = true;
 
-  let pendingRefresh = false;
+  let pendingEvent = null;
   let source = null;
+  let targetedRefreshRunning = false;
+
+  function escapeSelector(value){
+    const text = String(value ?? "");
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(text);
+    }
+    return text.replace(/["\\]/g, "\\$&");
+  }
+
+  function markRows(root){
+    const path = window.location.pathname.replace(/\/$/, "") || "/";
+
+    if (path === "/amazon-fba-stock") {
+      root.querySelectorAll("table tbody tr").forEach(function(row){
+        const sku = row.querySelector("td code")?.textContent?.trim();
+        if (sku) row.dataset.bt38SellerSku = sku;
+      });
+    }
+
+    if (path === "/orders-mcf") {
+      root.querySelectorAll(".mcf-order-row").forEach(function(row){
+        const orderId = row.querySelector("td:nth-child(2) strong")?.textContent?.trim();
+        if (orderId) row.dataset.bt38OrderId = orderId;
+      });
+    }
+  }
+
+  function selectorFor(detail){
+    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const stockId = detail?.warehouse_stock_id;
+    const listingId = detail?.listing_id;
+    const groupId = detail?.group_id;
+    const sellerSku = detail?.seller_sku;
+    const orderId = detail?.order_id;
+
+    if (path === "/warehouse") {
+      if (stockId != null) return `tr[data-stock-id="${escapeSelector(stockId)}"]`;
+      if (listingId != null) return `tr[data-listing-id="${escapeSelector(listingId)}"]`;
+      if (sellerSku) return `tr[data-sku="${escapeSelector(sellerSku)}"]`;
+      if (groupId != null) return `tr[data-group-id="${escapeSelector(groupId)}"]`;
+    }
+
+    if (path === "/amazon-fba-stock" && sellerSku) {
+      return `tr[data-bt38-seller-sku="${escapeSelector(sellerSku)}"]`;
+    }
+
+    if (path === "/orders-mcf" && orderId) {
+      return `tr[data-bt38-order-id="${escapeSelector(orderId)}"]`;
+    }
+
+    if (path === "/listings") {
+      if (listingId != null) return `tr[data-listing-id="${escapeSelector(listingId)}"]`;
+      if (sellerSku) return `tr[data-sku="${escapeSelector(sellerSku)}"]`;
+    }
+
+    return null;
+  }
+
+  function targetedUrl(detail){
+    const path = window.location.pathname.replace(/\/$/, "") || "/";
+    const url = new URL(window.location.href);
+
+    if (path === "/warehouse" && detail?.seller_sku) {
+      url.searchParams.set("q", String(detail.seller_sku));
+      url.searchParams.set("page", "1");
+      url.searchParams.set("per_page", "15");
+    }
+
+    if (path === "/amazon-fba-stock" && detail?.seller_sku) {
+      url.searchParams.set("search", String(detail.seller_sku));
+      url.searchParams.set("status", "all");
+      url.searchParams.set("page", "1");
+    }
+
+    return url.toString();
+  }
+
+  async function refreshAffectedHtmlRecord(detail){
+    const path = window.location.pathname.replace(/\/$/, "") || "/";
+
+    // Product Linking owns its exact-record merge in product-linking-session.js.
+    if (path === "/product-linking") return;
+
+    markRows(document);
+    const selector = selectorFor(detail);
+    if (!selector) return;
+
+    const currentRow = document.querySelector(selector);
+    if (!currentRow) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function(){ controller.abort(); }, 5000);
+
+    try {
+      const response = await fetch(targetedUrl(detail), {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: {"X-BT38-UI-Refresh": "targeted"},
+        signal: controller.signal
+      });
+      if (!response.ok) return;
+
+      const html = await response.text();
+      const parsed = new DOMParser().parseFromString(html, "text/html");
+      markRows(parsed);
+      const freshRow = parsed.querySelector(selector);
+      if (!freshRow) return;
+
+      currentRow.replaceWith(document.importNode(freshRow, true));
+      if (window.feather && typeof window.feather.replace === "function") {
+        window.feather.replace();
+      }
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        console.warn("[BT38 UI] targeted event refresh failed", error);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function handleEvent(detail){
+    if (!detail || targetedRefreshRunning) return;
+    targetedRefreshRunning = true;
+    try {
+      window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: detail}));
+      await refreshAffectedHtmlRecord(detail);
+    } finally {
+      targetedRefreshRunning = false;
+    }
+  }
 
   function startLiveEvents(){
     if (source) return;
 
+    markRows(document);
     source = new EventSource("/governed/ui/events", {withCredentials: true});
 
-    source.addEventListener("bt38-update", function(){
+    source.addEventListener("bt38-update", function(event){
+      let detail = {};
+      try { detail = JSON.parse(event.data || "{}"); } catch (_) {}
+
       if (document.hidden) {
-        pendingRefresh = true;
+        pendingEvent = detail;
         return;
       }
-      window.location.reload();
+
+      void handleEvent(detail);
     });
   }
 
   document.addEventListener("visibilitychange", function(){
-    if (!document.hidden && pendingRefresh) {
-      pendingRefresh = false;
-      window.location.reload();
+    if (!document.hidden && pendingEvent) {
+      const detail = pendingEvent;
+      pendingEvent = null;
+      void handleEvent(detail);
     }
   });
 
@@ -165,9 +350,8 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if (source) source.close();
   }, {once: true});
 
-  // Do not open the long-lived stream while the browser is still completing
-  // the page navigation. The normal Warehouse/Product Linking/etc. page load
-  // finishes first; then the sleeping webhook listener is attached.
+  // The normal page navigation finishes first. The sleeping listener is then
+  // attached and never participates in the page's loading/spinner lifecycle.
   if (document.readyState === "complete") {
     window.setTimeout(startLiveEvents, 0);
   } else {
