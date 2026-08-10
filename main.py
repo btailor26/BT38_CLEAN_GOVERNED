@@ -1,5 +1,10 @@
 from app import app
 
+# Load the existing MCF compatibility binding before any startup recovery can
+# attempt Amazon submission. This keeps MCFService UI/fee compatibility while
+# all live Amazon execution remains on services.governed_mcf_execution.
+import services.governed_mcf_compat  # noqa: F401
+
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
 )
@@ -109,6 +114,18 @@ def _install_governed_webhook_runtime_alignment():
         actor="webhook",
         notification_record_id=None,
     ):
+        platform = str(marketplace or "").strip().lower()
+
+        # eBay variation notifications may identify only listingId + line item.
+        # When more than one active SKU shares that listing ID, resolve the
+        # exact order line before the existing executor chooses Warehouse stock.
+        if platform == "ebay":
+            from services.governed_ebay_variation_signal import (
+                enrich_ambiguous_ebay_order_signal,
+            )
+
+            payload = enrich_ambiguous_ebay_order_signal(payload or {})
+
         result = original_webhook_execution(
             marketplace=marketplace,
             payload=payload,
@@ -116,7 +133,7 @@ def _install_governed_webhook_runtime_alignment():
             notification_record_id=notification_record_id,
         )
 
-        if str(marketplace or "").strip().lower() != "amazon":
+        if platform != "amazon":
             return result
 
         from services.governed_mcf_execution import (
@@ -270,7 +287,6 @@ def acknowledge_captured_ebay_webhook(response):
 
 
 try:
-    import services.governed_mcf_compat  # noqa: F401
     from governed_mcf_routes import governed_mcf_bp
     app.register_blueprint(governed_mcf_bp)
 except Exception as exc:
