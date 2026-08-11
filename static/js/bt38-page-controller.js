@@ -12,9 +12,38 @@ window.BT38.pages = window.BT38.pages || {};
   // Product Linking has its own complete-working-set session controller.
   // Do not register handlers, replace globals, cache rendered rows or alter pagination here.
   if (root && root.dataset.bt38Page === "productLinking") {
+    // Product Linking has one original Push control in the right-hand Actions
+    // column. A later dynamic-render regression also inserted the same push
+    // shortcut beside Link/Add (column 4). Remove only that injected duplicate
+    // after every render; never touch the original Actions-column control.
+    const removeInjectedProductLinkingPush = (scope) => {
+      const target = scope && scope.querySelectorAll ? scope : document;
+      target.querySelectorAll(
+        'tr > td:nth-child(4) .bt38-qty-push-open'
+      ).forEach((button) => button.remove());
+    };
+
+    removeInjectedProductLinkingPush(document);
+
+    const productLinkingObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node && node.nodeType === 1) {
+            removeInjectedProductLinkingPush(node);
+          }
+        });
+      });
+    });
+
+    productLinkingObserver.observe(root, {
+      childList: true,
+      subtree: true
+    });
+
     window.BT38.PageController = {
       owner: "product-linking-session.js",
-      skipped: true
+      skipped: true,
+      duplicatePushRemoved: true
     };
     return;
   }
