@@ -80,10 +80,6 @@ window.BT38.pages = window.BT38.pages || {};
       setKpi(3, grouped);
     }
 
-    // Product Linking has one original Push control in the right-hand Actions
-    // column. A later dynamic-render regression also inserted the same push
-    // shortcut beside Link/Add (column 4). Remove only that injected duplicate
-    // after every render; never touch the original Actions-column control.
     function removeInjectedProductLinkingPush(scope) {
       const target = scope && scope.querySelectorAll ? scope : document;
       target.querySelectorAll(
@@ -91,10 +87,6 @@ window.BT38.pages = window.BT38.pages || {};
       ).forEach((button) => button.remove());
     }
 
-    // Long marketplace titles must never expand the Linked Listings column and
-    // push the original Actions column off-screen. Keep the existing renderer,
-    // but constrain the Product Linking table after each render so the right-side
-    // Diagnostics/Push controls remain visible at normal desktop widths.
     function alignProductLinkingTableLayout(scope) {
       const target = scope && scope.querySelectorAll ? scope : document;
       target.querySelectorAll('#warehouseDataContainer table').forEach((table) => {
@@ -158,11 +150,6 @@ window.BT38.pages = window.BT38.pages || {};
       subtree: true
     });
 
-    // Browser snapshots created before current MarketplaceListing group
-    // authority was enforced can still display a permanent/original Warehouse
-    // group after the listing has moved into another current group. Invalidate
-    // exactly once per browser after this alignment revision, then return to
-    // the normal event-only session workflow.
     function refreshCurrentRelationshipSnapshot(attempt) {
       let alreadyAligned = false;
       try {
@@ -265,12 +252,20 @@ window.BT38.pages = window.BT38.pages || {};
     return allowedPageSizes.includes(parsed) ? parsed : 15;
   }
 
+  function hasServerPagination() {
+    return !!document.querySelector(".bt38-page-nav .bt38-page-link[href]");
+  }
+
   function updateCount(page, start, end) {
     const total = page.filteredRows.length;
     const count = document.querySelector("[data-bt38-count], .bt38-table-count");
     if (count) {
       count.textContent = `${total} matching · showing ${total ? start + 1 : 0}-${Math.min(end, total)}`;
     }
+
+    // Server-rendered pages own the authoritative page/total count. Never
+    // replace it with a count calculated from only the currently loaded rows.
+    if (hasServerPagination()) return;
 
     const status = document.querySelector(".bt38-page-status");
     if (status) {
@@ -285,6 +280,19 @@ window.BT38.pages = window.BT38.pages || {};
 
     page.perPage = pageSize(page);
     const total = page.filteredRows.length;
+
+    // Server pagination already supplied only the requested page. Local table
+    // filtering may hide rows on that page, but it must not create another
+    // Previous/Next/page-size engine over the same rows.
+    if (hasServerPagination()) {
+      page.currentPage = 1;
+      page.rows.forEach((row) => {
+        row.el.hidden = !page.filteredRows.includes(row);
+      });
+      updateCount(page, 0, total);
+      return true;
+    }
+
     const totalPages = Math.max(1, Math.ceil(total / page.perPage));
     page.currentPage = Math.min(Math.max(page.currentPage, 1), totalPages);
 
@@ -297,12 +305,6 @@ window.BT38.pages = window.BT38.pages || {};
     });
 
     updateCount(page, start, end);
-
-    const links = document.querySelectorAll(".bt38-page-nav .bt38-page-link");
-    const previous = links[0];
-    const next = links[links.length - 1];
-    if (previous) previous.classList.toggle("disabled", page.currentPage <= 1);
-    if (next) next.classList.toggle("disabled", page.currentPage >= totalPages);
     return true;
   }
 
@@ -356,38 +358,6 @@ window.BT38.pages = window.BT38.pages || {};
       field.addEventListener("input", apply);
       field.addEventListener("change", apply);
     });
-  }
-
-  function wirePagination(page) {
-    const select = document.getElementById("bt38ResultsPerPageSelect");
-    if (select) {
-      select.addEventListener("change", () => {
-        page.currentPage = 1;
-        render(page.name);
-      });
-    }
-
-    const links = document.querySelectorAll(".bt38-page-nav .bt38-page-link");
-    if (links[0]) {
-      links[0].addEventListener("click", (event) => {
-        event.preventDefault();
-        if (page.currentPage > 1) {
-          page.currentPage -= 1;
-          render(page.name);
-        }
-      });
-    }
-
-    if (links.length > 1) {
-      links[links.length - 1].addEventListener("click", (event) => {
-        event.preventDefault();
-        const totalPages = Math.max(1, Math.ceil(page.filteredRows.length / page.perPage));
-        if (page.currentPage < totalPages) {
-          page.currentPage += 1;
-          render(page.name);
-        }
-      });
-    }
   }
 
   function normalizeWarehouseUi() {
@@ -500,7 +470,6 @@ window.BT38.pages = window.BT38.pages || {};
       }
 
       wireForm(page);
-      wirePagination(page);
       if (cacheRows(page.name)) filter(page.name, false);
       return true;
     }
