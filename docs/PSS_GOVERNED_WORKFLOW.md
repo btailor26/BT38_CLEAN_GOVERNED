@@ -6,6 +6,45 @@ PSS = Problem -> Solution -> Solve.
 
 BT38 development follows an audit-first governed workflow. No change reaches the governed `main` branch until the problem is proven, the solution is reviewed, the implementation is tested, and the release gate is green.
 
+## Non-Negotiable One-Clear-Path Contract
+
+This is the permanent BT38 inventory execution contract. Alignment work must preserve it. A feature is a FAIL if it reaches the correct final number through a competing path.
+
+### Inventory authority
+
+- Warehouse is the only authority for FBM/eBay sellable inventory quantity.
+- Product Linking manages current marketplace relationships only. It never owns or calculates marketplace quantity.
+- Product Linking Push / push settings are shortcuts into the Warehouse-controlled governed push path only.
+- A shortcut may identify `group_id` and the permanent `warehouse_stock_id`; it must not create a second quantity or marketplace-write engine.
+- Warehouse resolves the current group, supplies the saved Warehouse quantity, and sends that one quantity through the shared governed group service.
+- Every writable member of the current group receives that same Warehouse-controlled quantity.
+- Amazon FBA/AFN is Amazon-controlled, read-only to BT38 marketplace writes, and must always be skipped by the push writer.
+
+### Marketplace event / webhook authority
+
+- Amazon/eBay webhook intake runs 24/7 independently of browser activity.
+- A webhook is an event/signal into the governed order/Warehouse path; it is not a competing inventory authority.
+- Exact marketplace/store/SKU/order identity is resolved first.
+- FBM/eBay commercial events update the canonical MarketplaceOrder/Warehouse truth first.
+- Amazon FBA inventory events update the exact FBA inventory truth path; they do not write FBA inventory back to Amazon.
+- After Warehouse truth changes, Warehouse decides whether the correction is a single listing or current group and hands that exact scope to the same shared governed push service used by manual shortcuts.
+
+### UI handoff
+
+- UI pages are downstream observers of committed DB truth; they never become inventory authority.
+- No committed change means no UI wake and no page refresh.
+- A committed change publishes the exact affected record identities only: affected Warehouse stock IDs, listing IDs, group IDs, SKU/order identity as applicable.
+- Warehouse, Product Linking, Listings, FBA and MCF pages refresh only affected records from DB truth; no whole-database scan and no routine full-page refresh.
+- Rapid consecutive committed events must not overwrite one another before the browser consumes them.
+- Open pages should receive and render the committed change within 2 seconds in the deployed environment. The 2-second SLA must be measured in deployed testing; static tests alone cannot prove it.
+- When there is no browser activity and no marketplace event, pages/runtime return to sleep: no heartbeat, no browser polling and no idle DB reads/writes.
+
+### The one path
+
+`Marketplace event or explicit user shortcut -> canonical order/Warehouse or FBA truth -> Warehouse current-group decision -> shared governed push service -> FBA skip / FBM-eBay write -> committed affected-ID UI event -> targeted page refresh -> sleep`
+
+No future change may introduce a second Warehouse writer, Product Linking quantity authority, webhook-owned quantity engine, alternate group push engine, polling-based UI authority, or broad refresh as a substitute for exact affected-record handoff.
+
 ## Alignment-Only Rule
 
 The active release branch is cumulative. Work on the current release branch must align existing features so they operate together; it must not replace, roll back, silently remove, bypass, or create a parallel implementation of an already completed feature.
@@ -43,6 +82,8 @@ For marketplace/webhook changes, proof must preserve and test the complete curre
 - MCF behaviour;
 - FBA/AFN read-only protection;
 - recovery/reconcile behaviour;
+- exact DB-to-UI affected-record handoff;
+- deployed <=2-second targeted UI update proof;
 - existing Amazon and eBay paths so a fix for one marketplace does not break the other.
 
 A challenge-response test alone is not proof that an order webhook works. Where practical, the final gate must prove the external event reaches the deployed application and follows the governed path into the connected database.
@@ -52,7 +93,8 @@ A challenge-response test alone is not proof that an order webhook works. Where 
 - All development work is performed on branches.
 - `main` is the governed release authority.
 - Production is deployed only from tested and approved `main`.
-- Feature/fix branches may be used for development and testing but are not production authority.
+- A designated draft integration branch may be deployed to a test environment when explicitly approved for whole-system testing; that does not merge it or make it production authority.
+- The draft branch remains open/unmerged until all required branch and deployed lifecycle gates pass together.
 - Branches merge into `main` only after the required PSS checks and release gate pass.
 - No direct unreviewed production changes from feature branches.
 - Final merge and production deployment require human approval.
@@ -105,6 +147,11 @@ A branch may merge into governed `main` only when all applicable checks pass:
 - Branch aligned with latest `main`.
 - All intended current-branch features remain present.
 - No unrelated current behaviour was removed to make the fix pass.
+- The Non-Negotiable One-Clear-Path Contract passes end-to-end.
+- Product Linking/manual push, webhook correction and Warehouse push converge on the same shared Warehouse-controlled service.
+- FBA/AFN writes are skipped.
+- DB and UI agree on exact affected records.
+- Changed open-page records update within 2 seconds in deployed testing without broad refresh/polling.
 - Working tree clean.
 - Python compile passes.
 - Automated test suite passes.
@@ -124,10 +171,12 @@ No single tool may approve a merge by itself.
 
 - GitHub is the source of truth for code.
 - Governed `main` is the release authority.
-- Warehouse is the source of truth for inventory.
-- Product Linking manages relationships only.
-- FBA/AFN remains protected from unauthorized writes.
+- Warehouse is the source of truth for FBM/eBay inventory.
+- Product Linking manages relationships and exposes shortcuts only.
+- FBA/AFN remains protected from unauthorized writes and uses the FBA truth path.
 - Marketplace writes must use governed execution paths.
+- Webhooks signal the canonical order/Warehouse or FBA path; they do not become a competing quantity authority.
+- UI pages render committed truth and refresh exact affected records only.
 - No retired/legacy route may become an execution authority.
 - No alignment may create a competing authority for an existing governed path.
 
