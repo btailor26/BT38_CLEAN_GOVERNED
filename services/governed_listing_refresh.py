@@ -161,19 +161,16 @@ def refresh_governed_listing_from_snapshot(
     if getattr(store, "is_active", False) is not True:
         return _blocked("store is not active")
 
-    # Permanent marketplace identity contract:
+    # Platform-wide listing identity contract:
     #
-    # The external listing ID supplied by the marketplace API is the stable
-    # listing identity. Seller SKU and title are mutable metadata.
-    #
-    # Resolve by store + marketplace ID first. A SKU fallback is permitted
-    # only for legacy rows that do not yet contain an external listing ID.
+    # store_id + seller SKU is the operational marketplace-listing identity.
+    # ASIN / external listing ID is marketplace reference metadata and may be
+    # corrected without creating another MarketplaceListing.
     listing = (
         MarketplaceListing.query
         .filter(
             MarketplaceListing.store_id == store.id,
-            MarketplaceListing.external_listing_id
-            == external_listing_id,
+            MarketplaceListing.external_sku == sku,
         )
         .order_by(
             MarketplaceListing.is_active.desc(),
@@ -181,24 +178,6 @@ def refresh_governed_listing_from_snapshot(
         )
         .first()
     )
-
-    if listing is None and sku:
-        listing = (
-            MarketplaceListing.query
-            .filter(
-                MarketplaceListing.store_id == store.id,
-                MarketplaceListing.external_sku == sku,
-                db.or_(
-                    MarketplaceListing.external_listing_id.is_(None),
-                    MarketplaceListing.external_listing_id == "",
-                ),
-            )
-            .order_by(
-                MarketplaceListing.is_active.desc(),
-                MarketplaceListing.id.asc(),
-            )
-            .first()
-        )
 
     warehouse_stock = None
 
@@ -232,9 +211,8 @@ def refresh_governed_listing_from_snapshot(
     # temporarily; WarehouseStock.master_product_group_id never moves.
     original_group_id = ensure_permanent_original_group(warehouse_stock)
 
-    # The permanent listing was resolved once by store + marketplace ID,
-    # with a restricted blank-ID legacy SKU fallback.
-    # No further identity lookup is permitted.
+    # The permanent listing was resolved once by store + seller SKU.
+    # No second listing identity lookup is permitted.
 
     created = False
     if listing is None:
