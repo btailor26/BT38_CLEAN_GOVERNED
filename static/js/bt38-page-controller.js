@@ -12,27 +12,103 @@ window.BT38.pages = window.BT38.pages || {};
   // Product Linking has its own complete-working-set session controller.
   // Do not register handlers, replace globals, cache rendered rows or alter pagination here.
   if (root && root.dataset.bt38Page === "productLinking") {
+    const SNAPSHOT_ALIGNMENT_REVISION = "current-group-authority-v5";
+    const SNAPSHOT_ALIGNMENT_MARKER = "bt38-product-linking-snapshot-alignment";
+
+    function productLinkingProducts() {
+      try {
+        return Array.isArray(allWarehouseProducts)
+          ? allWarehouseProducts
+          : [];
+      } catch (_) {
+        return Array.isArray(window.allWarehouseProducts)
+          ? window.allWarehouseProducts
+          : [];
+      }
+    }
+
+    function productLinkingUnlinked() {
+      try {
+        return Array.isArray(allUnlinkedListings)
+          ? allUnlinkedListings
+          : [];
+      } catch (_) {
+        return Array.isArray(window.allUnlinkedListings)
+          ? window.allUnlinkedListings
+          : [];
+      }
+    }
+
+    function setKpi(index, value) {
+      const nodes = root.querySelectorAll(".kpi-card .kpi-number");
+      const node = nodes[index];
+      if (!node) return;
+      const text = String(value);
+      if (node.textContent.trim() !== text) node.textContent = text;
+    }
+
+    function alignProductLinkingSummary() {
+      const products = productLinkingProducts();
+      const unlinked = productLinkingUnlinked();
+      if (!products.length && !unlinked.length) return;
+
+      const linked = products.reduce((total, product) => {
+        const listings = Array.isArray(product?.listings)
+          ? product.listings.length
+          : 0;
+        const count = Number.parseInt(
+          product?.linked_count ?? listings,
+          10
+        );
+        return total + (Number.isFinite(count) ? count : listings);
+      }, 0);
+
+      const grouped = products.reduce((total, product) => {
+        const listings = Array.isArray(product?.listings)
+          ? product.listings.length
+          : 0;
+        const count = Number.parseInt(
+          product?.linked_count ?? listings,
+          10
+        );
+        return total + ((Number.isFinite(count) ? count : listings) >= 2 ? 1 : 0);
+      }, 0);
+
+      setKpi(0, products.length);
+      setKpi(1, unlinked.length);
+      setKpi(2, linked);
+      setKpi(3, grouped);
+    }
+
     // Product Linking has one original Push control in the right-hand Actions
     // column. A later dynamic-render regression also inserted the same push
     // shortcut beside Link/Add (column 4). Remove only that injected duplicate
     // after every render; never touch the original Actions-column control.
-    const removeInjectedProductLinkingPush = (scope) => {
+    function removeInjectedProductLinkingPush(scope) {
       const target = scope && scope.querySelectorAll ? scope : document;
       target.querySelectorAll(
         'tr > td:nth-child(4) .bt38-qty-push-open'
       ).forEach((button) => button.remove());
-    };
+    }
 
-    removeInjectedProductLinkingPush(document);
+    function alignProductLinkingDom(scope) {
+      removeInjectedProductLinkingPush(scope || document);
+      alignProductLinkingSummary();
+    }
+
+    alignProductLinkingDom(document);
 
     const productLinkingObserver = new MutationObserver((mutations) => {
+      let addedElement = false;
       mutations.forEach((mutation) => {
         mutation.addedNodes.forEach((node) => {
           if (node && node.nodeType === 1) {
+            addedElement = true;
             removeInjectedProductLinkingPush(node);
           }
         });
       });
+      if (addedElement) alignProductLinkingSummary();
     });
 
     productLinkingObserver.observe(root, {
@@ -40,10 +116,58 @@ window.BT38.pages = window.BT38.pages || {};
       subtree: true
     });
 
+    // Browser snapshots created before current MarketplaceListing group
+    // authority was enforced can still display a permanent/original Warehouse
+    // group after the listing has moved into another current group. Invalidate
+    // exactly once per browser after this alignment revision, then return to
+    // the normal event-only session workflow.
+    function refreshCurrentRelationshipSnapshot(attempt) {
+      let alreadyAligned = false;
+      try {
+        alreadyAligned = window.localStorage.getItem(
+          SNAPSHOT_ALIGNMENT_MARKER
+        ) === SNAPSHOT_ALIGNMENT_REVISION;
+      } catch (_) {}
+      if (alreadyAligned) return;
+
+      if (typeof window.bt38InvalidateProductLinkingSnapshot !== "function") {
+        if (attempt < 20) {
+          window.setTimeout(
+            () => refreshCurrentRelationshipSnapshot(attempt + 1),
+            50
+          );
+        }
+        return;
+      }
+
+      try {
+        window.localStorage.setItem(
+          SNAPSHOT_ALIGNMENT_MARKER,
+          SNAPSHOT_ALIGNMENT_REVISION
+        );
+      } catch (_) {}
+
+      Promise.resolve(window.bt38InvalidateProductLinkingSnapshot())
+        .then(() => alignProductLinkingDom(document))
+        .catch((error) => {
+          try {
+            window.localStorage.removeItem(SNAPSHOT_ALIGNMENT_MARKER);
+          } catch (_) {}
+          console.error(
+            "[ProductLinking] current-group snapshot alignment failed",
+            error
+          );
+        });
+    }
+
+    refreshCurrentRelationshipSnapshot(0);
+
     window.BT38.PageController = {
       owner: "product-linking-session.js",
       skipped: true,
-      duplicatePushRemoved: true
+      duplicatePushRemoved: true,
+      currentGroupSnapshotAligned: true,
+      summaryAligned: true
     };
     return;
   }
