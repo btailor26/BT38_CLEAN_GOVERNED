@@ -30,3 +30,12 @@ def test_product_linking_keeps_its_own_exact_paging_owner():
     assert 'root.dataset.bt38Page === "productLinking"' in PAGE_CONTROLLER
     assert 'owner: "product-linking-session.js"' in PAGE_CONTROLLER
     assert "if (pageKey() === \"productLinking\") return;" in SHARED
+
+
+def test_fba_exposes_shared_server_page_size_and_preserves_paging_state():
+    assert "function ensureFbaPageSizeControl()" in SHARED
+    assert '"/amazon-fba-stock"' in SHARED
+    assert 'url.searchParams.set("per_page", perPage)' in SHARED
+    assert 'url.searchParams.set("status", status)' in SHARED
+    assert 'link.classList.add("bt38-page-link")' in SHARED
+    assert 'link.closest("nav")?.classList.add("bt38-page-nav")' in SHARED
