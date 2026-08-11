@@ -96,7 +96,7 @@ window.BT38.setPageSession = function(pageName, values = {}) {
   document.head.appendChild(layout);
 
   const script = document.createElement("script");
-  script.src = "/static/js/product-linking-session-preflight.js?v=current-relationship-session-v7";
+  script.src = "/static/js/product-linking-session-preflight.js?v=current-relationship-session-v8";
   script.async = false;
   script.dataset.bt38ProductLinkingSession = "1";
   document.head.appendChild(script);
