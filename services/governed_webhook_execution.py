@@ -8,6 +8,7 @@ Rules:
 - Amazon FBA inventory remains Amazon-controlled and is updated only from
   Amazon inventory events.
 - Missing listings use the existing marketplace listing recovery/import path.
+- Automatic marketplace propagation starts only after a committed Warehouse change.
 """
 
 from __future__ import annotations
@@ -270,11 +271,6 @@ def process_marketplace_notification(
         order.updated_at = datetime.utcnow()
         db.session.commit()
 
-    # Amazon FBA/AFN sale notifications must still enter the canonical order
-    # database, but order quantity is never FBA inventory authority. The exact
-    # order processor marks the row processed without mutating Warehouse stock.
-    # Return here before any Warehouse/group marketplace push; the runtime's
-    # exact FBA verification refreshes AmazonFBAInventory from Amazon truth.
     if is_amazon_fba:
         return _log_result(
             status="fba_order_processed",
@@ -301,6 +297,53 @@ def process_marketplace_notification(
             correction_started=False,
             push_started=False,
             fba_inventory_verification_required=True,
+        )
+
+    stock_changed = bool(
+        mutation_result.get("success")
+        and not mutation_result.get("skipped")
+    )
+
+    # One clear automatic path: marketplace notifications may propagate only
+    # after the canonical Warehouse mutation committed a real quantity change.
+    # Duplicate/replayed/verification notifications stop here. They do not
+    # re-enter group propagation, do not call marketplace writers, and do not
+    # create a second UI wake for unchanged stock.
+    if not stock_changed:
+        mutation_failed = not bool(mutation_result.get("success"))
+        return _log_result(
+            status=(
+                "stock_mutation_failed"
+                if mutation_failed
+                else "stock_unchanged"
+            ),
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            reason=(
+                "Canonical Warehouse mutation failed; automatic propagation was not started."
+                if mutation_failed
+                else "Canonical Warehouse quantity did not change; automatic propagation was not started."
+            ),
+            payload=payload,
+            store_id=getattr(listing, "store_id", None),
+            listing_id=listing.id,
+            warehouse_stock_id=stock.id,
+            group_id=(int(group_id) if group_id else None),
+            seller_sku=(
+                getattr(listing, "external_sku", None)
+                or getattr(stock, "sku", None)
+            ),
+            before_qty=before_qty,
+            after_qty=int(
+                getattr(stock, "available_quantity", 0) or 0
+            ),
+            stock_changed=False,
+            correction_started=False,
+            push_started=False,
+            order_id=order_intake.get("marketplace_order_id"),
+            order_intake=order_intake.get("result"),
+            stock_mutation=mutation_result,
         )
 
     if grouped:
@@ -358,10 +401,7 @@ def process_marketplace_notification(
             expected_quantity=int(
                 getattr(stock, "sellable_quantity", 0) or 0
             ),
-            stock_changed=bool(
-                mutation_result.get("success")
-                and not mutation_result.get("skipped")
-            ),
+            stock_changed=True,
             correction_started=True,
             order_id=order_intake.get("marketplace_order_id"),
             order_intake=order_intake.get("result"),
@@ -401,10 +441,7 @@ def process_marketplace_notification(
         expected_quantity=int(
             getattr(stock, "sellable_quantity", 0) or 0
         ),
-        stock_changed=bool(
-            mutation_result.get("success")
-            and not mutation_result.get("skipped")
-        ),
+        stock_changed=True,
         correction_started=True,
         order_id=order_intake.get("marketplace_order_id"),
         order_intake=order_intake.get("result"),
@@ -731,8 +768,6 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
         getattr(stock, "is_group_controlled", False)
     )
 
-    # Current Product Linking relationship is authoritative for correction.
-    # WarehouseStock.master_product_group_id remains permanent/original identity.
     group_id = listing_group_id or stock_group_id
     linked_group_members = []
     linked_stock_members = []
@@ -1076,7 +1111,7 @@ def _log_result(**data) -> Dict[str, Any]:
         db.session.rollback()
 
     success_statuses = {
-        "group_processed", "warehouse_processed", "stock_decrement_stored",
+        "group_processed", "warehouse_processed", "stock_decrement_stored", "stock_unchanged",
         "marketplace_notification_stored", "customer_message_stored", "return_stored",
         "case_stored", "listing_created_stored", "listing_removed_stored", "payout_stored",
         "payment_deferred_stored", "tracking_stored", "delivery_stored", "policy_stored",
