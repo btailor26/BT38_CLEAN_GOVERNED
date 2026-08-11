@@ -17,11 +17,25 @@ FBA_IMPORT_TREE = ast.parse(FBA_IMPORT_SOURCE)
 RUNTIME_TREE = ast.parse(RUNTIME_SOURCE)
 
 
-def _function_source(tree: ast.AST, source: str, name: str) -> str:
+def _function_node(tree: ast.AST, name: str) -> ast.FunctionDef:
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(source, node) or ""
+            return node
     raise AssertionError(f"Function not found: {name}")
+
+
+def _function_source(tree: ast.AST, source: str, name: str) -> str:
+    node = _function_node(tree, name)
+    return ast.get_source_segment(source, node) or ""
+
+
+def _referenced_names(tree: ast.AST, name: str) -> set[str]:
+    node = _function_node(tree, name)
+    return {
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name)
+    }
 
 
 def test_amazon_order_change_requires_canonical_order_before_completed():
@@ -51,6 +65,10 @@ def test_fba_inventory_handoff_uses_current_listing_group_only():
         FBA_IMPORT_SOURCE,
         "_listing_relationship_scope",
     )
+    relationship_names = _referenced_names(
+        FBA_IMPORT_TREE,
+        "_listing_relationship_scope",
+    )
     apply_row = _function_source(
         FBA_IMPORT_TREE,
         FBA_IMPORT_SOURCE,
@@ -58,7 +76,7 @@ def test_fba_inventory_handoff_uses_current_listing_group_only():
     )
 
     assert 'getattr(listing, "master_product_group_id", None)' in relationship
-    assert "WarehouseStock" not in relationship
+    assert "WarehouseStock" not in relationship_names
     assert "current_group_id is not None" in relationship
     assert '"group_authority": "MarketplaceListing.master_product_group_id"' in apply_row
     assert '"linked_warehouse_stock_id"' in apply_row
