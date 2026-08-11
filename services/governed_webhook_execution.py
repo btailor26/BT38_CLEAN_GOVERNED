@@ -46,9 +46,6 @@ def process_marketplace_notification(
         payload,
     )
 
-    # Cancellation is an order-state event, not a stock-decrement event. It
-    # must be persisted before any Amazon MCF consequence is attempted and it
-    # does not require a listing lookup to identify the exact order.
     if business_event == "cancellation":
         return _handle_marketplace_cancellation(
             marketplace=marketplace,
@@ -150,12 +147,6 @@ def process_marketplace_notification(
         or ""
     ).strip().upper()
 
-    # Amazon AFN/FBA ORDER_CHANGE quantity is the order-line quantity, not an
-    # inventory snapshot. Treat it only as an exact-SKU signal for the existing
-    # FBA verification path. This happens before the Warehouse-link guard:
-    # Amazon inventory truth does not depend on a Product Linking relationship.
-    # governed_routes performs the immediate exact Amazon reread and the
-    # existing delayed settlement recheck.
     if (
         is_amazon_fba
         and event_type == "order_change"
@@ -352,6 +343,7 @@ def process_marketplace_notification(
             actor=actor,
             source=f"webhook_{marketplace}_group_notification",
             actor_user=None,
+            authority_warehouse_stock_id=stock.id,
         )
 
         return _log_result(
@@ -361,8 +353,8 @@ def process_marketplace_notification(
             business_event=business_event,
             reason=(
                 "Grouped sale notification created MarketplaceOrder, "
-                "updated stock through governed order mutation, and "
-                "triggered the existing group correction path."
+                "updated Warehouse truth through governed order mutation, and "
+                "handed the exact current group to the shared Warehouse-controlled correction path."
             ),
             payload=payload,
             store_id=getattr(listing, "store_id", None),
@@ -379,7 +371,7 @@ def process_marketplace_notification(
                 getattr(stock, "available_quantity", 0) or 0
             ),
             expected_quantity=int(
-                getattr(stock, "available_quantity", 0) or 0
+                getattr(stock, "sellable_quantity", 0) or 0
             ),
             stock_changed=bool(
                 mutation_result.get("success")
@@ -405,9 +397,9 @@ def process_marketplace_notification(
         event_type=event_type,
         business_event=business_event,
         reason=(
-            "Sale notification created MarketplaceOrder, updated stock "
-            "through governed order mutation, and triggered the existing "
-            "listing correction path."
+            "Sale notification created MarketplaceOrder, updated Warehouse truth "
+            "through governed order mutation, and handed the exact listing to "
+            "the shared Warehouse-controlled correction path."
         ),
         payload=payload,
         store_id=getattr(listing, "store_id", None),
@@ -422,7 +414,7 @@ def process_marketplace_notification(
             getattr(stock, "available_quantity", 0) or 0
         ),
         expected_quantity=int(
-            getattr(stock, "available_quantity", 0) or 0
+            getattr(stock, "sellable_quantity", 0) or 0
         ),
         stock_changed=bool(
             mutation_result.get("success")
@@ -755,7 +747,9 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
         getattr(stock, "is_group_controlled", False)
     )
 
-    group_id = stock_group_id or listing_group_id
+    # Current Product Linking relationship is authoritative for correction.
+    # WarehouseStock.master_product_group_id remains permanent/original identity.
+    group_id = listing_group_id or stock_group_id
     linked_group_members = []
     linked_stock_members = []
 
@@ -782,8 +776,7 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
         )
 
     grouped = bool(
-        group_id
-        or stock_group_controlled
+        listing_group_id
         or len(linked_group_members) > 1
         or len(linked_stock_members) > 1
     )
@@ -806,7 +799,7 @@ def _resolve_group_context(*, listing, stock) -> Dict[str, Any]:
         "stock_is_group_controlled": stock_group_controlled,
         "linked_group_member_count": len(linked_group_members),
         "linked_stock_member_count": len(linked_stock_members),
-        "authority": "database_relationship_state",
+        "authority": "current_listing_relationship_then_warehouse_identity",
     }
 
 
@@ -906,7 +899,15 @@ def _find_listing(
             query = _active_query().filter(
                 MarketplaceListing.external_sku == str(value)
             )
-            if marketplace:
+            store_id = payload.get("_bt38_store_id")
+            if store_id not in (None, ""):
+                try:
+                    query = query.filter(
+                        MarketplaceListing.store_id == int(store_id)
+                    )
+                except (TypeError, ValueError):
+                    pass
+            elif marketplace:
                 query = query.join(
                     MarketplaceListing.store
                 ).filter_by(platform=marketplace)
@@ -918,12 +919,19 @@ def _find_listing(
         text = str(value).strip()
         if not text:
             continue
-        listing = _best(
-            _active_query().filter(
-                (MarketplaceListing.external_listing_id == text)
-                | (MarketplaceListing.external_sku == text)
-            )
+        query = _active_query().filter(
+            (MarketplaceListing.external_listing_id == text)
+            | (MarketplaceListing.external_sku == text)
         )
+        store_id = payload.get("_bt38_store_id")
+        if store_id not in (None, ""):
+            try:
+                query = query.filter(
+                    MarketplaceListing.store_id == int(store_id)
+                )
+            except (TypeError, ValueError):
+                pass
+        listing = _best(query)
         if listing:
             return listing
 
@@ -953,163 +961,24 @@ def _classify_business_event(
     combined = f"{event_type} {text}"
 
     checks = [
-        (
-            "cancellation",
-            [
-                "order cancelled",
-                "order canceled",
-                "order cancellation",
-                "cancel request",
-                "cancel_requested",
-                "cancelled",
-                "canceled",
-            ],
-        ),
-        (
-            "fba_pending",
-            [
-                "fba pending",
-                "afn pending",
-                "pending fba",
-                "pending inventory",
-                "inbound pending",
-            ],
-        ),
-        (
-            "fba_received",
-            [
-                "fba received",
-                "afn received",
-                "received by amazon",
-                "inbound received",
-            ],
-        ),
-        (
-            "fba_adjustment",
-            [
-                "fba adjustment",
-                "inventory adjustment",
-                "afn adjustment",
-            ],
-        ),
-        (
-            "fba_lost",
-            ["fba lost", "lost inventory", "inventory lost"],
-        ),
-        (
-            "fba_damaged",
-            [
-                "fba damaged",
-                "damaged inventory",
-                "warehouse damaged",
-            ],
-        ),
-        (
-            "fba_reimbursement",
-            [
-                "fba reimbursement",
-                "reimbursement",
-                "reimbursed",
-            ],
-        ),
-        (
-            "customer_message",
-            [
-                "message",
-                "buyer message",
-                "customer message",
-                "inbox",
-                "unread",
-            ],
-        ),
-        (
-            "return",
-            ["return", "return request", "refund requested"],
-        ),
-        (
-            "case",
-            [
-                "case",
-                "dispute",
-                "claim",
-                "a-to-z",
-                "chargeback",
-            ],
-        ),
-        (
-            "listing_created",
-            [
-                "listing created",
-                "item listed",
-                "offer created",
-                "new listing",
-            ],
-        ),
-        (
-            "listing_removed",
-            [
-                "listing removed",
-                "listing ended",
-                "item ended",
-                "offer deleted",
-                "listing blocked",
-                "suppressed",
-            ],
-        ),
-        (
-            "payment_deferred",
-            [
-                "deferred",
-                "reserve",
-                "hold",
-                "held",
-                "pending payout",
-            ],
-        ),
-        (
-            "payout",
-            [
-                "payout",
-                "disbursement",
-                "settlement",
-                "payment released",
-                "paid out",
-            ],
-        ),
-        (
-            "tracking",
-            [
-                "tracking",
-                "tracking uploaded",
-                "shipment confirmed",
-                "carrier",
-            ],
-        ),
-        (
-            "delivery",
-            ["delivered", "delivery confirmed"],
-        ),
-        (
-            "policy",
-            [
-                "policy",
-                "violation",
-                "warning",
-                "account health",
-                "performance notification",
-            ],
-        ),
-        (
-            "stock_decrement",
-            [
-                "order",
-                "sale",
-                "sold",
-                "transaction",
-                "paid",
-                "purchase",
-            ],
-        ),
+        ("cancellation", ["order cancelled", "order canceled", "order cancellation", "cancel request", "cancel_requested", "cancelled", "canceled"]),
+        ("fba_pending", ["fba pending", "afn pending", "pending fba", "pending inventory", "inbound pending"]),
+        ("fba_received", ["fba received", "afn received", "received by amazon", "inbound received"]),
+        ("fba_adjustment", ["fba adjustment", "inventory adjustment", "afn adjustment"]),
+        ("fba_lost", ["fba lost", "lost inventory", "inventory lost"]),
+        ("fba_damaged", ["fba damaged", "damaged inventory", "warehouse damaged"]),
+        ("fba_reimbursement", ["fba reimbursement", "reimbursement", "reimbursed"]),
+        ("customer_message", ["message", "buyer message", "customer message", "inbox", "unread"]),
+        ("return", ["return", "return request", "refund requested"]),
+        ("case", ["case", "dispute", "claim", "a-to-z", "chargeback"]),
+        ("listing_created", ["listing created", "item listed", "offer created", "new listing"]),
+        ("listing_removed", ["listing removed", "listing ended", "item ended", "offer deleted", "listing blocked", "suppressed"]),
+        ("payment_deferred", ["deferred", "reserve", "hold", "held", "pending payout"]),
+        ("payout", ["payout", "disbursement", "settlement", "payment released", "paid out"]),
+        ("tracking", ["tracking", "tracking uploaded", "shipment confirmed", "carrier"]),
+        ("delivery", ["delivered", "delivery confirmed"]),
+        ("policy", ["policy", "violation", "warning", "account health", "performance notification"]),
+        ("stock_decrement", ["order", "sale", "sold", "transaction", "paid", "purchase"]),
     ]
 
     for label, words in checks:
@@ -1121,14 +990,8 @@ def _classify_business_event(
 
 def _business_reason(business_event: str) -> str:
     reasons = {
-        "cancellation": (
-            "Cancellation notification stored against the exact existing "
-            "MarketplaceOrder and propagated to Amazon MCF when linked."
-        ),
-        "fba_pending": (
-            "FBA pending notification stored. No warehouse stock change is "
-            "made until Amazon supplies confirmed inventory state."
-        ),
+        "cancellation": "Cancellation notification stored against the exact existing MarketplaceOrder and propagated to Amazon MCF when linked.",
+        "fba_pending": "FBA pending notification stored. No warehouse stock change is made until Amazon supplies confirmed inventory state.",
         "fba_received": "FBA received notification stored for exact verification.",
         "fba_adjustment": "FBA adjustment notification stored for exact verification.",
         "fba_lost": "FBA lost notification stored for exact verification.",
@@ -1151,25 +1014,12 @@ def _business_reason(business_event: str) -> str:
     )
 
 
-def _is_stock_decrement_event(
-    event_type: str,
-    payload: dict,
-) -> bool:
-    return (
-        _classify_business_event(event_type, payload)
-        == "stock_decrement"
-    )
+def _is_stock_decrement_event(event_type: str, payload: dict) -> bool:
+    return _classify_business_event(event_type, payload) == "stock_decrement"
 
 
 def _extract_quantity(payload: dict) -> int:
-    for key in [
-        "quantity",
-        "qty",
-        "quantity_sold",
-        "quantitySold",
-        "orderQuantity",
-        "amount",
-    ]:
+    for key in ["quantity", "qty", "quantity_sold", "quantitySold", "orderQuantity", "amount"]:
         value = _deep_get(payload, key)
         if value is not None:
             try:
@@ -1223,9 +1073,7 @@ def _log_result(**data) -> Dict[str, Any]:
         or payload.pop("_bt38_notification_record_id", None)
     )
     if notification_record_id is not None:
-        safe["notification_record_id"] = int(
-            notification_record_id
-        )
+        safe["notification_record_id"] = int(notification_record_id)
 
     try:
         db.session.add(
@@ -1235,12 +1083,7 @@ def _log_result(**data) -> Dict[str, Any]:
                     f"{safe.get('marketplace')} webhook execution "
                     f"{safe.get('status')}: {safe.get('event_type')}"
                 ),
-                details=str(
-                    {
-                        **safe,
-                        "payload_keys": list(payload.keys()),
-                    }
-                )[:1000],
+                details=str({**safe, "payload_keys": list(payload.keys())})[:1000],
                 created_at=datetime.utcnow(),
             )
         )
@@ -1249,29 +1092,13 @@ def _log_result(**data) -> Dict[str, Any]:
         db.session.rollback()
 
     success_statuses = {
-        "group_processed",
-        "warehouse_processed",
-        "stock_decrement_stored",
-        "marketplace_notification_stored",
-        "customer_message_stored",
-        "return_stored",
-        "case_stored",
-        "listing_created_stored",
-        "listing_removed_stored",
-        "payout_stored",
-        "payment_deferred_stored",
-        "tracking_stored",
-        "delivery_stored",
-        "policy_stored",
-        "fba_pending_stored",
-        "fba_received_stored",
-        "fba_adjustment_stored",
-        "fba_lost_stored",
-        "fba_damaged_stored",
-        "fba_reimbursement_stored",
-        "fba_inventory_updated",
-        "fba_inventory_unchanged",
-        "cancellation_processed",
+        "group_processed", "warehouse_processed", "stock_decrement_stored",
+        "marketplace_notification_stored", "customer_message_stored", "return_stored",
+        "case_stored", "listing_created_stored", "listing_removed_stored", "payout_stored",
+        "payment_deferred_stored", "tracking_stored", "delivery_stored", "policy_stored",
+        "fba_pending_stored", "fba_received_stored", "fba_adjustment_stored", "fba_lost_stored",
+        "fba_damaged_stored", "fba_reimbursement_stored", "fba_inventory_updated",
+        "fba_inventory_unchanged", "cancellation_processed",
     }
 
     return {
