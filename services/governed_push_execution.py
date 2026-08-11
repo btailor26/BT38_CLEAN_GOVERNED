@@ -5,7 +5,8 @@ route shortcut -> governed service -> governed_execution -> marketplace adapter
 
 Rules:
 - request body quantity does not override warehouse truth
-- group push resolves listings first
+- group push resolves current Product Linking members first
+- one Warehouse row supplies one shared target quantity for the whole group
 - service owns shared listing push logic
 - routes must not be imported by services
 - existing webhook pushes queue exact affected rows for the 15-minute alignment check
@@ -35,6 +36,25 @@ def _is_automatic_push_source(source: str) -> bool:
     )
 
 
+def _is_fba_listing(listing) -> bool:
+    platform = str(
+        getattr(getattr(listing, "store", None), "platform", "") or ""
+    ).strip().lower()
+    channel = str(
+        getattr(listing, "normalized_amazon_fulfillment_channel", None)
+        or getattr(listing, "amazon_fulfillment_channel", None)
+        or ""
+    ).strip().upper()
+    explicit_fba = bool(getattr(listing, "is_fba", False))
+    is_amazon = "amazon" in platform
+    is_fbm = (
+        is_amazon
+        and not explicit_fba
+        and channel in {"MFN", "FBM", "MERCHANT"}
+    )
+    return bool(is_amazon and (explicit_fba or not is_fbm))
+
+
 def _queue_exact_webhook_verification(*, listing, stock, source: str) -> None:
     if not _is_webhook_push_source(source):
         return
@@ -55,14 +75,14 @@ def _queue_exact_webhook_verification(*, listing, stock, source: str) -> None:
             listing_id=getattr(listing, "external_listing_id", None),
             listing_ids=[getattr(listing, "id", None)],
             warehouse_stock_id=getattr(stock, "id", None),
-            group_id=getattr(stock, "master_product_group_id", None),
-            expected_quantity=getattr(listing, "effective_quantity", None),
+            group_id=getattr(listing, "master_product_group_id", None),
+            expected_quantity=getattr(stock, "sellable_quantity", None),
         )
     except Exception:
         return
 
 
-def _queue_exact_group_webhook_verifications(*, listings, warehouse_rows, group_id: int, source: str) -> None:
+def _queue_exact_group_webhook_verifications(*, listings, warehouse_rows, group_id: int, source: str, target_quantity: int) -> None:
     value = str(source or "").strip().lower()
     if not value.startswith("webhook_") or "15m_retry" in value:
         return
@@ -96,13 +116,20 @@ def _queue_exact_group_webhook_verifications(*, listings, warehouse_rows, group_
                 listing_ids=[int(item.id) for item in members],
                 warehouse_stock_id=stock_id,
                 group_id=int(group_id),
-                expected_quantity=getattr(first, "effective_quantity", None),
+                expected_quantity=int(target_quantity),
             )
     except Exception:
         return
 
 
-def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_user=None) -> Dict[str, Any]:
+def push_marketplace_listing(
+    *,
+    listing_id: int,
+    actor: str,
+    source: str,
+    actor_user=None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
     from extensions import db
     from governed_execution import AMAZON_FBM_LIVE_APPROVAL_TYPE, submit_governed_marketplace_action
     from models import MarketplaceListing, SyncLog
@@ -118,25 +145,14 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         return _blocked("Marketplace listing is not linked to warehouse stock.", listing_id=listing_id)
 
     source_value = str(source or "").strip().lower()
-    # Current Product Linking membership belongs to MarketplaceListing.
-    # Warehouse remains permanent identity and quantity authority.
-    group_id = getattr(
-        listing,
-        "master_product_group_id",
-        None,
-    )
+    group_id = getattr(listing, "master_product_group_id", None)
     group_controlled = bool(
         group_id
-        or getattr(
-            listing.warehouse_stock,
-            "is_group_controlled",
-            False,
-        )
+        or getattr(listing.warehouse_stock, "is_group_controlled", False)
     )
 
-    # Automatic changes entering through a single-listing shortcut must still
-    # honour the saved DB relationship. Expand only the affected governed group.
-    # Group members carry the suffix below so this does not recurse.
+    # Automatic single-listing entry points always expand through the same
+    # group engine and use the exact changed Warehouse row as group authority.
     if (
         _is_automatic_push_source(source_value)
         and ":group_member" not in source_value
@@ -148,10 +164,37 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
             actor=actor,
             source=f"{source}:group_auto_push",
             actor_user=actor_user,
+            authority_warehouse_stock_id=listing.warehouse_stock_id,
+            dry_run=dry_run,
         )
 
     platform = (listing.store.platform or "").strip().lower()
     marketplace = "amazon" if "amazon" in platform else "ebay" if "ebay" in platform else platform
+
+    # FBA/AFN is read-only. Never call the marketplace writer for it.
+    if _is_fba_listing(listing):
+        listing.last_push_at = datetime.utcnow()
+        listing.last_push_status = "read_only"
+        listing.last_push_error = None
+        listing.push_attempts = 0
+        listing.consecutive_failures = 0
+        db.session.commit()
+        return {
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "listing_id": listing.id,
+            "warehouse_stock_id": listing.warehouse_stock_id,
+            "marketplace": marketplace,
+            "amazon_fulfillment_channel": (
+                listing.normalized_amazon_fulfillment_channel
+                or listing.amazon_fulfillment_channel
+                or "FBA"
+            ),
+            "is_fba": True,
+            "push_status": "read_only",
+            "reason": "Amazon FBA/AFN is read-only and was not written.",
+        }
 
     try:
         push_quantity = int(listing.effective_quantity or 0)
@@ -184,7 +227,7 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
         actor_user=actor_user,
         approval_type=AMAZON_FBM_LIVE_APPROVAL_TYPE,
         approval_id=None,
-        dry_run=False,
+        dry_run=bool(dry_run),
     )
 
     ok = bool(result.get("ok") or result.get("success"))
@@ -241,11 +284,7 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
     result.update({
         "listing_id": listing.id,
         "warehouse_stock_id": listing.warehouse_stock_id,
-        "master_product_group_id": (
-            listing.warehouse_stock.master_product_group_id
-            if listing.warehouse_stock
-            else None
-        ),
+        "master_product_group_id": group_id,
         "push_quantity": push_quantity,
         "ui_action_wired": True,
         "grouping_layer_ready": True,
@@ -257,15 +296,21 @@ def push_marketplace_listing(*, listing_id: int, actor: str, source: str, actor_
     return result
 
 
-def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=None) -> Dict[str, Any]:
+def push_group_listings(
+    *,
+    group_id: int,
+    actor: str,
+    source: str,
+    actor_user=None,
+    authority_warehouse_stock_id: int | None = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
     from extensions import db
     from models import MarketplaceListing, WarehouseStock
 
     group_id = int(group_id)
 
-    # Current Product Linking membership belongs to MarketplaceListing.
-    # Permanent Warehouse identity remains warehouse_stock_id and the linked
-    # Warehouse row remains quantity authority.
+    # Current Product Linking membership is owned only by MarketplaceListing.
     listings = (
         db.session.query(MarketplaceListing)
         .filter(MarketplaceListing.is_active == True)  # noqa: E712
@@ -275,58 +320,139 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         .all()
     )
 
+    if not listings:
+        return _blocked(
+            "No active marketplace listings belong to the requested Product Linking group.",
+            group_id=group_id,
+        )
+
     warehouse_ids = sorted({
         int(listing.warehouse_stock_id)
         for listing in listings
         if listing.warehouse_stock_id is not None
     })
 
+    warehouse_rows = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.id.in_(warehouse_ids))
+        .all()
+    )
+    stock_by_id = {int(stock.id): stock for stock in warehouse_rows}
+
+    authority_stock = None
+    if authority_warehouse_stock_id not in (None, ""):
+        try:
+            authority_stock_id = int(authority_warehouse_stock_id)
+        except (TypeError, ValueError):
+            return _blocked(
+                "authority_warehouse_stock_id must be an integer.",
+                group_id=group_id,
+            )
+
+        if authority_stock_id not in warehouse_ids:
+            return _blocked(
+                "Warehouse authority row does not belong to the current Product Linking group.",
+                group_id=group_id,
+                warehouse_stock_id=authority_stock_id,
+            )
+        authority_stock = stock_by_id.get(authority_stock_id)
+
+    # When no exact changed row is supplied, use the group's permanent master
+    # Warehouse identity. Fall back deterministically only if legacy data lacks it.
+    if authority_stock is None:
+        for listing in listings:
+            stock = stock_by_id.get(int(listing.warehouse_stock_id))
+            if (
+                stock is not None
+                and getattr(stock, "master_product_group_id", None) == group_id
+            ):
+                authority_stock = stock
+                break
+
+    if authority_stock is None and warehouse_rows:
+        authority_stock = sorted(warehouse_rows, key=lambda row: int(row.id))[0]
+
+    if authority_stock is None:
+        return _blocked(
+            "Warehouse group quantity authority could not be resolved.",
+            group_id=group_id,
+        )
+
+    if not bool(getattr(authority_stock, "is_active", False)):
+        return _blocked(
+            "Warehouse group quantity authority is inactive.",
+            group_id=group_id,
+            warehouse_stock_id=authority_stock.id,
+        )
+
+    target_quantity = int(getattr(authority_stock, "sellable_quantity", 0) or 0)
+
+    # Synchronize every member Warehouse row to the same SELLABLE quantity.
+    # Relationship identity is never changed here.
+    now = datetime.utcnow()
+    for stock in warehouse_rows:
+        reserved = int(getattr(stock, "reserved_quantity", 0) or 0)
+        allocated = int(getattr(stock, "allocated_quantity", 0) or 0)
+        stock.available_quantity = int(target_quantity + reserved + allocated)
+        stock.updated_at = now
+    db.session.flush()
+
     member_source = f"{source}:group_member"
-    results: List[Dict[str, Any]] = [
-        push_marketplace_listing(
+    results: List[Dict[str, Any]] = []
+    for listing in listings:
+        if _is_fba_listing(listing):
+            listing.last_push_at = datetime.utcnow()
+            listing.last_push_status = "read_only"
+            listing.last_push_error = None
+            listing.push_attempts = 0
+            listing.consecutive_failures = 0
+            results.append({
+                "success": False,
+                "ok": False,
+                "governed": True,
+                "listing_id": listing.id,
+                "warehouse_stock_id": listing.warehouse_stock_id,
+                "marketplace": "amazon",
+                "amazon_fulfillment_channel": (
+                    listing.normalized_amazon_fulfillment_channel
+                    or listing.amazon_fulfillment_channel
+                    or "FBA"
+                ),
+                "is_fba": True,
+                "push_status": "read_only",
+                "quantity": target_quantity,
+                "reason": "Amazon FBA/AFN is read-only and was not written.",
+            })
+            continue
+
+        result = push_marketplace_listing(
             listing_id=listing.id,
             actor=actor,
             source=member_source,
             actor_user=actor_user,
+            dry_run=dry_run,
         )
-        for listing in listings
-    ]
+        result.setdefault("quantity", target_quantity)
+        results.append(result)
 
     def _is_success(item: Dict[str, Any]) -> bool:
         return bool(item.get("ok") or item.get("success"))
 
     def _is_fba_read_only_skip(item: Dict[str, Any]) -> bool:
-        reason = str(item.get("reason") or item.get("error") or item.get("message") or "").lower()
-        marketplace = str(item.get("marketplace") or item.get("platform") or "").lower()
-        channel = str(item.get("amazon_fulfillment_channel") or item.get("fulfillment_channel") or item.get("fulfillment") or "").upper()
-        return (
-            bool(item.get("is_fba"))
+        return bool(
+            item.get("is_fba")
             or item.get("push_status") == "read_only"
-            or channel in {"AFN", "FBA"}
-            or ("amazon" in marketplace and ("fba" in reason or "afn" in reason or "read-only" in reason or "read only" in reason))
         )
 
     success_count = sum(1 for item in results if _is_success(item))
-    skipped_count = sum(1 for item in results if (not _is_success(item)) and _is_fba_read_only_skip(item))
+    skipped_count = sum(
+        1
+        for item in results
+        if (not _is_success(item)) and _is_fba_read_only_skip(item)
+    )
     failed_count = len(results) - success_count - skipped_count
     pushable_count = len(results) - skipped_count
-
-    # FBA/AFN members are intentionally read-only. A group containing only
-    # protected FBA members is a successful governed no-op when nothing failed.
     group_success = failed_count == 0
-
-    report_stock_ids = sorted({
-        int(item.get("warehouse_stock_id"))
-        for item in results
-        if item.get("warehouse_stock_id")
-    })
-
-    warehouse_rows = (
-        db.session.query(WarehouseStock)
-        .filter(WarehouseStock.id.in_(report_stock_ids))
-        .all()
-        if report_stock_ids else []
-    )
 
     for stock in warehouse_rows:
         if hasattr(stock, "last_push_at"):
@@ -342,6 +468,8 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         if hasattr(stock, "last_group_push_result"):
             stock.last_group_push_result = {
                 "group_id": group_id,
+                "authority_warehouse_stock_id": int(authority_stock.id),
+                "target_quantity": target_quantity,
                 "pushed": success_count,
                 "skipped": skipped_count,
                 "failed": failed_count,
@@ -349,27 +477,33 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
                 "source": source,
             }
 
-    if warehouse_rows:
-        db.session.commit()
+    db.session.commit()
 
     _queue_exact_group_webhook_verifications(
         listings=listings,
         warehouse_rows=warehouse_rows,
         group_id=group_id,
         source=source,
+        target_quantity=target_quantity,
     )
 
     return {
         "success": group_success,
         "ok": group_success,
         "governed": True,
+        "changed": True,
         "group_id": group_id,
+        "warehouse_stock_id": int(authority_stock.id),
+        "authority_warehouse_stock_id": int(authority_stock.id),
+        "target_quantity": target_quantity,
+        "dry_run": bool(dry_run),
         "warehouse_ids": warehouse_ids,
-        "direct_group_listing_ids": [
-            int(listing.id)
-            for listing in listings
-        ],
+        "affected_group_ids": [group_id],
+        "affected_listing_ids": [int(listing.id) for listing in listings],
+        "affected_warehouse_stock_ids": warehouse_ids,
+        "direct_group_listing_ids": [int(listing.id) for listing in listings],
         "total": len(results),
+        "total_listings": len(results),
         "ok_count": success_count,
         "pushed": success_count,
         "skipped": skipped_count,
@@ -378,6 +512,7 @@ def push_group_listings(*, group_id: int, actor: str, source: str, actor_user=No
         "pushable_count": pushable_count,
         "warehouse_truth_quantity_used": True,
         "warehouse_authority_resolution": True,
+        "one_shared_group_quantity": True,
         "request_quantity_ignored": True,
         "fba_read_only_does_not_fail_group": True,
         "results": results,
