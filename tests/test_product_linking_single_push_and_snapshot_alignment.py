@@ -29,3 +29,12 @@ def test_product_linking_summary_uses_same_browser_relationship_dataset():
     assert "setKpi(1, unlinked.length)" in CONTROLLER
     assert "setKpi(2, linked)" in CONTROLLER
     assert "setKpi(3, grouped)" in CONTROLLER
+
+
+def test_long_listing_titles_cannot_push_actions_column_off_screen():
+    assert "alignProductLinkingTableLayout" in CONTROLLER
+    assert "table.style.tableLayout = 'fixed'" in CONTROLLER
+    assert "cells[4].style.overflow = 'hidden'" in CONTROLLER
+    assert "cells[5].style.minWidth = '86px'" in CONTROLLER
+    assert "cells[5].style.whiteSpace = 'nowrap'" in CONTROLLER
+    assert "actionsColumnVisible: true" in CONTROLLER
