@@ -82,7 +82,7 @@ def test_successful_exact_recovery_closes_durable_notification():
     assert "completed=True" in runner
 
 
-def test_restart_recovery_selects_only_failed_or_stranded_webhook_ids():
+def test_restart_recovery_selects_failed_stranded_and_completed_orphans_only():
     selector = _function_source(
         RECOVERY_TREE,
         RECOVERY_SOURCE,
@@ -93,7 +93,13 @@ def test_restart_recovery_selects_only_failed_or_stranded_webhook_ids():
     assert "webhooks.ebay_notifications" in selector
     assert "processing_status = 'FAILED'" in selector
     assert "processing_status = 'PROCESSING'" in selector
+    assert "processing_status = 'COMPLETED'" in selector
+    assert "notification_type = 'ORDER_CHANGE'" in selector
+    assert "A1F83G8C2ARO7P" in selector
+    assert "NOT EXISTS" in selector
+    assert "marketplace_orders" in selector
     assert "request_rejected_webhook_recovery" in selector
+    assert "sorted(set(selected))" in selector
     assert "get_orders" not in selector
     assert "run_governed_warehouse_sync" not in selector
     assert "run_governed_marketplace_order_import" not in selector
