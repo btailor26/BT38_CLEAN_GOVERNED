@@ -4,9 +4,12 @@ Contract:
 - Recover only the durable notification that failed.
 - Never launch a recent-order/platform scan.
 - Check canonical MarketplaceOrder first.
-- If the exact order already exists, stop without reprocessing stock.
-- If it is missing, replay only the captured payload through the existing
-  governed webhook executor, then verify that the canonical order now exists.
+- If the exact order already exists, never replay order/stock mutation.
+- Amazon FBA may still perform one exact Seller-SKU settlement verification;
+  this is read-only marketplace truth and is not an order replay.
+- If the exact order is missing, replay only the captured payload through the
+  existing governed webhook executor, then verify the canonical order exists.
+- Any committed recovery/FBA change uses the existing DB -> UI publisher.
 """
 from __future__ import annotations
 
@@ -72,10 +75,16 @@ def _exact_identity(platform: str, payload: dict[str, Any]) -> dict[str, Any]:
         or _deep_get(payload, "seller_sku")
         or _deep_get(payload, "sku")
     )
+    fulfillment_type = (
+        _deep_get(payload, "FulfillmentType")
+        or _deep_get(payload, "fulfillmentType")
+        or _deep_get(payload, "fulfillment_type")
+    )
     return {
         "platform": str(platform or "").strip().lower(),
         "order_id": str(order_id or "").strip() or None,
         "seller_sku": str(seller_sku or "").strip() or None,
+        "fulfillment_type": str(fulfillment_type or "").strip().upper() or None,
     }
 
 
@@ -127,8 +136,63 @@ def _canonical_order_exists(store_id: int | None, order_id: str | None) -> bool:
     return query.first() is not None
 
 
+def _publish_committed_change(platform: str, notification_record_id: int, result: dict | None) -> bool:
+    """Reuse the normal sleeping-browser handoff after a committed change."""
+    if not isinstance(result, dict):
+        return False
+
+    from services.governed_ui_event_signal import (
+        _result_has_committed_change,
+        publish_webhook_ui_event,
+    )
+
+    if not _result_has_committed_change(result):
+        return False
+
+    publish_webhook_ui_event(
+        platform=platform,
+        notification_record_id=int(notification_record_id),
+        scope=result,
+    )
+    return True
+
+
+def _verify_existing_amazon_fba(
+    *,
+    identity: dict[str, Any],
+    store_id: int | None,
+    payload: dict[str, Any],
+    notification_record_id: int,
+) -> dict[str, Any] | None:
+    """Refresh one exact FBA Seller SKU without replaying the order."""
+    if (
+        identity.get("platform") != "amazon"
+        or identity.get("fulfillment_type") not in {"AFN", "FBA", "AMAZON"}
+        or store_id is None
+        or not identity.get("seller_sku")
+    ):
+        return None
+
+    from services.governed_runtime_engine import _verify_exact_fba
+
+    result = _verify_exact_fba({
+        "event_type": "ORDER_CHANGE",
+        "marketplace": "amazon",
+        "store_id": int(store_id),
+        "seller_sku": identity.get("seller_sku"),
+        "order_id": identity.get("order_id"),
+        "payload": payload,
+    })
+    result["ui_event_published"] = _publish_committed_change(
+        "amazon",
+        int(notification_record_id),
+        result,
+    )
+    return result
+
+
 def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> dict[str, Any]:
-    """Recover one failed captured webhook, never a marketplace window."""
+    """Recover one captured webhook, never a marketplace window."""
     platform = str(platform or "").strip().lower()
     notification = _load_notification(platform, int(notification_record_id))
     if not notification:
@@ -153,14 +217,24 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
     identity = _exact_identity(platform, payload)
     store_id = _resolve_store_id(platform, identity.get("seller_sku"))
 
-    # Critical duplicate guard: once the canonical order exists, recovery ends.
-    # Do not replay the event and do not invoke stock mutation again.
+    # Critical duplicate guard: once the canonical order exists, never replay
+    # the order and never invoke its stock mutation again. Amazon FBA is the
+    # only exception in scope: one exact read-only Seller-SKU settlement check
+    # may refresh AmazonFBAInventory and publish that committed change to UI.
     if _canonical_order_exists(store_id, identity.get("order_id")):
+        fba_verification = _verify_existing_amazon_fba(
+            identity=identity,
+            store_id=store_id,
+            payload=payload,
+            notification_record_id=int(notification_record_id),
+        )
         return {
             "success": True,
             "recovered": False,
             "already_present": True,
             "duplicate_skipped": True,
+            "order_replayed": False,
+            "fba_verification": fba_verification,
             "order_id": identity.get("order_id"),
             "store_id": store_id,
             "notification_record_id": int(notification_record_id),
@@ -196,6 +270,12 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
             "broad_scan_started": False,
         }
 
+    ui_event_published = _publish_committed_change(
+        platform,
+        int(notification_record_id),
+        replay_result,
+    )
+
     return {
         "success": True,
         "recovered": True,
@@ -206,5 +286,6 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
         "notification_record_id": int(notification_record_id),
         "platform": platform,
         "replay_result": replay_result,
+        "ui_event_published": ui_event_published,
         "broad_scan_started": False,
     }
