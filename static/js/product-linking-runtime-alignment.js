@@ -10,16 +10,21 @@
 //   Warehouse shadow row in Product Linking display.
 // - Store auto_push_enabled is future permission only; no automatic push worker
 //   is running, so Product Linking must display Auto OFF.
+// - Main Product Linking search behaves like a live table search: typing is
+//   debounced into one targeted governed query, never a full idle-group load.
 (function () {
   "use strict";
 
   const root = document.querySelector('[data-bt38-page="productLinking"]');
   if (!root) return;
 
-  const SNAPSHOT_REVISION = "current-membership-push-shortcut-v6";
+  const SNAPSHOT_REVISION = "current-membership-push-shortcut-v7";
   const SNAPSHOT_MARKER = "bt38-product-linking-runtime-alignment";
+  const LIVE_SEARCH_DEBOUNCE_MS = 350;
   let lastRenderedProducts = [];
   let evidenceCorrectionScheduled = false;
+  let liveSearchTimer = null;
+  let lastSubmittedLiveSearch = null;
 
   function asArray(value) {
     return Array.isArray(value) ? value : [];
@@ -202,6 +207,37 @@
     true
   );
 
+  function installLiveTargetedSearch() {
+    const form = document.getElementById("bt38ProductLinkingFilterForm");
+    const input = form?.querySelector('[name="search"]');
+    if (!form || !input || input.dataset.bt38LiveTargetedSearch === "1") return;
+
+    input.dataset.bt38LiveTargetedSearch = "1";
+    input.addEventListener("input", () => {
+      const value = String(input.value || "").trim();
+      if (liveSearchTimer !== null) {
+        window.clearTimeout(liveSearchTimer);
+      }
+      liveSearchTimer = window.setTimeout(() => {
+        liveSearchTimer = null;
+        if (value === lastSubmittedLiveSearch) return;
+        lastSubmittedLiveSearch = value;
+        // Reuse the existing Product Linking submit handler. That handler calls
+        // the governed server-paged endpoint with only this exact search term;
+        // it does not hydrate idle groups or the old 5,000-row dataset.
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        }
+      }, LIVE_SEARCH_DEBOUNCE_MS);
+    });
+
+    form.addEventListener("submit", () => {
+      lastSubmittedLiveSearch = String(input.value || "").trim();
+    }, true);
+  }
+
   function invalidateCorruptedSnapshotOnce(attempt) {
     let aligned = false;
     try {
@@ -238,6 +274,7 @@
   evidenceObserver.observe(root, { childList: true, subtree: true });
 
   installRenderAlignment(0);
+  installLiveTargetedSearch();
   invalidateCorruptedSnapshotOnce(0);
 
   window.BT38 = window.BT38 || {};
@@ -249,6 +286,8 @@
     autoPushOperationalState: "off",
     duplicateSettingsFetchRemoved: true,
     settingsObserverSelfLoopBlocked: true,
+    liveTargetedSearch: true,
+    liveSearchDebounceMs: LIVE_SEARCH_DEBOUNCE_MS,
     snapshotRevision: SNAPSHOT_REVISION
   };
 }());
