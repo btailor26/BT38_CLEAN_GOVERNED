@@ -73,6 +73,9 @@ def _run_pending_recoveries():
                     from services.governed_exact_webhook_recovery import (
                         recover_exact_failed_webhook,
                     )
+                    from services.governed_webhook_capture import (
+                        mark_notification_status,
+                    )
 
                     result = recover_exact_failed_webhook(
                         platform,
@@ -80,6 +83,15 @@ def _run_pending_recoveries():
                     )
 
                     if result.get("success"):
+                        # Safe because exact recovery has already proven the
+                        # canonical order exists (or existed before replay).
+                        mark_notification_status(
+                            platform,
+                            notification_record_id,
+                            processing_status="COMPLETED",
+                            last_error="",
+                            completed=True,
+                        )
                         app.logger.warning(
                             "BT38 exact webhook recovery platform=%s "
                             "notification_record_id=%s order_id=%s "
