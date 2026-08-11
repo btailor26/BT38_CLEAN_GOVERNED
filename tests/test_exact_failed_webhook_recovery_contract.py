@@ -51,7 +51,39 @@ def test_exact_recovery_skips_existing_order_before_replay():
     assert exists_pos < replay_pos
     assert '"duplicate_skipped": True' in recover
     assert '"already_present": True' in recover
+    assert '"order_replayed": False' in recover
     assert '"broad_scan_started": False' in recover
+
+
+def test_existing_fba_order_can_verify_exact_inventory_without_order_replay():
+    recover = _function_source(
+        EXACT_TREE,
+        EXACT_SOURCE,
+        "recover_exact_failed_webhook",
+    )
+    verifier = _function_source(
+        EXACT_TREE,
+        EXACT_SOURCE,
+        "_verify_existing_amazon_fba",
+    )
+
+    assert "_verify_existing_amazon_fba" in recover
+    assert "_verify_exact_fba" in verifier
+    assert "seller_sku" in verifier
+    assert "process_marketplace_notification" not in verifier
+    assert "publish" in verifier
+
+
+def test_committed_exact_recovery_uses_existing_ui_publisher():
+    publisher = _function_source(
+        EXACT_TREE,
+        EXACT_SOURCE,
+        "_publish_committed_change",
+    )
+
+    assert "_result_has_committed_change" in publisher
+    assert "publish_webhook_ui_event" in publisher
+    assert "notification_record_id" in publisher
 
 
 def test_missing_order_replays_only_durable_notification():
@@ -82,7 +114,7 @@ def test_successful_exact_recovery_closes_durable_notification():
     assert "completed=True" in runner
 
 
-def test_restart_recovery_selects_failed_stranded_and_completed_orphans_only():
+def test_restart_recovery_selects_failed_stranded_orphans_and_fba_settlement_gaps():
     selector = _function_source(
         RECOVERY_TREE,
         RECOVERY_SOURCE,
@@ -98,6 +130,10 @@ def test_restart_recovery_selects_failed_stranded_and_completed_orphans_only():
     assert "A1F83G8C2ARO7P" in selector
     assert "NOT EXISTS" in selector
     assert "marketplace_orders" in selector
+    assert "amazon_fba_inventory" in selector
+    assert "INTERVAL '90 seconds'" in selector
+    assert "fulfillment_type" in selector
+    assert "last_synced_at" in selector
     assert "request_rejected_webhook_recovery" in selector
     assert "sorted(set(selected))" in selector
     assert "get_orders" not in selector
