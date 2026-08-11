@@ -130,6 +130,25 @@ def _listing_cache_unchanged(listing, *, asin, fnsku, qty):
     return all(checks)
 
 
+def _listing_relationship_scope(listing):
+    """Return current Product Linking authority only.
+
+    WarehouseStock.master_product_group_id is permanent/original identity and
+    must never be used to recreate propagation after a listing is ungrouped.
+    """
+    if listing is None:
+        return None, None, None
+
+    linked_warehouse_stock_id = getattr(listing, "warehouse_stock_id", None)
+    current_group_id = getattr(listing, "master_product_group_id", None)
+    propagation_warehouse_stock_id = (
+        linked_warehouse_stock_id
+        if current_group_id is not None
+        else None
+    )
+    return current_group_id, propagation_warehouse_stock_id, linked_warehouse_stock_id
+
+
 def _apply_inventory_row(store, raw_row):
     """Update one FBA identity; unchanged events perform no writes."""
     row = _normalise_event_row(raw_row)
@@ -152,6 +171,9 @@ def _apply_inventory_row(store, raw_row):
     inv = inv_query.first()
 
     listing = _find_existing_listing(store, sku=sku, asin=asin, fnsku=fnsku)
+    current_group_id, propagation_warehouse_stock_id, linked_warehouse_stock_id = (
+        _listing_relationship_scope(listing)
+    )
 
     if _inventory_unchanged(
         inv,
@@ -172,8 +194,11 @@ def _apply_inventory_row(store, raw_row):
             "channel": channel,
             "available_quantity": qty,
             "linked_existing_listing": bool(listing),
-            "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
-            "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
+            "listing_id": getattr(listing, "id", None) if listing else None,
+            "warehouse_stock_id": propagation_warehouse_stock_id,
+            "linked_warehouse_stock_id": linked_warehouse_stock_id,
+            "group_id": current_group_id,
+            "group_authority": "MarketplaceListing.master_product_group_id",
             "warehouse_mutation": False,
             "relationship_mutation": False,
         }
@@ -217,8 +242,10 @@ def _apply_inventory_row(store, raw_row):
         "available_quantity": qty,
         "linked_existing_listing": bool(listing),
         "listing_id": getattr(listing, "id", None) if listing else None,
-        "warehouse_stock_id": getattr(listing, "warehouse_stock_id", None) if listing else None,
-        "group_id": getattr(listing, "master_product_group_id", None) if listing else None,
+        "warehouse_stock_id": propagation_warehouse_stock_id,
+        "linked_warehouse_stock_id": linked_warehouse_stock_id,
+        "group_id": current_group_id,
+        "group_authority": "MarketplaceListing.master_product_group_id",
         "warehouse_mutation": False,
         "relationship_mutation": False,
     }
@@ -286,16 +313,18 @@ def apply_governed_amazon_fba_event(store_id, payload, source="amazon_fba_event"
         "seller_sku": result.get("seller_sku"),
         "listing_id": result.get("listing_id"),
         "warehouse_stock_id": result.get("warehouse_stock_id"),
+        "linked_warehouse_stock_id": result.get("linked_warehouse_stock_id"),
         "group_id": result.get("group_id"),
+        "group_authority": result.get("group_authority"),
         "expected_quantity": result.get("available_quantity"),
         "page_refresh_required": True,
         "warehouse_refresh_required": bool(
-            result.get("warehouse_stock_id") is not None
+            result.get("linked_warehouse_stock_id") is not None
         ),
         "refresh_scope": {
             "seller_sku": result.get("seller_sku"),
             "listing_id": result.get("listing_id"),
-            "warehouse_stock_id": result.get("warehouse_stock_id"),
+            "warehouse_stock_id": result.get("linked_warehouse_stock_id"),
             "group_id": result.get("group_id"),
             "expected_quantity": result.get("available_quantity"),
         },
