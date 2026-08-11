@@ -14,7 +14,18 @@ def _source(path):
     return path.read_text(encoding="utf-8")
 
 
-def test_existing_webhook_execution_still_auto_pushes():
+def _function_source(path, name):
+    source = _source(path)
+    tree = ast.parse(source)
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == name
+    )
+    return ast.get_source_segment(source, function)
+
+
+def test_webhook_uses_canonical_order_and_warehouse_handoff_path():
     source = _source(WEBHOOK_PATH)
     assert "push_group_listings(" in source
     assert "push_marketplace_listing(" in source
@@ -22,6 +33,28 @@ def test_existing_webhook_execution_still_auto_pushes():
     assert "process_exact_marketplace_order_line(" in source
     assert "MarketplaceOrder(" not in source
     assert "db.session.add(order)" not in source
+
+    # Group correction is handed to the shared Warehouse-controlled service
+    # with the exact Warehouse row changed by this webhook/order event.
+    assert "authority_warehouse_stock_id=stock.id" in source
+
+
+def test_webhook_current_product_linking_group_wins_over_permanent_stock_group():
+    block = _function_source(WEBHOOK_PATH, "_resolve_group_context")
+
+    assert "listing_group_id" in block
+    assert "stock_group_id" in block
+    assert "group_id = listing_group_id or stock_group_id" in block
+    assert "group_id = stock_group_id or listing_group_id" not in block
+    assert '"authority": "current_listing_relationship_then_warehouse_identity"' in block
+
+
+def test_webhook_sku_lookup_honours_resolved_store_identity():
+    block = _function_source(WEBHOOK_PATH, "_find_listing")
+
+    assert 'store_id = payload.get("_bt38_store_id")' in block
+    assert "MarketplaceListing.store_id == int(store_id)" in block
+    assert "MarketplaceListing.external_sku == str(value)" in block
 
 
 def test_existing_governed_push_queues_exact_alignment_scope():
