@@ -91,8 +91,46 @@ window.BT38.pages = window.BT38.pages || {};
       ).forEach((button) => button.remove());
     }
 
+    // Long marketplace titles must never expand the Linked Listings column and
+    // push the original Actions column off-screen. Keep the existing renderer,
+    // but constrain the Product Linking table after each render so the right-side
+    // Diagnostics/Push controls remain visible at normal desktop widths.
+    function alignProductLinkingTableLayout(scope) {
+      const target = scope && scope.querySelectorAll ? scope : document;
+      target.querySelectorAll('#warehouseDataContainer table').forEach((table) => {
+        table.style.width = '100%';
+        table.style.tableLayout = 'fixed';
+
+        table.querySelectorAll('tr').forEach((row) => {
+          const cells = row.children;
+          if (cells.length < 6) return;
+
+          cells[0].style.width = '20%';
+          cells[1].style.width = '6%';
+          cells[2].style.width = '9%';
+          cells[3].style.width = '8%';
+          cells[4].style.width = '47%';
+          cells[5].style.width = '10%';
+          cells[5].style.minWidth = '86px';
+          cells[5].style.whiteSpace = 'nowrap';
+          cells[5].style.verticalAlign = 'middle';
+
+          cells[4].style.minWidth = '0';
+          cells[4].style.overflow = 'hidden';
+          cells[4].querySelectorAll('.text-truncate').forEach((node) => {
+            node.style.display = 'block';
+            node.style.maxWidth = '100%';
+            node.style.overflow = 'hidden';
+            node.style.textOverflow = 'ellipsis';
+            node.style.whiteSpace = 'nowrap';
+          });
+        });
+      });
+    }
+
     function alignProductLinkingDom(scope) {
       removeInjectedProductLinkingPush(scope || document);
+      alignProductLinkingTableLayout(scope || document);
       alignProductLinkingSummary();
     }
 
@@ -105,10 +143,14 @@ window.BT38.pages = window.BT38.pages || {};
           if (node && node.nodeType === 1) {
             addedElement = true;
             removeInjectedProductLinkingPush(node);
+            alignProductLinkingTableLayout(node);
           }
         });
       });
-      if (addedElement) alignProductLinkingSummary();
+      if (addedElement) {
+        alignProductLinkingTableLayout(document);
+        alignProductLinkingSummary();
+      }
     });
 
     productLinkingObserver.observe(root, {
@@ -167,7 +209,8 @@ window.BT38.pages = window.BT38.pages || {};
       skipped: true,
       duplicatePushRemoved: true,
       currentGroupSnapshotAligned: true,
-      summaryAligned: true
+      summaryAligned: true,
+      actionsColumnVisible: true
     };
     return;
   }
