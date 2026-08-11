@@ -489,6 +489,72 @@ def capture_amazon_notification(
     return notification_record_id
 
 
+def _assert_amazon_order_change_canonical_order(
+    notification_record_id: int,
+    *,
+    commit: bool,
+) -> None:
+    """Refuse a silent COMPLETED state when canonical order intake is missing."""
+    notification = db.session.execute(
+        text(
+            """
+            SELECT
+                notification_type,
+                payload_json #>> '{Payload,OrderChangeNotification,AmazonOrderId}' AS order_id
+            FROM webhooks.amazon_notifications
+            WHERE id = :notification_record_id
+            """
+        ),
+        {"notification_record_id": notification_record_id},
+    ).mappings().first()
+
+    if not notification:
+        return
+
+    notification_type = str(
+        notification.get("notification_type") or ""
+    ).strip().upper()
+    order_id = str(notification.get("order_id") or "").strip()
+
+    if notification_type != "ORDER_CHANGE" or not order_id:
+        return
+
+    order_exists = db.session.execute(
+        text(
+            """
+            SELECT 1
+            FROM marketplace_orders
+            WHERE marketplace_order_id = :order_id
+            LIMIT 1
+            """
+        ),
+        {"order_id": order_id},
+    ).scalar()
+
+    if order_exists:
+        return
+
+    error = f"canonical_order_missing_after_order_change:{order_id}"
+    db.session.execute(
+        text(
+            """
+            UPDATE webhooks.amazon_notifications
+            SET processing_status = 'FAILED',
+                last_error = :error,
+                completed_at = NOW()
+            WHERE id = :notification_record_id
+            """
+        ),
+        {
+            "notification_record_id": notification_record_id,
+            "error": error,
+        },
+    )
+    if commit:
+        db.session.commit()
+    raise RuntimeError(error)
+
+
 def mark_notification_status(
     marketplace: str,
     notification_record_id: int,
@@ -506,6 +572,16 @@ def mark_notification_status(
 
     if platform not in {"ebay", "amazon"}:
         raise ValueError(f"Unsupported marketplace: {marketplace!r}")
+
+    if (
+        platform == "amazon"
+        and completed
+        and str(processing_status or "").strip().upper() == "COMPLETED"
+    ):
+        _assert_amazon_order_change_canonical_order(
+            notification_record_id,
+            commit=commit,
+        )
 
     table_name = (
         "webhooks.ebay_notifications"
