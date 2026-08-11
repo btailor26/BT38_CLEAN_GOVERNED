@@ -17,12 +17,12 @@
            class="btn btn-sm py-1 px-2 {% if request.path == '/listings' %}btn-primary{% else %}btn-outline-primary{% endif %}">
             Listings
         </a>
-        <a href="/groups"
-           class="btn btn-sm py-1 px-2 {% if request.path == '/groups' %}btn-primary{% else %}btn-outline-primary{% endif %}">
-            Orders
+        <a href="{{ url_for('governed_mcf.orders_mcf_page') }}"
+           class="btn btn-sm py-1 px-2 {% if request.path == '/orders-mcf' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+            Orders / MCF
         </a>
-        <a href="/warehouse?view=fba"
-           class="btn btn-sm py-1 px-2 {% if request.path == '/warehouse' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+        <a href="/amazon-fba-stock"
+           class="btn btn-sm py-1 px-2 {% if request.path == '/amazon-fba-stock' %}btn-primary{% else %}btn-outline-primary{% endif %}">
             FBA Read Only
         </a>
     </div>
