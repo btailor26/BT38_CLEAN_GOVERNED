@@ -39,6 +39,23 @@ def test_webhook_uses_canonical_order_and_warehouse_handoff_path():
     assert "authority_warehouse_stock_id=stock.id" in source
 
 
+def test_webhook_auto_push_requires_real_committed_warehouse_change():
+    block = _function_source(WEBHOOK_PATH, "process_marketplace_notification")
+
+    mutation = block.index("mutation_result = process_exact_marketplace_order_line(")
+    change_gate = block.index("if not stock_changed:")
+    group_push = block.index("push_result = push_group_listings(")
+    listing_push = block.index("push_result = push_marketplace_listing(")
+
+    assert mutation < change_gate < group_push
+    assert mutation < change_gate < listing_push
+    assert 'status=(\n                "stock_mutation_failed"' in block
+    assert 'else "stock_unchanged"' in block
+    assert "correction_started=False" in block
+    assert "push_started=False" in block
+    assert "Canonical Warehouse quantity did not change" in block
+
+
 def test_webhook_current_product_linking_group_wins_over_permanent_stock_group():
     block = _function_source(WEBHOOK_PATH, "_resolve_group_context")
 
