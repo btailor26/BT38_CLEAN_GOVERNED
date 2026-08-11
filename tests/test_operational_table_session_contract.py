@@ -3,12 +3,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = (ROOT / "static/js/bt38-operational-table-contract.js").read_text(encoding="utf-8")
 PAGE_CONTROLLER = (ROOT / "static/js/bt38-page-controller.js").read_text(encoding="utf-8")
+GLOBAL_STATE = (ROOT / "static/js/bt38-global-state.js").read_text(encoding="utf-8")
 BASE = (ROOT / "templates/base.html").read_text(encoding="utf-8")
 
 
 def test_shared_operational_table_contract_is_global_and_session_controlled():
     assert "bt38-operational-table-contract.js" in BASE
-    assert "sessionStorage" in SHARED
+    assert "BT38.getPageSession" in SHARED
+    assert "BT38.setPageSession" in SHARED
+    assert 'sessionOwner: "BT38.getPageSession/setPageSession"' in SHARED
+    assert "window.sessionStorage" not in SHARED
+    assert "window.sessionStorage" in GLOBAL_STATE
     assert "[15, 25, 50, 100]" in SHARED
     assert 'serverPagedExpansion: true' in SHARED
     assert 'businessActionsChanged: false' in SHARED
