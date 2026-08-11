@@ -80,3 +80,20 @@ def test_successful_exact_recovery_closes_durable_notification():
     assert 'processing_status="COMPLETED"' in runner
     assert 'last_error=""' in runner
     assert "completed=True" in runner
+
+
+def test_restart_recovery_selects_only_failed_or_stranded_webhook_ids():
+    selector = _function_source(
+        RECOVERY_TREE,
+        RECOVERY_SOURCE,
+        "_queue_stranded_durable_notifications",
+    )
+
+    assert "webhooks.amazon_notifications" in selector
+    assert "webhooks.ebay_notifications" in selector
+    assert "processing_status = 'FAILED'" in selector
+    assert "processing_status = 'PROCESSING'" in selector
+    assert "request_rejected_webhook_recovery" in selector
+    assert "get_orders" not in selector
+    assert "run_governed_warehouse_sync" not in selector
+    assert "run_governed_marketplace_order_import" not in selector
