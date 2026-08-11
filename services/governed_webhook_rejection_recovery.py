@@ -1,16 +1,18 @@
 """Immediate exact recovery after a failed governed webhook.
 
 Contract:
-- Successful webhooks do nothing here.
+- Successful webhooks normally do nothing here.
 - Failed webhooks recover only the durable notification that failed.
 - Recovery checks canonical MarketplaceOrder first.
-- Existing orders are skipped before replay, preventing duplicate rows and
-  duplicate stock mutation.
+- Existing orders are never replayed, preventing duplicate rows and duplicate
+  stock mutation.
 - Missing orders replay only the captured exact notification through the
   existing governed webhook executor.
-- A restart performs one bounded DB-only scan for failed/stranded webhook IDs
-  plus legacy Amazon ORDER_CHANGE rows that were incorrectly marked COMPLETED
-  without a canonical MarketplaceOrder.
+- A restart performs one bounded DB-only selector for failed/stranded webhook
+  IDs, legacy completed order orphans, and Amazon FBA order notifications whose
+  exact Seller-SKU settlement verification was not completed after 90 seconds.
+- FBA settlement recovery re-reads only that Seller SKU from Amazon; it does
+  not replay the order or scan marketplace inventory.
 - No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
   marketplace-wide recovery is started.
 """
@@ -98,12 +100,14 @@ def _run_pending_recoveries():
                         app.logger.warning(
                             "BT38 exact webhook recovery platform=%s "
                             "notification_record_id=%s order_id=%s "
-                            "recovered=%s duplicate_skipped=%s",
+                            "recovered=%s duplicate_skipped=%s "
+                            "fba_verified=%s",
                             platform,
                             notification_record_id,
                             result.get("order_id"),
                             result.get("recovered"),
                             result.get("duplicate_skipped"),
+                            bool(result.get("fba_verification")),
                         )
                     else:
                         app.logger.error(
@@ -162,7 +166,7 @@ def request_rejected_webhook_recovery(
 
 
 def _queue_stranded_durable_notifications(limit: int = 25) -> int:
-    """Queue only exact failed/stranded IDs and legacy completed order orphans."""
+    """Queue exact failures, order orphans, and missed FBA settlement checks."""
     from extensions import db
 
     selected: list[tuple[str, int]] = []
@@ -226,6 +230,51 @@ def _queue_stranded_durable_notifications(limit: int = 25) -> int:
         {"limit": int(limit)},
     ).scalars().all()
     selected.extend(("amazon", int(row_id)) for row_id in amazon_orphans)
+
+    # Exact FBA settlement durability. The normal webhook performs an immediate
+    # Seller-SKU read and schedules a 90-second in-memory recheck. A deployment
+    # inside that settlement window used to lose the delayed event permanently.
+    # Select only completed Amazon UK FBA orders whose stored FBA truth was not
+    # refreshed at/after the 90-second settlement point. Recovery sees that the
+    # canonical order already exists, so it NEVER replays the order; it performs
+    # one exact Seller-SKU Amazon read and publishes only a committed change.
+    fba_settlement_gaps = db.session.execute(
+        text(
+            """
+            SELECT DISTINCT n.id
+            FROM webhooks.amazon_notifications AS n
+            JOIN marketplace_orders AS mo
+              ON mo.marketplace_order_id =
+                 n.payload_json->'Payload'->'OrderChangeNotification'
+                   ->>'AmazonOrderId'
+            LEFT JOIN amazon_fba_inventory AS afi
+              ON afi.seller_sku = mo.sku
+             AND (
+                  afi.store_id = mo.store_id
+                  OR afi.store_id IS NULL
+             )
+            WHERE n.received_at >= NOW() - INTERVAL '48 hours'
+              AND n.received_at <= NOW() - INTERVAL '90 seconds'
+              AND n.processing_status = 'COMPLETED'
+              AND n.notification_type = 'ORDER_CHANGE'
+              AND n.payload_json->'Payload'->'OrderChangeNotification'
+                    ->'Summary'->>'MarketplaceId' = 'A1F83G8C2ARO7P'
+              AND UPPER(COALESCE(mo.fulfillment_type, '')) IN ('FBA', 'AFN', 'AMAZON')
+              AND (
+                    afi.id IS NULL
+                    OR afi.last_synced_at IS NULL
+                    OR afi.last_synced_at < n.received_at + INTERVAL '90 seconds'
+                  )
+            ORDER BY n.id ASC
+            LIMIT :limit
+            """
+        ),
+        {"limit": int(limit)},
+    ).scalars().all()
+    selected.extend(
+        ("amazon", int(row_id))
+        for row_id in fba_settlement_gaps
+    )
 
     queued = 0
     for platform, notification_record_id in sorted(set(selected)):
