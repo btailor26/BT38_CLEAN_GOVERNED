@@ -13,20 +13,14 @@
   }
 
   function readState() {
-    if (
-      window.BT38
-      && typeof window.BT38.getPageSession === "function"
-    ) {
+    if (window.BT38 && typeof window.BT38.getPageSession === "function") {
       return window.BT38.getPageSession(pageKey(), {});
     }
     return {};
   }
 
   function writeState(patch) {
-    if (
-      window.BT38
-      && typeof window.BT38.setPageSession === "function"
-    ) {
+    if (window.BT38 && typeof window.BT38.setPageSession === "function") {
       return window.BT38.setPageSession(pageKey(), patch || {});
     }
     return patch || {};
@@ -83,6 +77,45 @@
     preserveState();
     showLoading();
     window.location.assign(url);
+  }
+
+  function ensureFbaPageSizeControl() {
+    if (window.location.pathname.replace(/\/$/, "") !== "/amazon-fba-stock") return;
+    if (document.getElementById("bt38ResultsPerPageSelect")) return;
+
+    const card = document.querySelector(".table-responsive")?.closest(".card");
+    const footerTarget = card?.querySelector(".card-body");
+    if (!footerTarget) return;
+
+    const controls = document.createElement("div");
+    controls.className = "d-flex justify-content-end align-items-center gap-2 p-3 border-top";
+    controls.setAttribute("data-bt38-fba-page-size", "1");
+    controls.innerHTML = '<label class="small text-muted mb-0" for="bt38ResultsPerPageSelect">Results per page</label>'
+      + '<select id="bt38ResultsPerPageSelect" class="form-select form-select-sm" style="width:auto" aria-label="Results per page">'
+      + ALLOWED_PAGE_SIZES.map((size) => `<option value="${size}">${size}</option>`).join("")
+      + "</select>";
+    footerTarget.appendChild(controls);
+
+    const params = new URLSearchParams(window.location.search);
+    const requested = Number.parseInt(params.get("per_page") || "15", 10);
+    const selected = ALLOWED_PAGE_SIZES.includes(requested) ? requested : 15;
+    document.getElementById("bt38ResultsPerPageSelect").value = String(selected);
+  }
+
+  function normalizeFbaPaginationLinks() {
+    if (window.location.pathname.replace(/\/$/, "") !== "/amazon-fba-stock") return;
+    const current = new URL(window.location.href);
+    const perPage = String(currentPageSize());
+    const status = current.searchParams.get("status");
+
+    document.querySelectorAll("nav .pagination a.page-link[href]").forEach((link) => {
+      const url = new URL(link.href, window.location.origin);
+      url.searchParams.set("per_page", perPage);
+      if (status) url.searchParams.set("status", status);
+      link.href = url.toString();
+      link.classList.add("bt38-page-link");
+      link.closest("nav")?.classList.add("bt38-page-nav");
+    });
   }
 
   function serverPageSizeControl() {
@@ -147,6 +180,8 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    ensureFbaPageSizeControl();
+    normalizeFbaPaginationLinks();
     preserveState();
     serverPageSizeControl();
     serverPaginationLinks();
