@@ -316,7 +316,6 @@
     state.filtered = state.products.filter((product) => productMatches(product, filters));
     try { productLinkingPage = state.page; productLinkingPerPage = state.perPage; productLinkingPagination = { page: state.page, per_page: state.perPage, total_stock: state.total, total_pages: state.totalPages, has_prev: state.page > 1, has_next: state.page < state.totalPages, prev_page: Math.max(1, state.page - 1), next_page: Math.min(state.totalPages, state.page + 1) }; } catch (_) {}
     renderWarehouseProducts(state.filtered);
-    document.querySelectorAll('.bt38-qty-push-open').forEach((button) => { if (button.textContent.trim() === 'Push') button.remove(); });
     renderRelationshipAndPushEvidence(state.filtered);
     const count = document.getElementById("warehouseGroupsCount");
     if (count) count.textContent = `${state.filtered.length} shown of ${state.total} matching warehouse groups`;
