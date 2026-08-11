@@ -9,7 +9,8 @@ Contract:
 - Missing orders replay only the captured exact notification through the
   existing governed webhook executor.
 - A restart performs one bounded DB-only scan for failed/stranded webhook IDs
-  and reuses the same exact recovery path.
+  plus legacy Amazon ORDER_CHANGE rows that were incorrectly marked COMPLETED
+  without a canonical MarketplaceOrder.
 - No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
   marketplace-wide recovery is started.
 """
@@ -161,10 +162,12 @@ def request_rejected_webhook_recovery(
 
 
 def _queue_stranded_durable_notifications(limit: int = 25) -> int:
-    """Queue only failed/stranded durable webhook IDs after a restart."""
+    """Queue only exact failed/stranded IDs and legacy completed order orphans."""
     from extensions import db
 
     selected: list[tuple[str, int]] = []
+
+    # Failed/stranded exact notifications for both marketplaces.
     for platform, table_name in (
         ("amazon", "webhooks.amazon_notifications"),
         ("ebay", "webhooks.ebay_notifications"),
@@ -190,8 +193,42 @@ def _queue_stranded_durable_notifications(limit: int = 25) -> int:
         ).scalars().all()
         selected.extend((platform, int(row_id)) for row_id in rows)
 
+    # Legacy Amazon bug repair: before the completion guard existed, an AFN
+    # ORDER_CHANGE could be marked COMPLETED without creating MarketplaceOrder.
+    # Detect only Amazon UK customer-order notifications already held in BT38;
+    # do not scan Amazon, Warehouse, listings, or MCF/internal marketplaces.
+    amazon_orphans = db.session.execute(
+        text(
+            """
+            SELECT n.id
+            FROM webhooks.amazon_notifications AS n
+            WHERE n.received_at >= NOW() - INTERVAL '48 hours'
+              AND n.processing_status = 'COMPLETED'
+              AND n.notification_type = 'ORDER_CHANGE'
+              AND n.payload_json->'Payload'->'OrderChangeNotification'
+                    ->'Summary'->>'MarketplaceId' = 'A1F83G8C2ARO7P'
+              AND COALESCE(
+                    n.payload_json->'Payload'->'OrderChangeNotification'
+                      ->>'AmazonOrderId',
+                    ''
+                  ) <> ''
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM marketplace_orders AS mo
+                    WHERE mo.marketplace_order_id =
+                        n.payload_json->'Payload'->'OrderChangeNotification'
+                          ->>'AmazonOrderId'
+                  )
+            ORDER BY n.id ASC
+            LIMIT :limit
+            """
+        ),
+        {"limit": int(limit)},
+    ).scalars().all()
+    selected.extend(("amazon", int(row_id)) for row_id in amazon_orphans)
+
     queued = 0
-    for platform, notification_record_id in selected:
+    for platform, notification_record_id in sorted(set(selected)):
         if request_rejected_webhook_recovery(
             platform,
             notification_record_id,
