@@ -10,8 +10,12 @@ import services.governed_webhook_rejection_recovery  # noqa: F401
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
 )
+from services.product_linking_recent_table_alignment import (
+    install_product_linking_recent_table_alignment,
+)
 
 install_ebay_notification_challenge_handler(app)
+install_product_linking_recent_table_alignment(app)
 
 
 # Webhook runtime alignment only.
