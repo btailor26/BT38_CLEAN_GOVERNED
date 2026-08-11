@@ -8,6 +8,8 @@ Contract:
   duplicate stock mutation.
 - Missing orders replay only the captured exact notification through the
   existing governed webhook executor.
+- A restart performs one bounded DB-only scan for failed/stranded webhook IDs
+  and reuses the same exact recovery path.
 - No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
   marketplace-wide recovery is started.
 """
@@ -16,6 +18,7 @@ from __future__ import annotations
 import threading
 
 from flask import g, request
+from sqlalchemy import text
 
 from app import app
 
@@ -28,6 +31,7 @@ _WEBHOOK_PATHS = {
 _recovery_lock = threading.Lock()
 _recovery_running = False
 _pending_notifications: set[tuple[str, int]] = set()
+_startup_recovery_checked = False
 
 
 def _response_failed(response) -> bool:
@@ -83,8 +87,6 @@ def _run_pending_recoveries():
                     )
 
                     if result.get("success"):
-                        # Safe because exact recovery has already proven the
-                        # canonical order exists (or existed before replay).
                         mark_notification_status(
                             platform,
                             notification_record_id,
@@ -158,6 +160,77 @@ def request_rejected_webhook_recovery(
     return True
 
 
+def _queue_stranded_durable_notifications(limit: int = 25) -> int:
+    """Queue only failed/stranded durable webhook IDs after a restart."""
+    from extensions import db
+
+    selected: list[tuple[str, int]] = []
+    for platform, table_name in (
+        ("amazon", "webhooks.amazon_notifications"),
+        ("ebay", "webhooks.ebay_notifications"),
+    ):
+        rows = db.session.execute(
+            text(
+                f"""
+                SELECT id
+                FROM {table_name}
+                WHERE received_at >= NOW() - INTERVAL '48 hours'
+                  AND (
+                        processing_status = 'FAILED'
+                        OR (
+                            processing_status = 'PROCESSING'
+                            AND received_at <= NOW() - INTERVAL '2 minutes'
+                        )
+                  )
+                ORDER BY id ASC
+                LIMIT :limit
+                """
+            ),
+            {"limit": int(limit)},
+        ).scalars().all()
+        selected.extend((platform, int(row_id)) for row_id in rows)
+
+    queued = 0
+    for platform, notification_record_id in selected:
+        if request_rejected_webhook_recovery(
+            platform,
+            notification_record_id,
+        ):
+            queued += 1
+    return queued
+
+
+@app.before_request
+def recover_stranded_webhooks_once_after_restart():
+    """One bounded DB-only safety pass after process restart."""
+    global _startup_recovery_checked
+
+    if _startup_recovery_checked:
+        return None
+
+    with _recovery_lock:
+        if _startup_recovery_checked:
+            return None
+        _startup_recovery_checked = True
+
+    try:
+        queued = _queue_stranded_durable_notifications(limit=25)
+        if queued:
+            app.logger.warning(
+                "BT38 queued %s stranded exact webhook recoveries after restart",
+                queued,
+            )
+    except Exception:
+        from extensions import db
+
+        db.session.rollback()
+        app.logger.exception(
+            "BT38 stranded exact webhook recovery selector failed"
+        )
+
+    return None
+
+
 @app.after_request
 def recover_when_marketplace_webhook_is_rejected(response):
     path = request.path.rstrip("/") or "/"
@@ -181,7 +254,6 @@ def recover_when_marketplace_webhook_is_rejected(response):
                 "notification_record_id"
             )
 
-    # Request-local guard prevents duplicate scheduling from multiple hooks.
     if not getattr(g, "bt38_rejected_webhook_recovery_requested", False):
         scheduled = request_rejected_webhook_recovery(
             platform,
