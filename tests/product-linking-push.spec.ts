@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const template = readFileSync('templates/product_linking.html', 'utf8');
 const propagation = readFileSync('governed_group_propagation_routes.py', 'utf8');
+const pushService = readFileSync('services/governed_push_execution.py', 'utf8');
 
 test('Product Linking declares display quantity before visible Push button', async () => {
   const renderStart = template.indexOf('function renderWarehouseProducts(products)');
@@ -25,23 +26,29 @@ test('Product Linking shortcut posts group and permanent Warehouse identity', as
   expect(template).toContain("source: 'product_linking_warehouse_shortcut'");
 });
 
-test('governed group shortcut resolves one selected Warehouse target quantity', async () => {
-  expect(propagation).toContain('target_quantity = None');
-  expect(propagation).toContain('getattr(requested_stock, "sellable_quantity", 0) or 0');
-  expect(propagation).toContain('if target_quantity is not None');
-  expect(propagation).toContain('int(target_quantity)');
+test('manual shortcut delegates to the single governed group service', async () => {
+  expect(propagation).toContain('from services.governed_push_execution import push_group_listings');
+  expect(propagation).toContain('result = push_group_listings(');
+  expect(propagation).toContain('authority_warehouse_stock_id=requested_warehouse_stock_id');
+  expect(propagation).not.toContain('submit_governed_marketplace_action');
 });
 
-test('group shortcut preserves current Product Linking membership and FBA read-only guard', async () => {
-  expect(propagation).toContain('MarketplaceListing.master_product_group_id');
-  expect(propagation).toContain('== group_id');
-  expect(propagation).toContain('if classification["is_fba"]:');
-  expect(propagation).toContain('"read_only"');
+test('shared group service resolves one Warehouse target quantity', async () => {
+  expect(pushService).toContain('authority_warehouse_stock_id');
+  expect(pushService).toContain('target_quantity = int(getattr(authority_stock, "sellable_quantity", 0) or 0)');
+  expect(pushService).toContain('stock.available_quantity = int(target_quantity + reserved + allocated)');
+  expect(pushService).toContain('"one_shared_group_quantity": True');
+});
+
+test('shared group service preserves current group and skips FBA before write', async () => {
+  expect(pushService).toContain('MarketplaceListing.master_product_group_id == group_id');
+  expect(pushService).toContain('if _is_fba_listing(listing):');
+  expect(pushService).toContain('"push_status": "read_only"');
 });
 
 test('group push response identifies affected records for targeted UI handoff', async () => {
-  expect(propagation).toContain('"affected_group_ids": [int(group_id)]');
-  expect(propagation).toContain('"affected_listing_ids": affected_listing_ids');
-  expect(propagation).toContain('"affected_warehouse_stock_ids": affected_warehouse_stock_ids');
-  expect(propagation).toContain('"target_quantity": target_quantity');
+  expect(pushService).toContain('"affected_group_ids": [group_id]');
+  expect(pushService).toContain('"affected_listing_ids"');
+  expect(pushService).toContain('"affected_warehouse_stock_ids": warehouse_ids');
+  expect(pushService).toContain('"target_quantity": target_quantity');
 });
