@@ -8,6 +8,8 @@
 //   push must not run relationship-targeted searches/merges afterward.
 // - Current MarketplaceListing membership wins over an empty permanent/original
 //   Warehouse shadow row in Product Linking display.
+// - Store auto_push_enabled is future permission only; no automatic push worker
+//   is running, so Product Linking must display Auto OFF.
 (function () {
   "use strict";
 
@@ -17,7 +19,6 @@
   const SNAPSHOT_REVISION = "current-membership-push-shortcut-v6";
   const SNAPSHOT_MARKER = "bt38-product-linking-runtime-alignment";
   let lastRenderedProducts = [];
-  let settingsState = null;
   let evidenceCorrectionScheduled = false;
 
   function asArray(value) {
@@ -26,13 +27,6 @@
 
   function sameId(left, right) {
     return left != null && right != null && String(left) === String(right);
-  }
-
-  function settingOn(value) {
-    if (value === true || value === 1) return true;
-    return ["1", "true", "yes", "on", "enabled"].includes(
-      String(value ?? "").trim().toLowerCase()
-    );
   }
 
   function listingSku(listing) {
@@ -73,7 +67,7 @@
     evidenceCorrectionScheduled = true;
     window.requestAnimationFrame(() => {
       evidenceCorrectionScheduled = false;
-      void correctPushSettingsEvidence();
+      correctPushSettingsEvidence();
     });
   }
 
@@ -98,31 +92,7 @@
     window.renderWarehouseProducts = aligned;
   }
 
-  async function loadSettingsState() {
-    if (settingsState) return settingsState;
-    try {
-      const response = await fetch("/governed/settings/state", {
-        credentials: "same-origin",
-        cache: "no-store"
-      });
-      if (!response.ok) return null;
-      const data = await response.json();
-      if (!data || (!data.success && !data.ok)) return null;
-      settingsState = {
-        config: data.config || {},
-        stores: asArray(data.stores)
-      };
-      return settingsState;
-    } catch (error) {
-      console.warn("[ProductLinkingAlignment] settings read failed", error);
-      return null;
-    }
-  }
-
-  async function correctPushSettingsEvidence() {
-    const state = await loadSettingsState();
-    if (!state) return;
-
+  function correctPushSettingsEvidence() {
     lastRenderedProducts.forEach((product) => {
       const row = root.querySelector(
         `tr[data-warehouse-id="${CSS.escape(String(product?.id ?? ""))}"]`
@@ -137,15 +107,13 @@
         if (!card) return;
         const line = card.querySelector(".bt38-push-settings-evidence");
         if (!line) return;
-        const store = state.stores.find((item) => sameId(item?.id, listing?.store_id));
-        const autoOn = settingOn(store?.auto_push_enabled);
+
+        // auto_push_enabled is only future permission in Settings. There is no
+        // automatic push worker/runtime, so the operational UI state is OFF.
         const currentText = line.textContent || "";
-        const nextText = currentText.replace(
-          /Auto\s+(ON|OFF)/i,
-          `Auto ${autoOn ? "ON" : "OFF"}`
-        );
-        // Do not rewrite identical DOM text. Rewriting it retriggers the
-        // MutationObserver and can create a self-sustaining UI loop.
+        const nextText = currentText.replace(/Auto\s+(ON|OFF)/i, "Auto OFF");
+
+        // Idempotent DOM update: never retrigger the observer when unchanged.
         if (nextText !== currentText) {
           line.textContent = nextText;
         }
@@ -260,8 +228,6 @@
   }
 
   const evidenceObserver = new MutationObserver((mutations) => {
-    // Only schedule when structural nodes were added/removed. Text corrections
-    // made by this module must not recursively trigger another settings pass.
     const structuralChange = mutations.some((mutation) =>
       mutation.type === "childList" &&
       (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) &&
@@ -280,7 +246,8 @@
     directWarehousePush: true,
     quantityFromProductLinking: false,
     relationshipRefreshAfterPush: false,
-    autoPushEvidenceBooleanSafe: true,
+    autoPushOperationalState: "off",
+    duplicateSettingsFetchRemoved: true,
     settingsObserverSelfLoopBlocked: true,
     snapshotRevision: SNAPSHOT_REVISION
   };
