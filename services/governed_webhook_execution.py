@@ -136,54 +136,6 @@ def process_marketplace_notification(
         and listing_channel not in {"MFN", "FBM", "MERCHANT"}
     )
 
-    payload_change = (
-        payload.get("Payload", {})
-        .get("OrderChangeNotification", {})
-    )
-    payload_summary = payload_change.get("Summary", {})
-    payload_fulfillment_type = str(
-        payload_summary.get("FulfillmentType")
-        or payload_summary.get("fulfillmentType")
-        or ""
-    ).strip().upper()
-
-    if (
-        is_amazon_fba
-        and event_type == "order_change"
-        and payload_fulfillment_type in {"AFN", "FBA", "AMAZON"}
-    ):
-        seller_sku = (
-            _deep_get(payload, "SellerSKU")
-            or getattr(listing, "external_sku", None)
-        )
-
-        return _log_result(
-            status="fba_pending_stored",
-            marketplace=marketplace,
-            event_type=event_type,
-            business_event="fba_pending",
-            reason=(
-                "Amazon AFN/FBA ORDER_CHANGE stored as an exact inventory "
-                "verification signal. Order quantity was not treated as FBA "
-                "inventory; Amazon remains inventory authority."
-            ),
-            payload=payload,
-            store_id=(
-                payload.get("_bt38_store_id")
-                or getattr(listing, "store_id", None)
-            ),
-            listing_id=listing.id,
-            warehouse_stock_id=getattr(listing, "warehouse_stock_id", None),
-            seller_sku=(
-                str(seller_sku).strip()
-                if seller_sku not in (None, "")
-                else None
-            ),
-            order_id=_extract_marketplace_order_id(payload),
-            stock_changed=False,
-            correction_started=False,
-        )
-
     stock = listing.warehouse_stock
     if not stock:
         return _log_result(
@@ -317,6 +269,39 @@ def process_marketplace_notification(
         )
         order.updated_at = datetime.utcnow()
         db.session.commit()
+
+    # Amazon FBA/AFN sale notifications must still enter the canonical order
+    # database, but order quantity is never FBA inventory authority. The exact
+    # order processor marks the row processed without mutating Warehouse stock.
+    # Return here before any Warehouse/group marketplace push; the runtime's
+    # exact FBA verification refreshes AmazonFBAInventory from Amazon truth.
+    if is_amazon_fba:
+        return _log_result(
+            status="fba_order_processed",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            reason=(
+                "Amazon FBA/AFN sale was stored through canonical order intake. "
+                "Order quantity did not mutate Warehouse or FBA inventory and "
+                "no marketplace push was started; Amazon remains FBA inventory authority."
+            ),
+            payload=payload,
+            store_id=getattr(listing, "store_id", None),
+            listing_id=listing.id,
+            warehouse_stock_id=stock.id,
+            seller_sku=(
+                getattr(listing, "external_sku", None)
+                or getattr(stock, "sku", None)
+            ),
+            order_id=order_intake.get("marketplace_order_id"),
+            order_intake=order_intake.get("result"),
+            stock_mutation=mutation_result,
+            stock_changed=False,
+            correction_started=False,
+            push_started=False,
+            fba_inventory_verification_required=True,
+        )
 
     if grouped:
         if not group_id:
@@ -496,7 +481,6 @@ def _handle_marketplace_cancellation(
     for line in lines:
         line.status = "cancel_requested"
         line.updated_at = now
-        line.error_message = None
     db.session.commit()
 
     mcf = next(
@@ -1098,7 +1082,7 @@ def _log_result(**data) -> Dict[str, Any]:
         "payment_deferred_stored", "tracking_stored", "delivery_stored", "policy_stored",
         "fba_pending_stored", "fba_received_stored", "fba_adjustment_stored", "fba_lost_stored",
         "fba_damaged_stored", "fba_reimbursement_stored", "fba_inventory_updated",
-        "fba_inventory_unchanged", "cancellation_processed",
+        "fba_inventory_unchanged", "fba_order_processed", "cancellation_processed",
     }
 
     return {
