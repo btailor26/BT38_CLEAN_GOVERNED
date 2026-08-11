@@ -5,7 +5,6 @@
   "use strict";
 
   const ALLOWED_PAGE_SIZES = [15, 25, 50, 100];
-  const SESSION_PREFIX = "bt38:operational-table:";
   const SEARCH_DEBOUNCE_MS = 350;
 
   function pageKey() {
@@ -13,26 +12,24 @@
     return root?.dataset?.bt38Page || window.location.pathname;
   }
 
-  function sessionKey() {
-    return SESSION_PREFIX + pageKey();
-  }
-
   function readState() {
-    try {
-      return JSON.parse(window.sessionStorage.getItem(sessionKey()) || "{}") || {};
-    } catch (_) {
-      return {};
+    if (
+      window.BT38
+      && typeof window.BT38.getPageSession === "function"
+    ) {
+      return window.BT38.getPageSession(pageKey(), {});
     }
+    return {};
   }
 
   function writeState(patch) {
-    try {
-      const next = Object.assign({}, readState(), patch || {});
-      window.sessionStorage.setItem(sessionKey(), JSON.stringify(next));
-      return next;
-    } catch (_) {
-      return patch || {};
+    if (
+      window.BT38
+      && typeof window.BT38.setPageSession === "function"
+    ) {
+      return window.BT38.setPageSession(pageKey(), patch || {});
     }
+    return patch || {};
   }
 
   function currentPageSize() {
@@ -118,7 +115,6 @@
           event.preventDefault();
           return;
         }
-        // Product Linking owns exact group paging; never duplicate it.
         if (pageKey() === "productLinking") return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -133,9 +129,9 @@
       field.dataset.bt38SessionRemember = "1";
       const save = () => {
         const state = readState();
-        state.filters = state.filters || {};
-        state.filters[field.name] = field.value;
-        writeState(state);
+        const filters = Object.assign({}, state.filters || {});
+        filters[field.name] = field.value;
+        writeState({ filters });
       };
       field.addEventListener("input", save);
       field.addEventListener("change", save);
@@ -165,6 +161,7 @@
   window.BT38.operationalTableContract = {
     pageSizes: ALLOWED_PAGE_SIZES.slice(),
     sessionControlled: true,
+    sessionOwner: "BT38.getPageSession/setPageSession",
     loadingStyle: "shared",
     serverPagedExpansion: true,
     eventOwnership: "page-specific-exact-event-only",
