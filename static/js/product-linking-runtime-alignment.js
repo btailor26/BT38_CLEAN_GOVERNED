@@ -18,6 +18,7 @@
   const SNAPSHOT_MARKER = "bt38-product-linking-runtime-alignment";
   let lastRenderedProducts = [];
   let settingsState = null;
+  let evidenceCorrectionScheduled = false;
 
   function asArray(value) {
     return Array.isArray(value) ? value : [];
@@ -52,10 +53,6 @@
     const sku = productSku(product);
     if (!sku) return false;
 
-    // An empty Warehouse identity with the same Seller SKU must not be rendered
-    // as a live Product Linking group when that marketplace listing currently
-    // belongs to another product/group. Permanent identity remains in Neon and
-    // can reappear after an explicit unlink; it is not current membership.
     return asArray(products).some((candidate) => {
       if (sameId(candidate?.id, product?.id)) return false;
       return asArray(candidate?.listings).some((listing) => {
@@ -71,6 +68,15 @@
     return rows.filter((product) => !isEmptyPermanentShadow(product, rows));
   }
 
+  function schedulePushSettingsEvidenceCorrection() {
+    if (evidenceCorrectionScheduled) return;
+    evidenceCorrectionScheduled = true;
+    window.requestAnimationFrame(() => {
+      evidenceCorrectionScheduled = false;
+      void correctPushSettingsEvidence();
+    });
+  }
+
   function installRenderAlignment(attempt) {
     const original = window.renderWarehouseProducts;
     if (typeof original !== "function") {
@@ -84,7 +90,7 @@
     const aligned = function (products) {
       lastRenderedProducts = currentRelationshipProducts(products);
       const result = original(lastRenderedProducts);
-      window.setTimeout(correctPushSettingsEvidence, 0);
+      schedulePushSettingsEvidenceCorrection();
       return result;
     };
     aligned.__bt38CurrentRelationshipAligned = true;
@@ -133,10 +139,16 @@
         if (!line) return;
         const store = state.stores.find((item) => sameId(item?.id, listing?.store_id));
         const autoOn = settingOn(store?.auto_push_enabled);
-        line.textContent = line.textContent.replace(
+        const currentText = line.textContent || "";
+        const nextText = currentText.replace(
           /Auto\s+(ON|OFF)/i,
           `Auto ${autoOn ? "ON" : "OFF"}`
         );
+        // Do not rewrite identical DOM text. Rewriting it retriggers the
+        // MutationObserver and can create a self-sustaining UI loop.
+        if (nextText !== currentText) {
+          line.textContent = nextText;
+        }
       });
     });
   }
@@ -189,9 +201,6 @@
         );
       }
 
-      // IMPORTANT: a group push changes marketplace quantity state, not Product
-      // Linking membership. Do not call bt38ApplyProductLinkingMutation here.
-      // That relationship refresh was the source of stale/empty group collisions.
       window.alert(
         data.message
         || (
@@ -212,8 +221,6 @@
     }
   }
 
-  // Capture before the legacy template click listener. This preserves the
-  // original far-right button while preventing the quantity-edit modal path.
   document.addEventListener(
     "click",
     (event) => {
@@ -252,8 +259,15 @@
       });
   }
 
-  const evidenceObserver = new MutationObserver(() => {
-    void correctPushSettingsEvidence();
+  const evidenceObserver = new MutationObserver((mutations) => {
+    // Only schedule when structural nodes were added/removed. Text corrections
+    // made by this module must not recursively trigger another settings pass.
+    const structuralChange = mutations.some((mutation) =>
+      mutation.type === "childList" &&
+      (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) &&
+      !mutation.target?.closest?.(".bt38-push-settings-evidence")
+    );
+    if (structuralChange) schedulePushSettingsEvidenceCorrection();
   });
   evidenceObserver.observe(root, { childList: true, subtree: true });
 
@@ -267,6 +281,7 @@
     quantityFromProductLinking: false,
     relationshipRefreshAfterPush: false,
     autoPushEvidenceBooleanSafe: true,
+    settingsObserverSelfLoopBlocked: true,
     snapshotRevision: SNAPSHOT_REVISION
   };
 }());
