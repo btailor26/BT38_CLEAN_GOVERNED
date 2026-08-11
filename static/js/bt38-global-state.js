@@ -77,20 +77,20 @@ window.BT38.setPageSession = function(pageName, values = {}) {
   }
 };
 
-// Product Linking uses the same browser-session structure as Warehouse.
-// The existing template still defines a legacy server-driven loader. Replace it
-// immediately before DOMContentLoaded so it cannot issue page-by-page reads.
+// Product Linking uses one browser-session controller. A guarded preflight now
+// runs before that controller so a stale relationship cache cannot race the
+// current governed Neon snapshot during deployment alignment.
 (function loadProductLinkingSessionController() {
   if (!document.querySelector('[data-bt38-page="productLinking"]')) return;
   if (document.querySelector('script[data-bt38-product-linking-session]')) return;
 
   window.loadProductLinkingData = function () {
-    console.debug("[ProductLinkingSession] waiting for session controller");
+    console.debug("[ProductLinkingSession] waiting for guarded session controller");
     return Promise.resolve();
   };
 
   const script = document.createElement("script");
-  script.src = "/static/js/product-linking-session.js?v=product-linking-session-verified-link";
+  script.src = "/static/js/product-linking-session-preflight.js?v=current-relationship-session-v7";
   script.async = false;
   script.dataset.bt38ProductLinkingSession = "1";
   document.head.appendChild(script);
