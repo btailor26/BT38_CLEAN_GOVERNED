@@ -77,9 +77,9 @@ window.BT38.setPageSession = function(pageName, values = {}) {
   }
 };
 
-// Product Linking uses one browser-session controller. A guarded preflight now
-// runs before that controller so a stale relationship cache cannot race the
-// current governed Neon snapshot during deployment alignment.
+// Product Linking uses one browser-session controller. The layout guard loads
+// first so listing content can never cover the original right-hand Actions
+// controls. The guarded preflight then protects relationship-session hydration.
 (function loadProductLinkingSessionController() {
   if (!document.querySelector('[data-bt38-page="productLinking"]')) return;
   if (document.querySelector('script[data-bt38-product-linking-session]')) return;
@@ -88,6 +88,12 @@ window.BT38.setPageSession = function(pageName, values = {}) {
     console.debug("[ProductLinkingSession] waiting for guarded session controller");
     return Promise.resolve();
   };
+
+  const layout = document.createElement("script");
+  layout.src = "/static/js/product-linking-layout-guard.js?v=title-containment-actions-v8";
+  layout.async = false;
+  layout.dataset.bt38ProductLinkingLayoutGuard = "1";
+  document.head.appendChild(layout);
 
   const script = document.createElement("script");
   script.src = "/static/js/product-linking-session-preflight.js?v=current-relationship-session-v7";
