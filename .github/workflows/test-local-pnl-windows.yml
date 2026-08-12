@@ -20,25 +20,32 @@ jobs:
       - name: Install local server dependency
         run: python -m pip install flask==3.1.2
 
-      - name: Start local P&L server
+      - name: Start through the real one-click launcher
         shell: powershell
         run: |
-          $p = Start-Process python -ArgumentList 'LOCAL_PNL_SERVER.py' -PassThru -RedirectStandardOutput local-pnl-out.log -RedirectStandardError local-pnl-err.log
-          $p.Id | Out-File local-pnl.pid
-          Start-Sleep -Seconds 3
-          if ($p.HasExited) {
-            Write-Host 'LOCAL_PNL_SERVER.py exited early'
-            if (Test-Path local-pnl-out.log) { Get-Content local-pnl-out.log }
-            if (Test-Path local-pnl-err.log) { Get-Content local-pnl-err.log }
-            exit 1
-          }
+          $pythonw = Join-Path $env:pythonLocation 'pythonw.exe'
+          if (-not (Test-Path $pythonw)) { throw "pythonw.exe not found at $pythonw" }
+          Start-Process $pythonw -ArgumentList 'OPEN_BT38_PNL.pyw'
 
-      - name: Verify localhost health endpoint
+      - name: Wait for localhost and verify health
         shell: powershell
         run: |
-          $response = Invoke-RestMethod -Uri 'http://127.0.0.1:5000/health' -TimeoutSec 10
+          $deadline = (Get-Date).AddSeconds(60)
+          $response = $null
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $response = Invoke-RestMethod -Uri 'http://127.0.0.1:5000/health' -TimeoutSec 2
+              if ($response.ok) { break }
+            } catch {
+              Start-Sleep -Milliseconds 500
+            }
+          }
+          if ($null -eq $response -or -not $response.ok) {
+            Write-Host 'Launcher did not produce a healthy server on 127.0.0.1:5000'
+            if (Test-Path 'instance\bt38_pnl_startup.log') { Get-Content 'instance\bt38_pnl_startup.log' }
+            throw 'Local P&L launcher failed to start port 5000'
+          }
           $response | ConvertTo-Json
-          if (-not $response.ok) { throw 'Health endpoint did not return ok=true' }
           if ($response.port -ne 5000) { throw 'Server is not running on port 5000' }
 
       - name: Verify homepage
@@ -48,9 +55,8 @@ jobs:
           if ($page.StatusCode -ne 200) { throw 'Homepage did not return HTTP 200' }
           if ($page.Content -notmatch 'LOCAL SERVER RUNNING') { throw 'Expected local server marker was not found' }
 
-      - name: Show server logs on failure
+      - name: Show startup log on failure
         if: failure()
         shell: powershell
         run: |
-          if (Test-Path local-pnl-out.log) { Get-Content local-pnl-out.log }
-          if (Test-Path local-pnl-err.log) { Get-Content local-pnl-err.log }
+          if (Test-Path 'instance\bt38_pnl_startup.log') { Get-Content 'instance\bt38_pnl_startup.log' }
