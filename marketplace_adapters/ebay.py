@@ -225,16 +225,88 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                 long_error = None
 
         ack_success = ack in ("Success", "Warning")
-        ok = response.status_code < 300 and ack_success
+        write_acknowledged = response.status_code < 300 and ack_success
+        observed_quantity = None
+        readback_verified = False
+        readback_error = None
+
+        if write_acknowledged:
+            try:
+                from datetime import datetime
+                from app import db
+                from services.governed_ebay_inventory_import import (
+                    _get_item_detail,
+                    _xml_text,
+                )
+
+                detail = _get_item_detail(creds, str(item_id))
+                if detail is None:
+                    readback_error = "eBay exact GetItem returned no Item."
+                else:
+                    variations = list(detail.findall(".//{*}Variations/{*}Variation"))
+                    if variations:
+                        matched = None
+                        for variation in variations:
+                            if _xml_text(variation, "{*}SKU") == str(sku):
+                                matched = variation
+                                break
+                        if matched is None:
+                            readback_error = "eBay exact GetItem did not return the pushed variation SKU."
+                        else:
+                            listed_quantity = int(_xml_text(matched, "{*}Quantity", "0") or 0)
+                            sold_quantity = int(
+                                _xml_text(
+                                    matched,
+                                    "{*}SellingStatus/{*}QuantitySold",
+                                    "0",
+                                )
+                                or 0
+                            )
+                            observed_quantity = max(0, listed_quantity - sold_quantity)
+                    else:
+                        observed_quantity = int(
+                            _xml_text(detail, "{*}QuantityAvailable", "0") or 0
+                        )
+
+                    if observed_quantity is not None:
+                        readback_verified = (
+                            int(observed_quantity) == int(quantity or 0)
+                        )
+                        if listing is not None:
+                            listing.last_marketplace_qty = int(observed_quantity)
+                            listing.last_synced_at = datetime.utcnow()
+                            db.session.commit()
+
+                    if observed_quantity is not None and not readback_verified:
+                        readback_error = (
+                            "eBay exact read-back mismatch: "
+                            f"observed={int(observed_quantity)} "
+                            f"expected={int(quantity or 0)}"
+                        )
+            except Exception as exc:
+                readback_error = f"eBay exact read-back failed: {exc}"
+
+        ok = bool(write_acknowledged and readback_verified)
 
         response_summary = (
             f"Ack={ack}; ItemID={item_id}; SKU={sku}; "
             f"Quantity={int(quantity or 0)}"
         )
+        if observed_quantity is not None:
+            response_summary += f"; ObservedQuantity={int(observed_quantity)}"
         if short_error:
             response_summary += f"; ShortError={short_error}"
         if long_error:
             response_summary += f"; LongError={long_error}"
+        if readback_error:
+            response_summary += f"; Readback={readback_error}"
+
+        if not write_acknowledged:
+            reason = short_error or long_error or "eBay inventory write was not acknowledged."
+        elif not readback_verified:
+            reason = readback_error or "eBay inventory write was acknowledged but exact read-back was not verified."
+        else:
+            reason = "eBay inventory write and exact read-back verified."
 
         return {
             "ok": ok,
@@ -245,10 +317,16 @@ class EbayAdapter(GovernedMarketplaceAdapter):
             "ack": ack,
             "short_error": short_error,
             "long_error": long_error,
+            "reason": reason,
             "response_summary": response_summary,
             "response_text": response_text[:4000],
             "live_write": True,
+            "write_acknowledged": write_acknowledged,
+            "readback_verified": readback_verified,
+            "observed_quantity": observed_quantity,
+            "readback_error": readback_error,
             "ebay_call": "ReviseInventoryStatus",
+            "readback_call": "GetItem" if write_acknowledged else None,
             "external_listing_id": item_id,
             "sku": sku,
             "quantity": quantity,
