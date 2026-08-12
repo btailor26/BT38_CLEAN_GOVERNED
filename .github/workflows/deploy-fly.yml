@@ -1,10 +1,21 @@
 name: Governed Fly Deployment
 
+# HARD DEPLOYMENT RULE:
+# - The currently approved Fly production image must not be changed automatically.
+# - Git pushes, merges, branch updates, tests, audits, or alignment work must never
+#   replace the running Fly image by themselves.
+# - A Fly image change is allowed only when the operator explicitly launches this
+#   workflow manually and confirms the image change below.
+# - Rollback/image restoration must also be explicitly requested by the operator.
+# - This workflow does not merge branches.
+
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      confirm_image_change:
+        description: 'Type CHANGE_FLY_IMAGE to explicitly approve replacing the running Fly image'
+        required: true
+        type: string
 
 concurrency:
   group: governed-production-deploy
@@ -14,7 +25,20 @@ permissions:
   contents: read
 
 jobs:
+  image-change-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit Fly image approval
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm_image_change }}" != "CHANGE_FLY_IMAGE" ]; then
+            echo "BLOCKED: running Fly image is locked."
+            echo "No image change is allowed without explicit operator approval."
+            exit 1
+          fi
+
   audit:
+    needs: image-change-guard
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
