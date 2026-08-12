@@ -34,6 +34,69 @@ def governed_group_unlink_listing_disabled(group_id: int):
     }), 409
 
 
+def _apply_exact_fba_warehouse_handoff(
+    *,
+    group_id: int,
+    warehouse_stock_id: int,
+):
+    """Move confirmed exact FBA truth into Warehouse before group propagation.
+
+    This is deliberately available only to the exact internal Amazon webhook
+    handoff. Generic FBA hydration remains read-only with respect to Warehouse,
+    and browser/request quantities never become Warehouse authority.
+    """
+    from extensions import db
+    from models import MarketplaceListing, WarehouseStock
+
+    stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
+    if stock is None:
+        return False, "warehouse_stock_not_found"
+
+    listing = (
+        db.session.query(MarketplaceListing)
+        .filter(
+            MarketplaceListing.warehouse_stock_id == int(warehouse_stock_id),
+            MarketplaceListing.master_product_group_id == int(group_id),
+            MarketplaceListing.is_active == True,  # noqa: E712
+        )
+        .order_by(MarketplaceListing.id.desc())
+        .first()
+    )
+    if listing is None:
+        return False, "grouped_fba_listing_not_found"
+
+    platform = str(
+        getattr(getattr(listing, "store", None), "platform", "") or ""
+    ).strip().lower()
+    channel = str(
+        getattr(listing, "normalized_amazon_fulfillment_channel", None)
+        or getattr(listing, "amazon_fulfillment_channel", None)
+        or ""
+    ).strip().upper()
+    explicit_fba = bool(getattr(listing, "is_fba", False))
+    if "amazon" not in platform or not (
+        explicit_fba or channel in {"AFN", "FBA", "AMAZON"}
+    ):
+        return False, "authority_listing_is_not_fba"
+
+    confirmed_quantity = getattr(listing, "last_marketplace_qty", None)
+    if confirmed_quantity is None:
+        return False, "confirmed_fba_quantity_missing"
+
+    try:
+        confirmed_quantity = max(0, int(confirmed_quantity))
+    except (TypeError, ValueError):
+        return False, "confirmed_fba_quantity_invalid"
+
+    reserved = int(getattr(stock, "reserved_quantity", 0) or 0)
+    allocated = int(getattr(stock, "allocated_quantity", 0) or 0)
+    stock.available_quantity = int(
+        confirmed_quantity + reserved + allocated
+    )
+    db.session.commit()
+    return True, confirmed_quantity
+
+
 def run_governed_group_propagation(
     group_id: int,
     *,
@@ -43,19 +106,64 @@ def run_governed_group_propagation(
 
     Warehouse remains quantity authority. Product Linking/group push routes are
     shortcuts only and must not implement marketplace execution themselves.
+    The exact internal FBA webhook handoff first transfers confirmed Amazon FBA
+    truth into its linked Warehouse authority row, then uses the same group path.
     """
     from services.governed_push_execution import push_group_listings
 
     body = dict(payload or {})
     authority_warehouse_stock_id = body.get("warehouse_stock_id")
 
+    # Never trust arbitrary request source strings. Only the exact internal
+    # handoff marker may change Warehouse authority or classify the push as an
+    # automatic webhook action. HTTP Product Linking remains a manual shortcut.
+    requested_source = str(body.get("source") or "").strip().lower()
+    exact_fba_handoff = (
+        requested_source == "amazon_webhook_exact_fba_handoff"
+        and authority_warehouse_stock_id not in (None, "")
+    )
+    source = "governed_group_propagation"
+    fba_handoff = None
+
+    if exact_fba_handoff:
+        try:
+            authority_stock_id = int(authority_warehouse_stock_id)
+        except (TypeError, ValueError):
+            authority_stock_id = None
+
+        if authority_stock_id is not None:
+            applied, detail = _apply_exact_fba_warehouse_handoff(
+                group_id=int(group_id),
+                warehouse_stock_id=authority_stock_id,
+            )
+            fba_handoff = {
+                "applied": bool(applied),
+                "detail": detail,
+                "warehouse_stock_id": authority_stock_id,
+            }
+            if not applied:
+                return jsonify({
+                    "success": False,
+                    "ok": False,
+                    "governed": True,
+                    "execution_blocked": True,
+                    "reason": "exact_fba_warehouse_handoff_failed",
+                    "group_id": int(group_id),
+                    "fba_handoff": fba_handoff,
+                }), 409
+            source = "webhook_amazon_exact_fba_handoff"
+
     result = push_group_listings(
         group_id=int(group_id),
         actor=_actor(),
-        source="governed_group_propagation",
+        source=source,
         authority_warehouse_stock_id=authority_warehouse_stock_id,
         dry_run=bool(body.get("dry_run", False)),
     )
+
+    if fba_handoff is not None:
+        result["fba_warehouse_handoff"] = fba_handoff
+        result["automatic_webhook_push"] = True
 
     status = 200 if (
         result.get("ok")
