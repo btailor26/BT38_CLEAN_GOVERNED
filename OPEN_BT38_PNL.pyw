@@ -12,6 +12,7 @@ URL = f"http://{HOST}:{PORT}/"
 ROOT = Path(__file__).resolve().parent
 INSTANCE_DIR = ROOT / "instance"
 INSTANCE_DIR.mkdir(exist_ok=True)
+LOG_PATH = INSTANCE_DIR / "bt38_pnl_startup.log"
 
 
 def port_is_open():
@@ -22,16 +23,35 @@ def port_is_open():
         return False
 
 
-def python_executable():
+def show_error(message):
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("BT P&L could not start", message)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def candidate_python_commands():
+    commands = []
     exe = Path(sys.executable)
     if exe.name.lower() == "pythonw.exe":
         console_python = exe.with_name("python.exe")
         if console_python.exists():
-            return str(console_python)
-    return str(exe)
+            commands.append([str(console_python)])
+    elif exe.exists():
+        commands.append([str(exe)])
+
+    # Windows Python launcher is a reliable fallback if file association used pythonw.
+    if os.name == "nt":
+        commands.extend([["py", "-3.11"], ["py", "-3"], ["python"]])
+    return commands
 
 
-if not port_is_open():
+def start_server():
     env = os.environ.copy()
     env.update({
         "APP_ENV": "dev",
@@ -47,33 +67,59 @@ if not port_is_open():
         "PYTHONUNBUFFERED": "1",
     })
 
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NO_WINDOW
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-    subprocess.Popen(
-        [
-            python_executable(),
-            "-m", "flask",
-            "--app", "app.py",
-            "run",
-            "--host", HOST,
-            "--port", str(PORT),
-            "--no-debugger",
-            "--no-reload",
-        ],
-        cwd=str(ROOT),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=creationflags,
+    LOG_PATH.write_text("BT P&L local startup\n", encoding="utf-8")
+
+    last_error = None
+    for python_cmd in candidate_python_commands():
+        try:
+            log = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+            command = python_cmd + [
+                "-m", "flask",
+                "--app", "app:app",
+                "run",
+                "--host", HOST,
+                "--port", str(PORT),
+                "--no-debugger",
+                "--no-reload",
+            ]
+            log.write("\nStarting: " + " ".join(command) + "\n")
+            process = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                if port_is_open():
+                    return True
+                if process.poll() is not None:
+                    break
+                time.sleep(0.25)
+            last_error = f"Process exited with code {process.poll()}"
+        except Exception as exc:
+            last_error = str(exc)
+
+    try:
+        log_text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        tail = log_text[-3500:]
+    except Exception:
+        tail = last_error or "Unknown startup error"
+
+    show_error(
+        "BT P&L did not start on http://127.0.0.1:5000/.\n\n"
+        "No command window is required. The startup error has been saved to:\n"
+        f"{LOG_PATH}\n\n"
+        "Last startup details:\n" + tail
     )
+    return False
 
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if port_is_open():
-            break
-        time.sleep(0.25)
 
-webbrowser.open(URL)
+if port_is_open() or start_server():
+    webbrowser.open(URL)
