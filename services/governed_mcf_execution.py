@@ -12,6 +12,12 @@ from sp_api.base import Marketplaces
 
 from extensions import db
 from models import MCFOrder, MarketplaceOrder
+from services.governed_mcf_tracking import (
+    has_unforwarded_tracking,
+    load_tracking_details,
+    mark_tracking_forwarded,
+    sync_amazon_tracking_details,
+)
 
 UK_MARKETPLACE_ID = "A1F83G8C2ARO7P"
 
@@ -319,6 +325,7 @@ def refresh_mcf_status(
                     "status": mcf_order.amazon_status or "RECEIVED",
                     "carrier": mcf_order.carrier,
                     "tracking_number": mcf_order.tracking_number,
+                    "tracking_details": load_tracking_details(mcf_order.id),
                     "ship_date": (
                         mcf_order.ship_date.isoformat()
                         if mcf_order.ship_date
@@ -352,46 +359,28 @@ def refresh_mcf_status(
         elif status in {"PLANNING", "PROCESSING", "RECEIVED"}:
             mcf_order.status = "processing"
 
-        shipments = payload.get("fulfillmentShipments") or []
-        first_shipment = shipments[0] if shipments else {}
-        packages = (
-            first_shipment.get("fulfillmentShipmentPackage")
-            or first_shipment.get("fulfillmentShipmentPackages")
-            or []
+        tracking_details = sync_amazon_tracking_details(
+            mcf_order.id,
+            payload,
         )
-        first_package = packages[0] if packages else first_shipment
+        primary_tracking = tracking_details[0] if tracking_details else None
 
-        mcf_order.carrier = (
-            first_package.get("carrierCode")
-            or first_shipment.get("carrierCode")
-            or mcf_order.carrier
-        )
-        mcf_order.tracking_number = (
-            first_package.get("trackingNumber")
-            or first_shipment.get("trackingNumber")
-            or mcf_order.tracking_number
-        )
+        if primary_tracking:
+            mcf_order.carrier = (
+                primary_tracking.get("carrier")
+                or mcf_order.carrier
+            )
+            mcf_order.tracking_number = (
+                primary_tracking.get("tracking_number")
+                or mcf_order.tracking_number
+            )
 
-        ship_date = (
-            first_shipment.get("shippingDate")
-            or first_shipment.get("shipDate")
-        )
-        if ship_date:
-            try:
-                mcf_order.ship_date = datetime.fromisoformat(
-                    str(ship_date).replace("Z", "+00:00")
-                ).replace(tzinfo=None)
-            except Exception:
-                pass
-
-        estimated = first_shipment.get("estimatedArrivalDate")
-        if estimated:
-            try:
-                mcf_order.estimated_arrival_date = datetime.fromisoformat(
-                    str(estimated).replace("Z", "+00:00")
-                ).replace(tzinfo=None)
-            except Exception:
-                pass
+            if primary_tracking.get("ship_date"):
+                mcf_order.ship_date = primary_tracking["ship_date"]
+            if primary_tracking.get("estimated_arrival_date"):
+                mcf_order.estimated_arrival_date = (
+                    primary_tracking["estimated_arrival_date"]
+                )
 
         db.session.commit()
         return True, {
@@ -399,6 +388,7 @@ def refresh_mcf_status(
             "amazon_order_id": mcf_order.amazon_order_id,
             "carrier": mcf_order.carrier,
             "tracking_number": mcf_order.tracking_number,
+            "tracking_details": tracking_details,
             "ship_date": (
                 mcf_order.ship_date.isoformat()
                 if mcf_order.ship_date
@@ -499,14 +489,30 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "database_touched": True,
         }
 
-    tracking_number = str(mcf.tracking_number or "").strip()
-    if not tracking_number:
+    tracking_details = (
+        refresh_result.get("tracking_details")
+        or load_tracking_details(mcf.id)
+    )
+    if not tracking_details:
         return {
             "success": True,
             "skipped": True,
             "reason": "amazon_mcf_tracking_not_available_yet",
             "mcf_order_id": mcf.id,
             "amazon_status": mcf.amazon_status,
+            "database_touched": True,
+        }
+
+    if not has_unforwarded_tracking(mcf.id):
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "mcf_tracking_already_enriched",
+            "mcf_order_id": mcf.id,
+            "tracking_numbers": [
+                item.get("tracking_number")
+                for item in tracking_details
+            ],
             "database_touched": True,
         }
 
@@ -522,20 +528,6 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "skipped": False,
             "reason": "mcf_source_marketplace_order_missing",
             "mcf_order_id": mcf.id,
-            "database_touched": True,
-        }
-
-    if all(
-        str(line.tracking_number or "").strip() == tracking_number
-        and str(line.status or "").strip().lower() == "mcf_tracking_updated"
-        for line in lines
-    ):
-        return {
-            "success": True,
-            "skipped": True,
-            "reason": "mcf_tracking_already_enriched",
-            "mcf_order_id": mcf.id,
-            "tracking_number": tracking_number,
             "database_touched": True,
         }
 
@@ -555,7 +547,10 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "skipped": True,
             "reason": "tracking_received_inside_one_hour_cancellation_window",
             "mcf_order_id": mcf.id,
-            "tracking_number": tracking_number,
+            "tracking_numbers": [
+                item.get("tracking_number")
+                for item in tracking_details
+            ],
             "release_at": release_at.isoformat(),
             "database_touched": True,
         }
@@ -567,7 +562,10 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "skipped": True,
             "reason": "mcf_source_marketplace_tracking_not_supported",
             "mcf_order_id": mcf.id,
-            "tracking_number": tracking_number,
+            "tracking_numbers": [
+                item.get("tracking_number")
+                for item in tracking_details
+            ],
             "database_touched": True,
         }
 
@@ -589,7 +587,10 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "skipped": False,
             "reason": "mcf_tracking_ebay_enrichment_blocked",
             "mcf_order_id": mcf.id,
-            "tracking_number": tracking_number,
+            "tracking_numbers": [
+                item.get("tracking_number")
+                for item in tracking_details
+            ],
             "error": guard.get("reason"),
             "database_touched": True,
         }
@@ -597,7 +598,8 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
     dispatch = complete_sale(
         anchor,
         carrier=mcf.carrier or "Other",
-        tracking_number=tracking_number,
+        tracking_number=mcf.tracking_number,
+        tracking_details=tracking_details,
     )
     if not dispatch.get("success"):
         for line in lines:
@@ -610,19 +612,28 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
             "skipped": False,
             "reason": "mcf_tracking_ebay_update_failed",
             "mcf_order_id": mcf.id,
-            "tracking_number": tracking_number,
+            "tracking_numbers": [
+                item.get("tracking_number")
+                for item in tracking_details
+            ],
             "error": dispatch.get("error"),
             "database_touched": True,
         }
 
+    primary_tracking = tracking_details[0]
     now = datetime.utcnow()
     for line in lines:
-        line.carrier = mcf.carrier
-        line.tracking_number = tracking_number
+        line.carrier = primary_tracking.get("carrier") or mcf.carrier
+        line.tracking_number = (
+            primary_tracking.get("tracking_number")
+            or mcf.tracking_number
+        )
         line.shipped_at = line.shipped_at or anchor.shipped_at or now
         line.status = "mcf_tracking_updated"
         line.error_message = None
         line.updated_at = now
+
+    mark_tracking_forwarded(mcf.id)
     db.session.commit()
 
     return {
@@ -632,6 +643,10 @@ def refresh_mcf_from_amazon_signal(payload: dict) -> dict[str, Any]:
         "mcf_order_id": mcf.id,
         "amazon_status": mcf.amazon_status,
         "carrier": mcf.carrier,
-        "tracking_number": tracking_number,
+        "tracking_number": mcf.tracking_number,
+        "tracking_numbers": [
+            item.get("tracking_number")
+            for item in tracking_details
+        ],
         "database_touched": True,
     }
