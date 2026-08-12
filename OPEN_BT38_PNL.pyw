@@ -44,8 +44,6 @@ def candidate_python_commands():
             commands.append([str(console_python)])
     elif exe.exists():
         commands.append([str(exe)])
-
-    # Windows Python launcher is a reliable fallback if file association used pythonw.
     if os.name == "nt":
         commands.extend([["py", "-3.11"], ["py", "-3"], ["python"]])
     return commands
@@ -68,41 +66,37 @@ def start_server():
     })
 
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-
     LOG_PATH.write_text("BT P&L local startup\n", encoding="utf-8")
+    server_script = ROOT / "LOCAL_PNL_SERVER.py"
+
+    if not server_script.exists():
+        show_error(f"Missing local server file:\n{server_script}")
+        return False
 
     last_error = None
     for python_cmd in candidate_python_commands():
         try:
-            log = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
-            command = python_cmd + [
-                "-m", "flask",
-                "--app", "app:app",
-                "run",
-                "--host", HOST,
-                "--port", str(PORT),
-                "--no-debugger",
-                "--no-reload",
-            ]
-            log.write("\nStarting: " + " ".join(command) + "\n")
-            process = subprocess.Popen(
-                command,
-                cwd=str(ROOT),
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+            with open(LOG_PATH, "a", encoding="utf-8", buffering=1) as log:
+                command = python_cmd + [str(server_script)]
+                log.write("\nStarting: " + " ".join(command) + "\n")
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(ROOT),
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
 
-            deadline = time.time() + 45
-            while time.time() < deadline:
-                if port_is_open():
-                    return True
-                if process.poll() is not None:
-                    break
-                time.sleep(0.25)
-            last_error = f"Process exited with code {process.poll()}"
+                deadline = time.time() + 45
+                while time.time() < deadline:
+                    if port_is_open():
+                        return True
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.25)
+                last_error = f"Process exited with code {process.poll()}"
         except Exception as exc:
             last_error = str(exc)
 
@@ -114,7 +108,8 @@ def start_server():
 
     show_error(
         "BT P&L did not start on http://127.0.0.1:5000/.\n\n"
-        "No command window is required. The startup error has been saved to:\n"
+        "You do not need to open a command window.\n\n"
+        "Startup details were saved to:\n"
         f"{LOG_PATH}\n\n"
         "Last startup details:\n" + tail
     )
