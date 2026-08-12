@@ -139,6 +139,7 @@ def run_governed_group_propagation(
     existing shared group service then aligns Warehouse members and pushes only
     writable marketplace listings. FBA itself remains read-only.
     """
+    from flask import has_request_context
     from services.governed_push_execution import push_group_listings
 
     body = dict(payload or {})
@@ -163,9 +164,13 @@ def run_governed_group_propagation(
     )
 
     requested_source = str(body.get("source") or "").strip().lower()
+    internal_exact_fba_handoff = (
+        not has_request_context()
+        and requested_source == "amazon_webhook_exact_fba_handoff"
+    )
     source = (
         "webhook_amazon_exact_fba_handoff"
-        if requested_source == "amazon_webhook_exact_fba_handoff"
+        if internal_exact_fba_handoff
         else "governed_group_propagation"
     )
 
