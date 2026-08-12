@@ -1,0 +1,56 @@
+name: Test local P&L Windows startup
+
+on:
+  push:
+    branches:
+      - agent/pnl-local-one-click
+  workflow_dispatch:
+
+jobs:
+  windows-smoke-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install local server dependency
+        run: python -m pip install flask==3.1.2
+
+      - name: Start local P&L server
+        shell: powershell
+        run: |
+          $p = Start-Process python -ArgumentList 'LOCAL_PNL_SERVER.py' -PassThru -RedirectStandardOutput local-pnl-out.log -RedirectStandardError local-pnl-err.log
+          $p.Id | Out-File local-pnl.pid
+          Start-Sleep -Seconds 3
+          if ($p.HasExited) {
+            Write-Host 'LOCAL_PNL_SERVER.py exited early'
+            if (Test-Path local-pnl-out.log) { Get-Content local-pnl-out.log }
+            if (Test-Path local-pnl-err.log) { Get-Content local-pnl-err.log }
+            exit 1
+          }
+
+      - name: Verify localhost health endpoint
+        shell: powershell
+        run: |
+          $response = Invoke-RestMethod -Uri 'http://127.0.0.1:5000/health' -TimeoutSec 10
+          $response | ConvertTo-Json
+          if (-not $response.ok) { throw 'Health endpoint did not return ok=true' }
+          if ($response.port -ne 5000) { throw 'Server is not running on port 5000' }
+
+      - name: Verify homepage
+        shell: powershell
+        run: |
+          $page = Invoke-WebRequest -Uri 'http://127.0.0.1:5000/' -UseBasicParsing -TimeoutSec 10
+          if ($page.StatusCode -ne 200) { throw 'Homepage did not return HTTP 200' }
+          if ($page.Content -notmatch 'LOCAL SERVER RUNNING') { throw 'Expected local server marker was not found' }
+
+      - name: Show server logs on failure
+        if: failure()
+        shell: powershell
+        run: |
+          if (Test-Path local-pnl-out.log) { Get-Content local-pnl-out.log }
+          if (Test-Path local-pnl-err.log) { Get-Content local-pnl-err.log }
