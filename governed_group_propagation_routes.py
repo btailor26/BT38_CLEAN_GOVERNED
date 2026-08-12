@@ -109,17 +109,19 @@ def run_governed_group_propagation(
     The exact internal FBA webhook handoff first transfers confirmed Amazon FBA
     truth into its linked Warehouse authority row, then uses the same group path.
     """
+    from flask import has_request_context
     from services.governed_push_execution import push_group_listings
 
     body = dict(payload or {})
     authority_warehouse_stock_id = body.get("warehouse_stock_id")
 
-    # Never trust arbitrary request source strings. Only the exact internal
-    # handoff marker may change Warehouse authority or classify the push as an
-    # automatic webhook action. HTTP Product Linking remains a manual shortcut.
+    # The marker is accepted only from in-process runtime work. A browser/API
+    # request cannot spoof the marker to turn Product Linking into an FBA stock
+    # writer or bypass manual-action user access.
     requested_source = str(body.get("source") or "").strip().lower()
     exact_fba_handoff = (
-        requested_source == "amazon_webhook_exact_fba_handoff"
+        not has_request_context()
+        and requested_source == "amazon_webhook_exact_fba_handoff"
         and authority_warehouse_stock_id not in (None, "")
     )
     source = "governed_group_propagation"
