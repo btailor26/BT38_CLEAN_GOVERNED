@@ -71,30 +71,79 @@ def _xml_text(value: Any) -> str:
     )
 
 
+def _tracking_details_xml(
+    *,
+    carrier: str | None,
+    tracking_number: str | None,
+    tracking_details: list[dict[str, Any]] | None,
+) -> tuple[str, list[dict[str, str]]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    source = list(tracking_details or [])
+    if not source and (carrier or tracking_number):
+        source = [{
+            "carrier": carrier or "Other",
+            "tracking_number": tracking_number or "",
+        }]
+
+    for detail in source:
+        number = str(
+            detail.get("tracking_number")
+            or detail.get("trackingNumber")
+            or ""
+        ).strip()
+        if not number or number in seen:
+            continue
+
+        seen.add(number)
+        normalized.append({
+            "carrier": str(
+                detail.get("carrier")
+                or detail.get("carrierCode")
+                or carrier
+                or "Other"
+            ).strip() or "Other",
+            "tracking_number": number,
+        })
+
+    if not normalized:
+        return "", []
+
+    detail_xml = "".join(
+        "<ShipmentTrackingDetails>"
+        f"<ShippingCarrierUsed>{_xml_text(detail['carrier'])}</ShippingCarrierUsed>"
+        f"<ShipmentTrackingNumber>{_xml_text(detail['tracking_number'])}</ShipmentTrackingNumber>"
+        "</ShipmentTrackingDetails>"
+        for detail in normalized
+    )
+    return f"<Shipment>{detail_xml}</Shipment>", normalized
+
+
 def complete_sale(
     order: MarketplaceOrder,
     *,
     carrier: str | None = None,
     tracking_number: str | None = None,
+    tracking_details: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Mark an eBay order shipped, optionally adding carrier and tracking.
+    """Mark an eBay order shipped and optionally send all package tracking.
 
     This function performs the marketplace call only. The caller is responsible
-    for passing the governed runtime guard before invoking it.
+    for passing the governed runtime guard before invoking it. For split MCF
+    shipments, callers pass the complete accumulated package set so eBay keeps
+    existing tracking details while adding newly received packages.
     """
     store = order.store
     if store is None or "ebay" not in str(store.platform or "").lower():
         return {"success": False, "error": "source_order_is_not_ebay"}
 
     token = _access_token(store)
-    shipment_xml = ""
-    if carrier or tracking_number:
-        shipment_xml = (
-            "<Shipment>"
-            f"<ShippingCarrierUsed>{_xml_text(carrier or 'Other')}</ShippingCarrierUsed>"
-            f"<ShipmentTrackingNumber>{_xml_text(tracking_number or '')}</ShipmentTrackingNumber>"
-            "</Shipment>"
-        )
+    shipment_xml, normalized_tracking = _tracking_details_xml(
+        carrier=carrier,
+        tracking_number=tracking_number,
+        tracking_details=tracking_details,
+    )
 
     body = (
         '<?xml version="1.0" encoding="utf-8"?>'
@@ -136,10 +185,15 @@ def complete_sale(
         return {"success": False, "error": "; ".join(errors) or f"ebay_complete_sale_ack_{ack}"}
 
     order.shipped_at = order.shipped_at or datetime.utcnow()
-    if carrier:
-        order.carrier = carrier
-    if tracking_number:
-        order.tracking_number = tracking_number
+    primary_tracking = normalized_tracking[0] if normalized_tracking else None
+    if primary_tracking:
+        order.carrier = primary_tracking["carrier"]
+        order.tracking_number = primary_tracking["tracking_number"]
+    else:
+        if carrier:
+            order.carrier = carrier
+        if tracking_number:
+            order.tracking_number = tracking_number
     order.updated_at = datetime.utcnow()
     db.session.commit()
 
@@ -149,5 +203,6 @@ def complete_sale(
         "warnings": errors if ack == "Warning" else [],
         "carrier": order.carrier,
         "tracking_number": order.tracking_number,
+        "tracking_details": normalized_tracking,
         "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,
     }
