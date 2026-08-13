@@ -81,6 +81,14 @@ def test_product_linking_shortcut_delegates_to_single_group_push_service():
     assert "WarehouseStock" not in block
 
 
+def test_product_linking_http_shortcut_does_not_override_warehouse_authority():
+    block = _function_block(ROUTES, "governed_group_push")
+    assert 'body.get("warehouse_stock_id")' not in block
+    assert 'body.get("stock_id")' not in block
+    assert 'body.get("quantity")' not in block
+    assert '"source": "product_linking_group_shortcut"' in block
+
+
 def test_shared_group_service_resolves_one_warehouse_quantity():
     block = _function_block(PUSH, "push_group_listings")
     assert "authority_warehouse_stock_id" in block

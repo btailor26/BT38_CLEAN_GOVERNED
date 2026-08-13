@@ -10,6 +10,8 @@ def _source(relative_path: str) -> str:
 
 def test_product_linking_group_push_is_only_a_warehouse_shortcut():
     route_source = _source("governed_group_propagation_routes.py")
+    governed_routes_source = _source("governed_routes.py")
+    template_source = _source("templates/product_linking.html")
 
     assert "Thin adapter into the single governed group push service" in route_source
     assert "from services.governed_push_execution import push_group_listings" in route_source
@@ -21,6 +23,22 @@ def test_product_linking_group_push_is_only_a_warehouse_shortcut():
     assert "submit_governed_marketplace_action" not in route_source
     assert 'body.get("quantity")' not in route_source
     assert "target_quantity = body" not in route_source
+
+    shortcut_start = governed_routes_source.index("def governed_group_push(")
+    shortcut_end = governed_routes_source.index(
+        "\n@governed_bp.get(\"/governed/actions/history\")",
+        shortcut_start,
+    )
+    shortcut_route = governed_routes_source[shortcut_start:shortcut_end]
+    assert 'body.get("warehouse_stock_id")' not in shortcut_route
+    assert 'body.get("stock_id")' not in shortcut_route
+    assert 'body.get("quantity")' not in shortcut_route
+
+    ui_start = template_source.index("async function executeGroupPush()")
+    ui_end = template_source.index("function showLinkModal(", ui_start)
+    ui_shortcut = template_source[ui_start:ui_end]
+    assert "warehouse_stock_id:" not in ui_shortcut
+    assert "quantity:" not in ui_shortcut
 
 
 def test_shared_push_service_keeps_warehouse_quantity_and_fba_protection():

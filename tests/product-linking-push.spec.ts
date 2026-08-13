@@ -27,10 +27,14 @@ test('Product Linking renders exactly one group Push shortcut per row', async ()
   expect(renderBlock.match(/class="[^"]*bt38-qty-push-open[^"]*"/g) || []).toHaveLength(1);
 });
 
-test('Product Linking shortcut posts group and permanent Warehouse identity', async () => {
+test('Product Linking shortcut posts only group identity to Warehouse authority', async () => {
   expect(template).toContain('/governed/actions/groups/${encodeURIComponent(groupId)}/push');
-  expect(template).toContain('warehouse_stock_id: warehouseId');
   expect(template).toContain("source: 'product_linking_warehouse_shortcut'");
+  const shortcutStart = template.indexOf('async function executeGroupPush()');
+  const shortcutEnd = template.indexOf('function showLinkModal(', shortcutStart);
+  const shortcut = template.slice(shortcutStart, shortcutEnd);
+  expect(shortcut).not.toContain('warehouse_stock_id:');
+  expect(shortcut).not.toContain('quantity:');
 });
 
 test('manual shortcut delegates to the single governed group service', async () => {
@@ -60,4 +64,5 @@ test('group push response identifies affected records for targeted UI handoff', 
   expect(pushService).toContain('"affected_listing_ids"');
   expect(pushService).toContain('"affected_warehouse_stock_ids": warehouse_ids');
   expect(pushService).toContain('"target_quantity": target_quantity');
+  expect(pushService).toContain('response["error"] = failed_reasons[0]');
 });

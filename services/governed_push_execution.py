@@ -499,6 +499,13 @@ def push_group_listings(
     failed_count = len(results) - success_count - skipped_count
     pushable_count = len(results) - skipped_count
     group_success = failed_count == 0
+    failed_reasons = [
+        str(item.get("error") or item.get("reason") or item.get("message"))
+        for item in results
+        if (not _is_success(item))
+        and (not _is_fba_read_only_skip(item))
+        and (item.get("error") or item.get("reason") or item.get("message"))
+    ]
 
     for stock in warehouse_rows:
         if hasattr(stock, "last_push_at"):
@@ -533,7 +540,7 @@ def push_group_listings(
         target_quantity=target_quantity,
     )
 
-    return {
+    response = {
         "success": group_success,
         "ok": group_success,
         "governed": True,
@@ -564,6 +571,12 @@ def push_group_listings(
         "fba_read_only_does_not_fail_group": True,
         "results": results,
     }
+    if failed_reasons:
+        # Give every shortcut the real marketplace/settings failure instead of
+        # forcing the UI to replace it with "Warehouse group push failed".
+        response["error"] = failed_reasons[0]
+        response["message"] = failed_reasons[0]
+    return response
 
 
 def _blocked(reason: str, **extra) -> Dict[str, Any]:

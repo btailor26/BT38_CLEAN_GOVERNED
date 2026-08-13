@@ -1243,11 +1243,6 @@ async function executeGroupPush() {
                     'X-BT38-Shortcut': 'product_linking_warehouse_shortcut'
                 },
                 body: JSON.stringify({
-                    warehouse_stock_id: warehouseId,
-                    quantity: parseInt(
-                        document.getElementById('adjustPushQuantity').value,
-                        10
-                    ),
                     source: 'product_linking_warehouse_shortcut'
                 })
             }

@@ -2045,16 +2045,9 @@ def governed_group_push(group_id: int):
         "source": "product_linking_group_shortcut",
     }
 
-    warehouse_stock_id = (
-        body.get("warehouse_stock_id")
-        or body.get("stock_id")
-    )
-
-    if warehouse_stock_id not in (None, ""):
-        payload["warehouse_stock_id"] = warehouse_stock_id
-
-    # Do not accept Product Linking quantity as authority.
-    # Warehouse/group propagation resolves quantity from WarehouseStock.
+    # Do not accept Product Linking row identity or quantity as authority.
+    # This UI action is only a shortcut. The existing Warehouse/group service
+    # resolves its permanent authority and current quantity from the database.
     return run_governed_group_propagation(
         group_id,
         payload=payload,
