@@ -1254,17 +1254,10 @@ def governed_marketplace_webhook_intake(marketplace):
             )
 
             if exact_fba_scope:
-                # Refresh the exact FBA DB row immediately, then retain one
-                # delayed exact-SKU verification because Amazon inventory can
-                # settle shortly after the order notification.
-                from services.governed_runtime_engine import (
-                    _verify_exact_fba,
-                )
-
-                immediate_fba_result = _verify_exact_fba(
-                    exact_scope,
-                )
-
+                # Hand the exact AFN/FBA identity to the single governed
+                # process-memory queue before any Amazon inventory work.
+                # The runtime consumer owns exact FBA verification; the
+                # webhook request must not call Amazon or create a second path.
                 from datetime import datetime, timedelta
 
                 settlement_scope = dict(exact_scope)
@@ -1273,15 +1266,10 @@ def governed_marketplace_webhook_intake(marketplace):
                     + timedelta(seconds=90)
                 )
 
-                delayed_fba_result = notify_governed_runtime_work(
+                verification_queue_result = notify_governed_runtime_work(
                     source=f"webhook_{platform}_settlement_recheck",
                     event=settlement_scope,
                 )
-
-                verification_queue_result = {
-                    "immediate": immediate_fba_result,
-                    "delayed": delayed_fba_result,
-                }
             else:
                 verification_queue_result = notify_governed_runtime_work(
                     source=f"webhook_{platform}",
