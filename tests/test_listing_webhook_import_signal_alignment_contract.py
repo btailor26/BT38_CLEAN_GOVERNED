@@ -5,6 +5,7 @@ EXECUTION = Path("services/governed_webhook_execution.py").read_text(encoding="u
 EBAY_IMPORT = Path("services/governed_ebay_inventory_import.py").read_text(encoding="utf-8")
 UI_SIGNAL = Path("services/governed_ui_event_signal.py").read_text(encoding="utf-8")
 ROUTES = Path("governed_routes.py").read_text(encoding="utf-8")
+AMAZON_REFRESH = Path("services/governed_amazon_listing_fulfillment_refresh.py").read_text(encoding="utf-8")
 
 
 def test_listing_notifications_refresh_known_and_missing_listings():
@@ -49,3 +50,11 @@ def test_token_refresh_reconciles_order_and_listing_subscriptions():
     refresh = ROUTES.split('def governed_ebay_oauth_refresh_token():', 1)[1]
     assert "ensure_ebay_order_notification_registration(" in refresh
     assert '"notification_registration": notification_registration' in refresh
+
+
+def test_amazon_listing_subscriptions_reuse_existing_destination_explicitly():
+    assert "def ensure_governed_amazon_listing_notification_subscriptions(" in AMAZON_REFRESH
+    assert "client.get_destinations()" in AMAZON_REFRESH
+    assert "client.create_subscription(" in AMAZON_REFRESH
+    assert '"destination_created": False' in AMAZON_REFRESH
+    assert "application startup" in AMAZON_REFRESH

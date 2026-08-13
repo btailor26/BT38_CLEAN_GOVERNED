@@ -22,8 +22,9 @@ import os
 from datetime import datetime
 from typing import Any
 
-from sp_api.api import ListingsItems
+from sp_api.api import ListingsItems, Notifications
 from sp_api.base import Marketplaces
+from sp_api.base.notifications import NotificationType
 
 from extensions import db
 from models import Store, SyncLog
@@ -270,6 +271,94 @@ AMAZON_LISTING_NOTIFICATION_TYPES = {
     "LISTINGS_ITEM_STATUS_CHANGE",
     "LISTINGS_ITEM_MFN_QUANTITY_CHANGE",
 }
+
+
+def ensure_governed_amazon_listing_notification_subscriptions(
+    *,
+    store_id: int,
+) -> dict[str, Any]:
+    """Explicitly reconcile Amazon listing notifications on the existing destination.
+
+    This is a one-shot setup action for deployment/testing. It never runs at
+    application startup and does not create another destination, importer,
+    scheduler or marketplace write path.
+    """
+    store = (
+        Store.query
+        .filter(
+            Store.id == int(store_id),
+            Store.platform.ilike("%amazon%"),
+            Store.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if store is None:
+        return {
+            "success": False,
+            "governed": True,
+            "reason": "amazon_store_not_found",
+            "store_id": int(store_id),
+        }
+
+    marketplace, _marketplace_id, raw = _marketplace_for_store(store)
+    client = Notifications(
+        marketplace=marketplace,
+        credentials=_credentials(raw),
+    )
+    destination_payload = client.get_destinations().payload or {}
+    destinations = list(destination_payload.get("destinations") or [])
+    destination = next(
+        (
+            row for row in destinations
+            if str(row.get("resourceSpecification", {}).get("sqs", {}).get("arn") or "").strip()
+        ),
+        destinations[0] if destinations else None,
+    )
+    destination_id = str((destination or {}).get("destinationId") or "").strip()
+    if not destination_id:
+        return {
+            "success": False,
+            "governed": True,
+            "reason": "amazon_existing_notification_destination_missing",
+            "store_id": int(store_id),
+            "destination_created": False,
+        }
+
+    results = []
+    for event_type in sorted(AMAZON_LISTING_NOTIFICATION_TYPES):
+        notification_type = NotificationType[event_type]
+        existing = None
+        try:
+            existing = client.get_subscription(notification_type).payload or {}
+        except Exception as exc:
+            message = str(exc)
+            if "404" not in message and "NotFound" not in message and "not found" not in message.lower():
+                raise
+
+        subscription_id = str((existing or {}).get("subscriptionId") or "").strip()
+        created = False
+        if not subscription_id:
+            created_payload = client.create_subscription(
+                notification_type,
+                destination_id=destination_id,
+            ).payload or {}
+            subscription_id = str(created_payload.get("subscriptionId") or "").strip()
+            created = True
+
+        results.append({
+            "notification_type": event_type,
+            "subscription_id": subscription_id or None,
+            "created": created,
+        })
+
+    return {
+        "success": all(row.get("subscription_id") for row in results),
+        "governed": True,
+        "store_id": int(store_id),
+        "destination_id": destination_id,
+        "destination_created": False,
+        "subscriptions": results,
+    }
 
 
 def recover_governed_amazon_listing_from_notification(
