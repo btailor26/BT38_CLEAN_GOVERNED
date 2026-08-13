@@ -381,12 +381,14 @@ def publish_completed_webhook_and_attach_live_ui(response):
             )
         return response
 
-    if request.method != "GET" or path not in _LIVE_UI_PATHS:
+    if request.method != "GET":
         return response
     if "text/html" not in str(response.content_type or "").lower():
         return response
 
     body = response.get_data(as_text=True)
+    if path not in _LIVE_UI_PATHS and 'id="bt38NotificationBell"' not in body:
+        return response
     if "bt38WebhookLiveEvents" in body or "</body>" not in body:
         return response
 
@@ -521,6 +523,7 @@ def publish_completed_webhook_and_attach_live_ui(response):
     if (!contract || refreshRunning) return;
     refreshRunning = true;
     try {
+      window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: contract}));
       if (currentPath() === "/product-linking" && typeof window.bt38ApplyProductLinkingMutation === "function") {
         const identity = {
           warehouseId: contract.warehouse_stock_id,
@@ -533,7 +536,6 @@ def publish_completed_webhook_and_attach_live_ui(response):
         return;
       }
 
-      window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: contract}));
       for (const detail of exactDetails(contract)) await refreshHtmlRow(detail);
     } finally {
       refreshRunning = false;
