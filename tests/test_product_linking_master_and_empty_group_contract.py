@@ -30,6 +30,26 @@ def test_empty_original_group_is_suppressed_only_while_member_is_shared_elsewher
     assert "listing.warehouse_stock_id = None" not in block
 
 
+def test_exact_original_sku_search_loads_its_active_shared_group():
+    block = function_source(
+        ROUTES,
+        "governed_product_linking_data_compat",
+    )
+
+    assert "matched_stock_ids" in block
+    assert "active_listing_group_ids" in block
+    assert "MarketplaceListing.warehouse_stock_id.in_(" in block
+    assert "matched_group_ids.update(active_listing_group_ids)" in block
+
+    # Active membership is followed only through the exact permanent
+    # Warehouse identity; no SKU-only cross-group inference is allowed.
+    expansion = block[
+        block.index("active_listing_group_ids = set()"):
+        block.index("matched_group_ids.update(active_listing_group_ids)")
+    ]
+    assert "MarketplaceListing.external_sku" not in expansion
+
+
 def test_master_is_defined_by_permanent_group_matching_current_group():
     block = function_source(
         GROUPS,
