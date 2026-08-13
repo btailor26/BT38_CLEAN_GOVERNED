@@ -61,8 +61,14 @@ def process_marketplace_notification(
 
     listing_recovery = None
     listing_discovery = None
+    listing_was_missing = listing is None
+    listing_notification = _is_listing_notification(
+        marketplace=marketplace,
+        event_type=event_type,
+        payload=payload,
+    )
 
-    if not listing:
+    if listing_was_missing or listing_notification:
         seller_sku = (
             _deep_get(payload, "seller_sku")
             or _deep_get(payload, "sellerSku")
@@ -115,6 +121,8 @@ def process_marketplace_notification(
             ),
             payload=payload,
         )
+
+    listing_discovered = bool(listing_was_missing and listing is not None)
 
     platform_name = str(marketplace or "").strip().lower()
     listing_channel = str(
@@ -198,6 +206,7 @@ def process_marketplace_notification(
     )
 
     if not is_stock_event or quantity <= 0:
+        group_id = getattr(listing, "master_product_group_id", None)
         return _log_result(
             status=f"{business_event}_stored",
             marketplace=marketplace,
@@ -207,6 +216,20 @@ def process_marketplace_notification(
             payload=payload,
             listing_id=listing.id,
             warehouse_stock_id=stock.id,
+            group_id=int(group_id) if group_id is not None else None,
+            store_id=getattr(listing, "store_id", None),
+            seller_sku=getattr(listing, "external_sku", None),
+            listing_discovery=listing_discovery,
+            changed=bool(
+                listing_discovered
+                or (listing_notification and (listing_discovery or {}).get("success"))
+            ),
+            created=listing_discovered,
+            affected_listing_ids=[int(listing.id)],
+            affected_warehouse_stock_ids=[int(stock.id)],
+            affected_group_ids=(
+                [int(group_id)] if group_id is not None else []
+            ),
             stock_changed=False,
             correction_started=False,
         )
@@ -932,6 +955,22 @@ def _event_type(payload: dict) -> str:
         or payload.get("topic")
         or "marketplace_notification"
     ).strip().lower()
+
+
+def _is_listing_notification(*, marketplace: str, event_type: str, payload: dict) -> bool:
+    normalized = str(event_type or "").strip().upper()
+    if str(marketplace or "").strip().lower() == "amazon":
+        return normalized in {
+            "LISTINGS_ITEM_STATUS_CHANGE",
+            "LISTINGS_ITEM_MFN_QUANTITY_CHANGE",
+        }
+
+    topic = str(
+        _deep_get(payload, "topic")
+        or _deep_get(payload, "notificationType")
+        or ""
+    ).strip().upper()
+    return str(marketplace or "").strip().lower() == "ebay" and topic == "LISTING"
 
 
 def _classify_business_event(

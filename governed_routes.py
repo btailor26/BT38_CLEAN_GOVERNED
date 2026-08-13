@@ -4929,6 +4929,23 @@ def governed_ebay_oauth_refresh_token():
     store.store_mode = "live"
     db.session.commit()
 
+    notification_registration = None
+    try:
+        from services.governed_ebay_notification_registration import (
+            ensure_ebay_order_notification_registration,
+        )
+
+        notification_registration = ensure_ebay_order_notification_registration(
+            store=store,
+            access_token=token.get("access_token"),
+        )
+    except Exception as exc:
+        notification_registration = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+
     return jsonify({
         "ok": True,
         "success": True,
@@ -4937,6 +4954,7 @@ def governed_ebay_oauth_refresh_token():
         "store_id": store.id,
         "store_name": store.name,
         "mode": "production",
+        "notification_registration": notification_registration,
     }), 200
 
 
@@ -5195,4 +5213,3 @@ def governed_import_handler():
             "explicit_import": True,
             "error": str(exc),
         }), 500
-

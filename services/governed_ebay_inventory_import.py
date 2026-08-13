@@ -22,6 +22,7 @@ import requests
 from app import db
 from models import Store, MarketplaceListing, Warehouse, WarehouseStock, SyncLog, SystemConfig
 from services.runtime_status_writer import set_store_runtime_status
+from services.governed_listing_refresh import ensure_permanent_original_group
 
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -236,17 +237,23 @@ def _upsert_listing(
 ) -> MarketplaceListing:
     # Permanent marketplace identity contract:
     #
-    # The eBay Item ID supplied by the API is the stable listing identity.
-    # Seller SKU and title are mutable marketplace metadata.
+    # The eBay Item ID supplied by the API is the stable parent identity.
+    # Variation children share that Item ID, so their operational identity is
+    # store + Item ID + seller SKU, matching the DB uniqueness contract.
     #
     # Resolve by store + Item ID first. A SKU fallback is permitted only for
     # legacy rows that do not yet contain a marketplace Item ID.
-    listing = (
-        db.session.query(MarketplaceListing)
-        .filter(
-            MarketplaceListing.store_id == store.id,
-            MarketplaceListing.external_listing_id == item_id,
+    identity_query = db.session.query(MarketplaceListing).filter(
+        MarketplaceListing.store_id == store.id,
+        MarketplaceListing.external_listing_id == item_id,
+    )
+    if is_variation_child:
+        identity_query = identity_query.filter(
+            MarketplaceListing.external_sku == sku,
         )
+
+    listing = (
+        identity_query
         .order_by(
             MarketplaceListing.is_active.desc(),
             MarketplaceListing.id.asc(),
@@ -299,6 +306,10 @@ def _upsert_listing(
     listing.last_marketplace_qty = int(qty or 0)
     listing.last_synced_at = datetime.utcnow()
 
+    original_group_id = ensure_permanent_original_group(stock)
+    if listing.master_product_group_id is None:
+        listing.master_product_group_id = int(original_group_id)
+
     if is_variation_child:
         listing.parent_item_id = parent_item_id or item_id
         listing.external_parent_id = parent_item_id or item_id
@@ -311,12 +322,18 @@ def _upsert_listing(
     return listing
 
 
-def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[str, int]:
+def _import_item(
+    store: Store,
+    creds: dict[str, Any],
+    item: ET.Element,
+    *,
+    item_is_detail: bool = False,
+) -> dict[str, Any]:
     item_id = _xml_text(item, "{*}ItemID")
     if not item_id:
         return {"items": 0, "variations": 0}
 
-    detail = _get_item_detail(creds, item_id) or item
+    detail = item if item_is_detail else (_get_item_detail(creds, item_id) or item)
 
     title = _xml_text(detail, "{*}Title") or f"eBay Item {item_id}"
     parent_sku = _xml_text(detail, "{*}SKU") or item_id
@@ -327,6 +344,9 @@ def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[
 
     imported_items = 0
     imported_variations = 0
+    affected_listing_ids = []
+    affected_warehouse_stock_ids = []
+    affected_group_ids = []
 
     if variations:
         for variation in variations:
@@ -340,7 +360,7 @@ def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[
             price = float(_xml_text(variation, "{*}StartPrice", str(parent_price)) or parent_price or 0)
 
             stock = _find_or_create_stock(sku, title)
-            _upsert_listing(
+            listing = _upsert_listing(
                 store=store,
                 stock=stock,
                 item_id=item_id,
@@ -352,11 +372,16 @@ def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[
                 parent_item_id=item_id,
                 variation_sku_map=_variation_specifics_json(variation),
             )
+            db.session.flush()
+            affected_listing_ids.append(int(listing.id))
+            affected_warehouse_stock_ids.append(int(stock.id))
+            if listing.master_product_group_id is not None:
+                affected_group_ids.append(int(listing.master_product_group_id))
             imported_variations += 1
             imported_items += 1
     else:
         stock = _find_or_create_stock(parent_sku, title)
-        _upsert_listing(
+        listing = _upsert_listing(
             store=store,
             stock=stock,
             item_id=item_id,
@@ -368,9 +393,41 @@ def _import_item(store: Store, creds: dict[str, Any], item: ET.Element) -> dict[
             parent_item_id=None,
             variation_sku_map=None,
         )
+        db.session.flush()
+        affected_listing_ids.append(int(listing.id))
+        affected_warehouse_stock_ids.append(int(stock.id))
+        if listing.master_product_group_id is not None:
+            affected_group_ids.append(int(listing.master_product_group_id))
         imported_items += 1
 
-    return {"items": imported_items, "variations": imported_variations}
+    return {
+        "items": imported_items,
+        "variations": imported_variations,
+        "affected_listing_ids": sorted(set(affected_listing_ids)),
+        "affected_warehouse_stock_ids": sorted(set(affected_warehouse_stock_ids)),
+        "affected_group_ids": sorted(set(affected_group_ids)),
+    }
+
+
+def _notification_item_id(payload: dict[str, Any] | None) -> str | None:
+    wanted = {"itemid", "item_id", "listingid", "listing_id"}
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if str(key).strip().lower() in wanted and nested not in (None, ""):
+                    return str(nested).strip()
+                found = walk(nested)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = walk(nested)
+                if found:
+                    return found
+        return None
+
+    return walk(payload or {})
 
 
 def recover_governed_ebay_listing_from_notification(
@@ -395,10 +452,32 @@ def recover_governed_ebay_listing_from_notification(
             "event_type": str(event_type or ""),
         }
 
+    item_id = _notification_item_id(payload)
+
     try:
-        result = run_governed_ebay_inventory_import(
-            store_id=int(store_id),
-        )
+        if item_id:
+            store = db.session.get(Store, int(store_id))
+            if store is None or "ebay" not in str(store.platform or "").lower():
+                raise RuntimeError("ebay_listing_recovery_store_not_found")
+            creds = _refresh_access_token_if_needed(store, _parse_creds(store))
+            detail = _get_item_detail(creds, item_id)
+            if detail is None:
+                raise RuntimeError("ebay_listing_notification_item_not_found")
+            exact = _import_item(store, creds, detail, item_is_detail=True)
+            db.session.commit()
+            result = {
+                "success": True,
+                "governed": True,
+                "targeted": True,
+                "store_id": int(store_id),
+                "external_listing_id": item_id,
+                "imported": int(exact.get("items") or 0),
+                **exact,
+            }
+        else:
+            result = run_governed_ebay_inventory_import(
+                store_id=int(store_id),
+            )
     except Exception as exc:
         return {
             "success": False,
@@ -416,8 +495,13 @@ def recover_governed_ebay_listing_from_notification(
         "governed": True,
         "applicable": True,
         "bounded_recovery": True,
+        "targeted": bool(item_id),
         "store_id": int(store_id),
         "event_type": str(event_type or ""),
+        "affected_listing_ids": list((result or {}).get("affected_listing_ids") or []),
+        "affected_warehouse_stock_ids": list((result or {}).get("affected_warehouse_stock_ids") or []),
+        "affected_group_ids": list((result or {}).get("affected_group_ids") or []),
+        "changed": bool((result or {}).get("imported")),
         "result": result,
     }
 
@@ -451,6 +535,9 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
         variations = 0
         pages = 0
         seen_item_ids = set()
+        affected_listing_ids = set()
+        affected_warehouse_stock_ids = set()
+        affected_group_ids = set()
 
         # eBay may return up to 100 items even when a smaller entries value is requested.
         # Keep each governed cycle bounded, but resume from the next page next time.
@@ -494,6 +581,9 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
 
                 imported += counts["items"]
                 variations += counts["variations"]
+                affected_listing_ids.update(counts.get("affected_listing_ids") or [])
+                affected_warehouse_stock_ids.update(counts.get("affected_warehouse_stock_ids") or [])
+                affected_group_ids.update(counts.get("affected_group_ids") or [])
 
                 db.session.commit()
 
@@ -529,6 +619,9 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             "imported": imported,
             "variations": variations,
             "pages": pages,
+            "affected_listing_ids": sorted(affected_listing_ids),
+            "affected_warehouse_stock_ids": sorted(affected_warehouse_stock_ids),
+            "affected_group_ids": sorted(affected_group_ids),
         })
 
     db.session.commit()
@@ -537,5 +630,8 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
         "success": True,
         "governed": True,
         "marketplace": "ebay",
+        "affected_listing_ids": sorted({item for row in results for item in row.get("affected_listing_ids", [])}),
+        "affected_warehouse_stock_ids": sorted({item for row in results for item in row.get("affected_warehouse_stock_ids", [])}),
+        "affected_group_ids": sorted({item for row in results for item in row.get("affected_group_ids", [])}),
         "results": results,
     }

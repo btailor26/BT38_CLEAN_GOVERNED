@@ -130,6 +130,7 @@ def _merge_scope(target: dict, source) -> None:
         "order_intake",
         "stock_mutation",
         "result",
+        "listing_discovery",
     ):
         nested = source.get(nested_key)
         if isinstance(nested, dict):
@@ -291,6 +292,7 @@ def _result_has_committed_change(value) -> bool:
         "stock_mutation",
         "push_result",
         "result",
+        "listing_discovery",
     ):
         nested = value.get(key)
         if isinstance(nested, dict) and _result_has_committed_change(nested):
