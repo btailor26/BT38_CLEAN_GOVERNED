@@ -39,6 +39,19 @@ def test_eight_hour_recovery_remains_explicitly_gated():
     assert expected in status_source
 
 
+def test_enabled_recovery_runs_before_first_event_wait():
+    engine_source = _function_source("_engine_loop")
+
+    startup = engine_source.index(
+        "if hydration_enabled and runtime_database_enabled:"
+    )
+    event_loop = engine_source.index("while not _stop_event.is_set():")
+    event_wait = engine_source.index("_pending_notification_event.wait(")
+
+    assert startup < event_loop < event_wait
+    assert "_run_full_sync_cycle()" in engine_source[startup:event_loop]
+
+
 def test_production_enables_existing_eight_hour_recovery_path():
     config = tomllib.loads(Path("fly.toml").read_text(encoding="utf-8"))
 

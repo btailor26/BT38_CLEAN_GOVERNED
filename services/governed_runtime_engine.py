@@ -1368,6 +1368,17 @@ def _engine_loop(app):
         False,
     )
 
+    # Recovery is due immediately after a process restart. Run it before the
+    # first event wait; otherwise an idle process delays marketplace hydration
+    # by the 15-minute notification timeout even though the recovery flag is
+    # enabled. Subsequent cycles remain on the existing eight-hour interval.
+    if hydration_enabled and runtime_database_enabled:
+        try:
+            with app.app_context():
+                _run_full_sync_cycle()
+        except Exception as exc:
+            _safe_error("Startup marketplace hydration failed", exc)
+
     while not _stop_event.is_set():
         try:
             seconds_until_due = _seconds_until_next_due()
