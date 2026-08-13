@@ -266,8 +266,24 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                             )
                             observed_quantity = max(0, listed_quantity - sold_quantity)
                     else:
-                        observed_quantity = int(
-                            _xml_text(detail, "{*}QuantityAvailable", "0") or 0
+                        # GetItem returns Item.Quantity as lifetime total
+                        # (available + sold), just like Variation.Quantity.
+                        # QuantityAvailable is not the stock field for this
+                        # seller-side exact read-back and may be absent/zero.
+                        listed_quantity = int(
+                            _xml_text(detail, "{*}Quantity", "0") or 0
+                        )
+                        sold_quantity = int(
+                            _xml_text(
+                                detail,
+                                "{*}SellingStatus/{*}QuantitySold",
+                                "0",
+                            )
+                            or 0
+                        )
+                        observed_quantity = max(
+                            0,
+                            listed_quantity - sold_quantity,
                         )
 
                     if observed_quantity is not None:
