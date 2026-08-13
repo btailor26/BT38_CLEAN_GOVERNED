@@ -239,13 +239,16 @@ def _upsert_listing(
     # Variation children share that Item ID, so their operational identity is
     # store + Item ID + seller SKU, matching the DB uniqueness contract.
     #
-    # Resolve by store + Item ID first. A SKU fallback is permitted only for
-    # legacy rows that do not yet contain a marketplace Item ID.
+    # Resolve the exact composite identity first. Historical imports may have
+    # left more than one row for an Item ID while eBay's current seller SKU is
+    # already present on the canonical row. Selecting only by Item ID in that
+    # situation can pick a stale row and then violate the composite uniqueness
+    # constraint when its SKU is updated.
     identity_query = db.session.query(MarketplaceListing).filter(
         MarketplaceListing.store_id == store.id,
         MarketplaceListing.external_listing_id == item_id,
     )
-    if is_variation_child:
+    if sku:
         identity_query = identity_query.filter(
             MarketplaceListing.external_sku == sku,
         )
@@ -273,6 +276,24 @@ def _upsert_listing(
             .order_by(
                 MarketplaceListing.is_active.desc(),
                 MarketplaceListing.id.asc(),
+            )
+            .first()
+        )
+
+    # A non-variation legacy row may already have the stable Item ID but an
+    # old/missing seller SKU. Reuse it only after proving that the exact
+    # composite identity is absent. Variation children must never use this
+    # fallback because they intentionally share the parent Item ID.
+    if listing is None and not is_variation_child:
+        listing = (
+            db.session.query(MarketplaceListing)
+            .filter(
+                MarketplaceListing.store_id == store.id,
+                MarketplaceListing.external_listing_id == item_id,
+            )
+            .order_by(
+                MarketplaceListing.is_active.desc(),
+                MarketplaceListing.id.desc(),
             )
             .first()
         )

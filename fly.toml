@@ -4,6 +4,12 @@ primary_region = "lhr"
 [build]
   dockerfile = "Dockerfile"
 
+[env]
+  # Webhooks remain the immediate listing path. This enables the existing
+  # bounded eight-hour importer as recovery when a marketplace notification
+  # is unavailable or missed; the importer still obeys the database fuses.
+  ENABLE_GOVERNED_8H_HYDRATION = "true"
+
 [http_service]
   internal_port = 5000
   force_https = true

@@ -1,5 +1,6 @@
 from pathlib import Path
 import ast
+import tomllib
 
 
 RUNTIME_PATH = Path("services/governed_runtime_engine.py")
@@ -36,6 +37,27 @@ def test_eight_hour_recovery_remains_explicitly_gated():
     expected = 'os.getenv("ENABLE_GOVERNED_8H_HYDRATION", "false")'
     assert expected in engine_source
     assert expected in status_source
+
+
+def test_production_enables_existing_eight_hour_recovery_path():
+    config = tomllib.loads(Path("fly.toml").read_text(encoding="utf-8"))
+
+    assert config["env"]["ENABLE_GOVERNED_8H_HYDRATION"] == "true"
+
+
+def test_ebay_upsert_resolves_exact_item_and_sku_before_legacy_item():
+    function_source = Path(
+        "services/governed_ebay_inventory_import.py"
+    ).read_text(encoding="utf-8")
+    upsert = function_source.split("def _upsert_listing(", 1)[1].split(
+        "\ndef _import_item(", 1
+    )[0]
+
+    exact_sku = upsert.index("MarketplaceListing.external_sku == sku")
+    legacy_item = upsert.index("if listing is None and not is_variation_child:")
+
+    assert exact_sku < legacy_item
+    assert "MarketplaceListing.external_listing_id == item_id" in upsert
 
 
 def test_fifteen_minute_verification_stays_exact_scope_only():
