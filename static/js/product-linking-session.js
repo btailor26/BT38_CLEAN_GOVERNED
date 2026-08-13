@@ -23,6 +23,7 @@
     products: [],
     unlinked: [],
     listings: [],
+    revision: null,
     fullLoadedAt: 0,
     page: 1,
     perPage: 15,
@@ -176,7 +177,7 @@
   }
 
   async function writeSnapshot() {
-    const snapshot = { releaseVersion: RELEASE_VERSION, fullLoadedAt: state.fullLoadedAt, products: state.products, unlinked: state.unlinked, listings: state.listings };
+    const snapshot = { releaseVersion: RELEASE_VERSION, revision: state.revision, fullLoadedAt: state.fullLoadedAt, products: state.products, unlinked: state.unlinked, listings: state.listings };
     try {
       const database = await openCacheDatabase(); if (!database) return;
       await new Promise((resolve, reject) => {
@@ -189,7 +190,18 @@
   }
 
   function snapshotExists(snapshot) { return Boolean(snapshot && snapshot.releaseVersion === RELEASE_VERSION && Array.isArray(snapshot.products) && Array.isArray(snapshot.unlinked) && Array.isArray(snapshot.listings)); }
-  function applySnapshot(snapshot) { state.products = uniqueById(snapshot?.products || []); state.unlinked = uniqueById(snapshot?.unlinked || []); state.listings = uniqueById(snapshot?.listings || []); state.fullLoadedAt = Number(snapshot?.fullLoadedAt || 0); state.hydrated = true; assignLegacyGlobals(); }
+  function applySnapshot(snapshot) { state.products = uniqueById(snapshot?.products || []); state.unlinked = uniqueById(snapshot?.unlinked || []); state.listings = uniqueById(snapshot?.listings || []); state.revision = snapshot?.revision || null; state.fullLoadedAt = Number(snapshot?.fullLoadedAt || 0); state.hydrated = true; assignLegacyGlobals(); }
+
+  async function fetchDatabaseRevision() {
+    const response = await fetch("/governed/product-linking/revision", {
+      credentials: "same-origin",
+      cache: "no-store"
+    });
+    if (!response.ok) throw new Error(`Product Linking revision failed: HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data.success || !data.revision) throw new Error(data.error || "Product Linking revision unavailable");
+    return String(data.revision);
+  }
 
   async function fetchDataset(search, limit) {
     const targeted = Boolean(String(search || "").trim());
@@ -203,11 +215,13 @@
   }
 
   async function fetchFullSnapshot() {
+    const revision = await fetchDatabaseRevision();
     const data = await fetchDataset("", FULL_DATASET_LIMIT);
     state.products = uniqueById(data.warehouse_products || []);
     state.unlinked = uniqueById(data.unlinked_listings || []);
     state.listings = uniqueById(data.all_marketplace_listings || data.listings || []);
     state.fullLoadedAt = Date.now();
+    state.revision = revision;
     state.hydrated = true;
     state.page = 1;
     assignLegacyGlobals();
@@ -215,7 +229,17 @@
   }
 
   async function fetchInitialSnapshotOnce() {
-    const work = async () => { const latest = await readSnapshot(); if (snapshotExists(latest)) applySnapshot(latest); else await fetchFullSnapshot(); };
+    const work = async () => {
+      const [latest, databaseRevision] = await Promise.all([
+        readSnapshot(),
+        fetchDatabaseRevision()
+      ]);
+      if (snapshotExists(latest) && latest.revision === databaseRevision) {
+        applySnapshot(latest);
+      } else {
+        await fetchFullSnapshot();
+      }
+    };
     if (navigator.locks?.request) return navigator.locks.request(CACHE_LOCK_NAME, { mode: "exclusive" }, work);
     return work();
   }
@@ -227,7 +251,7 @@
       const loading = document.getElementById("warehouseLoadingState"), errorBox = document.getElementById("warehouseErrorState"), container = document.getElementById("warehouseDataContainer");
       if (loading) loading.classList.remove("d-none"); if (errorBox) errorBox.classList.add("d-none"); if (container) container.classList.add("d-none");
       try {
-        const cached = await readSnapshot(); if (snapshotExists(cached)) applySnapshot(cached); else await fetchInitialSnapshotOnce();
+        await fetchInitialSnapshotOnce();
         render();
         if (loading) loading.classList.add("d-none");
         if (container) container.classList.remove("d-none");

@@ -26,3 +26,14 @@ def test_release_version_also_invalidates_the_persisted_dataset():
     assert 'const CACHE_KEY = `product-linking-session-v7:${RELEASE_VERSION}`' in session
     assert "releaseVersion: RELEASE_VERSION" in session
     assert "snapshot.releaseVersion === RELEASE_VERSION" in session
+
+
+def test_cached_dataset_must_match_current_database_revision():
+    session = Path("static/js/product-linking-session.js").read_text(encoding="utf-8")
+    routes = Path("governed_routes.py").read_text(encoding="utf-8")
+    assert 'fetch("/governed/product-linking/revision"' in session
+    assert "latest.revision === databaseRevision" in session
+    assert "revision: state.revision" in session
+    assert '"/governed/product-linking/revision"' in routes
+    assert "func.max(MarketplaceListing.updated_at)" in routes
+    assert "func.max(WarehouseStock.updated_at)" in routes

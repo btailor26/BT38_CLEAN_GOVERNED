@@ -3001,6 +3001,46 @@ def governed_product_linking_data_compat():
     })
 
 
+@governed_bp.get("/governed/product-linking/revision")
+def governed_product_linking_revision():
+    """Return a cheap DB revision for browser-cache validation."""
+    from extensions import db
+    from models import MarketplaceListing, WarehouseStock
+    from sqlalchemy import func
+
+    stock_count, stock_updated = (
+        db.session.query(
+            func.count(WarehouseStock.id),
+            func.max(WarehouseStock.updated_at),
+        )
+        .filter(WarehouseStock.is_active == True)  # noqa: E712
+        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+        .one()
+    )
+    listing_count, listing_updated = (
+        db.session.query(
+            func.count(MarketplaceListing.id),
+            func.max(MarketplaceListing.updated_at),
+        )
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .one()
+    )
+
+    revision = ":".join([
+        str(int(stock_count or 0)),
+        stock_updated.isoformat() if stock_updated else "none",
+        str(int(listing_count or 0)),
+        listing_updated.isoformat() if listing_updated else "none",
+    ])
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "read_only": True,
+        "revision": revision,
+    })
+
+
 @governed_bp.get("/governed/product-linking/search-all-listings")
 def governed_product_linking_search_all_listings_compat():
     """Lightweight marketplace listing search for Product Linking modal.

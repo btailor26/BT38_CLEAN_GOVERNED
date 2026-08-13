@@ -13,7 +13,7 @@ def test_full_product_linking_snapshot_is_bootstrapped_once_then_event_driven():
     assert "snapshotExists" in code
     assert "fetchInitialSnapshotOnce" in code
     assert "navigator.locks.request(CACHE_LOCK_NAME" in code
-    assert "if (snapshotExists(cached)) applySnapshot(cached)" in code
+    assert "await fetchInitialSnapshotOnce()" in code
 
 
 def test_daily_snapshot_is_persisted_in_indexeddb_not_session_only_memory():
