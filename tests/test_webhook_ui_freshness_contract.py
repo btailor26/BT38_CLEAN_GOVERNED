@@ -10,7 +10,7 @@ def _signal_source():
     ).read_text(encoding="utf-8")
 
 
-def test_webhook_ui_freshness_is_event_driven_not_db_polled():
+def test_webhook_ui_freshness_does_not_reserve_browser_threads_or_poll_db():
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
     base_source = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
     source = _signal_source()
@@ -22,11 +22,14 @@ def test_webhook_ui_freshness_is_event_driven_not_db_polled():
     assert 'db.session' not in source
     assert '@app.get("/governed/ui/events")' in source
     assert 'threading.Condition()' in source
-    assert '_condition.wait(timeout=25.0)' in source
+    assert '_condition.wait(timeout=25.0)' not in source
+    assert 'LIVE_BROWSER_EVENT_WAITER_ENABLED = False' in source
+    assert 'function start(){ markRows(document); }' in source
+    assert 'function start(){ markRows(document); void waitForNextEvent(); }' not in source
     assert 'window.location.reload()' not in source
 
 
-def test_webhook_ui_handoff_preserves_every_unseen_exact_record():
+def test_server_event_audit_preserves_exact_records_without_browser_waiting():
     source = _signal_source()
 
     assert '_events = deque(maxlen=256)' in source
@@ -34,11 +37,12 @@ def test_webhook_ui_handoff_preserves_every_unseen_exact_record():
     assert 'affected_listing_ids' in source
     assert 'affected_warehouse_stock_ids' in source
     assert 'affected_group_ids' in source
-    assert 'unseen = _events_after(seen_revision)' in source
-    assert '_collapse_events(unseen)' in source
+    assert 'def _events_after(seen_revision: int)' in source
+    assert 'def _collapse_events(events: list[dict])' in source
+    assert '"event": None' in source
 
 
-def test_product_linking_consumes_full_webhook_mutation_contract():
+def test_dormant_targeted_contract_remains_available_without_auto_starting():
     source = _signal_source()
 
     assert 'window.bt38ApplyProductLinkingMutation' in source
@@ -46,6 +50,7 @@ def test_product_linking_consumes_full_webhook_mutation_contract():
     assert 'exactDetails(contract)' in source
     assert 'X-BT38-UI-Refresh' in source
     assert 'window.setTimeout(waitForNextEvent, 50)' in source
+    assert 'LIVE_BROWSER_EVENT_WAITER_ENABLED = False' in source
 
 
 def test_completed_webhook_wakes_only_after_committed_change():

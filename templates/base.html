@@ -111,7 +111,7 @@
         <div class="offcanvas-header border-bottom">
             <div>
                 <h5 class="offcanvas-title mb-0" id="bt38NotificationPanelLabel"><i data-feather="bell" class="me-2"></i>Notifications</h5>
-                <small class="text-muted">Durable governed activity</small>
+                <small class="text-muted">Marketplace sales</small>
             </div>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
@@ -121,12 +121,12 @@
             </div>
             <div id="bt38NotificationError" class="alert alert-danger m-3 d-none" role="alert"></div>
             <div id="bt38NotificationEmpty" class="text-center text-muted py-5 d-none">
-                <i data-feather="bell-off" class="mb-2"></i><div>No governed activity recorded.</div>
+                <i data-feather="bell-off" class="mb-2"></i><div>No marketplace sales found.</div>
             </div>
             <div id="bt38NotificationList" class="list-group list-group-flush d-none"></div>
         </div>
         <div class="border-top p-3">
-            <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('governed.governed_notification_audit') }}" target="_blank" rel="noopener noreferrer">View raw notification audit</a>
+            <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('governed.governed_dashboard_page') }}">View sales dashboard</a>
         </div>
     </div>
 
@@ -191,7 +191,7 @@
         const list = document.getElementById("bt38NotificationList");
         if (!panel || !badge || !loading || !errorBox || !emptyBox || !list) return;
 
-        const auditUrl = "{{ url_for('governed.governed_notification_audit') }}?limit=20";
+        const salesUrl = "/governed/ui/sales?limit=20";
         const seenKey = "bt38.notifications.lastSeenAt";
         let records = [];
         let loaded = false;
@@ -249,7 +249,7 @@
             loading.classList.remove("d-none");
             errorBox.classList.add("d-none");
             try {
-                const response = await fetch(auditUrl, {method: "GET", headers: {"Accept": "application/json"}, credentials: "same-origin", cache: "no-store"});
+                const response = await fetch(salesUrl, {method: "GET", headers: {"Accept": "application/json"}, credentials: "same-origin", cache: "no-store"});
                 if (!response.ok) throw new Error(`Notification request failed with HTTP ${response.status}`);
                 const payload = await response.json();
                 if (payload?.success !== true) throw new Error(payload?.error || payload?.message || "Notification response was not successful.");
@@ -267,17 +267,13 @@
         }
 
         panel.addEventListener("show.bs.offcanvas", async function () {
+            stale = true;
             await loadNotifications();
             markSeen();
         });
 
-        window.addEventListener("bt38-marketplace-event", function () {
-            stale = true;
-            setBadge(Number(badge.textContent || 0) + 1);
-            if (panel.classList.contains("show")) void loadNotifications().then(markSeen);
-        });
-
-        void loadNotifications();
+        // Deliberately no page-load fetch and no background polling. Opening
+        // the bell is the single read-only shortcut that pulls current sales.
     })();
     </script>
     

@@ -4,9 +4,8 @@ Contract:
 - publish only after a committed governed change
 - preserve every unseen committed revision in a bounded in-memory queue
 - carry exact affected listing / Warehouse / group identities
-- sleeping browsers wake immediately when a change is published
-- no Neon polling, marketplace polling, broad scans, or full-page reloads
-- Product Linking consumes its existing targeted mutation contract
+- no browser long-poll, Neon polling, broad scans, or full-page reloads
+- the global bell pulls sales only when explicitly opened
 """
 from __future__ import annotations
 
@@ -15,14 +14,18 @@ from collections import deque
 from datetime import datetime
 
 from flask import g, has_request_context, jsonify, request
-from flask_login import login_required
-
 from app import app
 
 
 _condition = threading.Condition()
 _revision = 0
 _events = deque(maxlen=256)
+
+# The previous 25-second authenticated browser waiter could occupy every
+# Gunicorn thread and hold read transactions open. Keep event publication for
+# server-side governance, but do not install a browser waiter while the bell is
+# the explicit sales-only shortcut.
+LIVE_BROWSER_EVENT_WAITER_ENABLED = False
 
 _LIVE_UI_PATHS = {
     "/warehouse",
@@ -248,27 +251,21 @@ def _collapse_events(events: list[dict]) -> dict | None:
 
 
 @app.get("/governed/ui/events")
-@login_required
 def governed_ui_events():
-    """Sleep in memory; on change return every unseen exact affected identity."""
-    try:
-        seen_revision = max(0, int(request.args.get("after") or 0))
-    except Exception:
-        seen_revision = 0
+    """Return immediately for compatibility with already-open browser pages.
 
+    The global bell is now an explicit sales shortcut.  It must not reserve a
+    Gunicorn request thread (or cause Flask-Login to open a Neon transaction)
+    while a browser waits for an unrelated runtime event.
+    """
     with _condition:
-        unseen = _events_after(seen_revision)
-        if not unseen:
-            # Long wait is idle and DB-free. notify_all() returns immediately on
-            # a committed webhook, keeping browser handoff well below 2 seconds.
-            _condition.wait(timeout=25.0)
-            unseen = _events_after(seen_revision)
         current_revision = _revision
 
     response = jsonify({
         "ok": True,
         "revision": current_revision,
-        "event": _collapse_events(unseen),
+        # Compatibility callers are deliberately not page-refresh authority.
+        "event": None,
     })
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
@@ -382,6 +379,8 @@ def publish_completed_webhook_and_attach_live_ui(response):
         return response
 
     if request.method != "GET":
+        return response
+    if not LIVE_BROWSER_EVENT_WAITER_ENABLED:
         return response
     if "text/html" not in str(response.content_type or "").lower():
         return response
@@ -576,7 +575,9 @@ def publish_completed_webhook_and_attach_live_ui(response):
 
   window.addEventListener("beforeunload", function(){ stopped = true; }, {once: true});
 
-  function start(){ markRows(document); void waitForNextEvent(); }
+  // Page sessions remain unchanged. Runtime events no longer create a
+  // permanent browser request; the notification bell pulls sales on demand.
+  function start(){ markRows(document); }
   if (document.readyState === "complete") window.setTimeout(start, 0);
   else window.addEventListener("load", function(){ window.setTimeout(start, 0); }, {once: true});
 })();

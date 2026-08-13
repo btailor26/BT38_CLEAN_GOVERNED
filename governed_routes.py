@@ -1409,6 +1409,72 @@ def governed_notification_audit():
     }), 200
 
 
+@governed_bp.get("/governed/ui/sales")
+@login_required
+def governed_ui_sales():
+    """Small, read-only marketplace-sales payload for the global bell.
+
+    This endpoint runs only when the user opens the bell. It does not poll,
+    import, sync, push, group, or alter the existing page session.
+    """
+    from extensions import db
+    from models import MarketplaceOrder, Store
+
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except Exception:
+        limit = 20
+    limit = max(1, min(limit, 50))
+
+    rows = (
+        db.session.query(
+            MarketplaceOrder.id,
+            MarketplaceOrder.marketplace_order_id,
+            MarketplaceOrder.sku,
+            MarketplaceOrder.quantity,
+            MarketplaceOrder.status,
+            MarketplaceOrder.fulfillment_type,
+            MarketplaceOrder.created_at,
+            Store.name.label("store_name"),
+            Store.platform.label("platform"),
+        )
+        .outerjoin(Store, Store.id == MarketplaceOrder.store_id)
+        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    records = [
+        {
+            "id": f"marketplace_order:{row.id}",
+            "log_type": "marketplace_sale",
+            "message": (
+                f"{row.store_name or row.platform or 'Marketplace'} sale "
+                f"{row.marketplace_order_id}: {row.sku} x{int(row.quantity or 0)}"
+            ),
+            "marketplace_order_id": row.marketplace_order_id,
+            "sku": row.sku,
+            "quantity": int(row.quantity or 0),
+            "status": row.status,
+            "fulfillment_type": row.fulfillment_type,
+            "store_name": row.store_name,
+            "platform": row.platform,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "governed": True,
+        "read_only": True,
+        "source": "MarketplaceOrder",
+        "count": len(records),
+        "records": records,
+    }), 200
+
+
 
 @governed_bp.get("/governed/audit/notification-match")
 @login_required

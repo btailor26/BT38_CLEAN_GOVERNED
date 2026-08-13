@@ -12,24 +12,21 @@ SIGNAL = (ROOT / "services" / "governed_ui_event_signal.py").read_text(
 def test_shared_base_has_one_global_notification_bell_and_drawer():
     assert BASE.count('id="bt38NotificationBell"') == 1
     assert BASE.count('id="bt38NotificationPanel"') == 1
-    assert "governed.governed_notification_audit" in BASE
+    assert 'const salesUrl = "/governed/ui/sales?limit=20"' in BASE
 
 
-def test_bell_reads_durable_events_without_polling_or_starting_work():
-    assert 'SyncLog.message.like("event_type=%")' in ROUTES
-    assert '"source": "Neon SystemLog + SyncLog"' in ROUTES
+def test_bell_reads_sales_only_on_open_without_polling_or_starting_work():
+    assert '@governed_bp.get("/governed/ui/sales")' in ROUTES
+    assert '"source": "MarketplaceOrder"' in ROUTES
+    assert 'MarketplaceOrder.created_at.desc()' in ROUTES
     assert 'method: "GET"' in BASE
     assert "setInterval" not in BASE
+    assert "void loadNotifications();" not in BASE
+    assert 'panel.addEventListener("show.bs.offcanvas"' in BASE
 
 
-def test_existing_event_channel_wakes_bell_on_every_shared_base_page():
+def test_browser_event_waiter_is_disabled_for_sales_only_bell():
     assert "bt38NotificationBell" in SIGNAL
-    assert 'window.dispatchEvent(new CustomEvent("bt38-marketplace-event"' in SIGNAL
-    assert 'window.addEventListener("bt38-marketplace-event"' in BASE
-    dispatch_at = SIGNAL.index(
-        'window.dispatchEvent(new CustomEvent("bt38-marketplace-event"'
-    )
-    product_linking_at = SIGNAL.index(
-        'if (currentPath() === "/product-linking"'
-    )
-    assert dispatch_at < product_linking_at
+    assert 'LIVE_BROWSER_EVENT_WAITER_ENABLED = False' in SIGNAL
+    assert '_condition.wait(timeout=25.0)' not in SIGNAL
+    assert 'window.addEventListener("bt38-marketplace-event"' not in BASE
