@@ -81,6 +81,7 @@ logging.basicConfig(level=log_level)
 
 # Create the app
 app = Flask(__name__)
+app.config["BT38_ASSET_VERSION"] = APP_VERSION
 
 # Database configuration
 import os
@@ -717,4 +718,3 @@ def dev_product_linking_button_test():
         {"group_id": 9010, "warehouse_id": 9010, "listing_id": 9110, "sku": "PEARS-SOAP-2PK", "title": "Pears Transparent Soap Twin Pack", "marketplace": "Amazon", "qty": 26},
     ]
     return render_template("dev/product_linking_button_test.html", rows=rows)
-

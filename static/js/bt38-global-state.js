@@ -90,7 +90,9 @@ window.BT38.setPageSession = function(pageName, values = {}) {
   };
 
   const script = document.createElement("script");
-  script.src = "/static/js/product-linking-session.js?v=product-linking-session-verified-link";
+  const loaderUrl = new URL(document.currentScript.src, window.location.origin);
+  const assetVersion = loaderUrl.searchParams.get("v") || "bt38-runtime";
+  script.src = `/static/js/product-linking-session.js?v=${encodeURIComponent(assetVersion)}`;
   script.async = false;
   script.dataset.bt38ProductLinkingSession = "1";
   document.head.appendChild(script);
