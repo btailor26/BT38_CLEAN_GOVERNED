@@ -60,7 +60,7 @@ def test_product_linking_changes_merge_only_affected_server_state():
     assert "/unlink" in unlink_confirm_block
     assert "user_confirmed: true" in unlink_confirm_block
 
-    assert "await applyMutationContract(data, {" in link_block
+    assert "await applyMutationContract(relationshipEvent, {" in link_block
     assert "await applyMutationContract(data, {" in unlink_confirm_block
 
     assert "await clearSnapshot();" not in link_block

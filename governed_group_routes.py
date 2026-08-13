@@ -196,6 +196,9 @@ def governed_group_link_listing(group_id: int):
     push_result = _push_group_safely(group.id, source="product_linking_auto_push")
     payload = _serialize_master_group(group)
     payload.update({
+        "event_type": "product_linking_link",
+        "event_source": "product_linking_ui",
+        "group_id": int(group.id),
         "message": "Marketplace listing linked to the Product Linking group.",
         "original_group_id": result.get("original_group_id"),
         "previous_group_id": result.get("previous_group_id"),

@@ -37,6 +37,12 @@ _WEBHOOK_PATHS = {
     "/governed/webhooks/ebay": "ebay",
 }
 
+_RELATIONSHIP_EVENT_PATHS = {
+    "/governed/product-linking/link-listing-to-warehouse": (
+        "product_linking_link"
+    ),
+}
+
 _SINGULAR_SCOPE_KEYS = (
     "event_type",
     "seller_sku",
@@ -137,10 +143,10 @@ def _merge_scope(target: dict, source) -> None:
             _merge_scope(target, nested)
 
 
-def publish_webhook_ui_event(
+def publish_governed_ui_event(
     *,
-    platform: str,
-    notification_record_id: int,
+    source: str,
+    notification_record_id: int | None = None,
     scope: dict | None = None,
 ) -> int:
     """Publish one committed change and wake sleepers immediately."""
@@ -169,14 +175,29 @@ def publish_webhook_ui_event(
         event = {
             "revision": _revision,
             "changed": True,
-            "platform": str(platform or "").strip().lower(),
-            "notification_record_id": int(notification_record_id),
+            "source": str(source or "").strip().lower(),
             "published_at": datetime.utcnow().isoformat() + "Z",
             **safe_scope,
         }
+        if notification_record_id is not None:
+            event["notification_record_id"] = int(notification_record_id)
         _events.append(event)
         _condition.notify_all()
         return _revision
+
+
+def publish_webhook_ui_event(
+    *,
+    platform: str,
+    notification_record_id: int,
+    scope: dict | None = None,
+) -> int:
+    """Preserve the existing webhook publisher on the shared UI event path."""
+    return publish_governed_ui_event(
+        source=f"webhook_{str(platform or '').strip().lower()}",
+        notification_record_id=notification_record_id,
+        scope={"platform": platform, **dict(scope or {})},
+    )
 
 
 def _events_after(seen_revision: int):
@@ -322,6 +343,18 @@ def _ui_scope_from_response(payload) -> dict:
 def publish_completed_webhook_and_attach_live_ui(response):
     """Publish changed webhooks and install the shared sleeping browser waiter."""
     path = request.path.rstrip("/") or "/"
+
+    if request.method == "POST" and path in _RELATIONSHIP_EVENT_PATHS:
+        payload = response.get_json(silent=True)
+        if (
+            response.status_code < 400
+            and _result_has_committed_change(payload)
+        ):
+            publish_governed_ui_event(
+                source=_RELATIONSHIP_EVENT_PATHS[path],
+                scope=payload,
+            )
+        return response
 
     if request.method == "POST" and path in _WEBHOOK_PATHS:
         payload = response.get_json(silent=True)

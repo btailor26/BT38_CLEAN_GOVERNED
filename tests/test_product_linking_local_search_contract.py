@@ -67,7 +67,8 @@ def test_mutations_remain_governed_and_refresh_only_affected_record():
     source = _source(SESSION_CONTROLLER)
 
     assert 'fetch("/governed/product-linking/link-listing-to-warehouse"' in source
-    assert "await applyMutationContract(data, {" in source
+    assert "await applyMutationContract(relationshipEvent, {" in source
     assert "TARGETED_DATASET_LIMIT = 25" in source
     assert "await hydrate(true)" not in source
-    assert "mappingExists(listingId, warehouseId, data.group_id)" in source
+    assert "mappingExists(listingId, warehouseId, eventGroupId)" in source
+    assert 'event_type: data.event_type || "product_linking_link"' in source

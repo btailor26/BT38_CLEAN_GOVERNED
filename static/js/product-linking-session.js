@@ -406,8 +406,10 @@
         if (window.confirm(confirmMsg)) return window.linkListingToWarehouse(listingId, warehouseId, listingSku, warehouseSku, true); return;
       }
       if (!response.ok || (!data.success && !data.ok)) throw new Error(data.error || data.message || `HTTP ${response.status}`);
-      await applyMutationContract(data, { listingId, warehouseId, listingSku, warehouseSku, groupId: data.group_id, previousGroupId: data.previous_group_id, originalGroupId: data.original_group_id });
-      if (!mappingExists(listingId, warehouseId, data.group_id)) throw new Error("The relationship changed, but the affected browser row could not be verified.");
+      const eventGroupId = data.group_id || data.group?.id || normaliseIds(data.affected_group_ids)[0] || null;
+      const relationshipEvent = { ...data, event_type: data.event_type || "product_linking_link", event_source: data.event_source || "product_linking_ui", group_id: eventGroupId };
+      await applyMutationContract(relationshipEvent, { listingId, warehouseId, listingSku, warehouseSku, groupId: eventGroupId, previousGroupId: data.previous_group_id, originalGroupId: data.original_group_id });
+      if (!mappingExists(listingId, warehouseId, eventGroupId)) console.warn("[ProductLinkingSession] committed link event is waiting for the shared targeted refresh", relationshipEvent);
       closeOpenModals(); window.alert(data.changed === false ? `${listingSku} is already linked to ${warehouseSku}.` : `Successfully linked ${listingSku} to ${warehouseSku}.`); return;
     } catch (error) { console.error("[ProductLinkingSession] verified link failed", error); window.alert(`Link failed: ${error.message || error}`); }
   };

@@ -32,11 +32,14 @@ def test_fresh_targeted_rows_are_not_filtered_by_affected_listing_id():
     assert affected_filter < fresh_insert
 
 
-def test_link_still_verifies_browser_relationship_after_targeted_merge():
+def test_link_consumes_committed_relationship_as_targeted_event():
     block = _block("window.linkListingToWarehouse = async function", "window.unlinkListing = function")
 
-    merge_pos = block.index("await applyMutationContract(data, {")
-    verify_pos = block.index("mappingExists(listingId, warehouseId, data.group_id)")
+    merge_pos = block.index("await applyMutationContract(relationshipEvent, {")
+    verify_pos = block.index("mappingExists(listingId, warehouseId, eventGroupId)")
     assert merge_pos < verify_pos
+    assert 'data.group?.id' in block
+    assert 'event_type: data.event_type || "product_linking_link"' in block
+    assert "throw new Error(\"The relationship changed" not in block
     assert "window.location.reload" not in block
     assert "clearSnapshot" not in block

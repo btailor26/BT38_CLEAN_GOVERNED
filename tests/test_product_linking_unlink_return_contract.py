@@ -33,7 +33,7 @@ def test_relationship_mutations_merge_affected_records_without_full_reload():
     link_block = SESSION[link_start:unlink_start]
     unlink_block = SESSION[confirm_start:wire_start]
 
-    assert "await applyMutationContract(data, {" in link_block
+    assert "await applyMutationContract(relationshipEvent, {" in link_block
     assert "await applyMutationContract(data, {" in unlink_block
     assert "await clearSnapshot();" not in link_block
     assert "await clearSnapshot();" not in unlink_block

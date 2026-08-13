@@ -62,6 +62,16 @@ def test_completed_webhook_wakes_only_after_committed_change():
     assert 'submit_governed_marketplace_action' not in source
 
 
+def test_committed_product_link_is_published_on_existing_ui_event_channel():
+    source = _signal_source()
+
+    assert '"/governed/product-linking/link-listing-to-warehouse"' in source
+    assert '"product_linking_link"' in source
+    assert "publish_governed_ui_event(" in source
+    assert "_result_has_committed_change(payload)" in source
+    assert "response.status_code < 400" in source
+
+
 def test_live_ui_scope_covers_fba_fbm_and_marketplace_pages():
     source = _signal_source()
 
