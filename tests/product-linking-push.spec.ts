@@ -20,6 +20,13 @@ test('Product Linking declares display quantity before visible Push button', asy
   expect(declaration).toBeLessThan(visiblePush);
 });
 
+test('Product Linking renders exactly one group Push shortcut per row', async () => {
+  const renderStart = template.indexOf('function renderWarehouseProducts(products)');
+  const renderEnd = template.indexOf('function renderProductLinkingPagination()', renderStart);
+  const renderBlock = template.slice(renderStart, renderEnd);
+  expect(renderBlock.match(/class="[^"]*bt38-qty-push-open[^"]*"/g) || []).toHaveLength(1);
+});
+
 test('Product Linking shortcut posts group and permanent Warehouse identity', async () => {
   expect(template).toContain('/governed/actions/groups/${encodeURIComponent(groupId)}/push');
   expect(template).toContain('warehouse_stock_id: warehouseId');

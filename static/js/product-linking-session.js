@@ -113,11 +113,13 @@
   function pushSettingsEvidence(listing, product) {
     if (listing?.push_status === "read_only" || listing?.is_fba) return { label: "Push settings: FBA read-only · Amazon authority", healthy: true, relationshipBlocked: false };
     const config = state.pushSettings?.config || {};
+    const store = (state.pushSettings?.stores || []).find((item) => sameId(item?.id, listing?.store_id));
     const globalOn = ["push_enabled", "runtime_push_enabled", "marketplace_push_enabled", "manual_push_enabled"].every((key) => settingOn(config[key]));
     const quantityOn = settingOn(config.quantity_push_enabled);
     const groupOn = settingOn(config.group_push_enabled);
+    const autoOn = Boolean(store?.auto_push_enabled);
     const relationshipBlocked = !product?.master_product_group_id;
-    return { label: [`Global ${globalOn ? "ON" : "OFF"}`, `Qty ${quantityOn ? "ON" : "OFF"}`, `Group ${groupOn ? "ON" : "OFF"}`, "Auto OFF"].join(" · "), healthy: globalOn && quantityOn && groupOn, relationshipBlocked };
+    return { label: [`Global ${globalOn ? "ON" : "OFF"}`, `Qty ${quantityOn ? "ON" : "OFF"}`, `Group ${groupOn ? "ON" : "OFF"}`, `Auto ${autoOn ? "ON" : "OFF"}`].join(" · "), healthy: globalOn && quantityOn && groupOn, relationshipBlocked };
   }
 
   function renderRelationshipAndPushEvidence(pageRows) {

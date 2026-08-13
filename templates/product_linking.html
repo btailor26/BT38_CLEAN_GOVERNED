@@ -995,17 +995,6 @@ function renderWarehouseProducts(products) {
                         <button class="btn btn-outline-secondary" onclick="showDiagnostics(${product.id}, '${escapeHtml(product.sku)}')" title="Diagnostics">
                             <i data-feather="activity" class="feather-xs"></i>
                         </button>
-                        <button type="button"
-                            class="btn btn-outline-primary bt38-qty-push-open"
-                            data-warehouse-id="${product.id}"
-                            data-group-id="${product.master_product_group_id || ''}"
-                            data-sku="${escapeHtml(product.sku)}"
-                            data-name="${escapeHtml(product.name || '')}"
-                            data-qty="${displayStockQuantity}"
-                            data-is-fba="${Boolean(fbaListingForStock)}"
-                            title="Adjust quantity and push grouped marketplaces">
-                            <i data-feather="upload-cloud" class="feather-xs"></i>
-                        </button>
                     </div>
                 </td>
             </tr>
@@ -2341,4 +2330,3 @@ document.addEventListener('DOMContentLoaded', function() {
     return originalFetch(input, init);
   };})();
 </script>
-
