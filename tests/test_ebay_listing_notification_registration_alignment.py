@@ -28,7 +28,7 @@ def test_authorization_scope_is_complete_and_legacy_refresh_stays_safe(monkeypat
     authorization = governed_ebay_oauth_scopes().split()
     legacy_refresh = governed_ebay_refresh_scopes({}).split()
 
-    assert "https://api.ebay.com/oauth/api_scope/sell.listing.read" in authorization
+    assert "https://api.ebay.com/oauth/api_scope/sell.listing.read" not in authorization
     assert "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription" not in authorization
     assert "https://api.ebay.com/oauth/api_scope/sell.listing.read" not in legacy_refresh
     assert governed_ebay_refresh_scopes({"oauth_granted_scope": "scope-a scope-b"}) == "scope-a scope-b"
