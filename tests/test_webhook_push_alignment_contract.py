@@ -124,3 +124,22 @@ def test_current_post_path_preserves_store_resolution_and_governed_execution():
     assert "store = _bt38_match_webhook_store(platform, payload)" in source
     assert 'payload["_bt38_store_id"] = int(store.id)' in source
     assert "process_marketplace_notification(" in source
+
+def test_amazon_afn_handoff_queues_before_exact_fba_verification():
+    route = _function_source(
+        GOVERNED_ROUTES_PATH,
+        "governed_marketplace_webhook_intake",
+    )
+
+    assert "exact_fba_scope" in route
+    assert "stock_changed\n                or exact_fba_scope" in route
+    assert "_verify_exact_fba(" not in route
+    assert (
+        "verification_queue_result = notify_governed_runtime_work("
+        in route
+    )
+    assert route.index(
+        "verification_queue_result = notify_governed_runtime_work("
+    ) < route.index('processing_status="COMPLETED"')
+    assert 'timedelta(seconds=90)' in route
+
