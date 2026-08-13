@@ -23,11 +23,32 @@ def test_empty_original_group_is_suppressed_only_while_member_is_shared_elsewher
 
     assert "members_temporarily_shared_elsewhere = any(" in block
     assert "not current_group_listings" in block
-    assert "and members_temporarily_shared_elsewhere" in block
+    assert "members_temporarily_shared_elsewhere" in block
+    assert "or exact_sku_linked_into_another_group" in block
 
     # Permanent Warehouse identity is only inspected, never cleared.
     assert "stock.master_product_group_id = None" not in block
     assert "listing.warehouse_stock_id = None" not in block
+
+
+def test_empty_exact_sku_duplicate_is_suppressed_when_listing_is_active_elsewhere():
+    block = function_source(
+        ROUTES,
+        "governed_product_linking_data_compat",
+    )
+
+    assert "group_stock_skus" in block
+    assert "exact_sku_linked_into_another_group = any(" in block
+    assert 'getattr(listing, "external_sku"' in block
+    assert "or exact_sku_linked_into_another_group" in block
+
+    # Presentation suppression never mutates or deletes Warehouse history.
+    duplicate_guard = block[
+        block.index("group_stock_skus = {"):
+        block.index("group_has_fba_listing = any(")
+    ]
+    assert "db.session.delete" not in duplicate_guard
+    assert "master_product_group_id =" not in duplicate_guard
 
 
 def test_exact_original_sku_search_loads_its_active_shared_group():

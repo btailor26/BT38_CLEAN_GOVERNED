@@ -2834,9 +2834,31 @@ def governed_product_linking_data_compat():
             for listing in listing_rows
         )
 
+        # A recovered/imported listing can already be committed to a different
+        # canonical Warehouse row while an older grouped Warehouse duplicate
+        # with the exact SKU remains active. That duplicate is still valid
+        # Warehouse history, but it is not a second Product Linking
+        # relationship and must not render as "No listings linked".
+        group_stock_skus = {
+            str(getattr(stock, "sku", "") or "").strip().lower()
+            for stock in group_stocks
+            if str(getattr(stock, "sku", "") or "").strip()
+        }
+
+        exact_sku_linked_into_another_group = any(
+            str(getattr(listing, "external_sku", "") or "").strip().lower()
+            in group_stock_skus
+            and listing.master_product_group_id is not None
+            and int(listing.master_product_group_id) != int(group_id)
+            for listing in listing_rows
+        )
+
         if (
             not current_group_listings
-            and members_temporarily_shared_elsewhere
+            and (
+                members_temporarily_shared_elsewhere
+                or exact_sku_linked_into_another_group
+            )
         ):
             continue
 
