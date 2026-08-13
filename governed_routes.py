@@ -4601,6 +4601,42 @@ def governed_settings_normalize():
 # Does not perform marketplace push/import/sync.
 # ============================================================
 
+def _resolve_governed_ebay_oauth_store(store_id=None):
+    """Resolve one explicit live eBay store; never select the newest row."""
+    from models import Store
+
+    query = Store.query.filter(
+        Store.platform.ilike("%ebay%"),
+        Store.is_active == True,  # noqa: E712
+        Store.store_mode == "live",
+    )
+
+    if store_id not in (None, ""):
+        try:
+            requested_id = int(store_id)
+        except (TypeError, ValueError):
+            return None, []
+        store = query.filter(Store.id == requested_id).first()
+        return store, [store] if store else []
+
+    candidates = query.order_by(Store.id.asc()).all()
+    if len(candidates) == 1:
+        return candidates[0], candidates
+    return None, candidates
+
+
+def _ebay_oauth_store_selection_error(candidates):
+    return jsonify({
+        "ok": False,
+        "success": False,
+        "governed": True,
+        "error": "ebay_store_selection_required",
+        "candidates": [
+            {"id": store.id, "name": store.name}
+            for store in candidates
+        ],
+    }), 409
+
 @governed_bp.get("/ebay-oauth/authorize")
 def governed_ebay_oauth_authorize():
     import os
@@ -4613,6 +4649,10 @@ def governed_ebay_oauth_authorize():
     from services.governed_ebay_oauth_scopes import governed_ebay_oauth_scopes
 
     scopes = governed_ebay_oauth_scopes()
+
+    store, candidates = _resolve_governed_ebay_oauth_store(request.args.get("store_id"))
+    if not store:
+        return _ebay_oauth_store_selection_error(candidates)
 
     if not client_id or not runame:
         return jsonify({
@@ -4628,6 +4668,7 @@ def governed_ebay_oauth_authorize():
 
     state = secrets.token_urlsafe(24)
     session["governed_ebay_oauth_state"] = state
+    session["governed_ebay_oauth_store_id"] = store.id
 
     params = {
         "client_id": client_id,
@@ -4647,6 +4688,8 @@ def governed_ebay_oauth_authorize():
             "auth_url": auth_url,
             "runame": runame,
             "mode": "production",
+            "store_id": store.id,
+            "store_name": store.name,
         }), 200
 
     return redirect(auth_url)
@@ -4667,6 +4710,7 @@ def governed_ebay_oauth_callback():
     code = request.args.get("code")
     state = request.args.get("state")
     expected_state = session.get("governed_ebay_oauth_state")
+    selected_store_id = session.get("governed_ebay_oauth_store_id")
 
     if not code:
         return jsonify({
@@ -4683,6 +4727,10 @@ def governed_ebay_oauth_callback():
             "governed": True,
             "error": "state_mismatch",
         }), 200
+
+    store, candidates = _resolve_governed_ebay_oauth_store(selected_store_id)
+    if not store:
+        return _ebay_oauth_store_selection_error(candidates)
 
     client_id = os.getenv("EBAY_CLIENT_ID")
     client_secret = os.getenv("EBAY_CLIENT_SECRET")
@@ -4733,15 +4781,6 @@ def governed_ebay_oauth_callback():
             "error": "ebay_token_exchange_failed",
             "status_code": resp.status_code,
             "response": token,
-        }), 200
-
-    store = Store.query.filter(Store.platform.ilike("%ebay%")).order_by(Store.id.desc()).first()
-    if not store:
-        return jsonify({
-            "ok": False,
-            "success": False,
-            "governed": True,
-            "error": "no_ebay_store_found",
         }), 200
 
     existing = {}
@@ -4842,14 +4881,11 @@ def governed_ebay_oauth_refresh_token():
     from app import db
     from models import Store
 
-    store = Store.query.filter(Store.platform.ilike("%ebay%")).order_by(Store.id.desc()).first()
+    payload = request.get_json(silent=True) or {}
+    selected_store_id = payload.get("store_id") or request.args.get("store_id")
+    store, candidates = _resolve_governed_ebay_oauth_store(selected_store_id)
     if not store:
-        return jsonify({
-            "ok": False,
-            "success": False,
-            "governed": True,
-            "error": "no_ebay_store_found",
-        }), 200
+        return _ebay_oauth_store_selection_error(candidates)
 
     creds = {}
     if isinstance(store.api_key, str):

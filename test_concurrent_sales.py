@@ -12,6 +12,7 @@ Run with: pytest test_concurrent_sales.py -v
 """
 
 import pytest
+import os
 import threading
 import time
 from datetime import datetime
@@ -26,6 +27,12 @@ class TestConcurrentSales:
     @pytest.fixture(autouse=True)
     def setup_and_teardown(self):
         """Setup test database and cleanup after each test"""
+        app_env = str(os.getenv("APP_ENV") or app.config.get("ENV") or "").upper()
+        database_uri = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "")
+        if app_env in {"PROD", "PRODUCTION"} or "ep-royal-fire-ai8c32qw" in database_uri:
+            pytest.fail("Database-writing concurrency tests are forbidden against PROD")
+        if str(os.getenv("BT38_ALLOW_DATABASE_TESTS") or "").lower() != "true":
+            pytest.skip("Set BT38_ALLOW_DATABASE_TESTS=true with an isolated test database")
         with app.app_context():
             # Create test data
             yield
