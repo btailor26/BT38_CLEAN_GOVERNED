@@ -12,7 +12,7 @@ def test_full_product_linking_snapshot_is_bootstrapped_once_then_event_driven():
     code = source()
     assert "snapshotExists" in code
     assert "fetchInitialSnapshotOnce" in code
-    assert 'navigator.locks.request("bt38-product-linking-initial-snapshot"' in code
+    assert "navigator.locks.request(CACHE_LOCK_NAME" in code
     assert "if (snapshotExists(cached)) applySnapshot(cached)" in code
 
 
@@ -20,7 +20,8 @@ def test_daily_snapshot_is_persisted_in_indexeddb_not_session_only_memory():
     code = source()
     assert 'const CACHE_DB_NAME = "bt38-browser-cache"' in code
     assert 'const CACHE_STORE_NAME = "snapshots"' in code
-    assert 'const CACHE_KEY = "product-linking-session-v6"' in code
+    assert 'const CACHE_KEY = `product-linking-session-v7:${RELEASE_VERSION}`' in code
+    assert "snapshot.releaseVersion === RELEASE_VERSION" in code
     assert "window.indexedDB.open" in code
     assert "writeSnapshot" in code
     assert "readSnapshot" in code

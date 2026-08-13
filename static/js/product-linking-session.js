@@ -7,9 +7,12 @@
   const root = document.querySelector('[data-bt38-page="productLinking"]');
   if (!root) return;
 
+  const controllerUrl = new URL(document.currentScript.src, window.location.origin);
+  const RELEASE_VERSION = controllerUrl.searchParams.get("v") || "unversioned";
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
-  const CACHE_KEY = "product-linking-session-v6";
+  const CACHE_KEY = `product-linking-session-v7:${RELEASE_VERSION}`;
+  const CACHE_LOCK_NAME = `bt38-product-linking-initial-snapshot:${RELEASE_VERSION}`;
   const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
   const PAGE_SIZES = [15, 25, 50, 100];
@@ -173,7 +176,7 @@
   }
 
   async function writeSnapshot() {
-    const snapshot = { fullLoadedAt: state.fullLoadedAt, products: state.products, unlinked: state.unlinked, listings: state.listings };
+    const snapshot = { releaseVersion: RELEASE_VERSION, fullLoadedAt: state.fullLoadedAt, products: state.products, unlinked: state.unlinked, listings: state.listings };
     try {
       const database = await openCacheDatabase(); if (!database) return;
       await new Promise((resolve, reject) => {
@@ -185,7 +188,7 @@
     } catch (error) { console.warn("[ProductLinkingSession] cache write unavailable", error); }
   }
 
-  function snapshotExists(snapshot) { return Boolean(snapshot && Array.isArray(snapshot.products) && Array.isArray(snapshot.unlinked) && Array.isArray(snapshot.listings)); }
+  function snapshotExists(snapshot) { return Boolean(snapshot && snapshot.releaseVersion === RELEASE_VERSION && Array.isArray(snapshot.products) && Array.isArray(snapshot.unlinked) && Array.isArray(snapshot.listings)); }
   function applySnapshot(snapshot) { state.products = uniqueById(snapshot?.products || []); state.unlinked = uniqueById(snapshot?.unlinked || []); state.listings = uniqueById(snapshot?.listings || []); state.fullLoadedAt = Number(snapshot?.fullLoadedAt || 0); state.hydrated = true; assignLegacyGlobals(); }
 
   async function fetchDataset(search, limit) {
@@ -213,7 +216,7 @@
 
   async function fetchInitialSnapshotOnce() {
     const work = async () => { const latest = await readSnapshot(); if (snapshotExists(latest)) applySnapshot(latest); else await fetchFullSnapshot(); };
-    if (navigator.locks?.request) return navigator.locks.request("bt38-product-linking-initial-snapshot", { mode: "exclusive" }, work);
+    if (navigator.locks?.request) return navigator.locks.request(CACHE_LOCK_NAME, { mode: "exclusive" }, work);
     return work();
   }
 

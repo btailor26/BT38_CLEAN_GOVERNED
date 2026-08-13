@@ -18,3 +18,11 @@ def test_dynamic_product_linking_controller_inherits_loader_version():
     assert 'loaderUrl.searchParams.get("v")' in GLOBAL_STATE
     assert "encodeURIComponent(assetVersion)" in GLOBAL_STATE
     assert "product-linking-session-verified-link" not in GLOBAL_STATE
+
+
+def test_release_version_also_invalidates_the_persisted_dataset():
+    session = Path("static/js/product-linking-session.js").read_text(encoding="utf-8")
+    assert 'controllerUrl.searchParams.get("v")' in session
+    assert 'const CACHE_KEY = `product-linking-session-v7:${RELEASE_VERSION}`' in session
+    assert "releaseVersion: RELEASE_VERSION" in session
+    assert "snapshot.releaseVersion === RELEASE_VERSION" in session

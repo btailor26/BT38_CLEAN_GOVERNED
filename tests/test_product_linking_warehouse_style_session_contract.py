@@ -16,7 +16,7 @@ def test_product_linking_bootstraps_one_complete_browser_working_set():
     assert "fetchInitialSnapshotOnce" in SOURCE
     assert "readSnapshot" in SOURCE
     assert "PAGE_SIZES = [15, 25, 50, 100]" in SOURCE
-    assert 'navigator.locks.request("bt38-product-linking-initial-snapshot"' in SOURCE
+    assert "navigator.locks.request(CACHE_LOCK_NAME" in SOURCE
 
 
 def test_product_linking_search_and_paging_use_browser_session_rows():
