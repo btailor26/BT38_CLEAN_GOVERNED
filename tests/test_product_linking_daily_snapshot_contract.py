@@ -63,6 +63,17 @@ def test_search_filter_pagination_and_modals_remain_local():
     assert "window.searchWarehouseForLinking = function" in code
 
 
+def test_explicit_zero_result_search_can_recover_a_missed_listing_event():
+    code = source()
+    recovery = code[
+        code.index("async function recoverMissingSearchFromDatabase(search)"):
+        code.index("function mappingExists(")
+    ]
+    assert "state.filtered.length > 0" in recovery
+    assert "fetchDataset(exactSearch, TARGETED_DATASET_LIMIT)" in recovery
+    assert "fetchFullSnapshot" not in recovery
+
+
 def test_no_background_polling_or_timer_driven_full_scan():
     code = source()
     assert "setInterval(" not in code

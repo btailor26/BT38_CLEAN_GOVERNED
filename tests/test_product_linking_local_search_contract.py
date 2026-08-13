@@ -41,6 +41,17 @@ def test_product_linking_search_and_pagination_are_local():
     assert "window.renderProductLinkingPagination" in source
 
 
+def test_zero_result_search_recovers_exact_group_from_database():
+    source = _source(SESSION_CONTROLLER)
+
+    assert "async function recoverMissingSearchFromDatabase(search)" in source
+    assert "if (!exactSearch || state.filtered.length > 0) return false" in source
+    assert "fetchDataset(exactSearch, TARGETED_DATASET_LIMIT)" in source
+    assert "mergeTargetedData(data, affectedListingIds)" in source
+    assert "await writeSnapshot()" in source
+    assert "void recoverMissingSearchFromDatabase(search)" in source
+
+
 def test_product_linking_modal_searches_use_cached_arrays():
     source = _source(SESSION_CONTROLLER)
 

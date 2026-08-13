@@ -333,6 +333,24 @@
     if (typeof feather !== "undefined") feather.replace();
   }
 
+  async function recoverMissingSearchFromDatabase(search) {
+    const exactSearch = String(search || "").trim();
+    if (!exactSearch || state.filtered.length > 0) return false;
+
+    const data = await fetchDataset(exactSearch, TARGETED_DATASET_LIMIT);
+    const returnedProducts = uniqueById(data.warehouse_products || []);
+    const returnedListings = uniqueById(data.all_marketplace_listings || data.listings || []);
+    const affectedListingIds = returnedListings.map(listingIdentity).filter(Boolean);
+
+    if (!returnedProducts.length && !returnedListings.length) return false;
+
+    mergeTargetedData(data, affectedListingIds);
+    state.page = 1;
+    render();
+    await writeSnapshot();
+    return state.filtered.length > 0;
+  }
+
   function mappingExists(listingId, warehouseId, groupId = null) {
     return state.products.some((product) => {
       const groupMatches = groupId != null && sameId(product.master_product_group_id, groupId);
@@ -425,7 +443,16 @@
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (form && !form.dataset.bt38SessionWired) {
       form.dataset.bt38SessionWired = "1";
-      form.addEventListener("submit", (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.page = 1; render(); }, true);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        state.page = 1;
+        render();
+        const search = getFilters().search;
+        void recoverMissingSearchFromDatabase(search).catch((error) => {
+          console.warn("[ProductLinkingSession] exact DB search recovery failed", error);
+        });
+      }, true);
       form.querySelectorAll("input, select").forEach((field) => { field.addEventListener(field.tagName === "SELECT" ? "change" : "input", (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.page = 1; render(); }, true); });
     }
     const clear = form?.querySelector('a[href="/product-linking"]');
