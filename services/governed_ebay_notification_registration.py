@@ -18,7 +18,11 @@ REQUIRED_TOPIC_IDS = (
     ORDER_TOPIC_ID,
     LISTING_TOPIC_ID,
 )
-DEFAULT_SCHEMA_VERSION = "1.1"
+TOPIC_SCHEMA_VERSIONS = {
+    ORDER_TOPIC_ID: "1.1",
+    LISTING_TOPIC_ID: "1.0",
+}
+DEFAULT_SCHEMA_VERSION = TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID]
 DEFAULT_DESTINATION_NAME = "BT38 Production eBay Webhook"
 
 
@@ -369,38 +373,86 @@ def ensure_ebay_order_notification_registration(
 
     subscriptions = []
 
-    for topic_id in REQUIRED_TOPIC_IDS:
-        subscription_id, topic_created = _ensure_subscription(
-            access_token=access_token,
-            destination_id=destination_id,
-            topic_id=topic_id,
-            schema_version=DEFAULT_SCHEMA_VERSION,
-        )
-
-        subscriptions.append({
-            "topic_id": topic_id,
-            "subscription_id": subscription_id,
-            "subscription_created": topic_created,
-        })
-
-    order_subscription = next(
-        item
-        for item in subscriptions
-        if item["topic_id"] == ORDER_TOPIC_ID
+    order_subscription_id, order_created = _ensure_subscription(
+        access_token=access_token,
+        destination_id=destination_id,
+        topic_id=ORDER_TOPIC_ID,
+        schema_version=TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
     )
+    order_subscription = {
+        "topic_id": ORDER_TOPIC_ID,
+        "schema_version": TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
+        "subscription_id": order_subscription_id,
+        "subscription_created": order_created,
+        "status": "ENABLED",
+        "ok": True,
+    }
+    subscriptions.append(order_subscription)
 
-    subscription_id = order_subscription["subscription_id"]
+    creds = _decode_store_credentials(store)
+    listing_status = str(
+        creds.get("ebay_notification_listing_subscription_status") or ""
+    ).upper()
+
+    if listing_status == "AUTHORIZATION_REQUIRED":
+        listing_subscription = {
+            "topic_id": LISTING_TOPIC_ID,
+            "schema_version": TOPIC_SCHEMA_VERSIONS[LISTING_TOPIC_ID],
+            "subscription_id": None,
+            "subscription_created": False,
+            "status": "AUTHORIZATION_REQUIRED",
+            "ok": False,
+            "skipped": True,
+            "error": creds.get("ebay_notification_listing_subscription_error"),
+        }
+    else:
+        try:
+            listing_subscription_id, listing_created = _ensure_subscription(
+                access_token=access_token,
+                destination_id=destination_id,
+                topic_id=LISTING_TOPIC_ID,
+                schema_version=TOPIC_SCHEMA_VERSIONS[LISTING_TOPIC_ID],
+            )
+            listing_subscription = {
+                "topic_id": LISTING_TOPIC_ID,
+                "schema_version": TOPIC_SCHEMA_VERSIONS[LISTING_TOPIC_ID],
+                "subscription_id": listing_subscription_id,
+                "subscription_created": listing_created,
+                "status": "ENABLED",
+                "ok": True,
+            }
+        except EbayNotificationRegistrationError as exc:
+            listing_error = str(exc)
+            authorization_required = (
+                "195011" in listing_error
+                or "not authorized for this topic" in listing_error.lower()
+            )
+            listing_status = (
+                "AUTHORIZATION_REQUIRED" if authorization_required else "FAILED"
+            )
+            listing_subscription = {
+                "topic_id": LISTING_TOPIC_ID,
+                "schema_version": TOPIC_SCHEMA_VERSIONS[LISTING_TOPIC_ID],
+                "subscription_id": None,
+                "subscription_created": False,
+                "status": listing_status,
+                "ok": False,
+                "error": listing_error,
+            }
+
+    subscriptions.append(listing_subscription)
+
+    subscription_id = order_subscription_id
     subscription_created = any(
         item["subscription_created"]
         for item in subscriptions
     )
-
-    creds = _decode_store_credentials(store)
     now = datetime.utcnow().isoformat()
+    registration_status = "SUCCESS" if listing_subscription["ok"] else "PARTIAL"
 
     creds.update({
-        "ebay_notification_registration_status": "SUCCESS",
-        "ebay_notification_registration_error": None,
+        "ebay_notification_registration_status": registration_status,
+        "ebay_notification_registration_error": listing_subscription.get("error"),
         "ebay_notification_endpoint": endpoint,
         "ebay_notification_destination_id": destination_id,
         "ebay_notification_destination_name": destination_name,
@@ -408,8 +460,13 @@ def ensure_ebay_order_notification_registration(
         "ebay_notification_order_topic_id": ORDER_TOPIC_ID,
         "ebay_notification_order_subscription_id": subscription_id,
         "ebay_notification_order_subscription_status": "ENABLED",
+        "ebay_notification_listing_topic_id": LISTING_TOPIC_ID,
+        "ebay_notification_listing_subscription_id": listing_subscription.get("subscription_id"),
+        "ebay_notification_listing_subscription_status": listing_subscription["status"],
+        "ebay_notification_listing_subscription_error": listing_subscription.get("error"),
         "ebay_notification_subscriptions": subscriptions,
-        "ebay_notification_schema_version": DEFAULT_SCHEMA_VERSION,
+        "ebay_notification_schema_version": TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
+        "ebay_notification_topic_schema_versions": TOPIC_SCHEMA_VERSIONS,
         "ebay_notification_registered_at": now,
     })
 
@@ -426,4 +483,6 @@ def ensure_ebay_order_notification_registration(
         "topic_id": ORDER_TOPIC_ID,
         "endpoint": endpoint,
         "schema_version": DEFAULT_SCHEMA_VERSION,
+        "listing_subscription": listing_subscription,
+        "registration_status": registration_status,
     }

@@ -23,6 +23,7 @@ from app import db
 from models import Store, MarketplaceListing, Warehouse, WarehouseStock, SyncLog, SystemConfig
 from services.runtime_status_writer import set_store_runtime_status
 from services.governed_listing_refresh import ensure_permanent_original_group
+from services.governed_ebay_oauth_scopes import governed_ebay_refresh_scopes
 
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -63,12 +64,7 @@ def _refresh_access_token_if_needed(store: Store, creds: dict[str, Any]) -> dict
         return creds
 
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    scopes = os.getenv("EBAY_SCOPES") or (
-        "https://api.ebay.com/oauth/api_scope "
-        "https://api.ebay.com/oauth/api_scope/sell.inventory "
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account"
-    )
+    scopes = governed_ebay_refresh_scopes(creds)
 
     resp = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
@@ -94,6 +90,8 @@ def _refresh_access_token_if_needed(store: Store, creds: dict[str, Any]) -> dict
             datetime.utcnow() + timedelta(seconds=int(payload.get("expires_in", 7200)))
         ).isoformat(),
         "oauth_source": "governed_ebay_inventory_import_refresh",
+        "oauth_requested_scope": scopes,
+        "oauth_granted_scope": payload.get("scope") or creds.get("oauth_granted_scope"),
     })
     store.api_key = json.dumps(creds)
     db.session.add(store)

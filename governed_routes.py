@@ -4610,14 +4610,9 @@ def governed_ebay_oauth_authorize():
 
     client_id = os.getenv("EBAY_CLIENT_ID")
     runame = os.getenv("EBAY_RUNAME")
-    scopes = os.getenv("EBAY_SCOPES") or (
-        "https://api.ebay.com/oauth/api_scope "
-        "https://api.ebay.com/oauth/api_scope/sell.inventory "
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account "
-        "https://api.ebay.com/oauth/api_scope/"
-        "commerce.notification.subscription"
-    )
+    from services.governed_ebay_oauth_scopes import governed_ebay_oauth_scopes
+
+    scopes = governed_ebay_oauth_scopes()
 
     if not client_id or not runame:
         return jsonify({
@@ -4707,6 +4702,9 @@ def governed_ebay_oauth_callback():
         }), 200
 
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    from services.governed_ebay_oauth_scopes import governed_ebay_oauth_scopes
+
+    scopes = governed_ebay_oauth_scopes()
 
     resp = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
@@ -4769,6 +4767,10 @@ def governed_ebay_oauth_callback():
         "runame": runame,
         "sandbox": False,
         "oauth_source": "governed_ebay_oauth_callback",
+        "oauth_requested_scope": scopes,
+        "oauth_granted_scope": token.get("scope") or scopes,
+        "ebay_notification_listing_subscription_status": "PENDING",
+        "ebay_notification_listing_subscription_error": None,
         "connected_at": now.isoformat(),
     })
 
@@ -4876,14 +4878,9 @@ def governed_ebay_oauth_refresh_token():
         }), 200
 
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    scopes = os.getenv("EBAY_SCOPES") or (
-        "https://api.ebay.com/oauth/api_scope "
-        "https://api.ebay.com/oauth/api_scope/sell.inventory "
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-        "https://api.ebay.com/oauth/api_scope/sell.account "
-        "https://api.ebay.com/oauth/api_scope/"
-        "commerce.notification.subscription"
-    )
+    from services.governed_ebay_oauth_scopes import governed_ebay_refresh_scopes
+
+    scopes = governed_ebay_refresh_scopes(creds)
 
     resp = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
@@ -4920,6 +4917,8 @@ def governed_ebay_oauth_refresh_token():
         "token_type": token.get("token_type"),
         "access_token_expires_at": (now + timedelta(seconds=int(token.get("expires_in", 7200)))).isoformat(),
         "oauth_source": "governed_ebay_refresh_token",
+        "oauth_requested_scope": scopes,
+        "oauth_granted_scope": token.get("scope") or creds.get("oauth_granted_scope"),
         "refreshed_at": now.isoformat(),
         "sandbox": False,
     })

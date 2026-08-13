@@ -81,12 +81,9 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                 )
 
             basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-            scopes = os.getenv("EBAY_SCOPES") or (
-                "https://api.ebay.com/oauth/api_scope "
-                "https://api.ebay.com/oauth/api_scope/sell.inventory "
-                "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
-                "https://api.ebay.com/oauth/api_scope/sell.account"
-            )
+            from services.governed_ebay_oauth_scopes import governed_ebay_refresh_scopes
+
+            scopes = governed_ebay_refresh_scopes(creds)
 
             refresh_response = requests.post(
                 "https://api.ebay.com/identity/v1/oauth2/token",
@@ -127,6 +124,11 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                     now + timedelta(seconds=int(refresh_payload.get("expires_in", 7200)))
                 ).isoformat(),
                 "oauth_source": "governed_ebay_adapter_refresh_before_push",
+                "oauth_requested_scope": scopes,
+                "oauth_granted_scope": (
+                    refresh_payload.get("scope")
+                    or creds.get("oauth_granted_scope")
+                ),
                 "refreshed_at": now.isoformat(),
                 "sandbox": False,
             })
