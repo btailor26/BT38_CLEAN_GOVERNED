@@ -8,20 +8,19 @@ def source():
     return SESSION.read_text(encoding="utf-8")
 
 
-def test_full_product_linking_snapshot_is_limited_to_once_per_24_hours():
+def test_full_product_linking_snapshot_is_bootstrapped_once_then_event_driven():
     code = source()
-    assert "const CACHE_TTL_MS = 24 * 60 * 60 * 1000" in code
-    assert "snapshotIsFresh" in code
-    assert "fetchFullSnapshotOnceDaily" in code
-    assert 'navigator.locks.request("bt38-product-linking-daily-snapshot"' in code
-    assert "if (snapshotIsFresh(cached)) applySnapshot(cached)" in code
+    assert "snapshotExists" in code
+    assert "fetchInitialSnapshotOnce" in code
+    assert 'navigator.locks.request("bt38-product-linking-initial-snapshot"' in code
+    assert "if (snapshotExists(cached)) applySnapshot(cached)" in code
 
 
 def test_daily_snapshot_is_persisted_in_indexeddb_not_session_only_memory():
     code = source()
     assert 'const CACHE_DB_NAME = "bt38-browser-cache"' in code
     assert 'const CACHE_STORE_NAME = "snapshots"' in code
-    assert 'const CACHE_KEY = "product-linking-v3"' in code
+    assert 'const CACHE_KEY = "product-linking-session-v6"' in code
     assert "window.indexedDB.open" in code
     assert "writeSnapshot" in code
     assert "readSnapshot" in code

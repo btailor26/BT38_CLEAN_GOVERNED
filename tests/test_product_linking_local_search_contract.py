@@ -20,14 +20,14 @@ def test_shared_controller_explicitly_skips_product_linking():
     assert "wireAsyncProductLinking" not in source
 
 
-def test_product_linking_session_loads_full_working_set_only_once_daily():
+def test_product_linking_session_loads_full_working_set_once_then_uses_events():
     source = _source(SESSION_CONTROLLER)
 
     assert "FULL_DATASET_LIMIT = 5000" in source
-    assert "CACHE_TTL_MS = 24 * 60 * 60 * 1000" in source
     assert 'fetch(`/governed/product-linking/data?' in source
-    assert "fetchFullSnapshotOnceDaily" in source
-    assert "snapshotIsFresh" in source
+    assert "fetchInitialSnapshotOnce" in source
+    assert "snapshotExists" in source
+    assert "CACHE_TTL_MS" not in source
     assert "if (state.hydrating) return state.hydrating" in source
 
 
@@ -56,7 +56,7 @@ def test_mutations_remain_governed_and_refresh_only_affected_record():
     source = _source(SESSION_CONTROLLER)
 
     assert 'fetch("/governed/product-linking/link-listing-to-warehouse"' in source
-    assert "await refreshAffectedRecord({ listingId, warehouseId, listingSku, warehouseSku })" in source
+    assert "await applyMutationContract(data, {" in source
     assert "TARGETED_DATASET_LIMIT = 25" in source
     assert "await hydrate(true)" not in source
-    assert "mappingExists(listingId, warehouseId)" in source
+    assert "mappingExists(listingId, warehouseId, data.group_id)" in source

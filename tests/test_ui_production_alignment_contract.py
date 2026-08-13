@@ -35,8 +35,7 @@ def test_product_linking_session_persists_until_an_exact_change_then_paginates_l
     assert "window.indexedDB.open" in source
     assert "state.filtered = state.products.filter" in source
     assert "state.filtered.slice(start, start + state.perPage)" in source
-    assert "state.perPage: 25" not in source
-    assert "perPage: 25" in source
+    assert "perPage: 15" in source
 
 
 def test_product_linking_changes_merge_only_affected_server_state():

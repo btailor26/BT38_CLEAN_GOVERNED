@@ -1,7 +1,6 @@
 // Product Linking browser-session controller.
-// The visible table is server-paged. Landing loads only the visible page and
-// committed events query only their exact affected identities. Idle groups are
-// never hydrated just because Product Linking is open.
+// One governed snapshot is bootstrapped once and then kept aligned by exact
+// affected-record deltas. Search, filters and pagination remain browser-local.
 (function () {
   "use strict";
 
@@ -10,10 +9,10 @@
 
   const CACHE_DB_NAME = "bt38-browser-cache";
   const CACHE_STORE_NAME = "snapshots";
-  const CACHE_KEY = "product-linking-recent-v5";
+  const CACHE_KEY = "product-linking-session-v6";
+  const FULL_DATASET_LIMIT = 5000;
   const TARGETED_DATASET_LIMIT = 25;
   const PAGE_SIZES = [15, 25, 50, 100];
-  const LIVE_SEARCH_DEBOUNCE_MS = 350;
 
   const state = {
     hydrated: false,
@@ -21,18 +20,13 @@
     products: [],
     unlinked: [],
     listings: [],
+    fullLoadedAt: 0,
     page: 1,
     perPage: 15,
-    total: 0,
-    totalPages: 1,
     filtered: [],
-    activeSearch: "",
     pushSettingsLoaded: false,
     pushSettings: { config: {}, stores: [] }
   };
-
-  let liveSearchTimer = null;
-  let lastLiveSearch = null;
 
   function uniqueById(items) {
     const seen = new Map();
@@ -85,18 +79,10 @@
   async function fetchPushSettingsState() {
     if (state.pushSettingsLoaded) return state.pushSettings;
     try {
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 5000);
-      let response;
-      try {
-        response = await fetch("/governed/settings/state", {
-          credentials: "same-origin",
-          cache: "no-store",
-          signal: controller.signal
-        });
-      } finally {
-        window.clearTimeout(timeout);
-      }
+      const response = await fetch("/governed/settings/state", {
+        credentials: "same-origin",
+        cache: "no-store"
+      });
       if (!response.ok) throw new Error(`Push settings state failed: HTTP ${response.status}`);
       const data = await response.json();
       if (!data || (!data.success && !data.ok)) throw new Error(data?.error || "Push settings state unavailable");
@@ -160,6 +146,19 @@
     });
   }
 
+  async function readSnapshot() {
+    try {
+      const database = await openCacheDatabase(); if (!database) return null;
+      return await new Promise((resolve, reject) => {
+        const transaction = database.transaction(CACHE_STORE_NAME, "readonly");
+        const request = transaction.objectStore(CACHE_STORE_NAME).get(CACHE_KEY);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error("Unable to read Product Linking cache"));
+        transaction.oncomplete = () => database.close();
+      });
+    } catch (error) { console.warn("[ProductLinkingSession] cache read unavailable", error); return null; }
+  }
+
   async function clearSnapshot() {
     try {
       const database = await openCacheDatabase(); if (!database) return;
@@ -170,10 +169,11 @@
         transaction.onerror = () => reject(transaction.error || new Error("Unable to clear Product Linking cache"));
       });
     } catch (error) { console.warn("[ProductLinkingSession] cache clear unavailable", error); }
+    state.fullLoadedAt = 0;
   }
 
   async function writeSnapshot() {
-    const snapshot = { page: state.page, perPage: state.perPage, total: state.total, totalPages: state.totalPages, activeSearch: state.activeSearch, products: state.products, unlinked: state.unlinked, listings: state.listings };
+    const snapshot = { fullLoadedAt: state.fullLoadedAt, products: state.products, unlinked: state.unlinked, listings: state.listings };
     try {
       const database = await openCacheDatabase(); if (!database) return;
       await new Promise((resolve, reject) => {
@@ -185,9 +185,13 @@
     } catch (error) { console.warn("[ProductLinkingSession] cache write unavailable", error); }
   }
 
-  async function fetchDataset(search, limit, page = 1) {
-    const rowLimit = Math.max(1, Math.min(Number.parseInt(limit || state.perPage, 10) || state.perPage, 100));
-    const params = new URLSearchParams({ page: String(Math.max(1, Number.parseInt(page, 10) || 1)), per_page: String(rowLimit), limit: String(rowLimit), search: String(search || "").trim(), platform: "all", store: "all", show_linked: "all", section: "all" });
+  function snapshotExists(snapshot) { return Boolean(snapshot && Array.isArray(snapshot.products) && Array.isArray(snapshot.unlinked) && Array.isArray(snapshot.listings)); }
+  function applySnapshot(snapshot) { state.products = uniqueById(snapshot?.products || []); state.unlinked = uniqueById(snapshot?.unlinked || []); state.listings = uniqueById(snapshot?.listings || []); state.fullLoadedAt = Number(snapshot?.fullLoadedAt || 0); state.hydrated = true; assignLegacyGlobals(); }
+
+  async function fetchDataset(search, limit) {
+    const targeted = Boolean(String(search || "").trim());
+    const rowLimit = targeted ? TARGETED_DATASET_LIMIT : (limit || FULL_DATASET_LIMIT);
+    const params = new URLSearchParams({ page: "1", per_page: String(rowLimit), limit: String(rowLimit), search: String(search || "").trim(), platform: "all", store: "all", show_linked: "all", section: "all" });
     const response = await fetch(`/governed/product-linking/data?${params.toString()}`, { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error(`Product Linking hydration failed: HTTP ${response.status}`);
     const data = await response.json();
@@ -195,34 +199,33 @@
     return data;
   }
 
-  function applyVisibleDataset(data, search, requestedPage) {
+  async function fetchFullSnapshot() {
+    const data = await fetchDataset("", FULL_DATASET_LIMIT);
     state.products = uniqueById(data.warehouse_products || []);
     state.unlinked = uniqueById(data.unlinked_listings || []);
     state.listings = uniqueById(data.all_marketplace_listings || data.listings || []);
-    state.page = Number.parseInt(data.page || requestedPage || 1, 10) || 1;
-    state.total = Number.parseInt(data.total_stock || state.products.length || 0, 10) || 0;
-    state.totalPages = Math.max(1, Number.parseInt(data.total_pages || 1, 10) || 1);
-    state.activeSearch = String(search || "").trim();
+    state.fullLoadedAt = Date.now();
     state.hydrated = true;
+    state.page = 1;
     assignLegacyGlobals();
+    await writeSnapshot();
   }
 
-  async function loadVisiblePage(page = 1, search = null) {
-    const requestedSearch = search == null ? getFilters().search : String(search || "").trim();
-    const data = await fetchDataset(requestedSearch, state.perPage, page);
-    applyVisibleDataset(data, requestedSearch, page);
-    render();
-    await writeSnapshot();
-    return data;
+  async function fetchInitialSnapshotOnce() {
+    const work = async () => { const latest = await readSnapshot(); if (snapshotExists(latest)) applySnapshot(latest); else await fetchFullSnapshot(); };
+    if (navigator.locks?.request) return navigator.locks.request("bt38-product-linking-initial-snapshot", { mode: "exclusive" }, work);
+    return work();
   }
 
   async function hydrate() {
+    if (state.hydrated) { render(); void fetchPushSettingsState().then(render); return; }
     if (state.hydrating) return state.hydrating;
     state.hydrating = (async () => {
       const loading = document.getElementById("warehouseLoadingState"), errorBox = document.getElementById("warehouseErrorState"), container = document.getElementById("warehouseDataContainer");
       if (loading) loading.classList.remove("d-none"); if (errorBox) errorBox.classList.add("d-none"); if (container) container.classList.add("d-none");
       try {
-        await loadVisiblePage(1, "");
+        const cached = await readSnapshot(); if (snapshotExists(cached)) applySnapshot(cached); else await fetchInitialSnapshotOnce();
+        render();
         if (loading) loading.classList.add("d-none");
         if (container) container.classList.remove("d-none");
         void fetchPushSettingsState().then(render);
@@ -240,17 +243,19 @@
     const changedProductIds = new Set(changedProducts.map(productIdentity).filter(Boolean));
     const listingIds = new Set(normaliseIds(affectedListingIds));
 
+    // Remove affected identities from stale cached rows first. Fresh rows from
+    // the governed targeted response are inserted last and remain authoritative.
     const remainingProducts = state.products
       .filter((product) => !changedProductIds.has(productIdentity(product)))
       .map((product) => {
         const listings = (product.listings || []).filter((listing) => !listingIds.has(listingIdentity(listing)));
         return { ...product, listings, linked_count: listings.length };
       });
-    state.products = changedProducts.concat(remainingProducts).slice(0, state.perPage);
+    state.products = remainingProducts.concat(changedProducts);
 
     const returnedUnlinked = uniqueById(data.unlinked_listings || []);
     returnedUnlinked.forEach((listing) => listingIds.add(listingIdentity(listing)));
-    state.unlinked = returnedUnlinked.concat(state.unlinked.filter((listing) => !listingIds.has(listingIdentity(listing)))).slice(0, TARGETED_DATASET_LIMIT);
+    state.unlinked = state.unlinked.filter((listing) => !listingIds.has(listingIdentity(listing))).concat(returnedUnlinked);
 
     const returnedListings = uniqueById(data.all_marketplace_listings || data.listings || []);
     returnedListings.forEach((listing) => listingIds.add(listingIdentity(listing)));
@@ -287,7 +292,7 @@
     const keys = mutationSearchKeys(contract, identity);
     if (!keys.length) throw new Error("Affected Product Linking rows could not be identified");
     for (const key of keys) {
-      const data = await fetchDataset(key, TARGETED_DATASET_LIMIT, 1);
+      const data = await fetchDataset(key, TARGETED_DATASET_LIMIT);
       mergeTargetedData(data, listingIds);
     }
     state.page = 1;
@@ -299,11 +304,13 @@
 
   function getFilters() {
     const form = document.getElementById("bt38ProductLinkingFilterForm"); if (!form) return { search: "", platform: "", store: "", showLinked: "all" };
-    return { search: String(form.querySelector('[name="search"]')?.value || "").trim(), platform: String(form.querySelector('[name="platform"]')?.value || "").trim().toLowerCase(), store: String(form.querySelector('[name="store"]')?.value || "").trim().toLowerCase(), showLinked: String(form.querySelector('[name="show_linked"]')?.value || "all").trim().toLowerCase() };
+    return { search: String(form.querySelector('[name="search"]')?.value || "").trim().toLowerCase(), platform: String(form.querySelector('[name="platform"]')?.value || "").trim().toLowerCase(), store: String(form.querySelector('[name="store"]')?.value || "").trim().toLowerCase(), showLinked: String(form.querySelector('[name="show_linked"]')?.value || "all").trim().toLowerCase() };
   }
 
   function productMatches(product, filters) {
     const listings = product.listings || [];
+    const haystack = [product.sku, product.name, product.group_name, product.barcode, product.master_product_group_id, ...listings.flatMap((listing) => [listing.external_sku, listing.sku, listing.title, listing.external_listing_id, listing.external_id, listing.asin, listing.fnsku, listing.platform, listing.store_name])].filter(Boolean).join(" ").toLowerCase();
+    if (filters.search && !haystack.includes(filters.search)) return false;
     if (filters.platform && filters.platform !== "all" && !listings.some((listing) => String(listing.platform || "").toLowerCase().includes(filters.platform))) return false;
     if (filters.store && filters.store !== "all" && !listings.some((listing) => String(listing.store_id || "").toLowerCase() === filters.store)) return false;
     const linkedCount = Number.parseInt(product.linked_count || listings.length || 0, 10);
@@ -316,11 +323,13 @@
     if (!state.hydrated || typeof renderWarehouseProducts !== "function") return;
     const filters = getFilters();
     state.filtered = state.products.filter((product) => productMatches(product, filters));
-    try { productLinkingPage = state.page; productLinkingPerPage = state.perPage; productLinkingPagination = { page: state.page, per_page: state.perPage, total_stock: state.total, total_pages: state.totalPages, has_prev: state.page > 1, has_next: state.page < state.totalPages, prev_page: Math.max(1, state.page - 1), next_page: Math.min(state.totalPages, state.page + 1) }; } catch (_) {}
-    renderWarehouseProducts(state.filtered);
-    renderRelationshipAndPushEvidence(state.filtered);
+    const totalPages = Math.max(1, Math.ceil(state.filtered.length / state.perPage)); state.page = Math.min(Math.max(state.page, 1), totalPages);
+    const start = (state.page - 1) * state.perPage, pageRows = state.filtered.slice(start, start + state.perPage);
+    try { productLinkingPage = state.page; productLinkingPerPage = state.perPage; productLinkingPagination = { page: state.page, per_page: state.perPage, total_stock: state.filtered.length, total_pages: totalPages, has_prev: state.page > 1, has_next: state.page < totalPages, prev_page: Math.max(1, state.page - 1), next_page: Math.min(totalPages, state.page + 1) }; } catch (_) {}
+    renderWarehouseProducts(pageRows);
+    renderRelationshipAndPushEvidence(pageRows);
     const count = document.getElementById("warehouseGroupsCount");
-    if (count) count.textContent = `${state.filtered.length} shown of ${state.total} matching warehouse groups`;
+    if (count) count.textContent = `${state.filtered.length} matching of ${state.products.length} warehouse groups`;
     if (typeof feather !== "undefined") feather.replace();
   }
 
@@ -338,25 +347,25 @@
   function closeOpenModals() { document.querySelectorAll(".modal.show").forEach((modal) => { const instance = window.bootstrap?.Modal?.getInstance(modal); if (instance) instance.hide(); }); }
 
   window.bt38ProductLinkingSetPage = function (page) {
-    const next = Math.max(1, Number.parseInt(page || 1, 10) || 1);
-    void loadVisiblePage(next).catch((error) => console.warn("[ProductLinkingSession] page load failed", error));
+    state.page = Math.max(1, Number.parseInt(page || 1, 10) || 1);
+    render();
     return false;
   };
   window.bt38ProductLinkingSetPageSize = function (size) {
     state.perPage = normalisePageSize(size);
     state.page = 1;
-    void loadVisiblePage(1).catch((error) => console.warn("[ProductLinkingSession] page-size load failed", error));
+    render();
     return false;
   };
   window.renderProductLinkingPagination = function () {
-    const total = state.total, totalPages = Math.max(1, state.totalPages); const start = total === 0 ? 0 : ((state.page - 1) * state.perPage) + 1; const end = Math.min(total, state.page * state.perPage);
+    const total = state.filtered.length, totalPages = Math.max(1, Math.ceil(total / state.perPage)); const start = total === 0 ? 0 : ((state.page - 1) * state.perPage) + 1; const end = Math.min(total, state.page * state.perPage);
     const options = PAGE_SIZES.map((size) => `<option value="${size}" ${state.perPage === size ? "selected" : ""}>${size}</option>`).join("");
     return `<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 border rounded p-2 mt-3 bg-light"><small class="text-muted">Showing ${start} to ${end} of ${total} warehouse products</small><div class="d-flex align-items-center gap-2"><label class="small text-muted mb-0" for="bt38ProductLinkingPageSize">Rows</label><select id="bt38ProductLinkingPageSize" class="form-select form-select-sm" style="width:auto" onchange="bt38ProductLinkingSetPageSize(this.value)">${options}</select><div class="btn-group btn-group-sm" role="group" aria-label="Product linking pagination"><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(1)">First</button><button type="button" class="btn btn-outline-secondary" ${state.page > 1 ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.max(1, state.page - 1)})">← Prev</button><button type="button" class="btn btn-primary" disabled>Page ${state.page} of ${totalPages}</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${Math.min(totalPages, state.page + 1)})">Next →</button><button type="button" class="btn btn-outline-secondary" ${state.page < totalPages ? "" : "disabled"} onclick="bt38ProductLinkingSetPage(${totalPages})">Last</button></div></div></div>`;
   };
   window.loadProductLinkingData = function () { return hydrate(); };
   window.bt38RefreshProductLinkingRecord = refreshAffectedRecord;
   window.bt38ApplyProductLinkingMutation = applyMutationContract;
-  window.bt38InvalidateProductLinkingSnapshot = async function () { state.hydrated = false; state.hydrating = null; state.pushSettingsLoaded = false; await clearSnapshot(); return hydrate(); };
+  window.bt38InvalidateProductLinkingSnapshot = async function () { state.fullLoadedAt = 0; state.hydrated = false; state.hydrating = null; state.pushSettingsLoaded = false; await clearSnapshot(); return hydrate(); };
 
   window.filterFlatListings = function () {
     const search = String(document.getElementById("modalListingSearch")?.value || "").trim().toLowerCase();
@@ -416,31 +425,11 @@
     const form = document.getElementById("bt38ProductLinkingFilterForm");
     if (form && !form.dataset.bt38SessionWired) {
       form.dataset.bt38SessionWired = "1";
-      const searchInput = form.querySelector('[name="search"]');
-      form.addEventListener("submit", (event) => {
-        event.preventDefault(); event.stopImmediatePropagation(); state.page = 1;
-        if (liveSearchTimer !== null) { window.clearTimeout(liveSearchTimer); liveSearchTimer = null; }
-        lastLiveSearch = String(searchInput?.value || "").trim();
-        void loadVisiblePage(1, lastLiveSearch).catch((error) => console.warn("[ProductLinkingSession] search failed", error));
-      }, true);
-      if (searchInput && !searchInput.dataset.bt38LiveSearchWired) {
-        searchInput.dataset.bt38LiveSearchWired = "1";
-        searchInput.addEventListener("input", () => {
-          const value = String(searchInput.value || "").trim();
-          if (liveSearchTimer !== null) window.clearTimeout(liveSearchTimer);
-          liveSearchTimer = window.setTimeout(() => {
-            liveSearchTimer = null;
-            if (value === lastLiveSearch) return;
-            lastLiveSearch = value;
-            state.page = 1;
-            void loadVisiblePage(1, value).catch((error) => console.warn("[ProductLinkingSession] live search failed", error));
-          }, LIVE_SEARCH_DEBOUNCE_MS);
-        });
-      }
-      form.querySelectorAll("select").forEach((field) => { field.addEventListener("change", (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.page = 1; render(); }, true); });
+      form.addEventListener("submit", (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.page = 1; render(); }, true);
+      form.querySelectorAll("input, select").forEach((field) => { field.addEventListener(field.tagName === "SELECT" ? "change" : "input", (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.page = 1; render(); }, true); });
     }
     const clear = form?.querySelector('a[href="/product-linking"]');
-    if (clear && !clear.dataset.bt38SessionWired) { clear.dataset.bt38SessionWired = "1"; clear.addEventListener("click", (event) => { event.preventDefault(); event.stopImmediatePropagation(); if (liveSearchTimer !== null) { window.clearTimeout(liveSearchTimer); liveSearchTimer = null; } lastLiveSearch = ""; form.reset(); state.page = 1; void loadVisiblePage(1, ""); }, true); }
+    if (clear && !clear.dataset.bt38SessionWired) { clear.dataset.bt38SessionWired = "1"; clear.addEventListener("click", (event) => { event.preventDefault(); event.stopImmediatePropagation(); form.reset(); state.page = 1; render(); }, true); }
 
     window.addEventListener("bt38-marketplace-event", (event) => {
       const detail = event?.detail || {};
