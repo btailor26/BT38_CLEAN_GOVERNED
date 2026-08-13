@@ -95,9 +95,10 @@ def test_fba_order_returns_before_warehouse_or_group_push():
     assert "stock_changed=False" in fba_section
 
 
-def test_existing_route_remains_fba_verification_authority():
+def test_existing_route_hands_fba_verification_to_memory_queue():
     assert "exact_fba_scope = bool(" in ROUTES_SOURCE
-    assert "immediate_fba_result = _verify_exact_fba(" in ROUTES_SOURCE
+    assert "immediate_fba_result = _verify_exact_fba(" not in ROUTES_SOURCE
+    assert "verification_queue_result = notify_governed_runtime_work(" in ROUTES_SOURCE
     assert 'source=f"webhook_{platform}_settlement_recheck"' in ROUTES_SOURCE
     assert "timedelta(seconds=90)" in ROUTES_SOURCE
 

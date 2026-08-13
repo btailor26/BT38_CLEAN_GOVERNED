@@ -339,8 +339,47 @@ def push_group_listings(
     )
     stock_by_id = {int(stock.id): stock for stock in warehouse_rows}
 
+    # FBA-led groups take their one shared quantity from the already-refreshed
+    # Amazon read-only cache. The decision and Warehouse handoff live here so
+    # webhook, Warehouse and Product Linking entry points use this same group
+    # service. No caller-supplied quantity is accepted.
+    fba_listing = next(
+        (listing for listing in listings if _is_fba_listing(listing)),
+        None,
+    )
+    fba_quantity = None
+    if fba_listing is not None:
+        confirmed_quantity = getattr(
+            fba_listing,
+            "last_marketplace_qty",
+            None,
+        )
+        if confirmed_quantity is None:
+            return _blocked(
+                "Confirmed FBA quantity is missing; group propagation stopped.",
+                group_id=group_id,
+                listing_id=int(fba_listing.id),
+                warehouse_stock_id=int(fba_listing.warehouse_stock_id),
+            )
+        try:
+            fba_quantity = max(0, int(confirmed_quantity))
+        except (TypeError, ValueError):
+            return _blocked(
+                "Confirmed FBA quantity is invalid; group propagation stopped.",
+                group_id=group_id,
+                listing_id=int(fba_listing.id),
+                warehouse_stock_id=int(fba_listing.warehouse_stock_id),
+            )
+
     authority_stock = None
-    if authority_warehouse_stock_id not in (None, ""):
+    if fba_listing is not None:
+        authority_stock = stock_by_id.get(
+            int(fba_listing.warehouse_stock_id)
+        )
+    if (
+        fba_listing is None
+        and authority_warehouse_stock_id not in (None, "")
+    ):
         try:
             authority_stock_id = int(authority_warehouse_stock_id)
         except (TypeError, ValueError):
@@ -385,7 +424,14 @@ def push_group_listings(
             warehouse_stock_id=authority_stock.id,
         )
 
-    target_quantity = int(getattr(authority_stock, "sellable_quantity", 0) or 0)
+    # One Warehouse row supplies one shared target quantity for normal groups;
+    # an FBA-led group uses the committed Amazon cache from that row's listing.
+    # Request body quantity does not override Warehouse truth.
+    target_quantity = (
+        int(fba_quantity)
+        if fba_quantity is not None
+        else int(getattr(authority_stock, "sellable_quantity", 0) or 0)
+    )
 
     # Synchronize every member Warehouse row to the same SELLABLE quantity.
     # Relationship identity is never changed here.
@@ -496,6 +542,7 @@ def push_group_listings(
         "warehouse_stock_id": int(authority_stock.id),
         "authority_warehouse_stock_id": int(authority_stock.id),
         "target_quantity": target_quantity,
+        "fba_read_only_authority_used": fba_quantity is not None,
         "dry_run": bool(dry_run),
         "warehouse_ids": warehouse_ids,
         "affected_group_ids": [group_id],

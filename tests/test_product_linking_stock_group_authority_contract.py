@@ -75,7 +75,7 @@ def test_product_linking_shortcut_delegates_to_single_group_push_service():
     assert "from services.governed_push_execution import push_group_listings" in block
     assert "return push_group_listings(" not in block  # adapter captures result for HTTP response
     assert "result = push_group_listings(" in block
-    assert "authority_warehouse_stock_id=requested_warehouse_stock_id" in block
+    assert "authority_warehouse_stock_id=requested_authority_stock_id" in block
     assert "submit_governed_marketplace_action" not in block
     assert "MarketplaceListing" not in block
     assert "WarehouseStock" not in block
@@ -84,7 +84,9 @@ def test_product_linking_shortcut_delegates_to_single_group_push_service():
 def test_shared_group_service_resolves_one_warehouse_quantity():
     block = _function_block(PUSH, "push_group_listings")
     assert "authority_warehouse_stock_id" in block
-    assert 'target_quantity = int(getattr(authority_stock, "sellable_quantity", 0) or 0)' in block
+    assert 'else int(getattr(authority_stock, "sellable_quantity", 0) or 0)' in block
+    assert "fba_quantity = max(0, int(confirmed_quantity))" in block
+    assert '"fba_read_only_authority_used": fba_quantity is not None' in block
     assert "stock.available_quantity = int(target_quantity + reserved + allocated)" in block
     assert '"target_quantity": target_quantity' in block
     assert '"one_shared_group_quantity": True' in block

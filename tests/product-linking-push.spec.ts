@@ -29,13 +29,15 @@ test('Product Linking shortcut posts group and permanent Warehouse identity', as
 test('manual shortcut delegates to the single governed group service', async () => {
   expect(propagation).toContain('from services.governed_push_execution import push_group_listings');
   expect(propagation).toContain('result = push_group_listings(');
-  expect(propagation).toContain('authority_warehouse_stock_id=requested_warehouse_stock_id');
+  expect(propagation).toContain('authority_warehouse_stock_id=requested_authority_stock_id');
   expect(propagation).not.toContain('submit_governed_marketplace_action');
 });
 
 test('shared group service resolves one Warehouse target quantity', async () => {
   expect(pushService).toContain('authority_warehouse_stock_id');
-  expect(pushService).toContain('target_quantity = int(getattr(authority_stock, "sellable_quantity", 0) or 0)');
+  expect(pushService).toContain('else int(getattr(authority_stock, "sellable_quantity", 0) or 0)');
+  expect(pushService).toContain('fba_quantity = max(0, int(confirmed_quantity))');
+  expect(pushService).toContain('"fba_read_only_authority_used": fba_quantity is not None');
   expect(pushService).toContain('stock.available_quantity = int(target_quantity + reserved + allocated)');
   expect(pushService).toContain('"one_shared_group_quantity": True');
 });

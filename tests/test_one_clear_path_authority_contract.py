@@ -13,7 +13,7 @@ def test_product_linking_group_push_is_only_a_warehouse_shortcut():
 
     assert "Thin adapter into the single governed group push service" in route_source
     assert "from services.governed_push_execution import push_group_listings" in route_source
-    assert "authority_warehouse_stock_id=requested_warehouse_stock_id" in route_source
+    assert "authority_warehouse_stock_id=requested_authority_stock_id" in route_source
     assert "quantity authority is resolved inside services.governed_push_execution" in route_source.lower()
 
     # The shortcut identifies relationship/Warehouse authority only. It must not
