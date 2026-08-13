@@ -1,23 +1,21 @@
 name: Governed Fly Deployment
 
 # HARD DEPLOYMENT RULE:
-# - The currently approved Fly production image must not be changed automatically.
-# - Git pushes, merges, branch updates, tests, audits, or alignment work must never
-#   replace the running Fly image by themselves.
-# - A Fly image change is allowed only when the operator explicitly launches this
-#   workflow manually and confirms the image change below.
-# - Rollback/image restoration must also be explicitly requested by the operator.
+# - GitHub is the only source of production application files.
+# - The operator's PC is never a source, build context, overlay, or deploy host.
+# - Fly builds remotely from the exact manually approved GitHub commit.
+# - Pushes, merges, tests, and audits never deploy automatically.
 # - This workflow does not merge branches.
 
 on:
   workflow_dispatch:
     inputs:
-      confirm_image_change:
-        description: 'Type DEPLOY_APPROVED_IMAGE to approve an allowlisted image'
+      confirm_production_deploy:
+        description: 'Type DEPLOY_GITHUB_COMMIT_TO_BT38_PROD'
         required: true
         type: string
-      approved_image:
-        description: 'Exact prebuilt registry.fly.io/bt38-prod image reference'
+      expected_commit:
+        description: 'Exact GitHub commit SHA approved for bt38-prod'
         required: true
         type: string
 
@@ -29,33 +27,26 @@ permissions:
   contents: read
 
 jobs:
-  image-change-guard:
+  source-deploy-guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Require explicit Fly image approval
+      - name: Require exact GitHub source approval
         shell: bash
         run: |
-          if [ "${{ inputs.confirm_image_change }}" != "DEPLOY_APPROVED_IMAGE" ]; then
-            echo "BLOCKED: running Fly image is locked."
-            echo "No image deployment is allowed without explicit operator approval."
+          if [ "${{ inputs.confirm_production_deploy }}" != "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD" ]; then
+            echo "BLOCKED: explicit GitHub-to-Fly production approval is missing."
             exit 1
           fi
 
-          bad_image="registry.fly.io/bt38-prod:deployment-01KZXDYATJ36WXW6CM4TTFEPWW"
-          proven_image="registry.fly.io/bt38-prod:deployment-01KZSFW970WXFP6JB8JWDGQ6W1"
-
-          if [ "${{ inputs.approved_image }}" = "$bad_image" ]; then
-            echo "BLOCKED: this image is permanently excluded from deployment."
-            exit 1
-          fi
-
-          if [ "${{ inputs.approved_image }}" != "$proven_image" ]; then
-            echo "BLOCKED: image is not on the current production allowlist."
+          if [ "${{ inputs.expected_commit }}" != "${{ github.sha }}" ]; then
+            echo "BLOCKED: selected workflow commit does not equal the approved commit."
+            echo "selected=${{ github.sha }}"
+            echo "approved=${{ inputs.expected_commit }}"
             exit 1
           fi
 
   audit:
-    needs: image-change-guard
+    needs: source-deploy-guard
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
@@ -85,6 +76,24 @@ jobs:
           grep -q 'uv sync --frozen --no-dev' Dockerfile
           grep -q 'main:app' Dockerfile
           grep -q 'app = "bt38-prod"' fly.toml
+
+      - name: Reject corrupt production source files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          bad = []
+          for path in Path('.').rglob('*'):
+              if not path.is_file() or '.git' in path.parts:
+                  continue
+              if path.suffix.lower() not in {'.py', '.html', '.js', '.toml', '.md'}:
+                  continue
+              if b'\0' in path.read_bytes():
+                  bad.append(str(path))
+          if bad:
+              raise SystemExit('Null bytes found in production source: ' + ', '.join(bad))
+          print('SOURCE_INTEGRITY_OK')
+          PY
 
       - name: Compile production runtime
         run: |
@@ -120,10 +129,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Checkout exact audited GitHub commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - name: Set up Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Deploy exact allowlisted Fly image
-        run: flyctl deploy --app bt38-prod --image "${{ inputs.approved_image }}"
+      - name: Deploy exact GitHub commit with Fly remote builder
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ inputs.expected_commit }}"
+          flyctl deploy \
+            --app bt38-prod \
+            --config fly.toml \
+            --remote-only \
+            --strategy rolling
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

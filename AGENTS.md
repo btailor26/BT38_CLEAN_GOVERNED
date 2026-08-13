@@ -10,6 +10,13 @@ Settings Control Center
 → Logging + Audit
 
 No deploy without approval.
+Production code and deployment context must come only from an exact GitHub
+commit. Never clone, copy, overlay, build, test, or deploy application files
+from an operator's PC. The operator's PC may open GitHub Actions and inspect
+Fly, but it is never a BT38 source or build machine.
+All production deployments must use the manually approved GitHub Actions
+workflow and Fly remote builder. Direct `fly deploy` from an operator PC is
+prohibited.
 No production secrets changed.
 No duplicate routes.
 No direct marketplace push/sync/import from pages long term.
