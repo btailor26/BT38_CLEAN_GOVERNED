@@ -1418,7 +1418,7 @@ def governed_ui_sales():
     import, sync, push, group, or alter the existing page session.
     """
     from extensions import db
-    from models import MarketplaceOrder, Store
+    from models import MarketplaceListing, MarketplaceOrder, Store
 
     try:
         limit = int(request.args.get("limit") or 20)
@@ -1431,6 +1431,21 @@ def governed_ui_sales():
             MarketplaceOrder.id,
             MarketplaceOrder.marketplace_order_id,
             MarketplaceOrder.sku,
+            (
+                db.session.query(MarketplaceListing.title)
+                .filter(
+                    MarketplaceListing.store_id == MarketplaceOrder.store_id,
+                    MarketplaceListing.external_sku == MarketplaceOrder.sku,
+                    MarketplaceListing.is_active == True,  # noqa: E712
+                    ~MarketplaceListing.title.ilike("Amazon SKU%"),
+                )
+                .order_by(
+                    MarketplaceListing.updated_at.desc(),
+                    MarketplaceListing.id.desc(),
+                )
+                .limit(1)
+                .scalar_subquery()
+            ).label("title"),
             MarketplaceOrder.quantity,
             MarketplaceOrder.status,
             MarketplaceOrder.fulfillment_type,
@@ -1450,7 +1465,9 @@ def governed_ui_sales():
             "log_type": "marketplace_sale",
             "message": (
                 f"{row.platform or row.store_name or 'Marketplace'} sale "
-                f"{row.marketplace_order_id}: {row.sku} x{int(row.quantity or 0)}"
+                f"{row.marketplace_order_id}: "
+                f"{row.title or 'Product title unavailable'} "
+                f"x{int(row.quantity or 0)}"
             ),
             "marketplace_order_id": row.marketplace_order_id,
             "sku": row.sku,
