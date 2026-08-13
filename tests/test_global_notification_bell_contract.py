@@ -19,6 +19,8 @@ def test_bell_reads_sales_only_on_open_without_polling_or_starting_work():
     assert '@governed_bp.get("/governed/ui/sales")' in ROUTES
     assert '"source": "MarketplaceOrder"' in ROUTES
     assert 'MarketplaceOrder.created_at.desc()' in ROUTES
+    assert "row.platform or row.store_name or 'Marketplace'" in ROUTES
+    assert 'record.platform || "Marketplace"' in BASE
     assert 'method: "GET"' in BASE
     assert "setInterval" not in BASE
     assert "void loadNotifications();" not in BASE

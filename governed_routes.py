@@ -1449,7 +1449,7 @@ def governed_ui_sales():
             "id": f"marketplace_order:{row.id}",
             "log_type": "marketplace_sale",
             "message": (
-                f"{row.store_name or row.platform or 'Marketplace'} sale "
+                f"{row.platform or row.store_name or 'Marketplace'} sale "
                 f"{row.marketplace_order_id}: {row.sku} x{int(row.quantity or 0)}"
             ),
             "marketplace_order_id": row.marketplace_order_id,
