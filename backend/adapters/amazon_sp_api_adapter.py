@@ -178,6 +178,16 @@ class AmazonSPAPIAdapter:
             if fulfillable is None:
                 fulfillable = row.get("totalQuantity") or 0
 
+            inbound_working = quantity_value(
+                inventory_details.get("inboundWorkingQuantity")
+            )
+            inbound_shipped = quantity_value(
+                inventory_details.get("inboundShippedQuantity")
+            )
+            inbound_receiving = quantity_value(
+                inventory_details.get("inboundReceivingQuantity")
+            )
+
             normalized.append({
                 "seller_sku": row.get("sellerSku"),
                 "asin": row.get("asin"),
@@ -188,12 +198,21 @@ class AmazonSPAPIAdapter:
                     inventory_details.get("reservedQuantity"),
                     "totalReservedQuantity",
                 ),
-                "inbound_quantity": quantity_value(
-                    inventory_details.get("inboundWorkingQuantity")
-                ) + quantity_value(
-                    inventory_details.get("inboundShippedQuantity")
-                ) + quantity_value(
-                    inventory_details.get("inboundReceivingQuantity")
+                "inbound_quantity": (
+                    inbound_working
+                    + inbound_shipped
+                    + inbound_receiving
+                ),
+                "inbound_working": inbound_working,
+                "inbound_shipped": inbound_shipped,
+                "inbound_receiving": inbound_receiving,
+                "unfulfillable_quantity": quantity_value(
+                    inventory_details.get("unfulfillableQuantity"),
+                    "totalUnfulfillableQuantity",
+                ),
+                "researching_quantity": quantity_value(
+                    inventory_details.get("researchingQuantity"),
+                    "totalResearchingQuantity",
                 ),
                 "fulfillment_channel": row.get("fulfillmentChannel") or row.get("fulfillment_channel"),
                 "title": row.get("productName") or row.get("title"),
