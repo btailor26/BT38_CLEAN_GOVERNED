@@ -3,11 +3,7 @@
 {% block title %}Amazon FBA Stock - Read Only{% endblock %}
 
 {% block content %}
-<div class="row"
-     data-bt38-page="fbaInventory"
-     data-bt38-filter-form="#bt38FbaSearchForm"
-     data-bt38-table=".bt38-fba-table"
-     data-bt38-submit-name="bt38FbaLocalSubmit">
+<div class="row">
     <div class="col-12">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <div>
@@ -116,9 +112,7 @@
     <div class="col-12">
         <div class="card">
             <div class="card-body py-3">
-                <form method="GET"
-                      action="{{ url_for('governed.amazon_fba_stock') }}"
-                      id="bt38FbaSearchForm">
+                <form method="GET" action="{{ url_for('governed.amazon_fba_stock') }}">
                     <div class="row align-items-end g-3">
                         <div class="col-md-8">
                             <label for="search" class="form-label small text-muted mb-1">
@@ -204,7 +198,7 @@
             <div class="card-body p-0">
                 {% if fba_items.items %}
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0 bt38-fba-table">
+                    <table class="table table-hover mb-0">
                         <thead class="table-light">
                             <tr>
                                 <th>SKU</th>
@@ -463,8 +457,6 @@ async function submitReturn() {
 }
 </script>
 
-<script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
-<script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=fba-table-search-alignment"></script>
 {% endblock %}
 
 
