@@ -37,7 +37,7 @@ def _normalise_event_row(payload):
     payload = dict(payload or {})
     details = payload.get("inventoryDetails") or payload.get("inventory_details") or {}
 
-    def _qty(*keys, nested_key=None):
+    def _qty(*keys):
         for key in keys:
             value = payload.get(key)
             if value is None:
@@ -45,54 +45,9 @@ def _normalise_event_row(payload):
             if value is None:
                 continue
             if isinstance(value, dict):
-                value = value.get(nested_key) if nested_key else 0
+                value = value.get("totalReservedQuantity") or 0
             return int(value or 0)
         return 0
-
-    def _optional_qty(*keys, nested_key=None):
-        for key in keys:
-            value = payload.get(key)
-            if value is None:
-                value = details.get(key)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                value = value.get(nested_key) if nested_key else None
-            if value is None:
-                return None
-            return int(value or 0)
-        return None
-
-    inbound_working = _optional_qty(
-        "inbound_working",
-        "inboundWorkingQuantity",
-    )
-    inbound_shipped = _optional_qty(
-        "inbound_shipped",
-        "inboundShippedQuantity",
-    )
-    inbound_receiving = _optional_qty(
-        "inbound_receiving",
-        "inboundReceivingQuantity",
-    )
-
-    inbound_total = payload.get("inbound_quantity")
-    if inbound_total is None and any(
-        value is not None
-        for value in (
-            inbound_working,
-            inbound_shipped,
-            inbound_receiving,
-        )
-    ):
-        inbound_total = sum(
-            value or 0
-            for value in (
-                inbound_working,
-                inbound_shipped,
-                inbound_receiving,
-            )
-        )
 
     return {
         "seller_sku": payload.get("seller_sku") or payload.get("sellerSku") or payload.get("sku"),
@@ -103,34 +58,9 @@ def _normalise_event_row(payload):
             or payload.get("fulfillmentChannel")
             or "AFN"
         ),
-        "available_quantity": _qty(
-            "available_quantity",
-            "fulfillableQuantity",
-            "totalQuantity",
-        ),
-        "reserved_quantity": _qty(
-            "reserved_quantity",
-            "reservedQuantity",
-            nested_key="totalReservedQuantity",
-        ),
-        "inbound_quantity": (
-            int(inbound_total)
-            if inbound_total is not None
-            else 0
-        ),
-        "inbound_working": inbound_working,
-        "inbound_shipped": inbound_shipped,
-        "inbound_receiving": inbound_receiving,
-        "unfulfillable_quantity": _optional_qty(
-            "unfulfillable_quantity",
-            "unfulfillableQuantity",
-            nested_key="totalUnfulfillableQuantity",
-        ),
-        "researching_quantity": _optional_qty(
-            "researching_quantity",
-            "researchingQuantity",
-            nested_key="totalResearchingQuantity",
-        ),
+        "available_quantity": _qty("available_quantity", "fulfillableQuantity", "totalQuantity"),
+        "reserved_quantity": _qty("reserved_quantity", "reservedQuantity"),
+        "inbound_quantity": _qty("inbound_quantity"),
     }
 
 
@@ -173,21 +103,7 @@ def _same_value(obj, field, expected):
     return current == expected
 
 
-def _inventory_unchanged(
-    inv,
-    *,
-    store_id,
-    asin,
-    fnsku,
-    qty,
-    reserved,
-    inbound,
-    inbound_working,
-    inbound_shipped,
-    inbound_receiving,
-    unfulfillable,
-    researching,
-):
+def _inventory_unchanged(inv, *, store_id, asin, fnsku, qty, reserved, inbound):
     if inv is None:
         return False
     checks = [
@@ -195,11 +111,6 @@ def _inventory_unchanged(
         _same_value(inv, "available_quantity", qty),
         _same_value(inv, "reserved_quantity", reserved),
         _same_value(inv, "inbound_quantity", inbound),
-        _same_value(inv, "inbound_working", inbound_working),
-        _same_value(inv, "inbound_shipped", inbound_shipped),
-        _same_value(inv, "inbound_receiving", inbound_receiving),
-        _same_value(inv, "unfulfillable_quantity", unfulfillable),
-        _same_value(inv, "researching_quantity", researching),
         _same_value(inv, "asin", asin or None),
         _same_value(inv, "fnsku", fnsku or None),
         _same_value(inv, "is_archived", False),
@@ -252,44 +163,12 @@ def _apply_inventory_row(store, raw_row):
     reserved = int(row.get("reserved_quantity") or 0)
     inbound = int(row.get("inbound_quantity") or 0)
 
-    inbound_working_raw = row.get("inbound_working")
-    inbound_shipped_raw = row.get("inbound_shipped")
-    inbound_receiving_raw = row.get("inbound_receiving")
-    unfulfillable_raw = row.get("unfulfillable_quantity")
-    researching_raw = row.get("researching_quantity")
-
     inv_query = db.session.query(AmazonFBAInventory).filter(
         AmazonFBAInventory.seller_sku == sku
     )
     if hasattr(AmazonFBAInventory, "store_id"):
         inv_query = inv_query.filter(AmazonFBAInventory.store_id == store.id)
     inv = inv_query.first()
-
-    inbound_working = (
-        int(inbound_working_raw)
-        if inbound_working_raw is not None
-        else int(getattr(inv, "inbound_working", 0) or 0)
-    )
-    inbound_shipped = (
-        int(inbound_shipped_raw)
-        if inbound_shipped_raw is not None
-        else int(getattr(inv, "inbound_shipped", 0) or 0)
-    )
-    inbound_receiving = (
-        int(inbound_receiving_raw)
-        if inbound_receiving_raw is not None
-        else int(getattr(inv, "inbound_receiving", 0) or 0)
-    )
-    unfulfillable = (
-        int(unfulfillable_raw)
-        if unfulfillable_raw is not None
-        else int(getattr(inv, "unfulfillable_quantity", 0) or 0)
-    )
-    researching = (
-        int(researching_raw)
-        if researching_raw is not None
-        else int(getattr(inv, "researching_quantity", 0) or 0)
-    )
 
     listing = _find_existing_listing(store, sku=sku, asin=asin, fnsku=fnsku)
     current_group_id, propagation_warehouse_stock_id, linked_warehouse_stock_id = (
@@ -304,11 +183,6 @@ def _apply_inventory_row(store, raw_row):
         qty=qty,
         reserved=reserved,
         inbound=inbound,
-        inbound_working=inbound_working,
-        inbound_shipped=inbound_shipped,
-        inbound_receiving=inbound_receiving,
-        unfulfillable=unfulfillable,
-        researching=researching,
     ) and _listing_cache_unchanged(listing, asin=asin, fnsku=fnsku, qty=qty):
         return {
             "updated": False,
@@ -339,11 +213,6 @@ def _apply_inventory_row(store, raw_row):
     inv.available_quantity = qty
     inv.reserved_quantity = reserved
     inv.inbound_quantity = inbound
-    inv.inbound_working = inbound_working
-    inv.inbound_shipped = inbound_shipped
-    inv.inbound_receiving = inbound_receiving
-    inv.unfulfillable_quantity = unfulfillable
-    inv.researching_quantity = researching
     inv.asin = asin or None
     inv.fnsku = fnsku or None
     inv.is_archived = False
