@@ -462,10 +462,7 @@ async function submitReturn() {
     }
 }
 </script>
-{% endblock %}
 
-{% block scripts %}
-{{ super() }}
 <script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
 <script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=fba-table-search-alignment"></script>
 {% endblock %}
