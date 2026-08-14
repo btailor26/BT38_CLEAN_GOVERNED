@@ -67,7 +67,7 @@ def test_runtime_wake_signal_is_cleared_before_future_due_wait():
 def test_fba_startup_recovery_is_bounded_and_exact():
     body = _function_source("_recover_fba_verification_events")
 
-    assert "timedelta(hours=2)" in body
+    assert "timedelta(hours=24)" in body
     assert "LIMIT 250" in body
     assert "amazon_fba_inventory" in body
     assert "marketplace_orders" in body

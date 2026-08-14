@@ -1155,7 +1155,7 @@ def _recover_fba_verification_events(app) -> dict:
     from sqlalchemy import text
 
     now = datetime.utcnow()
-    recovery_since = now - timedelta(hours=2)
+    recovery_since = now - timedelta(hours=24)
 
     with app.app_context():
         rows = (
@@ -1277,7 +1277,7 @@ def _recover_fba_verification_events(app) -> dict:
         "success": True,
         "governed": True,
         "bounded": True,
-        "recovery_hours": 2,
+        "recovery_hours": 24,
         "rows_examined_max": 250,
         "rows_examined": len(rows),
         "settlement_queued": settlement_queued,
