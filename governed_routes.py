@@ -2523,6 +2523,14 @@ def governed_product_linking_data_compat():
     if search:
         like = f"%{search}%"
 
+        # Mutation events already tell Product Linking the exact affected
+        # listing / Warehouse / group IDs. Numeric searches must therefore
+        # resolve those relationship identities as well as text fields.
+        try:
+            relationship_identity_id = int(search)
+        except (TypeError, ValueError):
+            relationship_identity_id = None
+
         matching_listing_stock_ids = [
             row[0]
             for row in (
@@ -2539,6 +2547,21 @@ def governed_product_linking_data_compat():
                     MarketplaceListing.parent_item_id.ilike(like),
                     MarketplaceListing.external_parent_id.ilike(like),
                     MarketplaceListing.variation_sku_map.ilike(like),
+                    (
+                        MarketplaceListing.id == relationship_identity_id
+                        if relationship_identity_id is not None
+                        else False
+                    ),
+                    (
+                        MarketplaceListing.warehouse_stock_id == relationship_identity_id
+                        if relationship_identity_id is not None
+                        else False
+                    ),
+                    (
+                        MarketplaceListing.master_product_group_id == relationship_identity_id
+                        if relationship_identity_id is not None
+                        else False
+                    ),
                 ))
                 .distinct()
                 .all()
@@ -2554,7 +2577,15 @@ def governed_product_linking_data_compat():
         ]
 
         if matching_listing_stock_ids:
-            stock_search_clauses.append(WarehouseStock.id.in_(matching_listing_stock_ids))
+            stock_search_clauses.append(
+                WarehouseStock.id.in_(matching_listing_stock_ids)
+            )
+
+        if relationship_identity_id is not None:
+            stock_search_clauses.extend([
+                WarehouseStock.id == relationship_identity_id,
+                WarehouseStock.master_product_group_id == relationship_identity_id,
+            ])
 
         stock_query = stock_query.filter(or_(*stock_search_clauses))
 
@@ -2568,6 +2599,21 @@ def governed_product_linking_data_compat():
             MarketplaceListing.parent_item_id.ilike(like),
             MarketplaceListing.external_parent_id.ilike(like),
             MarketplaceListing.variation_sku_map.ilike(like),
+            (
+                MarketplaceListing.id == relationship_identity_id
+                if relationship_identity_id is not None
+                else False
+            ),
+            (
+                MarketplaceListing.warehouse_stock_id == relationship_identity_id
+                if relationship_identity_id is not None
+                else False
+            ),
+            (
+                MarketplaceListing.master_product_group_id == relationship_identity_id
+                if relationship_identity_id is not None
+                else False
+            ),
         ))
 
     total_stock = stock_query.count()
@@ -3101,29 +3147,71 @@ def governed_product_linking_revision():
     from models import MarketplaceListing, WarehouseStock
     from sqlalchemy import func
 
-    stock_count, stock_updated = (
+    stock_count, stock_updated, stock_group_fingerprint = (
         db.session.query(
             func.count(WarehouseStock.id),
             func.max(WarehouseStock.updated_at),
+            func.coalesce(
+                func.sum(
+                    WarehouseStock.id
+                    * func.coalesce(
+                        WarehouseStock.master_product_group_id,
+                        0,
+                    )
+                ),
+                0,
+            ),
         )
         .filter(WarehouseStock.is_active == True)  # noqa: E712
         .filter(WarehouseStock.is_deleted == False)  # noqa: E712
         .one()
     )
-    listing_count, listing_updated = (
+
+    (
+        listing_count,
+        listing_updated,
+        listing_group_fingerprint,
+        listing_stock_fingerprint,
+    ) = (
         db.session.query(
             func.count(MarketplaceListing.id),
             func.max(MarketplaceListing.updated_at),
+            func.coalesce(
+                func.sum(
+                    MarketplaceListing.id
+                    * func.coalesce(
+                        MarketplaceListing.master_product_group_id,
+                        0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    MarketplaceListing.id
+                    * func.coalesce(
+                        MarketplaceListing.warehouse_stock_id,
+                        0,
+                    )
+                ),
+                0,
+            ),
         )
         .filter(MarketplaceListing.is_active == True)  # noqa: E712
         .one()
     )
 
+    # One existing hydration-time revision check only.
+    # No timer and no polling. Relationship changes now invalidate stale
+    # Product Linking IndexedDB snapshots.
     revision = ":".join([
         str(int(stock_count or 0)),
         stock_updated.isoformat() if stock_updated else "none",
+        str(int(stock_group_fingerprint or 0)),
         str(int(listing_count or 0)),
         listing_updated.isoformat() if listing_updated else "none",
+        str(int(listing_group_fingerprint or 0)),
+        str(int(listing_stock_fingerprint or 0)),
     ])
     return jsonify({
         "success": True,

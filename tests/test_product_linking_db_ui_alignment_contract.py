@@ -71,3 +71,25 @@ def test_read_model_does_not_mutate_permanent_identity():
     assert "listing.warehouse_stock_id =" not in block
     assert "listing.master_product_group_id =" not in block
     assert "stock.master_product_group_id =" not in block
+
+def test_targeted_product_linking_search_understands_relationship_ids():
+    block = function_source("governed_product_linking_data_compat")
+
+    assert "relationship_identity_id = int(search)" in block
+    assert "MarketplaceListing.id == relationship_identity_id" in block
+    assert "MarketplaceListing.warehouse_stock_id == relationship_identity_id" in block
+    assert "MarketplaceListing.master_product_group_id == relationship_identity_id" in block
+    assert "WarehouseStock.id == relationship_identity_id" in block
+    assert "WarehouseStock.master_product_group_id == relationship_identity_id" in block
+
+
+def test_product_linking_revision_fingerprints_relationship_state():
+    block = function_source("governed_product_linking_revision")
+
+    assert "stock_group_fingerprint" in block
+    assert "listing_group_fingerprint" in block
+    assert "listing_stock_fingerprint" in block
+    assert "WarehouseStock.master_product_group_id" in block
+    assert "MarketplaceListing.master_product_group_id" in block
+    assert "MarketplaceListing.warehouse_stock_id" in block
+
