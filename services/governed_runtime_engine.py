@@ -49,8 +49,8 @@ LIGHT_RECONCILE_SECONDS = 15 * 60
 _pending_notification_event = threading.Event()
 
 # The historical DB runtime-job path remains retired. Exact events stay in the
-# single governed process; bounded startup recovery reconstructs only MCF work
-# that must survive a deployment/restart.
+# single governed process; bounded startup recovery reconstructs only exact
+# MCF/FBA work that must survive a deployment/restart.
 DURABLE_RUNTIME_JOB_PATH_ENABLED = False
 _stop_event = threading.Event()
 _pending_events = deque()
@@ -1148,6 +1148,148 @@ def _poll_amazon_sqs_once(
     }
 
 
+
+def _recover_fba_verification_events(app) -> dict:
+    """Recover only unsatisfied exact FBA event phases after restart."""
+    from extensions import db
+    from sqlalchemy import text
+
+    now = datetime.utcnow()
+    recovery_since = now - timedelta(hours=2)
+
+    with app.app_context():
+        rows = (
+            db.session.execute(
+                text(
+                    """
+                    SELECT
+                        mo.id,
+                        mo.store_id,
+                        mo.marketplace_order_id,
+                        mo.sku,
+                        mo.warehouse_stock_id,
+                        COALESCE(
+                            mo.processed_at,
+                            mo.created_at
+                        ) AS event_at,
+                        fba.last_synced_at
+                    FROM marketplace_orders AS mo
+                    JOIN stores AS s
+                      ON s.id = mo.store_id
+                    LEFT JOIN amazon_fba_inventory AS fba
+                      ON fba.store_id = mo.store_id
+                     AND fba.seller_sku = mo.sku
+                    WHERE mo.created_at >= :recovery_since
+                      AND LOWER(COALESCE(s.platform, ''))
+                          LIKE '%amazon%'
+                      AND UPPER(COALESCE(
+                          mo.fulfillment_type, ''
+                      )) IN ('FBA', 'AFN', 'AMAZON')
+                      AND mo.sku IS NOT NULL
+                    ORDER BY
+                        mo.created_at ASC,
+                        mo.id ASC
+                    LIMIT 250
+                    """
+                ),
+                {"recovery_since": recovery_since},
+            )
+            .mappings()
+            .all()
+        )
+
+        seen = set()
+        settlement_queued = 0
+        light_queued = 0
+        already_satisfied = 0
+        duplicates_skipped = 0
+
+        for row in rows:
+            identity = (
+                row["store_id"],
+                row["marketplace_order_id"],
+                row["sku"],
+            )
+            if identity in seen:
+                duplicates_skipped += 1
+                continue
+            seen.add(identity)
+
+            event_at = row["event_at"]
+            if event_at is None:
+                continue
+
+            last_synced_at = row["last_synced_at"]
+            settlement_due = event_at + timedelta(seconds=90)
+            light_due = event_at + timedelta(
+                seconds=LIGHT_RECONCILE_SECONDS
+            )
+
+            base_event = {
+                "event_type": "order_change",
+                "marketplace": "amazon",
+                "store_id": row["store_id"],
+                "seller_sku": row["sku"],
+                "order_id": row["marketplace_order_id"],
+                "warehouse_stock_id": row[
+                    "warehouse_stock_id"
+                ],
+                "payload": {
+                    "fulfillment_type": "FBA",
+                    "startup_recovered": True,
+                },
+            }
+
+            # Recover the settlement phase only if DB truth proves
+            # no exact FBA refresh has satisfied its original deadline.
+            if (
+                last_synced_at is None
+                or last_synced_at < settlement_due
+            ):
+                settlement_event = dict(base_event)
+                settlement_event["verify_after"] = settlement_due
+                notify_governed_runtime_work(
+                    source="webhook_amazon_settlement_recheck",
+                    event=settlement_event,
+                )
+                settlement_queued += 1
+            else:
+                already_satisfied += 1
+
+            # Independently recover the normal 15-minute event phase.
+            # A refresh at or after its original deadline is sufficient
+            # proof, so deployment never creates duplicate verification.
+            if (
+                last_synced_at is None
+                or last_synced_at < light_due
+            ):
+                light_event = dict(base_event)
+                light_event["verify_after"] = light_due
+                notify_governed_runtime_work(
+                    source="webhook_amazon_15m_reconcile",
+                    event=light_event,
+                )
+                light_queued += 1
+            else:
+                already_satisfied += 1
+
+    return {
+        "success": True,
+        "governed": True,
+        "bounded": True,
+        "recovery_hours": 2,
+        "rows_examined_max": 250,
+        "rows_examined": len(rows),
+        "settlement_queued": settlement_queued,
+        "light_queued": light_queued,
+        "already_satisfied": already_satisfied,
+        "duplicates_skipped": duplicates_skipped,
+        "full_scan_started": False,
+        "marketplace_import_started": False,
+        "warehouse_scan_started": False,
+    }
+
+
 def _recover_mcf_auto_release_events(app) -> dict:
     """Rebuild only exact unfinished MCF lifecycle events after restart."""
     from models import MarketplaceOrder
@@ -1387,6 +1529,21 @@ def _engine_loop(app):
                 _run_full_sync_cycle()
         except Exception as exc:
             _safe_error("Startup marketplace hydration failed", exc)
+
+    # Deployment/restart recovery for exact Amazon FBA events runs after
+    # optional startup hydration. Fresh DB truth can therefore satisfy an
+    # overdue phase without creating a duplicate marketplace verification.
+    if runtime_database_enabled:
+        try:
+            recovery_result = _recover_fba_verification_events(app)
+            _safe_log(
+                "FBA event startup recovery complete "
+                f"settlement={recovery_result.get('settlement_queued', 0)} "
+                f"light={recovery_result.get('light_queued', 0)} "
+                f"satisfied={recovery_result.get('already_satisfied', 0)}"
+            )
+        except Exception as exc:
+            _safe_error("FBA event startup recovery failed", exc)
 
     while not _stop_event.is_set():
         try:
