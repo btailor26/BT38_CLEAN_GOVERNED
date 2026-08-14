@@ -184,15 +184,17 @@
     <script id="bt38NotificationPanelScript">
     (function () {
         const panel = document.getElementById("bt38NotificationPanel");
+        const bell = document.getElementById("bt38NotificationBell");
         const badge = document.getElementById("bt38NotificationBadge");
         const loading = document.getElementById("bt38NotificationLoading");
         const errorBox = document.getElementById("bt38NotificationError");
         const emptyBox = document.getElementById("bt38NotificationEmpty");
         const list = document.getElementById("bt38NotificationList");
-        if (!panel || !badge || !loading || !errorBox || !emptyBox || !list) return;
+        if (!panel || !bell || !badge || !loading || !errorBox || !emptyBox || !list) return;
 
         const salesUrl = "/governed/ui/sales?limit=20";
         const seenKey = "bt38.notifications.lastSeenAt";
+        const lightKey = "bt38.notifications.eventPending";
         let records = [];
         let loaded = false;
         let stale = true;
@@ -204,6 +206,14 @@
         function timestamp(record) {
             const value = Date.parse(record?.created_at || "");
             return Number.isFinite(value) ? value : 0;
+        }
+
+        function setBellLight(on) {
+            const active = Boolean(on);
+            bell.classList.toggle("text-warning", active);
+            bell.setAttribute("aria-label", active ? "Open notifications - new marketplace event" : "Open notifications");
+            if (active) window.localStorage.setItem(lightKey, "1");
+            else window.localStorage.removeItem(lightKey);
         }
 
         function setBadge(count) {
@@ -221,6 +231,7 @@
             const newest = records.reduce((value, record) => Math.max(value, timestamp(record)), Date.now());
             window.localStorage.setItem(seenKey, String(newest));
             setBadge(0);
+            setBellLight(false);
         }
 
         function iconName(record) {
@@ -265,6 +276,13 @@
                 loading.classList.add("d-none");
             }
         }
+
+        setBellLight(window.localStorage.getItem(lightKey) === "1");
+
+        window.addEventListener("bt38-marketplace-event", function () {
+            stale = true;
+            setBellLight(true);
+        });
 
         panel.addEventListener("show.bs.offcanvas", async function () {
             stale = true;
@@ -357,7 +375,6 @@
     if (listingPush) {
       return originalFetch(`/governed/actions/listings/${listingPush[1]}/push`, init);
     }
-
     const groupPush = url.match(/^\/groups\/(\d+)\/push$/);
     if (groupPush) {
       return originalFetch(`/governed/actions/groups/${groupPush[1]}/push`, init);
