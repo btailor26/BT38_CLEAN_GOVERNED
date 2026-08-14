@@ -27,8 +27,11 @@ def test_bell_reads_sales_only_on_open_without_polling_or_starting_work():
     assert 'panel.addEventListener("show.bs.offcanvas"' in BASE
 
 
-def test_browser_event_waiter_is_disabled_for_sales_only_bell():
+def test_bell_lights_from_existing_marketplace_event_without_reenabling_waiter():
     assert "bt38NotificationBell" in SIGNAL
     assert 'LIVE_BROWSER_EVENT_WAITER_ENABLED = False' in SIGNAL
     assert '_condition.wait(timeout=25.0)' not in SIGNAL
-    assert 'window.addEventListener("bt38-marketplace-event"' not in BASE
+    assert 'window.addEventListener("bt38-marketplace-event"' in BASE
+    assert 'setBellLight(true)' in BASE
+    assert 'setBellLight(false)' in BASE
+    assert 'bell.classList.toggle("text-warning", active)' in BASE
