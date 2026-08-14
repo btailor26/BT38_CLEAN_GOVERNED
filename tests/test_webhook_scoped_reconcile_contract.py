@@ -49,3 +49,18 @@ def test_exact_verifiers_use_first_not_all_or_recent_windows():
         assert ".count()" not in body
 
     assert "timedelta(seconds=LIGHT_RECONCILE_SECONDS)" in source
+
+def test_duplicate_event_preserves_earliest_verification_deadline():
+    body = _function_source("notify_governed_runtime_work")
+
+    assert 'queued["verify_after"] = min(' in body
+    assert 'effective_verify_after = queued["verify_after"]' in body
+
+
+def test_runtime_wake_signal_is_cleared_before_future_due_wait():
+    body = _function_source("_engine_loop")
+
+    clear_pos = body.index("_pending_notification_event.clear()")
+    due_pos = body.index("seconds_until_due = _seconds_until_next_due()")
+    assert clear_pos < due_pos
+

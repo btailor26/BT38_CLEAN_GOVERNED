@@ -226,11 +226,19 @@ def notify_governed_runtime_work(
     _last_event_at = item["received_at"]
     _last_event_source = item["source"]
 
+    effective_verify_after = item["verify_after"]
+
     with _pending_events_lock:
         key = _event_key(item)
         for queued in _pending_events:
             if _event_key(queued) == key:
-                queued["verify_after"] = item["verify_after"]
+                # Duplicate notification: preserve the earliest deadline.
+                # A repeat event may refresh payload truth, but it must never
+                # postpone or create a second copy of the same pending work.
+                queued["verify_after"] = min(
+                    queued["verify_after"],
+                    item["verify_after"],
+                )
                 queued["payload"] = (
                     item.get("payload")
                     or queued.get("payload")
@@ -238,6 +246,7 @@ def notify_governed_runtime_work(
                 queued["expected_quantity"] = item.get(
                     "expected_quantity"
                 )
+                effective_verify_after = queued["verify_after"]
                 break
         else:
             _pending_events.append(item)
@@ -248,7 +257,7 @@ def notify_governed_runtime_work(
         "queued": True,
         "durable": False,
         "status": "GOVERNED_MEMORY_EVENT",
-        "verify_after": item["verify_after"].isoformat(),
+        "verify_after": effective_verify_after.isoformat(),
         "scoped": item["scope_present"],
     }
 
@@ -1381,6 +1390,10 @@ def _engine_loop(app):
 
     while not _stop_event.is_set():
         try:
+            # The Event is only a wake signal. Clear the previous edge before
+            # calculating the next exact deadline so a future event sleeps
+            # until due instead of keeping the loop awake.
+            _pending_notification_event.clear()
             seconds_until_due = _seconds_until_next_due()
             if _amazon_sqs_consumer_enabled():
                 sqs_wait = max(

@@ -1250,6 +1250,7 @@ def governed_marketplace_webhook_intake(marketplace):
 
         if should_queue_verification:
             from services.governed_runtime_engine import (
+                LIGHT_RECONCILE_SECONDS,
                 notify_governed_runtime_work,
             )
 
@@ -1269,6 +1270,22 @@ def governed_marketplace_webhook_intake(marketplace):
                 verification_queue_result = notify_governed_runtime_work(
                     source=f"webhook_{platform}_settlement_recheck",
                     event=settlement_scope,
+                )
+
+                # The 90-second check handles Amazon settlement latency.
+                # It does not replace the normal event-triggered 15-minute
+                # verification. Queue one exact follow-up for this same event.
+                light_reconcile_scope = dict(exact_scope)
+                light_reconcile_scope["verify_after"] = (
+                    datetime.utcnow()
+                    + timedelta(seconds=LIGHT_RECONCILE_SECONDS)
+                )
+                light_reconcile_queue_result = notify_governed_runtime_work(
+                    source=f"webhook_{platform}_15m_reconcile",
+                    event=light_reconcile_scope,
+                )
+                verification_queue_result["light_reconcile"] = (
+                    light_reconcile_queue_result
                 )
             else:
                 verification_queue_result = notify_governed_runtime_work(

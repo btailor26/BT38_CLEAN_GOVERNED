@@ -113,3 +113,12 @@ def test_order_quantity_is_never_used_as_fba_inventory_truth():
     assert "Amazon remains FBA inventory authority" in process
     assert "fba_inventory_verification_required=True" in process
     assert "Order quantity did not mutate Warehouse or FBA inventory" in process
+
+def test_fba_order_keeps_settlement_check_and_queues_15m_followup():
+    assert "LIGHT_RECONCILE_SECONDS" in ROUTES_SOURCE
+    assert 'source=f"webhook_{platform}_settlement_recheck"' in ROUTES_SOURCE
+    assert 'source=f"webhook_{platform}_15m_reconcile"' in ROUTES_SOURCE
+    assert "timedelta(seconds=90)" in ROUTES_SOURCE
+    assert "timedelta(seconds=LIGHT_RECONCILE_SECONDS)" in ROUTES_SOURCE
+    assert 'verification_queue_result["light_reconcile"]' in ROUTES_SOURCE
+
