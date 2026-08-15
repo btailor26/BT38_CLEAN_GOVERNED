@@ -438,7 +438,39 @@
       await applyMutationContract(relationshipEvent, { listingId, warehouseId, listingSku, warehouseSku, groupId: eventGroupId, previousGroupId: data.previous_group_id, originalGroupId: data.original_group_id });
       if (!mappingExists(listingId, warehouseId, eventGroupId)) console.warn("[ProductLinkingSession] committed link event is waiting for the shared targeted refresh", relationshipEvent);
       closeOpenModals(); window.alert(data.changed === false ? `${listingSku} is already linked to ${warehouseSku}.` : `Successfully linked ${listingSku} to ${warehouseSku}.`); return;
-    } catch (error) { console.error("[ProductLinkingSession] verified link failed", error); window.alert(`Link failed: ${error.message || error}`); }
+    } catch (error) {
+      console.error("[ProductLinkingSession] link transport failed", error);
+
+      // The governed write may already have committed even if the browser lost
+      // the HTTP response. Never retry the write automatically.
+      //
+      // Perform one targeted DB-backed refresh and verify the relationship.
+      // No polling, no timer and no repeated read.
+      try {
+        await refreshAffectedRecord({
+          listingId,
+          warehouseId,
+          listingSku,
+          warehouseSku
+        });
+
+        if (mappingExists(listingId, warehouseId)) {
+          closeOpenModals();
+          window.alert(`Successfully linked ${listingSku} to ${warehouseSku}.`);
+          return;
+        }
+      } catch (verificationError) {
+        console.error(
+          "[ProductLinkingSession] post-transport link verification failed",
+          verificationError
+        );
+      }
+
+      window.alert(
+        "Link response was interrupted and the relationship could not be verified. " +
+        "Check the refreshed Product Linking row before trying again."
+      );
+    }
   };
 
   window.unlinkListing = function (listingId, listingSku, userConfirmed = false, groupId = null, warehouseStockId = null) {
