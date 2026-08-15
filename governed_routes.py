@@ -3141,6 +3141,59 @@ def governed_product_linking_data_compat():
 
 
 
+
+@governed_bp.get("/governed/ui/notifications/stream")
+@login_required
+def governed_ui_notifications_stream():
+    """Wake the open browser when existing DB truth commits.
+
+    SSE is signal-only:
+    - no DB query
+    - no marketplace call
+    - no event persistence
+    - no polling
+    """
+    from flask import Response, stream_with_context
+    from services.governed_live_bell_signal import (
+        current_live_bell_sequence,
+        wait_for_live_bell,
+    )
+
+    @stream_with_context
+    def _stream():
+        sequence = current_live_bell_sequence()
+
+        # EventSource reconnect delay. This is network reconnection behaviour,
+        # not database polling.
+        yield "retry: 3000\n\n"
+
+        while True:
+            next_sequence = wait_for_live_bell(
+                sequence,
+                timeout=25.0,
+            )
+
+            if next_sequence != sequence:
+                sequence = next_sequence
+                yield (
+                    "event: marketplace\n"
+                    f"data: {sequence}\n\n"
+                )
+            else:
+                # Prevent intermediary/proxy idle timeout.
+                # No DB/API query occurs here.
+                yield ": keepalive\n\n"
+
+    response = Response(
+        _stream(),
+        mimetype="text/event-stream",
+    )
+    response.headers["Cache-Control"] = "no-cache, no-transform"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
+
+
 @governed_bp.get("/governed/ui/notifications")
 @login_required
 def governed_ui_notifications():
@@ -3151,7 +3204,8 @@ def governed_ui_notifications():
     - SystemLog marketplace_webhook remains persisted webhook evidence.
     - This endpoint creates no events and changes no marketplace state.
     """
-    from models import MarketplaceOrder, MarketplaceListing
+    from models import MarketplaceOrder, MarketplaceListing, SyncLog
+    from sqlalchemy import or_
 
     try:
         limit = int(request.args.get("limit") or 20)
@@ -3268,6 +3322,72 @@ def governed_ui_notifications():
             "created_at": (
                 listing.created_at.isoformat()
                 if getattr(listing, "created_at", None)
+                else None
+            ),
+        })
+
+    # Existing governed push/link SyncLog rows are already persisted truth.
+    # Read them into the same bell stream; do not create another event record.
+    sync_event_rows = (
+        SyncLog.query
+        .filter(
+            or_(
+                SyncLog.message.startswith(
+                    "event_type=marketplace_push",
+                    autoescape=True,
+                ),
+                SyncLog.message.startswith(
+                    "event_type=product_linking_",
+                    autoescape=True,
+                ),
+            )
+        )
+        .order_by(
+            SyncLog.created_at.desc(),
+            SyncLog.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    for row in sync_event_rows:
+        message = str(row.message or "").strip()
+        fields = {}
+
+        for token in message.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            fields[key.strip()] = value.strip()
+
+        event_type = fields.get("event_type") or "governed_event"
+        marketplace = fields.get("marketplace") or "BT38"
+        sku = fields.get("sku") or ""
+        quantity = fields.get("quantity")
+        group_id = fields.get("group_id")
+
+        if event_type == "marketplace_push_succeeded":
+            title = "Marketplace quantity push succeeded"
+        elif event_type == "marketplace_push_failed":
+            title = "Marketplace quantity push failed"
+        elif event_type.startswith("product_linking_"):
+            title = "Product linking updated"
+        else:
+            title = "Marketplace push update"
+
+        records.append({
+            "event_key": f"sync:{row.id}",
+            "id": f"sync:{row.id}",
+            "log_type": event_type,
+            "platform": marketplace,
+            "title": title,
+            "sku": sku,
+            "quantity": quantity,
+            "group_id": group_id,
+            "message": message,
+            "created_at": (
+                row.created_at.isoformat()
+                if row.created_at
                 else None
             ),
         })

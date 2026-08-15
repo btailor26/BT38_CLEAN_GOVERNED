@@ -193,12 +193,14 @@
         if (!panel || !bell || !badge || !loading || !errorBox || !emptyBox || !list) return;
 
         const salesUrl = "/governed/ui/notifications?limit=20";
+        const liveUrl = "/governed/ui/notifications/stream";
         const seenKey = "bt38.notifications.lastSeenAt";
         const seenEventsKey = "bt38.notifications.seenEventKeys";
         const lightKey = "bt38.notifications.eventPending";
         let records = [];
         let loaded = false;
         let stale = true;
+        let liveSource = null;
 
         function escapeHtml(value) {
             return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
@@ -311,6 +313,19 @@
                                 : "Item"
                           } ${record.listing_id}` : ""
                       ].filter(Boolean)
+                    : String(record.log_type || "").includes("push")
+                    ? [
+                        record.sku ? `SKU ${record.sku}` : "",
+                        record.quantity !== undefined && record.quantity !== null
+                            ? `Qty ${record.quantity}`
+                            : "",
+                        record.group_id ? `Group ${record.group_id}` : ""
+                      ].filter(Boolean)
+                    : String(record.log_type || "").startsWith("product_linking_")
+                    ? [
+                        record.sku ? `SKU ${record.sku}` : "",
+                        record.group_id ? `Group ${record.group_id}` : ""
+                      ].filter(Boolean)
                     : [];
                 item.innerHTML = `<div class="d-flex align-items-start gap-3"><div class="pt-1"><i data-feather="${iconName(record)}"></i></div><div class="flex-grow-1 min-w-0"><div class="d-flex justify-content-between gap-2"><strong class="small">${escapeHtml(record.platform || "Marketplace")}</strong><span class="text-muted small text-nowrap">${escapeHtml(date)}</span></div><div class="mt-1 fw-semibold">${escapeHtml(title)}</div>${eventMeta.map(value => `<div class="small text-muted mt-1">${escapeHtml(value)}</div>`).join("")}</div></div>`;
                 list.appendChild(item);
@@ -367,6 +382,68 @@
             stale = true;
             setBellLight(true);
         });
+
+        function stopLiveSignal() {
+            if (!liveSource) return;
+            try {
+                liveSource.close();
+            } catch (error) {
+                // Browser transport cleanup only.
+            }
+            liveSource = null;
+        }
+
+        function startLiveSignal() {
+            if (!("EventSource" in window)) return;
+            if (document.visibilityState === "hidden") return;
+            if (liveSource) return;
+
+            liveSource = new EventSource(
+                liveUrl,
+                {withCredentials: true}
+            );
+
+            liveSource.addEventListener(
+                "marketplace",
+                function (event) {
+                    window.dispatchEvent(
+                        new CustomEvent(
+                            "bt38-marketplace-event",
+                            {
+                                detail: {
+                                    source: "server_commit",
+                                    sequence: event.data || ""
+                                }
+                            }
+                        )
+                    );
+                }
+            );
+        }
+
+        document.addEventListener(
+            "visibilitychange",
+            function () {
+                if (document.visibilityState === "hidden") {
+                    stopLiveSignal();
+                    return;
+                }
+
+                // One read when returning to the tab catches any committed
+                // events that occurred while its SSE connection was closed.
+                stale = true;
+                loadNotifications();
+                startLiveSignal();
+            }
+        );
+
+        window.addEventListener(
+            "beforeunload",
+            stopLiveSignal,
+            {once: true}
+        );
+
+        startLiveSignal();
 
         panel.addEventListener("show.bs.offcanvas", async function () {
             stale = true;
