@@ -334,39 +334,46 @@ def run_governed_marketplace_import_refresh(
         platform = str(store.platform or "").strip().lower()
         try:
             if "amazon" in platform:
-                if not bool(
-                    getattr(store, "fba_import_enabled", False)
-                ):
-                    results.append({
-                        "store_id": store.id,
-                        "platform": store.platform,
-                        "skipped": True,
-                        "reason": "fba_import_disabled",
-                    })
-                    continue
-
-                from services.governed_amazon_inventory_import import (
-                    run_governed_amazon_inventory_import,
-                )
                 from services.governed_amazon_listing_fulfillment_refresh import (
                     run_governed_amazon_listing_fulfillment_refresh,
                 )
 
-                result = run_governed_amazon_inventory_import(
-                    store_id=store.id,
-                    full_refresh=True,
-                    source=source,
-                )
+                # Amazon listing discovery is marketplace listing recovery,
+                # not FBA inventory recovery. It must continue even when the
+                # FBA inventory fuse is disabled.
                 listing_fulfillment = (
                     run_governed_amazon_listing_fulfillment_refresh(
                         store_id=store.id,
                     )
                 )
-                _last_fba_import = datetime.utcnow()
+
+                if bool(
+                    getattr(store, "fba_import_enabled", False)
+                ):
+                    from services.governed_amazon_inventory_import import (
+                        run_governed_amazon_inventory_import,
+                    )
+
+                    result = run_governed_amazon_inventory_import(
+                        store_id=store.id,
+                        full_refresh=True,
+                        source=source,
+                    )
+                    _last_fba_import = datetime.utcnow()
+                else:
+                    result = {
+                        "success": True,
+                        "governed": True,
+                        "skipped": True,
+                        "reason": "fba_import_disabled",
+                    }
+
                 results.append({
                     "store_id": store.id,
                     "platform": store.platform,
-                    "success": True,
+                    "success": bool(
+                        listing_fulfillment.get("success", True)
+                    ),
                     "result": result,
                     "listing_fulfillment": listing_fulfillment,
                 })

@@ -297,13 +297,22 @@
                 item.className = "list-group-item px-3 py-3";
                 const date = timestamp(record) ? new Date(record.created_at).toLocaleString() : "Time unavailable";
                 const title = record.title || record.message || "Marketplace event";
-                const saleMeta = record.log_type === "marketplace_sale"
+                const eventMeta = record.log_type === "marketplace_sale"
                     ? [
                         record.sku ? `${record.sku} · Qty ${record.quantity || 0}` : "",
                         record.order_id ? `Order ${record.order_id}` : ""
                       ].filter(Boolean)
+                    : record.log_type === "marketplace_listing"
+                    ? [
+                        record.sku ? `SKU ${record.sku}` : "",
+                        record.listing_id ? `${
+                            String(record.platform || "").toLowerCase().includes("amazon")
+                                ? "ASIN"
+                                : "Item"
+                          } ${record.listing_id}` : ""
+                      ].filter(Boolean)
                     : [];
-                item.innerHTML = `<div class="d-flex align-items-start gap-3"><div class="pt-1"><i data-feather="${iconName(record)}"></i></div><div class="flex-grow-1 min-w-0"><div class="d-flex justify-content-between gap-2"><strong class="small">${escapeHtml(record.platform || "Marketplace")}</strong><span class="text-muted small text-nowrap">${escapeHtml(date)}</span></div><div class="mt-1 fw-semibold">${escapeHtml(title)}</div>${saleMeta.map(value => `<div class="small text-muted mt-1">${escapeHtml(value)}</div>`).join("")}</div></div>`;
+                item.innerHTML = `<div class="d-flex align-items-start gap-3"><div class="pt-1"><i data-feather="${iconName(record)}"></i></div><div class="flex-grow-1 min-w-0"><div class="d-flex justify-content-between gap-2"><strong class="small">${escapeHtml(record.platform || "Marketplace")}</strong><span class="text-muted small text-nowrap">${escapeHtml(date)}</span></div><div class="mt-1 fw-semibold">${escapeHtml(title)}</div>${eventMeta.map(value => `<div class="small text-muted mt-1">${escapeHtml(value)}</div>`).join("")}</div></div>`;
                 list.appendChild(item);
             });
             list.classList.toggle("d-none", records.length === 0);

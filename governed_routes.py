@@ -3151,7 +3151,7 @@ def governed_ui_notifications():
     - SystemLog marketplace_webhook remains persisted webhook evidence.
     - This endpoint creates no events and changes no marketplace state.
     """
-    from models import MarketplaceOrder, MarketplaceListing, SystemLog
+    from models import MarketplaceOrder, MarketplaceListing
 
     try:
         limit = int(request.args.get("limit") or 20)
@@ -3224,30 +3224,50 @@ def governed_ui_notifications():
             ),
         })
 
-    # Existing persisted webhook logs are used only for LISTING events here.
-    # Orders already come from MarketplaceOrder above, preventing a second
-    # representation of the same sale in the bell feed.
-    listing_logs = (
-        SystemLog.query
-        .filter(SystemLog.log_type == "marketplace_webhook")
-        .filter(SystemLog.message.ilike("%listing%"))
-        .order_by(SystemLog.created_at.desc())
+    # Canonical MarketplaceListing rows are listing truth.
+    # The bell reads them directly instead of creating another notification
+    # record. A recovered listing and an event-imported listing therefore use
+    # the same persisted identity and cannot appear as two bell events.
+    listing_rows = (
+        MarketplaceListing.query
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .order_by(MarketplaceListing.created_at.desc())
         .limit(limit)
         .all()
     )
 
-    for log in listing_logs:
-        message = str(getattr(log, "message", None) or "Marketplace listing update")
-        platform = str(getattr(log, "platform", None) or "Marketplace")
+    for listing in listing_rows:
+        store = getattr(listing, "store", None)
+        platform = (
+            getattr(store, "platform", None)
+            or "Marketplace"
+        )
+
+        title = str(
+            getattr(listing, "title", None)
+            or getattr(listing, "external_sku", None)
+            or "Marketplace listing"
+        ).strip()
+
+        sku = str(
+            getattr(listing, "external_sku", None) or ""
+        ).strip()
+
+        external_listing_id = str(
+            getattr(listing, "external_listing_id", None) or ""
+        ).strip()
 
         records.append({
-            "event_key": f"webhook:{getattr(log, 'id', '')}",
+            "event_key": f"listing:{getattr(listing, 'id', '')}",
             "log_type": "marketplace_listing",
             "platform": platform,
-            "message": message,
+            "title": title,
+            "sku": sku,
+            "listing_id": external_listing_id,
+            "message": title,
             "created_at": (
-                log.created_at.isoformat()
-                if getattr(log, "created_at", None)
+                listing.created_at.isoformat()
+                if getattr(listing, "created_at", None)
                 else None
             ),
         })
