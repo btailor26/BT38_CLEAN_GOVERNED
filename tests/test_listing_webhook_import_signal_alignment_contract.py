@@ -58,3 +58,11 @@ def test_amazon_listing_subscriptions_reuse_existing_destination_explicitly():
     assert "client.create_subscription(" in AMAZON_REFRESH
     assert '"destination_created": False' in AMAZON_REFRESH
     assert "application startup" in AMAZON_REFRESH
+
+def test_ebay_inventory_import_self_heals_missing_listing_subscription():
+    assert "ensure_ebay_order_notification_registration" in EBAY_IMPORT
+    assert "ebay_notification_listing_subscription_id" in EBAY_IMPORT
+    assert "ebay_notification_listing_subscription_status" in EBAY_IMPORT
+    assert 'listing_subscription_status != "ENABLED"' in EBAY_IMPORT
+    assert '"notification_alignment": notification_alignment' in EBAY_IMPORT
+

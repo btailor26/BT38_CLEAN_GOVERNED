@@ -24,6 +24,9 @@ from models import Store, MarketplaceListing, Warehouse, WarehouseStock, SyncLog
 from services.runtime_status_writer import set_store_runtime_status
 from services.governed_listing_refresh import ensure_permanent_original_group
 from services.governed_ebay_oauth_scopes import governed_ebay_refresh_scopes
+from services.governed_ebay_notification_registration import (
+    ensure_ebay_order_notification_registration,
+)
 
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -550,6 +553,40 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             })
             continue
 
+        # Existing stores may pre-date BT38's LISTING notification support.
+        # Reconcile the existing eBay destination only when the LISTING
+        # subscription is missing/not enabled. This is not polling and does
+        # not create another webhook/import path.
+        listing_subscription_id = str(
+            creds.get("ebay_notification_listing_subscription_id") or ""
+        ).strip()
+        listing_subscription_status = str(
+            creds.get("ebay_notification_listing_subscription_status") or ""
+        ).strip().upper()
+
+        notification_alignment = None
+
+        if (
+            not listing_subscription_id
+            or listing_subscription_status != "ENABLED"
+        ):
+            try:
+                notification_alignment = (
+                    ensure_ebay_order_notification_registration(
+                        store=store,
+                        access_token=str(creds.get("access_token") or ""),
+                    )
+                )
+                # Registration persists refreshed notification metadata.
+                creds = _parse_creds(store)
+            except Exception as exc:
+                # Registration failure must not disable the existing bounded
+                # inventory recovery path.
+                notification_alignment = {
+                    "ok": False,
+                    "error": str(exc),
+                }
+
         imported = 0
         variations = 0
         pages = 0
@@ -638,6 +675,7 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             "imported": imported,
             "variations": variations,
             "pages": pages,
+            "notification_alignment": notification_alignment,
             "affected_listing_ids": sorted(affected_listing_ids),
             "affected_warehouse_stock_ids": sorted(affected_warehouse_stock_ids),
             "affected_group_ids": sorted(affected_group_ids),
