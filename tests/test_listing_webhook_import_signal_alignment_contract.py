@@ -66,3 +66,20 @@ def test_ebay_inventory_import_self_heals_missing_listing_subscription():
     assert 'listing_subscription_status != "ENABLED"' in EBAY_IMPORT
     assert '"notification_alignment": notification_alignment' in EBAY_IMPORT
 
+def test_ebay_listing_subscription_failure_uses_existing_bounded_import_recovery():
+    assert 'listing_event_recovery_required = (' in EBAY_IMPORT
+    assert 'listing_subscription_status != "ENABLED"' in EBAY_IMPORT
+    assert 'sort="StartTimeDescending"' in EBAY_IMPORT
+    assert 'recovery_items' in EBAY_IMPORT
+
+
+def test_ebay_listing_recovery_reuses_existing_upsert_writer():
+    assert 'counts = _import_item(store, creds, item)' in EBAY_IMPORT
+    assert 'seen_item_ids.add(item_id)' in EBAY_IMPORT
+    assert '_upsert_listing(' in EBAY_IMPORT
+
+
+def test_ebay_listing_recovery_does_not_add_polling():
+    assert 'setInterval(' not in EBAY_IMPORT
+    assert 'setTimeout(' not in EBAY_IMPORT
+

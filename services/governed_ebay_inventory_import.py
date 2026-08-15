@@ -122,7 +122,13 @@ def _trading_headers(creds: dict[str, Any], call_name: str) -> dict[str, str]:
     }
 
 
-def _get_active_items(creds: dict[str, Any], page: int = 1, entries: int = 100) -> list[ET.Element]:
+def _get_active_items(
+    creds: dict[str, Any],
+    page: int = 1,
+    entries: int = 100,
+    sort: str | None = None,
+) -> list[ET.Element]:
+    sort_xml = f"<Sort>{sort}</Sort>" if sort else ""
     body = f"""<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
@@ -130,6 +136,7 @@ def _get_active_items(creds: dict[str, Any], page: int = 1, entries: int = 100) 
   </RequesterCredentials>
   <ActiveList>
     <Include>true</Include>
+    {sort_xml}
     <Pagination>
       <EntriesPerPage>{entries}</EntriesPerPage>
       <PageNumber>{page}</PageNumber>
@@ -587,6 +594,18 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
                     "error": str(exc),
                 }
 
+        # Re-read the persisted registration result. If eBay cannot provide
+        # LISTING events, this same existing importer becomes the discovery
+        # recovery path.
+        creds = _parse_creds(store)
+        listing_subscription_status = str(
+            creds.get("ebay_notification_listing_subscription_status") or ""
+        ).strip().upper()
+
+        listing_event_recovery_required = (
+            listing_subscription_status != "ENABLED"
+        )
+
         imported = 0
         variations = 0
         pages = 0
@@ -594,6 +613,42 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
         affected_listing_ids = set()
         affected_warehouse_stock_ids = set()
         affected_group_ids = set()
+        recovery_items = 0
+
+        if listing_event_recovery_required:
+            newest_items = _get_active_items(
+                creds,
+                page=1,
+                entries=100,
+                sort="StartTimeDescending",
+            )
+
+            for item in newest_items:
+                item_id = _xml_text(item, "{*}ItemID")
+
+                if not item_id or item_id in seen_item_ids:
+                    continue
+
+                seen_item_ids.add(item_id)
+
+                counts = _import_item(store, creds, item)
+
+                imported += counts["items"]
+                variations += counts["variations"]
+                recovery_items += counts["items"]
+
+                affected_listing_ids.update(
+                    counts.get("affected_listing_ids") or []
+                )
+                affected_warehouse_stock_ids.update(
+                    counts.get("affected_warehouse_stock_ids") or []
+                )
+                affected_group_ids.update(
+                    counts.get("affected_group_ids") or []
+                )
+
+            # One commit for the bounded newest-listing recovery batch.
+            db.session.commit()
 
         # eBay may return up to 100 items even when a smaller entries value is requested.
         # Keep each governed cycle bounded, but resume from the next page next time.
@@ -663,7 +718,9 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             items_synced=imported,
             message=(
                 f"governed_ebay_inventory_import "
-                f"imported={imported} variations={variations} pages={pages}"
+                f"imported={imported} variations={variations} pages={pages} "
+                f"listing_event_recovery={listing_event_recovery_required} "
+                f"recovery_items={recovery_items}"
             ),
             created_at=datetime.utcnow(),
         ))
@@ -675,6 +732,8 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             "imported": imported,
             "variations": variations,
             "pages": pages,
+            "listing_event_recovery": listing_event_recovery_required,
+            "recovery_items": recovery_items,
             "notification_alignment": notification_alignment,
             "affected_listing_ids": sorted(affected_listing_ids),
             "affected_warehouse_stock_ids": sorted(affected_warehouse_stock_ids),
