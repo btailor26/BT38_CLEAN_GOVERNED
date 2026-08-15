@@ -66,3 +66,21 @@ def test_bell_renders_title_before_sale_metadata():
     assert 'Qty ${record.quantity || 0}' in BASE
     assert 'Order ${record.order_id}' in BASE
 
+def test_bell_unread_uses_persisted_event_identity_not_marketplace_time():
+    assert 'bt38.notifications.seenEventKeys' in BASE
+    assert 'function eventKey(record)' in BASE
+    assert 'return !seenEvents.has(key);' in BASE
+    assert '.map(eventKey)' in BASE
+
+
+def test_late_recovered_event_can_still_be_unread():
+    # Timestamp remains display/legacy compatibility only.
+    assert 'if (key)' in BASE
+    assert 'return !seenEvents.has(key);' in BASE
+    assert 'return timestamp(record) > lastSeen;' in BASE
+
+
+def test_checking_bell_marks_only_loaded_event_keys_seen():
+    assert 'JSON.stringify(seenEvents)' in BASE
+    assert 'setBellLight(false);' in BASE
+

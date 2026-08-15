@@ -194,6 +194,7 @@
 
         const salesUrl = "/governed/ui/notifications?limit=20";
         const seenKey = "bt38.notifications.lastSeenAt";
+        const seenEventsKey = "bt38.notifications.seenEventKeys";
         const lightKey = "bt38.notifications.eventPending";
         let records = [];
         let loaded = false;
@@ -222,16 +223,60 @@
             badge.classList.toggle("d-none", value === 0);
         }
 
+        function eventKey(record) {
+            return String(record?.event_key || "").trim();
+        }
+
+        function readSeenEventKeys() {
+            try {
+                const value = JSON.parse(
+                    window.localStorage.getItem(seenEventsKey) || "[]"
+                );
+                return new Set(
+                    Array.isArray(value)
+                        ? value.map((item) => String(item || "").trim()).filter(Boolean)
+                        : []
+                );
+            } catch (error) {
+                return new Set();
+            }
+        }
+
         function updateUnread() {
+            const seenEvents = readSeenEventKeys();
             const lastSeen = Number(window.localStorage.getItem(seenKey) || 0);
-            const unread = records.filter((record) => timestamp(record) > lastSeen).length;
+
+            const unread = records.filter(function (record) {
+                const key = eventKey(record);
+
+                if (key) {
+                    return !seenEvents.has(key);
+                }
+
+                // Compatibility only for historical records without event_key.
+                return timestamp(record) > lastSeen;
+            }).length;
+
             setBadge(unread);
             setBellLight(unread > 0);
         }
 
         function markSeen() {
-            const newest = records.reduce((value, record) => Math.max(value, timestamp(record)), Date.now());
+            const newest = records.reduce(
+                (value, record) => Math.max(value, timestamp(record)),
+                Date.now()
+            );
+
+            const seenEvents = records
+                .map(eventKey)
+                .filter(Boolean);
+
             window.localStorage.setItem(seenKey, String(newest));
+            window.localStorage.setItem(
+                seenEventsKey,
+                JSON.stringify(seenEvents)
+            );
+
             setBadge(0);
             setBellLight(false);
         }
@@ -275,6 +320,26 @@
                 const payload = await response.json();
                 if (payload?.success !== true) throw new Error(payload?.error || payload?.message || "Notification response was not successful.");
                 records = Array.isArray(payload.records) ? payload.records : [];
+
+                if (
+                    window.localStorage.getItem(seenEventsKey) === null
+                    && window.localStorage.getItem(seenKey) !== null
+                ) {
+                    const previousLastSeen = Number(
+                        window.localStorage.getItem(seenKey) || 0
+                    );
+
+                    const previouslySeenKeys = records
+                        .filter((record) => timestamp(record) <= previousLastSeen)
+                        .map(eventKey)
+                        .filter(Boolean);
+
+                    window.localStorage.setItem(
+                        seenEventsKey,
+                        JSON.stringify(previouslySeenKeys)
+                    );
+                }
+
                 loaded = true;
                 stale = false;
                 render();
