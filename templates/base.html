@@ -193,7 +193,7 @@
         if (!panel || !bell || !badge || !loading || !errorBox || !emptyBox || !list) return;
 
         const salesUrl = "/governed/ui/notifications?limit=20";
-        const liveUrl = "/governed/ui/notifications/stream";
+        const liveUrl = "/governed/ui/events/stream";
         const seenKey = "bt38.notifications.lastSeenAt";
         const seenEventsKey = "bt38.notifications.seenEventKeys";
         const lightKey = "bt38.notifications.eventPending";
@@ -201,6 +201,10 @@
         let loaded = false;
         let stale = true;
         let liveSource = null;
+        let liveChannel = null;
+        let releaseLiveLeader = null;
+        const liveLeaderLock = "bt38-live-bell-sse-leader-v1";
+        const liveChannelName = "bt38-live-bell-events-v1";
 
         function escapeHtml(value) {
             return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
@@ -383,67 +387,137 @@
             setBellLight(true);
         });
 
+        function dispatchLiveBellSignal(detail) {
+            window.dispatchEvent(
+                new CustomEvent(
+                    "bt38-marketplace-event",
+                    {
+                        detail: detail || {
+                            source: "server_commit"
+                        }
+                    }
+                )
+            );
+        }
+
         function stopLiveSignal() {
-            if (!liveSource) return;
-            try {
-                liveSource.close();
-            } catch (error) {
-                // Browser transport cleanup only.
+            if (liveSource) {
+                try {
+                    liveSource.close();
+                } catch (error) {
+                    // Transport cleanup only.
+                }
+                liveSource = null;
             }
-            liveSource = null;
+
+            if (releaseLiveLeader) {
+                const release = releaseLiveLeader;
+                releaseLiveLeader = null;
+                release();
+            }
         }
 
-        function startLiveSignal() {
-            if (!("EventSource" in window)) return;
-            if (document.visibilityState === "hidden") return;
-            if (liveSource) return;
+        function installCrossTabLiveSignal() {
+            /*
+             * One browser profile = one server SSE connection.
+             *
+             * Every BT38 tab waits on the browser-native Web Lock.
+             * Only the lock holder opens EventSource.
+             *
+             * Other tabs receive the wake through BroadcastChannel and consume
+             * ZERO Gunicorn threads.
+             *
+             * No timer. No DB polling. No marketplace polling.
+             */
+            if (
+                !("EventSource" in window)
+                || !("BroadcastChannel" in window)
+                || !navigator.locks?.request
+            ) {
+                // Safe fallback: startup persisted-event hydration still works.
+                // Never open per-tab SSE and risk request starvation.
+                return;
+            }
 
-            liveSource = new EventSource(
-                liveUrl,
-                {withCredentials: true}
-            );
+            liveChannel = new BroadcastChannel(liveChannelName);
 
-            liveSource.addEventListener(
-                "marketplace",
+            liveChannel.addEventListener(
+                "message",
                 function (event) {
-                    window.dispatchEvent(
-                        new CustomEvent(
-                            "bt38-marketplace-event",
-                            {
-                                detail: {
-                                    source: "server_commit",
-                                    sequence: event.data || ""
-                                }
-                            }
-                        )
+                    if (event?.data?.type !== "marketplace") return;
+
+                    dispatchLiveBellSignal({
+                        source: "browser_leader",
+                        sequence: event.data.sequence || ""
+                    });
+                }
+            );
+
+            navigator.locks.request(
+                liveLeaderLock,
+                {mode: "exclusive"},
+                async function () {
+                    liveSource = new EventSource(
+                        liveUrl,
+                        {withCredentials: true}
                     );
+
+                    liveSource.addEventListener(
+                        "marketplace",
+                        function (event) {
+                            // Wake this tab.
+                            dispatchLiveBellSignal({
+                                source: "server_commit",
+                                sequence: event.data || ""
+                            });
+
+                            // Wake every other BT38 tab without another
+                            // server connection.
+                            try {
+                                liveChannel.postMessage({
+                                    type: "marketplace",
+                                    sequence: event.data || ""
+                                });
+                            } catch (error) {
+                                // Bell signal remains local if channel closes.
+                            }
+                        }
+                    );
+
+                    await new Promise(function (resolve) {
+                        releaseLiveLeader = resolve;
+                    });
+
+                    if (liveSource) {
+                        try {
+                            liveSource.close();
+                        } catch (error) {
+                            // Transport cleanup only.
+                        }
+                        liveSource = null;
+                    }
                 }
             );
         }
 
-        document.addEventListener(
-            "visibilitychange",
-            function () {
-                if (document.visibilityState === "hidden") {
-                    stopLiveSignal();
-                    return;
-                }
-
-                // One read when returning to the tab catches any committed
-                // events that occurred while its SSE connection was closed.
-                stale = true;
-                loadNotifications();
-                startLiveSignal();
-            }
-        );
+        installCrossTabLiveSignal();
 
         window.addEventListener(
-            "beforeunload",
-            stopLiveSignal,
+            "pagehide",
+            function () {
+                stopLiveSignal();
+
+                if (liveChannel) {
+                    try {
+                        liveChannel.close();
+                    } catch (error) {
+                        // Browser cleanup only.
+                    }
+                    liveChannel = null;
+                }
+            },
             {once: true}
         );
-
-        startLiveSignal();
 
         panel.addEventListener("show.bs.offcanvas", async function () {
             stale = true;

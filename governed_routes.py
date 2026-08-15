@@ -3142,58 +3142,6 @@ def governed_product_linking_data_compat():
 
 
 
-@governed_bp.get("/governed/ui/notifications/stream")
-@login_required
-def governed_ui_notifications_stream():
-    """Wake the open browser when existing DB truth commits.
-
-    SSE is signal-only:
-    - no DB query
-    - no marketplace call
-    - no event persistence
-    - no polling
-    """
-    from flask import Response, stream_with_context
-    from services.governed_live_bell_signal import (
-        current_live_bell_sequence,
-        wait_for_live_bell,
-    )
-
-    @stream_with_context
-    def _stream():
-        sequence = current_live_bell_sequence()
-
-        # EventSource reconnect delay. This is network reconnection behaviour,
-        # not database polling.
-        yield "retry: 3000\n\n"
-
-        while True:
-            next_sequence = wait_for_live_bell(
-                sequence,
-                timeout=25.0,
-            )
-
-            if next_sequence != sequence:
-                sequence = next_sequence
-                yield (
-                    "event: marketplace\n"
-                    f"data: {sequence}\n\n"
-                )
-            else:
-                # Prevent intermediary/proxy idle timeout.
-                # No DB/API query occurs here.
-                yield ": keepalive\n\n"
-
-    response = Response(
-        _stream(),
-        mimetype="text/event-stream",
-    )
-    response.headers["Cache-Control"] = "no-cache, no-transform"
-    response.headers["X-Accel-Buffering"] = "no"
-    response.headers["Connection"] = "keep-alive"
-    return response
-
-
 @governed_bp.get("/governed/ui/notifications")
 @login_required
 def governed_ui_notifications():

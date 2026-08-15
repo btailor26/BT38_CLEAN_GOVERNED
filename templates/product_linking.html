@@ -1802,8 +1802,50 @@ async function linkListingToWarehouse(listingId, warehouseId, listingSku, wareho
             alert('Error: ' + (data.error || data.message));
         }
     } catch (error) {
-        alert('Error linking listing: ' + error);
-        console.error('Link error:', error);
+        console.error('Link transport error:', error);
+
+        // A browser/network failure can happen after the governed transaction
+        // has committed. Perform one canonical readback before reporting a
+        // failure so the operator is never told to retry an already-completed
+        // relationship change.
+        try {
+            await loadProductLinkingData(productLinkingPage);
+
+            const linkedNow = (allWarehouseProducts || []).some(product => {
+                if (String(product?.id ?? '') !== String(warehouseId ?? '')) {
+                    return false;
+                }
+
+                return (product?.listings || []).some(listing => {
+                    return String(
+                        listing?.id
+                        ?? listing?.listing_id
+                        ?? listing?.marketplace_listing_id
+                        ?? ''
+                    ) === String(listingId ?? '');
+                });
+            });
+
+            if (linkedNow) {
+                document.querySelectorAll('.modal.show').forEach(modal => {
+                    const bsModal = bootstrap.Modal.getInstance(modal);
+                    if (bsModal) bsModal.hide();
+                });
+
+                alert(`Successfully linked ${listingSku} to ${warehouseSku}!`);
+                return;
+            }
+        } catch (verificationError) {
+            console.error(
+                'Link readback verification failed:',
+                verificationError
+            );
+        }
+
+        alert(
+            'Link response was interrupted and the relationship could not be verified. ' +
+            'The page has been refreshed from database truth; check the row before retrying.'
+        );
     }
 }
 

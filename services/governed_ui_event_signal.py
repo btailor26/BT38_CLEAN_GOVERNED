@@ -13,7 +13,9 @@ import threading
 from collections import deque
 from datetime import datetime
 
-from flask import g, has_request_context, jsonify, request
+from flask import Response, g, has_request_context, jsonify, request, session
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 from app import app
 
 
@@ -270,6 +272,103 @@ def governed_ui_events():
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
+
+
+@app.get("/governed/ui/events/stream")
+def governed_ui_event_stream():
+    """Signal-only SSE over the existing governed UI event condition.
+
+    No DB read.
+    No marketplace call.
+    No polling.
+    No second event queue.
+    """
+    # Flask-Login stores the authenticated user ID in the signed session.
+    # Do not resolve current_user here because this connection is long-lived
+    # and must never hold a Neon read transaction.
+    if not session.get("_user_id"):
+        return Response(status=401)
+
+    with _condition:
+        initial_revision = int(_revision)
+
+    def _stream():
+        seen_revision = initial_revision
+
+        yield "retry: 3000\n\n"
+
+        while True:
+            with _condition:
+                if int(_revision) == seen_revision:
+                    # In-memory sleep only. Zero SQL/API activity.
+                    _condition.wait(timeout=25.0)
+                current_revision = int(_revision)
+
+            if current_revision != seen_revision:
+                seen_revision = current_revision
+                yield (
+                    "event: marketplace\n"
+                    f"data: {seen_revision}\n\n"
+                )
+            else:
+                # Network keepalive only.
+                yield ": keepalive\n\n"
+
+    response = Response(
+        _stream(),
+        mimetype="text/event-stream",
+    )
+    response.headers["Cache-Control"] = "no-cache, no-transform"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
+
+
+@event.listens_for(Session, "before_flush")
+def _bt38_existing_ui_signal_before_flush(
+    session_obj,
+    flush_context,
+    instances,
+):
+    """Wake the existing UI signal for canonical marketplace commits.
+
+    Product Linking and webhook routes already publish through this module.
+    These model checks cover DB-originating sales/listings and persisted pushes.
+    """
+    if session_obj.info.get("_bt38_ui_commit_wake"):
+        return
+
+    from models import MarketplaceListing, MarketplaceOrder, SyncLog
+
+    for row in session_obj.new:
+        if isinstance(row, (MarketplaceListing, MarketplaceOrder)):
+            session_obj.info["_bt38_ui_commit_wake"] = True
+            return
+
+        if isinstance(row, SyncLog):
+            message = str(getattr(row, "message", "") or "").lower()
+            if (
+                message.startswith("event_type=marketplace_push")
+                or message.startswith("event_type=product_linking_")
+            ):
+                session_obj.info["_bt38_ui_commit_wake"] = True
+                return
+
+
+@event.listens_for(Session, "after_commit")
+def _bt38_existing_ui_signal_after_commit(session_obj):
+    if session_obj.info.pop("_bt38_ui_commit_wake", False):
+        publish_governed_ui_event(
+            source="committed_marketplace_state",
+            scope={
+                "event_type": "committed_marketplace_state",
+            },
+        )
+
+
+@event.listens_for(Session, "after_rollback")
+def _bt38_existing_ui_signal_after_rollback(session_obj):
+    session_obj.info.pop("_bt38_ui_commit_wake", None)
 
 def _result_has_committed_change(value) -> bool:
     if not isinstance(value, dict):
