@@ -52,3 +52,17 @@ def test_bell_is_display_only():
 
     for token in forbidden:
         assert token not in block
+
+def test_bell_sale_records_include_existing_product_title():
+    assert "MarketplaceListing.query" in ROUTES
+    assert "MarketplaceListing.store_id == order.store_id" in ROUTES
+    assert "MarketplaceListing.external_sku == sku" in ROUTES
+    assert '"title": product_title' in ROUTES
+    assert '"order_id": order_id' in ROUTES
+
+
+def test_bell_renders_title_before_sale_metadata():
+    assert 'record.title || record.message' in BASE
+    assert 'Qty ${record.quantity || 0}' in BASE
+    assert 'Order ${record.order_id}' in BASE
+

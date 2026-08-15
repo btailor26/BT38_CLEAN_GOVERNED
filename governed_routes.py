@@ -3151,7 +3151,7 @@ def governed_ui_notifications():
     - SystemLog marketplace_webhook remains persisted webhook evidence.
     - This endpoint creates no events and changes no marketplace state.
     """
-    from models import MarketplaceOrder, SystemLog
+    from models import MarketplaceOrder, MarketplaceListing, SystemLog
 
     try:
         limit = int(request.args.get("limit") or 20)
@@ -3184,14 +3184,38 @@ def governed_ui_notifications():
         sku = getattr(order, "sku", None) or ""
         quantity = int(getattr(order, "quantity", 0) or 0)
 
+        product_title = ""
+        if sku and getattr(order, "store_id", None):
+            listing = (
+                MarketplaceListing.query
+                .filter(
+                    MarketplaceListing.store_id == order.store_id,
+                    MarketplaceListing.external_sku == sku,
+                    MarketplaceListing.is_active == True,  # noqa: E712
+                )
+                .order_by(MarketplaceListing.id.desc())
+                .first()
+            )
+            if listing is not None:
+                product_title = str(
+                    getattr(listing, "title", None) or ""
+                ).strip()
+
         records.append({
             "event_key": f"order:{getattr(order, 'id', '')}",
             "log_type": "marketplace_sale",
             "platform": platform,
+            "title": product_title,
+            "sku": sku,
+            "quantity": quantity,
+            "order_id": order_id,
             "message": (
-                f"Sale {order_id}: {sku} x{quantity}"
-                if sku
-                else f"Marketplace sale {order_id}"
+                product_title
+                or (
+                    f"Sale {order_id}: {sku} x{quantity}"
+                    if sku
+                    else f"Marketplace sale {order_id}"
+                )
             ),
             "created_at": (
                 order.created_at.isoformat()
