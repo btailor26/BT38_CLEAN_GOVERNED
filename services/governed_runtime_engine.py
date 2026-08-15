@@ -335,8 +335,32 @@ def run_governed_marketplace_import_refresh(
         try:
             if "amazon" in platform:
                 from services.governed_amazon_listing_fulfillment_refresh import (
+                    ensure_governed_amazon_listing_notification_subscriptions,
                     run_governed_amazon_listing_fulfillment_refresh,
                 )
+
+                # Reconcile the existing Amazon listing notification topics
+                # against the existing destination before recovery hydration.
+                # This does not create a destination, importer or scheduler.
+                # If Amazon refuses a topic, bounded Listings Items recovery
+                # must still run so missed listings are recovered.
+                try:
+                    listing_subscriptions = (
+                        ensure_governed_amazon_listing_notification_subscriptions(
+                            store_id=store.id,
+                        )
+                    )
+                except Exception as exc:
+                    listing_subscriptions = {
+                        "success": False,
+                        "governed": True,
+                        "store_id": store.id,
+                        "reason": (
+                            "amazon_listing_subscription_reconcile_failed"
+                        ),
+                        "error": str(exc),
+                        "destination_created": False,
+                    }
 
                 # Amazon listing discovery is marketplace listing recovery,
                 # not FBA inventory recovery. It must continue even when the
@@ -375,6 +399,7 @@ def run_governed_marketplace_import_refresh(
                         listing_fulfillment.get("success", True)
                     ),
                     "result": result,
+                    "listing_subscriptions": listing_subscriptions,
                     "listing_fulfillment": listing_fulfillment,
                 })
                 continue
