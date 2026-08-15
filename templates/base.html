@@ -319,7 +319,15 @@
                       ].filter(Boolean)
                     : String(record.log_type || "").includes("push")
                     ? [
+                        record.product_title || "",
                         record.sku ? `SKU ${record.sku}` : "",
+                        record.listing_id
+                            ? `${
+                                String(record.platform || "").toLowerCase().includes("amazon")
+                                    ? "ASIN"
+                                    : "Item ID"
+                              } ${record.asin || record.listing_id}`
+                            : "",
                         record.quantity !== undefined && record.quantity !== null
                             ? `Qty ${record.quantity}`
                             : "",

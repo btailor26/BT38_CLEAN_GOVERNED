@@ -3310,9 +3310,56 @@ def governed_ui_notifications():
 
         event_type = fields.get("event_type") or "governed_event"
         marketplace = fields.get("marketplace") or "BT38"
-        sku = fields.get("sku") or ""
         quantity = fields.get("quantity")
         group_id = fields.get("group_id")
+
+        # SyncLog identifies the persisted MarketplaceListing row.
+        # Display must resolve canonical listing truth instead of treating
+        # logger fallback identifiers as seller SKUs.
+        listing_db_id = fields.get("listing_id")
+        listing = None
+
+        try:
+            if listing_db_id not in (None, ""):
+                listing = MarketplaceListing.query.get(
+                    int(listing_db_id)
+                )
+        except (TypeError, ValueError):
+            listing = None
+
+        product_title = ""
+        sku = ""
+        external_listing_id = ""
+        asin = ""
+
+        if listing is not None:
+            product_title = str(
+                getattr(listing, "title", None) or ""
+            ).strip()
+
+            sku = str(
+                getattr(listing, "external_sku", None) or ""
+            ).strip()
+
+            external_listing_id = str(
+                getattr(listing, "external_listing_id", None) or ""
+            ).strip()
+
+            asin = str(
+                getattr(listing, "asin", None) or ""
+            ).strip()
+
+            store = getattr(listing, "store", None)
+            marketplace = (
+                getattr(store, "platform", None)
+                or marketplace
+            )
+        else:
+            # Compatibility only for historical logs whose canonical listing
+            # no longer exists. Never relabel an external Item ID as a SKU.
+            logged_sku = str(fields.get("sku") or "").strip()
+            if not logged_sku.isdigit():
+                sku = logged_sku
 
         if event_type == "marketplace_push_succeeded":
             title = "Marketplace quantity push succeeded"
@@ -3329,7 +3376,10 @@ def governed_ui_notifications():
             "log_type": event_type,
             "platform": marketplace,
             "title": title,
+            "product_title": product_title,
             "sku": sku,
+            "listing_id": external_listing_id,
+            "asin": asin,
             "quantity": quantity,
             "group_id": group_id,
             "message": message,
