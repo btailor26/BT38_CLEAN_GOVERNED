@@ -3140,6 +3140,125 @@ def governed_product_linking_data_compat():
     })
 
 
+
+@governed_bp.get("/governed/ui/notifications")
+@login_required
+def governed_ui_notifications():
+    """Read the existing persisted marketplace event state for the bell.
+
+    Alignment only:
+    - MarketplaceOrder remains sale/order truth.
+    - SystemLog marketplace_webhook remains persisted webhook evidence.
+    - This endpoint creates no events and changes no marketplace state.
+    """
+    from models import MarketplaceOrder, SystemLog
+
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except Exception:
+        limit = 20
+
+    limit = max(1, min(limit, 50))
+    records = []
+
+    # Existing persisted sale/order records.
+    orders = (
+        MarketplaceOrder.query
+        .order_by(MarketplaceOrder.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    for order in orders:
+        store = getattr(order, "store", None)
+        platform = (
+            getattr(store, "platform", None)
+            or "Marketplace"
+        )
+
+        order_id = (
+            getattr(order, "marketplace_order_id", None)
+            or getattr(order, "external_order_id", None)
+            or ""
+        )
+        sku = getattr(order, "sku", None) or ""
+        quantity = int(getattr(order, "quantity", 0) or 0)
+
+        records.append({
+            "event_key": f"order:{getattr(order, 'id', '')}",
+            "log_type": "marketplace_sale",
+            "platform": platform,
+            "message": (
+                f"Sale {order_id}: {sku} x{quantity}"
+                if sku
+                else f"Marketplace sale {order_id}"
+            ),
+            "created_at": (
+                order.created_at.isoformat()
+                if getattr(order, "created_at", None)
+                else None
+            ),
+        })
+
+    # Existing persisted webhook logs are used only for LISTING events here.
+    # Orders already come from MarketplaceOrder above, preventing a second
+    # representation of the same sale in the bell feed.
+    listing_logs = (
+        SystemLog.query
+        .filter(SystemLog.log_type == "marketplace_webhook")
+        .filter(SystemLog.message.ilike("%listing%"))
+        .order_by(SystemLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    for log in listing_logs:
+        message = str(getattr(log, "message", None) or "Marketplace listing update")
+        platform = str(getattr(log, "platform", None) or "Marketplace")
+
+        records.append({
+            "event_key": f"webhook:{getattr(log, 'id', '')}",
+            "log_type": "marketplace_listing",
+            "platform": platform,
+            "message": message,
+            "created_at": (
+                log.created_at.isoformat()
+                if getattr(log, "created_at", None)
+                else None
+            ),
+        })
+
+    # One ordered stream for display only. DB rows above remain the truth.
+    records.sort(
+        key=lambda row: str(row.get("created_at") or ""),
+        reverse=True,
+    )
+
+    # Stable event keys prevent duplicate rows inside this read response.
+    seen = set()
+    unique = []
+
+    for record in records:
+        key = record.get("event_key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(record)
+
+        if len(unique) >= limit:
+            break
+
+    return jsonify({
+        "success": True,
+        "records": unique,
+        "latest_event_at": (
+            unique[0].get("created_at")
+            if unique
+            else None
+        ),
+    })
+
+
 @governed_bp.get("/governed/product-linking/revision")
 def governed_product_linking_revision():
     """Return a cheap DB revision for browser-cache validation."""

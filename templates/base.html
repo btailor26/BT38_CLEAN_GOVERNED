@@ -111,7 +111,7 @@
         <div class="offcanvas-header border-bottom">
             <div>
                 <h5 class="offcanvas-title mb-0" id="bt38NotificationPanelLabel"><i data-feather="bell" class="me-2"></i>Notifications</h5>
-                <small class="text-muted">Marketplace sales</small>
+                <small class="text-muted">Marketplace events</small>
             </div>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
@@ -121,7 +121,7 @@
             </div>
             <div id="bt38NotificationError" class="alert alert-danger m-3 d-none" role="alert"></div>
             <div id="bt38NotificationEmpty" class="text-center text-muted py-5 d-none">
-                <i data-feather="bell-off" class="mb-2"></i><div>No marketplace sales found.</div>
+                <i data-feather="bell-off" class="mb-2"></i><div>No marketplace events found.</div>
             </div>
             <div id="bt38NotificationList" class="list-group list-group-flush d-none"></div>
         </div>
@@ -192,7 +192,7 @@
         const list = document.getElementById("bt38NotificationList");
         if (!panel || !bell || !badge || !loading || !errorBox || !emptyBox || !list) return;
 
-        const salesUrl = "/governed/ui/sales?limit=20";
+        const salesUrl = "/governed/ui/notifications?limit=20";
         const seenKey = "bt38.notifications.lastSeenAt";
         const lightKey = "bt38.notifications.eventPending";
         let records = [];
@@ -224,7 +224,9 @@
 
         function updateUnread() {
             const lastSeen = Number(window.localStorage.getItem(seenKey) || 0);
-            setBadge(records.filter((record) => timestamp(record) > lastSeen).length);
+            const unread = records.filter((record) => timestamp(record) > lastSeen).length;
+            setBadge(unread);
+            setBellLight(unread > 0);
         }
 
         function markSeen() {
@@ -236,6 +238,7 @@
 
         function iconName(record) {
             if (record.log_type === "product_linking_link") return "link-2";
+            if (record.log_type === "marketplace_listing") return "tag";
             if (record.log_type === "marketplace_webhook") return "radio";
             if (String(record.log_type || "").includes("push")) return "upload-cloud";
             return "bell";
@@ -290,8 +293,10 @@
             markSeen();
         });
 
-        // Deliberately no page-load fetch and no background polling. Opening
-        // the bell is the single read-only shortcut that pulls current sales.
+        // One persisted-event hydration when this page/session opens.
+        // If the laptop/browser was off, a newer DB event restores the bell.
+        // Deliberately no background polling or timer.
+        loadNotifications();
     })();
     </script>
     
