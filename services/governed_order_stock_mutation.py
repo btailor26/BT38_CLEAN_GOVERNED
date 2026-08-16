@@ -22,6 +22,11 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _ledger_update_source(value: Any) -> str:
+    """Respect the existing StockLedgerEntry.update_source VARCHAR(50) contract."""
+    return _text(value)[:50]
+
+
 def _line_idempotency_key(line: Any) -> str:
     store_id = _text(getattr(line, "store_id", None))
     order_id = _text(getattr(line, "external_order_id", None)) or _text(getattr(line, "marketplace_order_id", None)) or _text(getattr(line, "order_number", None))
@@ -190,7 +195,7 @@ def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_or
         reference_id=key,
         reason=f"{source}: marketplace order updated grouped warehouse stock",
         source_system="marketplace",
-        update_source=source,
+        update_source=_ledger_update_source(source),
     ))
 
     # Current group membership belongs to MarketplaceListing. The Warehouse
