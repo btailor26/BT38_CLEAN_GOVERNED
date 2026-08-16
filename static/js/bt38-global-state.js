@@ -95,5 +95,46 @@ window.BT38.setPageSession = function(pageName, values = {}) {
   script.src = `/static/js/product-linking-session.js?v=${encodeURIComponent(assetVersion)}`;
   script.async = false;
   script.dataset.bt38ProductLinkingSession = "1";
+
+  // Marketplace write truth and browser refresh truth are separate concerns.
+  // A successful group push must never be relabelled as "Push error" only
+  // because the targeted Product Linking row refresh could not be reconciled.
+  // Real marketplace failures are still re-thrown unchanged.
+  script.onload = function () {
+    const applyMutation = window.bt38ApplyProductLinkingMutation;
+    if (typeof applyMutation !== "function" || applyMutation.bt38PushTruthGuard) {
+      return;
+    }
+
+    const guardedApplyMutation = async function (contract, identity) {
+      try {
+        return await applyMutation(contract, identity);
+      } catch (error) {
+        const marketplacePushSucceeded = Boolean(
+          contract
+          && (contract.success || contract.ok)
+          && Number(contract.failed || 0) === 0
+          && Number(contract.pushed || contract.ok_count || 0) > 0
+          && Array.isArray(contract.affected_group_ids)
+        );
+
+        if (!marketplacePushSucceeded) {
+          throw error;
+        }
+
+        console.warn(
+          "[ProductLinkingSession] marketplace push succeeded; targeted UI refresh could not be reconciled",
+          error,
+          contract
+        );
+
+        return contract;
+      }
+    };
+
+    guardedApplyMutation.bt38PushTruthGuard = true;
+    window.bt38ApplyProductLinkingMutation = guardedApplyMutation;
+  };
+
   document.head.appendChild(script);
 })();
