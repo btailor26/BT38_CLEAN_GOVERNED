@@ -6,6 +6,9 @@ from typing import Any
 
 from extensions import db
 from models import SyncLog
+from services.governed_amazon_eventbridge_alignment import (
+    align_governed_amazon_eventbridge_to_existing_sqs,
+)
 from services.governed_amazon_listing_fulfillment_refresh import (
     ensure_governed_amazon_listing_notification_subscriptions,
 )
@@ -16,12 +19,23 @@ def record_governed_amazon_listing_subscription_reconciliation(
     store_id: int,
     source: str = "amazon_listing_subscription_visibility",
 ) -> dict[str, Any]:
-    """Run the existing listing subscription reconciliation and persist its result.
+    """Align the missing EventBridge hop, then reconcile existing subscriptions.
 
-    This is diagnostic visibility only. It creates no destination, queue, event bus,
-    rule, importer, scheduler, canonical writer, or marketplace write path.
+    This remains upstream infrastructure alignment only. It reuses BT38's
+    existing Amazon SQS queue/consumer and existing canonical listing path.
+    It creates no second queue, importer, scheduler, writer, stock path, or push.
     """
+    infrastructure = None
     try:
+        infrastructure = align_governed_amazon_eventbridge_to_existing_sqs(
+            store_id=int(store_id),
+        )
+        if not infrastructure.get("success"):
+            raise RuntimeError(
+                infrastructure.get("reason")
+                or "amazon_eventbridge_alignment_failed"
+            )
+
         result = ensure_governed_amazon_listing_notification_subscriptions(
             store_id=int(store_id),
         )
@@ -32,7 +46,9 @@ def record_governed_amazon_listing_subscription_reconciliation(
             "store_id": int(store_id),
             "reason": "amazon_listing_subscription_reconcile_failed",
             "error": str(exc),
-            "destination_created": False,
+            "destination_created": bool(
+                (infrastructure or {}).get("destination_created", False)
+            ),
         }
 
     subscriptions = []
@@ -43,6 +59,28 @@ def record_governed_amazon_listing_subscription_reconciliation(
             "created": bool(row.get("created")),
         })
 
+    infrastructure_visible = {
+        key: (infrastructure or {}).get(key)
+        for key in (
+            "success",
+            "destination_id",
+            "destination_created",
+            "event_source_name",
+            "event_bus_created",
+            "rule_name",
+            "rule_arn",
+            "target",
+            "input_path",
+            "queue_arn",
+            "region",
+            "account_id",
+            "new_queue_created",
+            "new_consumer_created",
+            "new_importer_created",
+        )
+        if key in (infrastructure or {})
+    }
+
     visible = {
         "success": bool(result.get("success")),
         "governed": True,
@@ -50,8 +88,17 @@ def record_governed_amazon_listing_subscription_reconciliation(
         "source": source,
         "reason": result.get("reason"),
         "error": result.get("error"),
-        "destination_id": result.get("destination_id"),
-        "destination_created": bool(result.get("destination_created", False)),
+        "destination_id": (
+            result.get("destination_id")
+            or infrastructure_visible.get("destination_id")
+        ),
+        "destination_created": bool(
+            result.get(
+                "destination_created",
+                infrastructure_visible.get("destination_created", False),
+            )
+        ),
+        "infrastructure": infrastructure_visible,
         "subscriptions": subscriptions,
     }
 
