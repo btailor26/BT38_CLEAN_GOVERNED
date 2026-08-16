@@ -38,6 +38,16 @@ def test_hydration_fills_mcf_delivery_fields_and_marketplace_timestamp():
     assert "marketplace_created_at" in fn
 
 
+def test_ebay_hydration_canonicalises_line_identity_and_idempotency_together():
+    fn = _function_source(HYDRATION, "hydrate_exact_ebay_order")
+    assert 'line_id = _text(item.get("lineItemId"))' in fn
+    assert 'canonical_key = f"{store.id}:{order_id}:{line_id}:{_text(row.sku)}"' in fn
+    assert "row.marketplace_order_item_id = line_id" in fn
+    assert "row.idempotency_key = canonical_key" in fn
+    assert "MarketplaceOrder.idempotency_key == canonical_key" in fn
+    assert "exact_ebay_order_identity_conflict" in fn
+
+
 def test_automatic_mcf_handoff_hydrates_before_existing_submission_authority():
     fn = _function_source(STOCK, "_attempt_immediate_mcf_handoff")
     hydrate_pos = fn.index("hydrate_exact_ebay_order(")
