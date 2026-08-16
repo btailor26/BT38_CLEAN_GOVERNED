@@ -16,7 +16,8 @@ def test_listing_notifications_select_existing_eventbridge_destination_only():
         "def recover_governed_amazon_listing_from_notification(", 1
     )[0]
 
-    assert 'get("eventBridge", {})' in function_block
+    assert '(row.get("resource") or {}).get("eventBridge", {})' in function_block
+    assert '(row.get("resourceSpecification") or {}).get("eventBridge", {})' in function_block
     assert 'get("sqs", {})' not in function_block
     assert 'amazon_existing_eventbridge_destination_missing' in function_block
     assert '"destination_created": False' in function_block
