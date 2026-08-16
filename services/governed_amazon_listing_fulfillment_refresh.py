@@ -517,6 +517,11 @@ def run_governed_amazon_listing_fulfillment_refresh(store_id=None, max_pages: in
                 "marketplaceIds": [marketplace_id],
                 "includedData": ["summaries", "fulfillmentAvailability"],
                 "pageSize": 20,
+                # Listing recovery must discover newly-created listings first.
+                # Amazon otherwise defaults this search to lastUpdatedDate,
+                # which can repeatedly surface an older recently-updated slice.
+                "sortBy": "createdDate",
+                "sortOrder": "DESC",
             }
 
             if page_token:
