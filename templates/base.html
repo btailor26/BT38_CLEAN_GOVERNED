@@ -533,10 +533,25 @@
             markSeen();
         });
 
-        // One persisted-event hydration when this page/session opens.
-        // If the laptop/browser was off, a newer DB event restores the bell.
-        // Deliberately no background polling or timer.
-        loadNotifications();
+        // One persisted-event hydration after the browser has actually
+        // opened/restored this page.
+        //
+        // This reconstructs bell state from persisted DB truth when events
+        // happened while the laptop/browser was offline.
+        //
+        // Exactly one read per page open:
+        // - no polling
+        // - no timer
+        // - no marketplace call
+        // - no background DB loop
+        window.addEventListener(
+            "pageshow",
+            function () {
+                stale = true;
+                loadNotifications();
+            },
+            {once: true}
+        );
     })();
     </script>
     
