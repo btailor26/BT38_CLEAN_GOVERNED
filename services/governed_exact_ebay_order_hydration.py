@@ -110,6 +110,9 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         if _text(item.get("sku"))
     }
 
+    identity_updates = 0
+    identity_conflicts = []
+
     for row in rows:
         for field, value in values.items():
             if value:
@@ -122,7 +125,35 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         if item:
             line_id = _text(item.get("lineItemId"))
             if line_id:
-                row.marketplace_order_item_id = line_id
+                # eBay notifications may initially identify a sold item with the
+                # legacy listing/item id. The Fulfillment API then gives us the
+                # canonical order lineItemId. Keep BOTH identity columns aligned
+                # when canonicalising the row; otherwise the later recovery read
+                # builds a different idempotency key and can create a duplicate
+                # pending MarketplaceOrder for the same sale.
+                canonical_key = f"{store.id}:{order_id}:{line_id}:{_text(row.sku)}"
+                conflict = (
+                    MarketplaceOrder.query
+                    .filter(
+                        MarketplaceOrder.idempotency_key == canonical_key,
+                        MarketplaceOrder.id != row.id,
+                    )
+                    .first()
+                )
+                if conflict is None:
+                    if (
+                        _text(row.marketplace_order_item_id) != line_id
+                        or _text(row.idempotency_key) != canonical_key
+                    ):
+                        row.marketplace_order_item_id = line_id
+                        row.idempotency_key = canonical_key
+                        identity_updates += 1
+                else:
+                    identity_conflicts.append({
+                        "row_id": row.id,
+                        "conflicting_row_id": conflict.id,
+                        "line_item_id": line_id,
+                    })
 
         db.session.execute(
             text(
@@ -150,11 +181,15 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         and values["ship_to_country"]
     )
     return {
-        "success": required_address_complete,
+        "success": required_address_complete and not identity_conflicts,
         "skipped": False,
         "reason": (
-            None if required_address_complete
-            else "exact_ebay_order_missing_mcf_delivery_fields"
+            "exact_ebay_order_identity_conflict"
+            if identity_conflicts
+            else (
+                None if required_address_complete
+                else "exact_ebay_order_missing_mcf_delivery_fields"
+            )
         ),
         "order_id": order_id,
         "marketplace_created_at": (
@@ -162,4 +197,6 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         ),
         "required_address_complete": required_address_complete,
         "rows_hydrated": len(rows),
+        "identity_updates": identity_updates,
+        "identity_conflicts": identity_conflicts,
     }
