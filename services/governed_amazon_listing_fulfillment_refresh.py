@@ -277,11 +277,13 @@ def ensure_governed_amazon_listing_notification_subscriptions(
     *,
     store_id: int,
 ) -> dict[str, Any]:
-    """Explicitly reconcile Amazon listing notifications on the existing destination.
+    """Reconcile listing notifications against an existing EventBridge destination.
 
-    This is a one-shot setup action for deployment/testing. It never runs at
-    application startup and does not create another destination, importer,
-    scheduler or marketplace write path.
+    Amazon routes LISTINGS_ITEM_* notifications through its EventBridge
+    workflow. Infrastructure provisioning remains outside runtime: this helper
+    reuses an already-created SP-API EventBridge destination and never creates
+    a destination, event bus, rule, importer, scheduler or marketplace write
+    path. The EventBridge rule can target the existing BT38 Amazon SQS queue.
     """
     store = (
         Store.query
@@ -310,16 +312,16 @@ def ensure_governed_amazon_listing_notification_subscriptions(
     destination = next(
         (
             row for row in destinations
-            if str(row.get("resourceSpecification", {}).get("sqs", {}).get("arn") or "").strip()
+            if row.get("resourceSpecification", {}).get("eventBridge", {})
         ),
-        destinations[0] if destinations else None,
+        None,
     )
     destination_id = str((destination or {}).get("destinationId") or "").strip()
     if not destination_id:
         return {
             "success": False,
             "governed": True,
-            "reason": "amazon_existing_notification_destination_missing",
+            "reason": "amazon_existing_eventbridge_destination_missing",
             "store_id": int(store_id),
             "destination_created": False,
         }
