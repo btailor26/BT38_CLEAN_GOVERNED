@@ -14,6 +14,7 @@ import requests
 NOTIFICATION_BASE_URL = "https://api.ebay.com/commerce/notification/v1"
 ORDER_TOPIC_ID = "ORDER_CONFIRMATION"
 LISTING_TOPIC_ID = "LISTING"
+LISTING_READ_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.listing.read"
 REQUIRED_TOPIC_IDS = (
     ORDER_TOPIC_ID,
     LISTING_TOPIC_ID,
@@ -393,8 +394,12 @@ def ensure_ebay_order_notification_registration(
     listing_status = str(
         creds.get("ebay_notification_listing_subscription_status") or ""
     ).upper()
+    granted_scopes = set(
+        str(creds.get("oauth_granted_scope") or "").split()
+    )
+    listing_scope_granted = LISTING_READ_SCOPE in granted_scopes
 
-    if listing_status == "AUTHORIZATION_REQUIRED":
+    if listing_status == "AUTHORIZATION_REQUIRED" and not listing_scope_granted:
         listing_subscription = {
             "topic_id": LISTING_TOPIC_ID,
             "schema_version": TOPIC_SCHEMA_VERSIONS[LISTING_TOPIC_ID],
