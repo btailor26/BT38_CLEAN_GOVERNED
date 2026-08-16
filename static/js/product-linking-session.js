@@ -313,6 +313,114 @@
     return cleanup.concat(authority);
   }
 
+  function committedListingSnapshot(listingId) {
+    const id = String(listingId ?? "");
+
+    for (const product of state.products) {
+      const found = (product?.listings || []).find(
+        (listing) => listingIdentity(listing) === id
+      );
+      if (found) return { ...found };
+    }
+
+    const direct = state.listings.find(
+      (listing) => listingIdentity(listing) === id
+    );
+    if (direct) return { ...direct };
+
+    const unlinked = state.unlinked.find(
+      (listing) => listingIdentity(listing) === id
+    );
+    if (unlinked) return { ...unlinked };
+
+    return null;
+  }
+
+  function applyCommittedRelationshipLocally(contract, identity) {
+    if (!contract || contract.changed === false) return false;
+
+    const listingId =
+      identity?.listingId ||
+      contract.listing_id ||
+      normaliseIds(contract.affected_listing_ids)[0];
+
+    const groupId =
+      contract.group_id ||
+      identity?.groupId ||
+      contract.group?.id ||
+      normaliseIds(contract.affected_group_ids)[0];
+
+    if (!listingId || !groupId) return false;
+
+    const listing =
+      committedListingSnapshot(listingId) ||
+      (contract.marketplace_listings || []).find(
+        (item) => sameId(item?.id, listingId)
+      );
+
+    if (!listing) return false;
+
+    const committedListing = {
+      ...listing,
+      master_product_group_id: Number(groupId),
+      active_group_id: Number(groupId)
+    };
+
+    // Remove this exact listing from every stale browser group first.
+    state.products = state.products.map((product) => {
+      const listings = (product.listings || []).filter(
+        (item) => !sameId(listingIdentity(item), listingId)
+      );
+
+      return {
+        ...product,
+        listings,
+        linked_count: listings.length
+      };
+    });
+
+    // Current Product Linking group is the display authority.
+    const destinationIndex = state.products.findIndex(
+      (product) => sameId(product?.master_product_group_id, groupId)
+    );
+
+    if (destinationIndex < 0) return false;
+
+    const destination = state.products[destinationIndex];
+    const destinationListings = uniqueById([
+      ...(destination.listings || []),
+      committedListing
+    ]);
+
+    state.products[destinationIndex] = {
+      ...destination,
+      listings: destinationListings,
+      linked_count: destinationListings.length
+    };
+
+    // Keep the browser listing indexes aligned with the same committed truth.
+    state.unlinked = state.unlinked.filter(
+      (item) => !sameId(listingIdentity(item), listingId)
+    );
+
+    state.listings = [
+      committedListing,
+      ...state.listings.filter(
+        (item) => !sameId(listingIdentity(item), listingId)
+      )
+    ];
+
+    assignLegacyGlobals();
+    state.page = 1;
+    render();
+
+    // Browser cache follows the already-committed server response.
+    // No DB read is required on the successful mutation path.
+    void writeSnapshot();
+
+    return true;
+  }
+
   async function applyMutationContract(contract, identity) {
     if (contract && contract.changed === false) return contract;
 
@@ -461,9 +569,36 @@
       if (!response.ok || (!data.success && !data.ok)) throw new Error(data.error || data.message || `HTTP ${response.status}`);
       const eventGroupId = data.group_id || data.group?.id || normaliseIds(data.affected_group_ids)[0] || null;
       const relationshipEvent = { ...data, event_type: data.event_type || "product_linking_link", event_source: data.event_source || "product_linking_ui", group_id: eventGroupId };
-      await applyMutationContract(relationshipEvent, { listingId, warehouseId, listingSku, warehouseSku, groupId: eventGroupId, previousGroupId: data.previous_group_id, originalGroupId: data.original_group_id });
-      if (!mappingExists(listingId, warehouseId, eventGroupId)) console.warn("[ProductLinkingSession] committed link event is waiting for the shared targeted refresh", relationshipEvent);
-      closeOpenModals(); window.alert(data.changed === false ? `${listingSku} is already linked to ${warehouseSku}.` : `Successfully linked ${listingSku} to ${warehouseSku}.`); return;
+
+      if (data.changed !== false) {
+        const applied = applyCommittedRelationshipLocally(
+          relationshipEvent,
+          {
+            listingId,
+            warehouseId,
+            listingSku,
+            warehouseSku,
+            groupId: eventGroupId,
+            previousGroupId: data.previous_group_id,
+            originalGroupId: data.original_group_id
+          }
+        );
+
+        if (!applied) {
+          console.warn(
+            "[ProductLinkingSession] committed Link response could not be applied locally",
+            relationshipEvent
+          );
+        }
+      }
+
+      closeOpenModals();
+      window.alert(
+        data.changed === false
+          ? `${listingSku} is already linked to ${warehouseSku}.`
+          : `Successfully linked ${listingSku} to ${warehouseSku}.`
+      );
+      return;
     } catch (error) {
       console.error("[ProductLinkingSession] link transport failed", error);
 
@@ -514,9 +649,48 @@
     const button = document.getElementById("confirmExplicitUnlinkButton"); if (button) { button.disabled = true; button.textContent = "Unlinking..."; }
     try {
       const response = await fetch(`/governed/groups/${encodeURIComponent(identity.groupId)}/unlink`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ listing_id: identity.listingId, warehouse_stock_id: identity.warehouseStockId, user_confirmed: true }) });
-      const data = await response.json(); if (!response.ok || (!data.success && !data.ok)) throw new Error(data.error || data.message || `HTTP ${response.status}`);
-      await applyMutationContract(data, { listingId: identity.listingId, listingSku: identity.listingSku, warehouseId: data.warehouse_stock_id || identity.warehouseStockId, groupId: data.group_id, previousGroupId: data.previous_group_id || identity.groupId, originalGroupId: data.original_group_id });
-      closeOpenModals(); window.alert(data.changed === false ? `${identity.listingSku} is already in its original group.` : `Removed ${identity.listingSku} from the shared group and restored its original group.`); clearPendingExplicitUnlink(); return;
+      const data = await response.json();
+      if (!response.ok || (!data.success && !data.ok)) {
+        throw new Error(
+          data.error ||
+          data.message ||
+          `HTTP ${response.status}`
+        );
+      }
+
+      if (data.changed !== false) {
+        const applied = applyCommittedRelationshipLocally(
+          data,
+          {
+            listingId: identity.listingId,
+            listingSku: identity.listingSku,
+            warehouseId:
+              data.warehouse_stock_id ||
+              identity.warehouseStockId,
+            groupId: data.group_id,
+            previousGroupId:
+              data.previous_group_id ||
+              identity.groupId,
+            originalGroupId: data.original_group_id
+          }
+        );
+
+        if (!applied) {
+          console.warn(
+            "[ProductLinkingSession] committed Unlink response could not be applied locally",
+            data
+          );
+        }
+      }
+
+      closeOpenModals();
+      window.alert(
+        data.changed === false
+          ? `${identity.listingSku} is already in its original group.`
+          : `Removed ${identity.listingSku} from the shared group and restored its original group.`
+      );
+      clearPendingExplicitUnlink();
+      return;
     } catch (error) {
       console.error("[ProductLinkingSession] explicit unlink failed", error); window.alert(`Unlink failed: ${error.message || error}`); explicitUnlinkInFlight = false; if (button) { button.disabled = false; button.textContent = "Confirm Unlink"; }
     }
