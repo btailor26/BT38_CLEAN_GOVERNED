@@ -315,16 +315,42 @@
 
   async function applyMutationContract(contract, identity) {
     if (contract && contract.changed === false) return contract;
-    const listingIds = normaliseIds([...(contract?.affected_listing_ids || []), identity?.listingId]);
-    const keys = mutationSearchKeys(contract, identity);
-    if (!keys.length) throw new Error("Affected Product Linking rows could not be identified");
-    for (const key of keys) {
-      const data = await fetchDataset(key, TARGETED_DATASET_LIMIT);
-      mergeTargetedData(data, listingIds);
+
+    const listingIds = normaliseIds([
+      ...(contract?.affected_listing_ids || []),
+      identity?.listingId
+    ]);
+
+    // One committed relationship identity is enough to rebuild the affected
+    // browser row. mergeTargetedData removes that listing from any stale old
+    // group before inserting the canonical row returned from Neon.
+    //
+    // No sequential group/listing/Warehouse reads.
+    const refreshKey =
+      identity?.listingId ||
+      listingIds[0] ||
+      identity?.warehouseId ||
+      normaliseIds(contract?.affected_warehouse_stock_ids)[0] ||
+      identity?.groupId ||
+      normaliseIds(contract?.affected_group_ids)[0];
+
+    if (!refreshKey) {
+      throw new Error(
+        "Affected Product Linking row could not be identified"
+      );
     }
+
+    const data = await fetchDataset(
+      refreshKey,
+      TARGETED_DATASET_LIMIT
+    );
+
+    mergeTargetedData(data, listingIds);
+
     state.page = 1;
     render();
     await writeSnapshot();
+
     return contract;
   }
   async function refreshAffectedRecord(identity) { return applyMutationContract({ changed: true }, identity); }

@@ -135,17 +135,25 @@ def _normalise_webhook_event(source, event=None, **identifiers):
             listing_ids.append(parsed)
     listing_ids = sorted(set(listing_ids))
 
+    product_linking_group_push = bool(
+        event_type == "product_linking_group_push"
+        and group_id is not None
+    )
+
     scope_present = bool(
-        store_id is not None
-        and any(
-            (
-                seller_sku,
-                listing_id,
-                order_id,
-                asin,
-                fnsku,
-                warehouse_stock_id,
-                listing_ids,
+        product_linking_group_push
+        or (
+            store_id is not None
+            and any(
+                (
+                    seller_sku,
+                    listing_id,
+                    order_id,
+                    asin,
+                    fnsku,
+                    warehouse_stock_id,
+                    listing_ids,
+                )
             )
         )
     )
@@ -856,6 +864,54 @@ def _execute_mcf_auto_release_event(event):
     }
 
 
+def _execute_product_linking_group_push_event(event):
+    """Execute one already-committed Product Linking group push.
+
+    Relationship mutation has already committed before this event is queued.
+    This reuses the existing governed runtime and existing push authority.
+    """
+    group_id = _safe_int(event.get("group_id"))
+
+    if group_id is None:
+        return {
+            "success": False,
+            "verified": False,
+            "aligned": False,
+            "reason": "product_linking_group_id_required",
+            "database_touched": False,
+        }
+
+    from services.governed_push_execution import push_group_listings
+
+    result = push_group_listings(
+        group_id=int(group_id),
+        actor="product_linking_runtime",
+        source=(
+            event.get("source")
+            or "product_linking_committed_relationship"
+        ),
+        actor_user=None,
+    )
+
+    success = bool(
+        result.get("ok")
+        or result.get("success")
+    )
+
+    return {
+        **result,
+        "verified": True,
+        "aligned": success,
+        "event_type": "product_linking_group_push",
+        "group_id": int(group_id),
+        "database_touched": True,
+        "full_scan_started": False,
+        "recent_order_import_started": False,
+        "warehouse_scan_started": False,
+        "marketplace_hydration_started": False,
+    }
+
+
 def _verify_webhook_event(event):
     if not event.get("scope_present"):
         return {
@@ -968,6 +1024,8 @@ def _run_light_reconcile_cycle(
         ).strip().lower()
         if event_type == "mcf_auto_release":
             result = _execute_mcf_auto_release_event(event)
+        elif event_type == "product_linking_group_push":
+            result = _execute_product_linking_group_push_event(event)
         else:
             result = _verify_webhook_event(event)
         results.append(result)

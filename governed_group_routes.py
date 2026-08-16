@@ -193,7 +193,14 @@ def governed_group_link_listing(group_id: int):
     ))
 
     db.session.commit()
-    push_result = _push_group_safely(group.id, source="product_linking_auto_push")
+
+    # Relationship truth is committed before marketplace execution.
+    # Do not hold the browser request open while Amazon/eBay respond.
+    push_queue_result = _queue_group_push_after_commit(
+        [group.id],
+        source="product_linking_auto_push",
+    )
+
     payload = _serialize_master_group(group)
     payload.update({
         "event_type": "product_linking_link",
@@ -205,9 +212,10 @@ def governed_group_link_listing(group_id: int):
         "warehouse_stock_id": result.get("warehouse_stock_id"),
         "stock_group_authority": False,
         "listing_group_mutated": True,
-        "auto_push_attempted": True,
-        "auto_push_success": _push_succeeded(push_result),
-        "push_result": push_result,
+        "auto_push_attempted": False,
+        "auto_push_queued": bool(push_queue_result.get("queued")),
+        "auto_push_success": None,
+        "push_result": push_queue_result,
         **_change_contract(
             changed=True,
             group_ids=[group.id, result.get("original_group_id")],
@@ -471,18 +479,20 @@ def governed_group_unlink(group_id: int):
             ),
         )), 409
 
-    previous_group_push = _push_group_safely(
+    affected_group_ids = [
         previous_group_id,
-        source="product_linking_unlink_previous_group_auto_push",
-    )
-    restored_group_push = _push_group_safely(
         resulting_group_id,
-        source="product_linking_unlink_original_group_auto_push",
+    ]
+
+    # The unlink relationship is already committed and verified.
+    # Wake the existing governed runtime for both affected groups without
+    # making the browser wait for marketplace network calls.
+    push_queue_result = _queue_group_push_after_commit(
+        affected_group_ids,
+        source="product_linking_unlink_auto_push",
     )
 
     response_group = committed_group
-
-    affected_group_ids = [previous_group_id, resulting_group_id]
 
     payload = _serialize_master_group(response_group)
     payload.update({
@@ -497,15 +507,10 @@ def governed_group_unlink(group_id: int):
         "released_to_unlinked": False,
         "recovered_missing_original": recovered_missing_original,
         "neon_relationship_confirmed": True,
-        "auto_push_attempted": True,
-        "auto_push_success": (
-            _push_succeeded(previous_group_push)
-            and _push_succeeded(restored_group_push)
-        ),
-        "push_results": {
-            "previous_group": previous_group_push,
-            "restored_original_group": restored_group_push,
-        },
+        "auto_push_attempted": False,
+        "auto_push_queued": bool(push_queue_result.get("queued")),
+        "auto_push_success": None,
+        "push_results": push_queue_result,
         **_change_contract(
             changed=True,
             group_ids=affected_group_ids,
@@ -655,6 +660,51 @@ def _link_listing_to_group(group, listing_id: int, actor: str) -> dict:
         "original_group_id": original_group_id,
         "stock_group_authority": False,
         "listing_group_mutated": True,
+    }
+
+
+def _queue_group_push_after_commit(group_ids, *, source: str) -> dict:
+    """Wake the existing governed runtime for committed group relationships."""
+    from services.governed_runtime_engine import notify_governed_runtime_work
+
+    queued = []
+    seen = set()
+
+    for value in group_ids or []:
+        try:
+            group_id = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if group_id <= 0 or group_id in seen:
+            continue
+
+        seen.add(group_id)
+
+        result = notify_governed_runtime_work(
+            source=source,
+            event={
+                "event_type": "product_linking_group_push",
+                "group_id": group_id,
+                "verify_after": datetime.utcnow(),
+                "payload": {
+                    "group_id": group_id,
+                    "push_source": source,
+                },
+            },
+        )
+
+        queued.append({
+            "group_id": group_id,
+            "queued": bool(result.get("queued")),
+            "runtime": result,
+        })
+
+    return {
+        "success": True,
+        "queued": bool(queued),
+        "groups": queued,
+        "group_ids": sorted(seen),
     }
 
 
