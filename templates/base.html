@@ -533,24 +533,54 @@
             markSeen();
         });
 
-        // One persisted-event hydration after the browser has actually
-        // opened/restored this page.
+        // Refresh ONLY persisted bell truth when the browser first opens
+        // or becomes visible again after laptop/tab suspension.
         //
-        // This reconstructs bell state from persisted DB truth when events
-        // happened while the laptop/browser was offline.
-        //
-        // Exactly one read per page open:
+        // Event driven only:
         // - no polling
+        // - no interval
         // - no timer
+        // - no page refresh
         // - no marketplace call
         // - no background DB loop
+        let bellWakeHydrationInFlight = false;
+        let bellPageWasHidden = document.visibilityState === "hidden";
+
+        async function hydrateBellAfterWake() {
+            if (bellWakeHydrationInFlight) return;
+
+            bellWakeHydrationInFlight = true;
+            try {
+                stale = true;
+                await loadNotifications();
+            } finally {
+                bellWakeHydrationInFlight = false;
+            }
+        }
+
         window.addEventListener(
             "pageshow",
             function () {
-                stale = true;
-                loadNotifications();
-            },
-            {once: true}
+                hydrateBellAfterWake();
+            }
+        );
+
+        document.addEventListener(
+            "visibilitychange",
+            function () {
+                if (document.visibilityState === "hidden") {
+                    bellPageWasHidden = true;
+                    return;
+                }
+
+                if (
+                    document.visibilityState === "visible"
+                    && bellPageWasHidden
+                ) {
+                    bellPageWasHidden = false;
+                    hydrateBellAfterWake();
+                }
+            }
         );
     })();
     </script>
