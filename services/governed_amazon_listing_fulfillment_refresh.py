@@ -308,7 +308,10 @@ def ensure_governed_amazon_listing_notification_subscriptions(
         credentials=_credentials(raw),
     )
     destination_payload = client.get_destinations().payload or {}
-    destinations = list(destination_payload.get("destinations") or [])
+    if isinstance(destination_payload, list):
+        destinations = list(destination_payload)
+    else:
+        destinations = list(destination_payload.get("destinations") or [])
     destination = next(
         (
             row for row in destinations
