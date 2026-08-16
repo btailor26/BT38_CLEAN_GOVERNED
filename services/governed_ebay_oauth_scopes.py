@@ -10,14 +10,9 @@ DEFAULT_EBAY_OAUTH_SCOPES = (
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
     "https://api.ebay.com/oauth/api_scope/sell.account",
-    "https://api.ebay.com/oauth/api_scope/sell.listing.read",
 )
 
-LEGACY_EBAY_OAUTH_SCOPES = tuple(
-    scope
-    for scope in DEFAULT_EBAY_OAUTH_SCOPES
-    if scope != "https://api.ebay.com/oauth/api_scope/sell.listing.read"
-)
+LEGACY_EBAY_OAUTH_SCOPES = DEFAULT_EBAY_OAUTH_SCOPES
 
 
 def governed_ebay_oauth_scopes() -> str:
