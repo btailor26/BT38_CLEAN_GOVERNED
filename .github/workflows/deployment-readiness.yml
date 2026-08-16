@@ -63,5 +63,15 @@ jobs:
           grep -q 'app = "bt38-prod"' fly.toml
 
       - name: Run full integrated test suite
+        shell: bash
         run: |
-          uv run python -m pytest -q tests
+          set -o pipefail
+          uv run python -m pytest -q tests 2>&1 | tee /tmp/pytest-output.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo '## Integrated pytest output'
+            echo '```text'
+            tail -n 200 /tmp/pytest-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
