@@ -41,12 +41,13 @@ def _destination_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def _eventbridge_spec(destination: dict[str, Any] | None) -> dict[str, Any]:
-    return dict(
-        ((destination or {}).get("resourceSpecification") or {}).get(
-            "eventBridge"
-        )
+    destination = destination or {}
+    resource = (
+        destination.get("resource")
+        or destination.get("resourceSpecification")
         or {}
     )
+    return dict(resource.get("eventBridge") or {})
 
 
 def _existing_eventbridge_destination(client: Notifications):
