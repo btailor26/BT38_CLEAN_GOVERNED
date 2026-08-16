@@ -1,7 +1,7 @@
-"""BT38 governed marketplace refresh entry point.
+"""BT38 governed Warehouse Sync recovery entry point.
 
-All manual store-sync shortcuts delegate to the same governed marketplace
-import-refresh orchestrator used by the runtime engine.
+Warehouse Sync is a bounded pending-order recovery shortcut only.
+It must not launch marketplace-wide listing or inventory hydration.
 """
 
 from services.runtime_action_guard import is_runtime_action_allowed
@@ -27,8 +27,8 @@ def run_governed_warehouse_sync(
 ):
     from extensions import db
     from models import Store
-    from services.governed_runtime_engine import (
-        run_governed_marketplace_import_refresh,
+    from services.governed_marketplace_order_import import (
+        run_governed_marketplace_order_import,
     )
 
     if store_id:
@@ -42,6 +42,7 @@ def run_governed_warehouse_sync(
             .all()
         )
 
+    stores = [store for store in stores if store is not None]
     guard_results = []
     import_results = []
 
@@ -65,9 +66,9 @@ def run_governed_warehouse_sync(
             })
             continue
 
-        result = run_governed_marketplace_import_refresh(
+        result = run_governed_marketplace_order_import(
             store_id=store.id,
-            source=actor,
+            source=f"{actor}:pending_order_recovery",
         )
         result_success = (
             bool(result.get("success", False))
@@ -96,10 +97,13 @@ def run_governed_warehouse_sync(
         "manual": True,
         "execution_blocked": bool(stores) and blocked == len(stores),
         "fuse_box_checked": True,
-        "mode": "governed_marketplace_import_refresh",
+        "mode": "governed_recent_order_recovery",
         "store_id": store_id,
         "stores_checked": len(stores),
         "stores_blocked": blocked,
         "guards": guard_results,
         "results": import_results,
+        "full_marketplace_scan_started": False,
+        "listing_hydration_started": False,
+        "inventory_hydration_started": False,
     }
