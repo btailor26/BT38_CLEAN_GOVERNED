@@ -185,6 +185,7 @@
   let selections = Array.from(
     document.querySelectorAll('.mcf-order-select')
   );
+  let mcfRefreshRunning = false;
 
   const pageName = 'mcfOrders';
   const defaults = {
@@ -287,6 +288,40 @@
     });
   }
 
+  async function refreshMcfTable() {
+    if (mcfRefreshRunning) return;
+    mcfRefreshRunning = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(window.location.href, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {'X-BT38-UI-Refresh': 'mcf-committed-state'},
+        signal: controller.signal
+      });
+      if (!response.ok) return;
+      const html = await response.text();
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      const freshBody = parsed.getElementById('mcf-orders-body');
+      const body = document.getElementById('mcf-orders-body');
+      if (!freshBody || !body) return;
+      body.replaceChildren(...Array.from(freshBody.children).map((node) => document.importNode(node, true)));
+      refreshCollections();
+      render();
+      if (window.feather && typeof window.feather.replace === 'function') {
+        window.feather.replace();
+      }
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        console.warn('[Orders/MCF] committed-state refresh failed', error);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      mcfRefreshRunning = false;
+    }
+  }
+
   selectAll.addEventListener('change', () => {
     selections.forEach((checkbox) => {
       const row = checkbox.closest('tr');
@@ -306,52 +341,24 @@
   prev.addEventListener('click', () => { if (page > 1) { page -= 1; render(); } });
   next.addEventListener('click', () => { page += 1; render(); });
 
-  window.addEventListener('bt38-marketplace-event', async (event) => {
-    const orderId = String(event?.detail?.order_id || '').trim();
-    if (!orderId) return;
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 5000);
-
-    try {
-      const response = await fetch(window.location.href, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {'X-BT38-UI-Refresh': 'mcf-exact-order'},
-        signal: controller.signal
-      });
-      if (!response.ok) return;
-
-      const html = await response.text();
-      const parsed = new DOMParser().parseFromString(html, 'text/html');
-      const escaped = window.CSS?.escape ? window.CSS.escape(orderId) : orderId.replace(/["\\]/g, '\\$&');
-      const freshRow = parsed.querySelector(`.mcf-order-row[data-order-id="${escaped}"]`);
-      if (!freshRow) return;
-
-      const currentRow = document.querySelector(`.mcf-order-row[data-order-id="${escaped}"]`);
-      const imported = document.importNode(freshRow, true);
-      if (currentRow) {
-        currentRow.replaceWith(imported);
-      } else {
-        const body = document.getElementById('mcf-orders-body');
-        const noMatchRow = document.getElementById('mcf-no-match-row');
-        body.insertBefore(imported, noMatchRow || body.firstChild);
-      }
-
-      refreshCollections();
-      page = 1;
-      render();
-      if (window.feather && typeof window.feather.replace === 'function') {
-        window.feather.replace();
-      }
-    } catch (error) {
-      if (error?.name !== 'AbortError') {
-        console.warn('[Orders/MCF] exact event refresh failed', error);
-      }
-    } finally {
-      window.clearTimeout(timeout);
-    }
+  window.addEventListener('bt38-marketplace-event', () => {
+    void refreshMcfTable();
   });
+
+  let eventSource = null;
+  if (typeof window.EventSource === 'function') {
+    eventSource = new EventSource('/governed/ui/events/stream');
+    eventSource.addEventListener('marketplace', () => {
+      void refreshMcfTable();
+    });
+    eventSource.addEventListener('error', () => {
+      console.warn('[Orders/MCF] live committed-state signal unavailable');
+    });
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (eventSource) eventSource.close();
+  }, {once: true});
 
   render();
 })();
