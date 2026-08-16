@@ -63,15 +63,32 @@ jobs:
           grep -q 'app = "bt38-prod"' fly.toml
 
       - name: Run full integrated test suite
+        id: integrated-tests
         shell: bash
         run: |
-          set -o pipefail
-          uv run python -m pytest -q tests 2>&1 | tee /tmp/pytest-output.txt
-          status=${PIPESTATUS[0]}
-          {
-            echo '## Integrated pytest output'
-            echo '```text'
-            tail -n 200 /tmp/pytest-output.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          uv run python -m pytest -q tests > pytest-output.txt 2>&1
+          status=$?
+          cat pytest-output.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload integrated pytest output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-readiness-pytest-${{ github.sha }}
+          path: pytest-output.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce integrated test result
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.integrated-tests.outputs.status }}"
+          if [ -z "$status" ]; then
+            echo "Integrated pytest status missing."
+            exit 1
+          fi
           exit "$status"
