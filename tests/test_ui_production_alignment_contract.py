@@ -60,8 +60,16 @@ def test_product_linking_changes_merge_only_affected_server_state():
     assert "/unlink" in unlink_confirm_block
     assert "user_confirmed: true" in unlink_confirm_block
 
-    assert "await applyMutationContract(relationshipEvent, {" in link_block
-    assert "await applyMutationContract(data, {" in unlink_confirm_block
+    # Successful relationship mutations render directly from the committed
+    # server response instead of doing another normal-path DB read.
+    assert "applyCommittedRelationshipLocally(" in link_block
+    assert "applyCommittedRelationshipLocally(" in unlink_confirm_block
+    assert "await applyMutationContract(relationshipEvent, {" not in link_block
+    assert "await applyMutationContract(data, {" not in unlink_confirm_block
+
+    # Lost-response protection remains targeted and read-only for Link.
+    assert "await refreshAffectedRecord({" in link_block
+    assert "Never retry the write automatically" in link_block
 
     assert "await clearSnapshot();" not in link_block
     assert "window.location.reload();" not in link_block
