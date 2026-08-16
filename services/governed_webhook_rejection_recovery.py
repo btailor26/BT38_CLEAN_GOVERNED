@@ -13,6 +13,9 @@ Contract:
   exact Seller-SKU settlement verification was not completed after 90 seconds.
 - FBA settlement recovery re-reads only that Seller SKU from Amazon; it does
   not replay the order or scan marketplace inventory.
+- eBay ORDER_CONFIRMATION failures that were durably captured are handed to
+  this exact recovery path before BT38 returns HTTP 200 to eBay. Other eBay
+  topics, including LISTING, keep their existing response behaviour.
 - No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
   marketplace-wide recovery is started.
 """
@@ -57,6 +60,25 @@ def _response_failed(response) -> bool:
         "failed",
         "order_import_failed",
     }
+
+
+def _ebay_request_topic() -> str:
+    """Return the exact eBay topic without normalising one topic into another."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return ""
+
+    topic = payload.get("topic")
+    if topic in (None, ""):
+        notification = payload.get("notification")
+        if isinstance(notification, dict):
+            topic = notification.get("topic")
+    if topic in (None, ""):
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            topic = metadata.get("topic")
+
+    return str(topic or "").strip().upper()
 
 
 def _run_pending_recoveries():
@@ -340,6 +362,7 @@ def recover_when_marketplace_webhook_is_rejected(response):
                 "notification_record_id"
             )
 
+    scheduled = False
     if not getattr(g, "bt38_rejected_webhook_recovery_requested", False):
         scheduled = request_rejected_webhook_recovery(
             platform,
@@ -347,5 +370,20 @@ def recover_when_marketplace_webhook_is_rejected(response):
         )
         if scheduled:
             g.bt38_rejected_webhook_recovery_requested = True
+    else:
+        scheduled = True
+
+    # eBay must not retry/mark down an ORDER_CONFIRMATION that BT38 has already
+    # captured durably and handed to its existing exact recovery path. This is
+    # deliberately topic-specific: LISTING and every other webhook retain their
+    # existing response semantics. If capture failed or recovery could not be
+    # scheduled, preserve the original failure so eBay can retry it.
+    if (
+        scheduled
+        and platform == "ebay"
+        and _ebay_request_topic() == "ORDER_CONFIRMATION"
+    ):
+        response.status_code = 200
+        response.headers["X-BT38-Exact-Recovery"] = "scheduled"
 
     return response
