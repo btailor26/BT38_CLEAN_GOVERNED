@@ -6,25 +6,38 @@
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
     <div>
         <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
-        <p class="text-muted mb-0">One DB-backed workspace for merchant-fulfilled orders, shipping choice, labels, carrier acceptance, tracking and marketplace mapping.</p>
+        <p class="text-muted mb-0">One DB-backed shipping desk for merchant-fulfilled marketplace orders.</p>
     </div>
-    <span class="badge bg-secondary fs-6">Build mode · provider writes disabled</span>
+    <span class="badge bg-primary fs-6">Governed shipping · explicit purchase</span>
 </div>
 
 <div class="alert alert-info">
-    <strong>Source of truth:</strong> FBM reads orders already committed to the BT38 database. MCF/FBA orders are excluded. Shipping charges stay on the seller's marketplace, Packlink or carrier account; BT38 does not handle postage money or carrier claims.
+    <strong>Source of truth:</strong> orders come from the BT38 database. MCF/FBA orders are excluded. Prime/SFP Amazon orders are locked to Amazon Buy Shipping. Postage is charged by the marketplace/provider account, never by BT38.
 </div>
 
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <div>
-            <strong>Packlink PRO</strong>
-            <div class="small text-muted">Connection status only. No shipment or label is created.</div>
+<div class="row g-3 mb-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div><strong>Packlink PRO</strong><div class="small text-muted">Connection and live rate provider.</div></div>
+                <button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test connection</button>
+            </div>
+            <div class="card-body py-3"><div id="packlinkConnectionStatus" class="small text-muted">Not tested in this browser session.</div></div>
         </div>
-        <button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test Packlink connection</button>
     </div>
-    <div class="card-body py-3">
-        <div id="packlinkConnectionStatus" class="small text-muted">Not tested in this browser session.</div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>Label printer · QZ Tray</strong><div class="small text-muted">Purchased label is saved first; printing can never trigger another postage charge.</div></div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <button id="qzConnect" class="btn btn-sm btn-outline-primary" type="button">Connect QZ</button>
+                    <select id="qzPrinter" class="form-select form-select-sm" style="max-width:300px"><option value="">Saved/default printer</option></select>
+                    <button id="qzSavePrinter" class="btn btn-sm btn-outline-secondary" type="button">Save printer</button>
+                    <div class="form-check ms-lg-auto"><input id="qzAutoPrint" class="form-check-input" type="checkbox" checked><label class="form-check-label" for="qzAutoPrint">Auto-print after purchase</label></div>
+                </div>
+                <div id="qzStatus" class="small text-muted mt-2">QZ not connected.</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -38,150 +51,51 @@
 
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <div>
-            <span class="fw-semibold">FBM Orders</span>
-            <span id="selectedOrderCount" class="badge bg-light text-dark border ms-2">0 selected</span>
-        </div>
-        <div class="d-flex gap-2 align-items-center">
-            <button id="readyToShipSelected" class="btn btn-sm btn-primary" type="button" disabled>
-                <i data-feather="package" class="me-1"></i>Ready to Ship
-            </button>
-            <span class="text-muted small">Select one or more orders, or click an order to view shipping routes.</span>
-        </div>
+        <div><span class="fw-semibold">FBM Orders</span><span id="selectedOrderCount" class="badge bg-light text-dark border ms-2">0 selected</span></div>
+        <div class="d-flex gap-2 align-items-center"><button id="readyToShipSelected" class="btn btn-sm btn-primary" type="button" disabled><i data-feather="package" class="me-1"></i>Ready to Ship</button><span class="text-muted small">Select orders or click a row.</span></div>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th style="width:42px" class="text-center"><input id="selectAllOrders" class="form-check-input" type="checkbox" aria-label="Select all visible FBM orders"></th>
-                    <th>Marketplace</th>
-                    <th>Order</th>
-                    <th>SKU</th>
-                    <th>Qty</th>
-                    <th>Postcode</th>
-                    <th>Recommended shipping</th>
-                    <th>Shipment</th>
-                    <th>Carrier confirmation</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
+            <thead class="table-light"><tr><th style="width:42px" class="text-center"><input id="selectAllOrders" class="form-check-input" type="checkbox"></th><th>Marketplace</th><th>Order</th><th>SKU</th><th>Qty</th><th>Postcode</th><th>Recommended shipping</th><th>Shipment</th><th>Carrier confirmation</th><th>Action</th></tr></thead>
             <tbody>
             {% for item in orders %}
-                {% set order = item.order %}
-                {% set shipping = item.shipping_mode %}
-                {% set shipment = item.shipment %}
+                {% set order = item.order %}{% set shipping = item.shipping_mode %}{% set shipment = item.shipment %}
                 <tr class="fbm-order-row" data-order-id="{{ order.id }}" style="cursor:pointer">
-                    <td class="text-center" data-no-row-click="1"><input class="form-check-input fbm-order-checkbox" type="checkbox" value="{{ order.id }}" aria-label="Select order {{ order.marketplace_order_id }}"></td>
-                    <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div></td>
+                    <td class="text-center" data-no-row-click="1"><input class="form-check-input fbm-order-checkbox" type="checkbox" value="{{ order.id }}"></td>
+                    <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div>{% if shipping.prime_locked %}<span class="badge bg-warning text-dark mt-1">Prime / SFP</span>{% endif %}</td>
                     <td>{{ order.marketplace_order_id }}<div class="small text-muted">{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</div></td>
-                    <td><code>{{ order.sku or '—' }}</code></td>
-                    <td>{{ order.quantity or 0 }}</td>
-                    <td>{{ order.ship_to_postcode or '—' }}</td>
-                    <td>
-                        <strong>{{ shipping.recommended }}</strong>
-                        <div class="small mt-1">
-                            {% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace</span>{% endif %}
-                            {% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Packlink / carrier</span>{% endif %}
-                            {% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}
-                        </div>
-                    </td>
-                    <td>
-                        {% if shipment %}
-                            <strong>{{ shipment.carrier or shipment.provider or 'Shipment' }}</strong>
-                            <div class="small text-muted">{{ shipment.service or 'Service pending' }}</div>
-                            <div class="small"><code>{{ shipment.tracking_number or 'Tracking pending' }}</code></div>
-                        {% else %}
-                            <span class="text-muted">Not started</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if item.shipment_state == 'delivered' %}
-                            <span class="badge bg-success">Delivered</span>
-                        {% elif item.shipment_state == 'in_transit' %}
-                            <span class="badge bg-success">In transit</span>
-                        {% elif item.shipment_state == 'accepted' %}
-                            <span class="badge bg-success">Carrier accepted</span>
-                        {% elif item.shipment_state == 'acceptance_overdue' %}
-                            <span class="badge bg-danger">Acceptance overdue</span>
-                        {% elif item.shipment_state == 'awaiting_carrier_acceptance' %}
-                            <span class="badge bg-warning text-dark">Awaiting carrier</span>
-                        {% elif item.shipment_state == 'awaiting_label' %}
-                            <span class="badge bg-light text-dark border">Awaiting label</span>
-                        {% else %}
-                            <span class="badge bg-light text-dark border">Not started</span>
-                        {% endif %}
-                        {% if shipment and shipment.handover_due_at %}
-                            <div class="small text-muted mt-1">Due {{ shipment.handover_due_at.strftime('%d/%m/%Y %H:%M') }}</div>
-                        {% endif %}
-                    </td>
-                    <td data-no-row-click="1">
-                        <button class="btn btn-sm btn-outline-primary fbm-shipping-options" type="button" data-order-id="{{ order.id }}">Shipping options</button>
-                        {% if item.case.eligible %}
-                            <button class="btn btn-sm btn-outline-danger mt-1" type="button" disabled title="Provider case write is not enabled yet">Open case</button>
-                        {% elif item.case.reason == 'case_already_open' %}
-                            <span class="badge bg-warning text-dark mt-1">Case open</span>
-                        {% endif %}
-                    </td>
+                    <td><code>{{ order.sku or '—' }}</code></td><td>{{ order.quantity or 0 }}</td><td>{{ order.ship_to_postcode or '—' }}</td>
+                    <td><strong>{{ shipping.recommended }}</strong><div class="small mt-1">{% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace</span>{% endif %}{% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Packlink / carrier</span>{% endif %}{% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}</div><div class="small text-muted mt-1">{{ shipping.reason }}</div></td>
+                    <td>{% if shipment %}<strong>{{ shipment.carrier or shipment.provider or 'Shipment' }}</strong><div class="small text-muted">{{ shipment.service or 'Service pending' }}</div><div class="small"><code>{{ shipment.tracking_number or 'Parcel ID pending' }}</code></div>{% else %}<span class="text-muted">Not started</span>{% endif %}</td>
+                    <td>{% if item.shipment_state == 'delivered' %}<span class="badge bg-success">Delivered</span>{% elif item.shipment_state == 'in_transit' %}<span class="badge bg-success">In transit</span>{% elif item.shipment_state == 'accepted' %}<span class="badge bg-success">Carrier accepted</span>{% elif item.shipment_state == 'acceptance_overdue' %}<span class="badge bg-danger">Acceptance overdue</span>{% elif item.shipment_state == 'awaiting_carrier_acceptance' %}<span class="badge bg-warning text-dark">Awaiting carrier</span>{% elif item.shipment_state == 'purchase_verification_required' %}<span class="badge bg-danger">Purchase needs verification</span>{% else %}<span class="badge bg-light text-dark border">Not started</span>{% endif %}</td>
+                    <td data-no-row-click="1"><button class="btn btn-sm btn-outline-primary fbm-shipping-options" type="button" data-order-id="{{ order.id }}">Shipping options</button>{% if item.case.eligible %}<button class="btn btn-sm btn-outline-danger mt-1" type="button" disabled>Open case</button>{% endif %}</td>
                 </tr>
-            {% else %}
-                <tr><td colspan="10" class="text-center text-muted py-5">No merchant-fulfilled marketplace orders are currently available in the BT38 database.</td></tr>
-            {% endfor %}
+            {% else %}<tr><td colspan="10" class="text-center text-muted py-5">No merchant-fulfilled marketplace orders are currently available in the BT38 database.</td></tr>{% endfor %}
             </tbody>
         </table>
     </div>
 </div>
 
-<div class="modal fade" id="fbmShippingModal" tabindex="-1" aria-labelledby="fbmShippingModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-xl modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <div>
-                    <h5 class="modal-title" id="fbmShippingModalLabel">Ready to Ship</h5>
-                    <div id="fbmShippingModalSubtitle" class="small text-muted">Loading shipping routes…</div>
-                </div>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div id="fbmShippingLoading" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Loading shipping options…</div>
-                <div id="fbmShippingError" class="alert alert-danger d-none"></div>
-                <div id="fbmShippingOrders"></div>
-            </div>
-            <div class="modal-footer">
-                <span class="me-auto small text-muted">No label is purchased until you explicitly choose a service and confirm the purchase.</span>
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
+<div class="modal fade" id="fbmShippingModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content">
+    <div class="modal-header"><div><h5 class="modal-title">Ready to Ship</h5><div id="fbmShippingModalSubtitle" class="small text-muted">Loading shipping routes…</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div id="fbmShippingLoading" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Loading shipping options…</div><div id="fbmShippingError" class="alert alert-danger d-none"></div><div id="fbmShippingOrders"></div></div>
+    <div class="modal-footer"><span class="me-auto small text-muted">A Buy button always requires an explicit confirmation. Refresh/double-click protection is enforced on the server.</span><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>
+</div></div></div>
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.6/qz-tray.js"></script>
+<script src="{{ url_for('static', filename='js/fbm_qz_print.js') }}"></script>
 <script>
 (function () {
+    const rateState = new Map();
     const packlinkButton = document.getElementById('packlinkConnectionTest');
     const packlinkStatus = document.getElementById('packlinkConnectionStatus');
-    if (packlinkButton && packlinkStatus) {
-        packlinkButton.addEventListener('click', async function () {
-            if (packlinkButton.disabled) return;
-            packlinkButton.disabled = true;
-            packlinkStatus.className = 'small text-muted';
-            packlinkStatus.textContent = 'Testing Packlink PRO authentication…';
-            try {
-                const response = await fetch('/fbm/providers/packlink/connection', {method:'GET', credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json'}});
-                const payload = await response.json();
-                if (!response.ok || payload.success !== true) throw new Error(payload.message || `Packlink returned HTTP ${response.status}`);
-                packlinkStatus.className = 'small text-success';
-                const account = [payload.account_email, payload.account_country].filter(Boolean).join(' · ');
-                packlinkStatus.textContent = account ? `Connected successfully · ${account}` : 'Connected successfully to Packlink PRO.';
-            } catch (error) {
-                packlinkStatus.className = 'small text-danger';
-                packlinkStatus.textContent = error instanceof Error ? error.message : 'Packlink connection test failed.';
-            } finally {
-                packlinkButton.disabled = false;
-            }
-        });
-    }
-
+    const qzConnect = document.getElementById('qzConnect');
+    const qzPrinter = document.getElementById('qzPrinter');
+    const qzSavePrinter = document.getElementById('qzSavePrinter');
+    const qzAutoPrint = document.getElementById('qzAutoPrint');
+    const qzStatus = document.getElementById('qzStatus');
     const checkboxes = Array.from(document.querySelectorAll('.fbm-order-checkbox'));
     const selectAll = document.getElementById('selectAllOrders');
     const readyButton = document.getElementById('readyToShipSelected');
@@ -193,88 +107,59 @@
     const errorBox = document.getElementById('fbmShippingError');
     const ordersBox = document.getElementById('fbmShippingOrders');
 
-    function selectedIds() {
-        return checkboxes.filter(box => box.checked).map(box => box.value);
-    }
+    function esc(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+    async function jsonFetch(url, options={}) { const response = await fetch(url, {credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json','Content-Type':'application/json', ...(options.headers||{})}, ...options}); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.success !== true) { const err = new Error(payload.message || `HTTP ${response.status}`); err.payload = payload; throw err; } return payload; }
+    function selectedIds() { return checkboxes.filter(box => box.checked).map(box => box.value); }
+    function updateSelection() { const ids=selectedIds(); if(selectedCount) selectedCount.textContent=`${ids.length} selected`; if(readyButton) readyButton.disabled=ids.length===0; if(selectAll){selectAll.checked=checkboxes.length>0&&ids.length===checkboxes.length;selectAll.indeterminate=ids.length>0&&ids.length<checkboxes.length;} }
+    function providerBadge(provider) { if(provider.kind==='marketplace') return '<span class="badge bg-primary">Marketplace</span>'; if(provider.kind==='provider') return '<span class="badge bg-info text-dark">Provider</span>'; return '<span class="badge bg-light text-dark border">Manual</span>'; }
+    function priceText(price) { if(price==null) return 'Price unavailable'; if(typeof price==='number') return `£${price.toFixed(2)}`; const value=price.value ?? price.amount ?? price.total ?? price.price; const unit=price.unit ?? price.currency ?? price.currencyCode ?? 'GBP'; return value!=null ? `${unit==='GBP'?'£':esc(unit)+' '}${Number(value).toFixed(2)}` : 'Price unavailable'; }
+    function parcelHtml(order) { const p=order.parcel||{}; return `<div class="border rounded p-3 mb-3"><div class="fw-semibold mb-2">Packed parcel</div><div class="row g-2"><div class="col-6 col-md-3"><label class="form-label small">Weight kg</label><input class="form-control form-control-sm parcel-field" data-field="weight_kg" data-order-id="${order.id}" type="number" step="0.001" min="0.001" value="${p.weight_kg??''}"></div><div class="col-6 col-md-3"><label class="form-label small">Length cm</label><input class="form-control form-control-sm parcel-field" data-field="length_cm" data-order-id="${order.id}" type="number" step="0.1" min="0.1" value="${p.length_cm??''}"></div><div class="col-6 col-md-3"><label class="form-label small">Width cm</label><input class="form-control form-control-sm parcel-field" data-field="width_cm" data-order-id="${order.id}" type="number" step="0.1" min="0.1" value="${p.width_cm??''}"></div><div class="col-6 col-md-3"><label class="form-label small">Height cm</label><input class="form-control form-control-sm parcel-field" data-field="height_cm" data-order-id="${order.id}" type="number" step="0.1" min="0.1" value="${p.height_cm??''}"></div></div><div class="small text-muted mt-2">DB source: ${esc(p.source||'missing')}. Missing values must be entered from the actual packed parcel.</div></div>`; }
+    function collectParcel(orderId) { const result={}; document.querySelectorAll(`.parcel-field[data-order-id="${orderId}"]`).forEach(el=>{ if(el.value!=='') result[el.dataset.field]=Number(el.value); }); return result; }
 
-    function updateSelection() {
-        const ids = selectedIds();
-        if (selectedCount) selectedCount.textContent = `${ids.length} selected`;
-        if (readyButton) readyButton.disabled = ids.length === 0;
-        if (selectAll) {
-            selectAll.checked = checkboxes.length > 0 && ids.length === checkboxes.length;
-            selectAll.indeterminate = ids.length > 0 && ids.length < checkboxes.length;
-        }
-    }
+    if(packlinkButton&&packlinkStatus){packlinkButton.addEventListener('click',async()=>{packlinkButton.disabled=true;packlinkStatus.className='small text-muted';packlinkStatus.textContent='Testing Packlink…';try{const p=await jsonFetch('/fbm/providers/packlink/connection');packlinkStatus.className='small text-success';packlinkStatus.textContent=`Connected successfully${p.account_email?' · '+p.account_email:''}${p.account_country?' · '+p.account_country:''}`;}catch(e){packlinkStatus.className='small text-danger';packlinkStatus.textContent=e.message;}finally{packlinkButton.disabled=false;}});}
 
-    checkboxes.forEach(box => {
-        box.addEventListener('click', event => event.stopPropagation());
-        box.addEventListener('change', updateSelection);
-    });
+    async function connectQz(){ if(!window.BT38FBMQZ) throw new Error('QZ printing bridge is unavailable.'); qzStatus.className='small text-muted mt-2';qzStatus.textContent='Connecting to QZ Tray…'; await BT38FBMQZ.connect(); const printers=await BT38FBMQZ.printers(); const saved=BT38FBMQZ.savedPrinter(); qzPrinter.innerHTML='<option value="">Saved/default printer</option>'+printers.map(name=>`<option value="${esc(name)}" ${name===saved?'selected':''}>${esc(name)}</option>`).join(''); qzStatus.className='small text-success mt-2';qzStatus.textContent=`QZ connected · ${printers.length} printer${printers.length===1?'':'s'} found${saved?' · saved: '+saved:''}`; }
+    if(qzConnect) qzConnect.addEventListener('click',()=>connectQz().catch(e=>{qzStatus.className='small text-danger mt-2';qzStatus.textContent=e.message;}));
+    if(qzSavePrinter) qzSavePrinter.addEventListener('click',()=>{try{const saved=BT38FBMQZ.savePrinter(qzPrinter.value);qzStatus.className='small text-success mt-2';qzStatus.textContent=`Saved label printer: ${saved}`;}catch(e){qzStatus.className='small text-danger mt-2';qzStatus.textContent=e.message;}});
 
-    if (selectAll) {
-        selectAll.addEventListener('change', function () {
-            checkboxes.forEach(box => { box.checked = selectAll.checked; });
-            updateSelection();
-        });
-    }
-
-    function providerBadge(provider) {
-        if (provider.kind === 'marketplace') return '<span class="badge bg-primary">Marketplace</span>';
-        if (provider.kind === 'provider') return '<span class="badge bg-info text-dark">Provider</span>';
-        return '<span class="badge bg-light text-dark border">Manual</span>';
-    }
+    checkboxes.forEach(box=>{box.addEventListener('click',e=>e.stopPropagation());box.addEventListener('change',updateSelection);});
+    if(selectAll) selectAll.addEventListener('change',()=>{checkboxes.forEach(box=>box.checked=selectAll.checked);updateSelection();});
 
     function renderShippingOrders(payload) {
-        ordersBox.innerHTML = '';
-        payload.orders.forEach(order => {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'card mb-3';
-            const providerHtml = order.providers.map(provider => {
-                const disabled = provider.available ? '' : 'disabled';
-                const recommendation = provider.recommended ? '<span class="badge bg-success ms-2">Recommended</span>' : '';
-                const sfp = provider.supports_prime_sfp ? '<span class="badge bg-warning text-dark ms-2">Prime / SFP</span>' : '';
-                const actionText = provider.provider === 'packlink' ? 'Get Packlink rates' : provider.provider === 'amazon_buy_shipping' ? 'Get Amazon rates' : provider.provider === 'ebay_shipping' ? 'Check eBay shipping' : 'Use manual carrier';
-                return `<div class="border rounded p-3 mb-2 d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><div class="d-flex align-items-center gap-2 flex-wrap"><strong>${provider.label}</strong>${providerBadge(provider)}${recommendation}${sfp}</div><div class="small text-muted mt-1">${provider.message || ''}</div></div><button class="btn btn-sm ${provider.recommended ? 'btn-primary' : 'btn-outline-primary'}" type="button" ${disabled} data-provider="${provider.provider}" data-order-id="${order.id}">${actionText}</button></div>`;
-            }).join('');
-            wrapper.innerHTML = `<div class="card-header d-flex justify-content-between flex-wrap gap-2"><div><strong>${order.platform} · ${order.marketplace_order_id}</strong><div class="small text-muted">${order.store_name || ''}</div></div><div class="small text-muted">${order.sku || 'No SKU'} · Qty ${order.quantity || 0} · ${order.postcode || 'No postcode'}</div></div><div class="card-body"><div class="mb-2 fw-semibold">Choose shipping route</div>${providerHtml}</div>`;
+        ordersBox.innerHTML='';
+        payload.orders.forEach(order=>{
+            const wrapper=document.createElement('div'); wrapper.className='card mb-3'; wrapper.dataset.orderId=order.id;
+            const prime=order.is_prime===true?'<span class="badge bg-warning text-dark ms-2">Prime / SFP · Amazon only</span>':'';
+            const providerHtml=order.providers.map(provider=>{const disabled=provider.available?'':'disabled';const recommendation=provider.recommended?'<span class="badge bg-success ms-2">Recommended</span>':'';const actionText=provider.provider==='packlink'?'Get Packlink rates':provider.provider==='amazon_buy_shipping'?'Get Amazon rates':provider.provider==='ebay_shipping'?'Check eBay shipping':'Use manual carrier';return `<div class="border rounded p-3 mb-2 d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><div class="d-flex align-items-center gap-2 flex-wrap"><strong>${esc(provider.label)}</strong>${providerBadge(provider)}${recommendation}</div><div class="small text-muted mt-1">${esc(provider.message||'')}</div></div><button class="btn btn-sm ${provider.recommended?'btn-primary':'btn-outline-primary'} provider-action" type="button" ${disabled} data-provider="${provider.provider}" data-order-id="${order.id}">${actionText}</button></div>`;}).join('');
+            wrapper.innerHTML=`<div class="card-header d-flex justify-content-between flex-wrap gap-2"><div><strong>${esc(order.platform)} · ${esc(order.marketplace_order_id)}</strong>${prime}<div class="small text-muted">${esc(order.store_name||'')}</div></div><div class="small text-muted">Qty ${order.quantity||0} · ${esc(order.postcode||'No postcode')}</div></div><div class="card-body">${parcelHtml(order)}<div class="fw-semibold mb-2">Choose shipping route</div>${providerHtml}<div class="rate-results mt-3" data-order-id="${order.id}"></div></div>`;
             ordersBox.appendChild(wrapper);
         });
         feather.replace();
     }
 
-    async function openShippingOptions(ids) {
-        if (!ids.length || !modal) return;
-        modal.show();
-        loading.classList.remove('d-none');
-        errorBox.classList.add('d-none');
-        ordersBox.innerHTML = '';
-        modalSubtitle.textContent = ids.length === 1 ? 'Preparing shipping routes for 1 order…' : `Preparing shipping routes for ${ids.length} orders…`;
-        try {
-            const response = await fetch(`/fbm/shipping-options?order_ids=${encodeURIComponent(ids.join(','))}`, {method:'GET', credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json'}});
-            const payload = await response.json();
-            if (!response.ok || payload.success !== true) throw new Error(payload.message || `Shipping options returned HTTP ${response.status}`);
-            modalSubtitle.textContent = `${payload.selected_count} FBM order${payload.selected_count === 1 ? '' : 's'} ready for shipping choice`;
-            renderShippingOrders(payload);
-        } catch (error) {
-            errorBox.textContent = error instanceof Error ? error.message : 'Unable to load shipping options.';
-            errorBox.classList.remove('d-none');
-        } finally {
-            loading.classList.add('d-none');
-        }
-    }
+    function renderAmazonRates(orderId,payload){rateState.set(String(orderId),payload);const box=document.querySelector(`.rate-results[data-order-id="${orderId}"]`);if(!box)return;if(!payload.rates.length){box.innerHTML='<div class="alert alert-warning mb-0">Amazon returned no eligible shipping services for this parcel.</div>';return;}box.innerHTML='<div class="fw-semibold mb-2">Amazon Buy Shipping services</div>'+payload.rates.map((rate,index)=>{const docs=rate.supported_documents||[];const docOptions=docs.map((doc,i)=>{const size=doc.size||{};return `<option value="${i}">${esc(doc.format||'LABEL')} ${size.width&&size.length?esc(size.width+'×'+size.length+' '+(size.unit||'')):''}${doc.dpi?' · '+esc(doc.dpi)+'dpi':''}</option>`;}).join('');const royal=/royal mail/i.test(rate.carrier_name||'');return `<div class="border rounded p-3 mb-2"><div class="d-flex justify-content-between gap-3 flex-wrap"><div><strong>${esc(rate.carrier_name||rate.carrier_id||'Carrier')} · ${esc(rate.service_name||rate.service_id||'Service')}</strong><div class="small text-muted">${priceText(rate.price)}</div></div><div><select class="form-select form-select-sm amazon-doc" data-order-id="${orderId}" data-rate-index="${index}" ${docs.length?'':'disabled'}>${docOptions||'<option>No label format returned</option>'}</select></div></div>${royal?`<div class="form-check mt-2"><input class="form-check-input royal-terms" type="checkbox" id="rm-${orderId}-${index}"><label class="form-check-label small" for="rm-${orderId}-${index}">I have read and accept the Royal Mail terms for this service.</label></div>`:''}<div class="mt-2"><button class="btn btn-sm btn-success amazon-buy" data-order-id="${orderId}" data-rate-index="${index}" ${docs.length?'':'disabled'}>Buy label · ${priceText(rate.price)}</button></div></div>`;}).join('');}
+    function renderPacklinkRates(orderId,payload){rateState.set(String(orderId),payload);const box=document.querySelector(`.rate-results[data-order-id="${orderId}"]`);if(!box)return;const rates=payload.rates||[];box.innerHTML='<div class="fw-semibold mb-2">Packlink live services</div>'+(rates.length?rates.map(rate=>`<div class="border rounded p-3 mb-2 d-flex justify-content-between gap-3 flex-wrap"><div><strong>${esc(rate.carrier||rate.carrier_name||rate.name||rate.service_name||'Packlink service')}</strong><div class="small text-muted">${esc(rate.service||rate.service_name||'')} · ${priceText(rate.price??rate.total_price??rate.base_price)}</div></div><button class="btn btn-sm btn-outline-secondary" disabled title="Purchase endpoint is not enabled until Packlink's exact create/purchase contract is verified">Buy through Packlink</button></div>`).join(''):'<div class="alert alert-warning mb-0">Packlink returned no services for this parcel.</div>');}
 
-    if (readyButton) readyButton.addEventListener('click', () => openShippingOptions(selectedIds()));
-    document.querySelectorAll('.fbm-shipping-options').forEach(button => {
-        button.addEventListener('click', event => { event.stopPropagation(); openShippingOptions([button.dataset.orderId]); });
-    });
-    document.querySelectorAll('.fbm-order-row').forEach(row => {
-        row.addEventListener('click', event => {
-            if (event.target.closest('[data-no-row-click="1"]')) return;
-            openShippingOptions([row.dataset.orderId]);
-        });
+    ordersBox.addEventListener('click',async event=>{
+        const providerButton=event.target.closest('.provider-action');
+        if(providerButton){const orderId=providerButton.dataset.orderId;const provider=providerButton.dataset.provider;if(provider==='manual'||provider==='ebay_shipping')return;providerButton.disabled=true;const box=document.querySelector(`.rate-results[data-order-id="${orderId}"]`);if(box)box.innerHTML='<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Fetching live rates…</div>';try{const payload=await jsonFetch(`/fbm/orders/${orderId}/${provider==='packlink'?'packlink':'amazon'}/rates`,{method:'POST',body:JSON.stringify({parcel:collectParcel(orderId)})});if(provider==='packlink')renderPacklinkRates(orderId,payload);else renderAmazonRates(orderId,payload);}catch(e){if(box)box.innerHTML=`<div class="alert alert-danger mb-0">${esc(e.message)}${e.payload&&e.payload.missing?'<div class="small mt-1">Missing: '+esc(e.payload.missing.join(', '))+'</div>':''}</div>`;}finally{providerButton.disabled=false;}return;}
+
+        const buyButton=event.target.closest('.amazon-buy');
+        if(!buyButton)return;
+        const orderId=buyButton.dataset.orderId;const idx=Number(buyButton.dataset.rateIndex);const state=rateState.get(String(orderId));if(!state||!state.rates||!state.rates[idx])return;
+        const rate=state.rates[idx];const select=document.querySelector(`.amazon-doc[data-order-id="${orderId}"][data-rate-index="${idx}"]`);const documentIndex=Number(select?.value||0);const terms=document.getElementById(`rm-${orderId}-${idx}`);if(terms&&!terms.checked){alert('Accept the Royal Mail terms before buying this label.');return;}
+        const message=`Buy ${rate.carrier_name||'Amazon shipping'} · ${rate.service_name||''} for ${priceText(rate.price)}? The charge will be taken by Amazon from the seller account.`;if(!window.confirm(message))return;
+        buyButton.disabled=true;buyButton.textContent='Buying…';
+        try{const purchased=await jsonFetch(`/fbm/orders/${orderId}/amazon/purchase`,{method:'POST',body:JSON.stringify({quote_id:state.quote_id,rate_id:rate.rate_id,document_index:documentIndex,accept_carrier_terms:terms?terms.checked:false,confirm_purchase:'BUY_POSTAGE'})});const box=document.querySelector(`.rate-results[data-order-id="${orderId}"]`);let html=`<div class="alert alert-success"><strong>Label purchased.</strong><div>${esc(purchased.carrier||'Amazon')} · ${esc(purchased.service||'')}</div><div class="small">Parcel/Tracking ID: <code>${esc(purchased.tracking_number||'pending from Amazon')}</code></div></div>`;if(purchased.label&&purchased.label.base64){html+='<button class="btn btn-sm btn-outline-primary label-download">Download label</button>'; }box.innerHTML=html;box.dataset.label=JSON.stringify(purchased.label||{});if(purchased.label&&purchased.label.base64&&qzAutoPrint?.checked){try{const printed=await BT38FBMQZ.printLabel(purchased.label);qzStatus.className='small text-success mt-2';qzStatus.textContent=`Label sent to ${printed.printer}`;}catch(printError){qzStatus.className='small text-danger mt-2';qzStatus.textContent=`Postage purchased successfully, but auto-print failed: ${printError.message}`;}}
+        }catch(e){alert(e.message);}finally{buyButton.disabled=false;buyButton.textContent='Buy label';}
     });
 
+    ordersBox.addEventListener('click',event=>{const btn=event.target.closest('.label-download');if(!btn)return;const box=btn.closest('.rate-results');let label={};try{label=JSON.parse(box.dataset.label||'{}');}catch(_){}if(!label.base64)return;const binary=atob(label.base64);const bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);const format=String(label.format||'pdf').toLowerCase();const mime=format==='pdf'?'application/pdf':format==='png'?'image/png':'application/octet-stream';const url=URL.createObjectURL(new Blob([bytes],{type:mime}));const a=document.createElement('a');a.href=url;a.download=`BT38-label.${format==='zpl'?'txt':format}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+
+    async function openShippingOptions(ids){if(!ids.length||!modal)return;modal.show();loading.classList.remove('d-none');errorBox.classList.add('d-none');ordersBox.innerHTML='';modalSubtitle.textContent=`Preparing shipping routes for ${ids.length} order${ids.length===1?'':'s'}…`;try{const payload=await jsonFetch(`/fbm/shipping-options?order_ids=${encodeURIComponent(ids.join(','))}`);modalSubtitle.textContent=`${payload.selected_count} FBM order${payload.selected_count===1?'':'s'} ready for shipping choice`;renderShippingOrders(payload);}catch(e){errorBox.textContent=e.message;errorBox.classList.remove('d-none');}finally{loading.classList.add('d-none');}}
+    if(readyButton)readyButton.addEventListener('click',()=>openShippingOptions(selectedIds()));
+    document.querySelectorAll('.fbm-shipping-options').forEach(button=>button.addEventListener('click',e=>{e.stopPropagation();openShippingOptions([button.dataset.orderId]);}));
+    document.querySelectorAll('.fbm-order-row').forEach(row=>row.addEventListener('click',e=>{if(e.target.closest('[data-no-row-click="1"]'))return;openShippingOptions([row.dataset.orderId]);}));
     updateSelection();
 })();
 </script>
