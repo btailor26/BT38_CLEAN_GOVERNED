@@ -18,15 +18,16 @@ def test_base_wires_one_shared_page_refresh_controller():
     assert "setInterval(" not in controller
     assert "setTimeout(" not in controller
     assert "fetch(" not in controller
+    assert "window.location.reload()" not in controller
 
 
-def test_shared_refresh_is_immediate_event_driven_and_deduplicated():
+def test_shared_refresh_is_event_driven_deduplicated_and_non_disruptive():
     controller = _read("static/js/bt38-live-page-refresh.js")
 
     assert "lastSequence" in controller
-    assert "window.location.reload()" in controller
     assert "document.visibilityState === 'hidden'" in controller
     assert "pendingWhileHidden" in controller
+    assert "Never reload or rerender the whole page" in controller
 
 
 def test_product_linking_reuses_existing_targeted_refresh_for_active_search():
