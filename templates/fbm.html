@@ -6,9 +6,9 @@
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
     <div>
         <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
-        <p class="text-muted mb-0">One DB-backed workspace for merchant-fulfilled orders, shipping choice, labels, tracking and marketplace mapping.</p>
+        <p class="text-muted mb-0">One DB-backed workspace for merchant-fulfilled orders, shipping choice, labels, carrier acceptance, tracking and marketplace mapping.</p>
     </div>
-    <span class="badge bg-secondary fs-6">Build mode · no label writes enabled</span>
+    <span class="badge bg-secondary fs-6">Build mode · no provider writes enabled</span>
 </div>
 
 <div class="alert alert-info">
@@ -19,8 +19,8 @@
     <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
     <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
     <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Marketplace shipping</div><div class="fs-3 fw-bold">{{ counts.marketplace_shipping }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Tracking</div><div class="fs-3 fw-bold">{{ counts.tracking }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Dispatched</div><div class="fs-3 fw-bold">{{ counts.dispatched }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Awaiting carrier</div><div class="fs-3 fw-bold">{{ counts.awaiting_acceptance }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Carrier overdue</div><div class="fs-3 fw-bold">{{ counts.overdue }}</div></div></div></div>
 </div>
 
 <div class="card mb-4">
@@ -30,7 +30,7 @@
             <div class="col-md-3"><strong>1. DB order</strong><br><span class="text-muted">Use the existing marketplace order and committed customer/order data.</span></div>
             <div class="col-md-3"><strong>2. Recommend</strong><br><span class="text-muted">Cut-off, promise, parcel, price and marketplace rules determine the recommendation.</span></div>
             <div class="col-md-3"><strong>3. User chooses</strong><br><span class="text-muted">Marketplace Buy Shipping, Packlink/direct carrier or manual route. User may override.</span></div>
-            <div class="col-md-3"><strong>4. BT38 maps</strong><br><span class="text-muted">Actual carrier + service + tracking are normalised before marketplace dispatch.</span></div>
+            <div class="col-md-3"><strong>4. Confirm movement</strong><br><span class="text-muted">Label purchase and marketplace dispatch do not count as carrier acceptance. BT38 tracks the actual provider movement separately.</span></div>
         </div>
     </div>
 </div>
@@ -38,7 +38,7 @@
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span class="fw-semibold">FBM Orders</span>
-        <span class="text-muted small">Recommendations shown only. Purchase/dispatch remains disabled until provider adapters pass audit.</span>
+        <span class="text-muted small">Provider checks may be shown read-only. Buying labels, dispatching and opening cases remain disabled until adapter audit passes.</span>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
@@ -46,35 +46,72 @@
                 <tr>
                     <th>Marketplace</th>
                     <th>Order</th>
-                    <th>Created</th>
                     <th>SKU</th>
                     <th>Qty</th>
                     <th>Postcode</th>
-                    <th>State</th>
                     <th>Recommended shipping</th>
-                    <th>Available routes</th>
+                    <th>Shipment</th>
+                    <th>Carrier confirmation</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
             {% for item in orders %}
                 {% set order = item.order %}
                 {% set shipping = item.shipping_mode %}
+                {% set shipment = item.shipment %}
                 <tr>
                     <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div></td>
-                    <td>{{ order.marketplace_order_id }}</td>
-                    <td>{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</td>
+                    <td>{{ order.marketplace_order_id }}<div class="small text-muted">{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</div></td>
                     <td><code>{{ order.sku or '—' }}</code></td>
                     <td>{{ order.quantity or 0 }}</td>
                     <td>{{ order.ship_to_postcode or '—' }}</td>
-                    <td><span class="badge bg-light text-dark border">{{ item.route_state }}</span></td>
                     <td>
                         <strong>{{ shipping.recommended }}</strong>
-                        <div class="small text-muted" style="max-width: 360px;">{{ shipping.reason }}</div>
+                        <div class="small mt-1">
+                            {% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace</span>{% endif %}
+                            {% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Provider</span>{% endif %}
+                            {% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}
+                        </div>
                     </td>
-                    <td class="small">
-                        {% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace Buy Shipping</span>{% endif %}
-                        {% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Provider / Carrier</span>{% endif %}
-                        {% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}
+                    <td>
+                        {% if shipment %}
+                            <strong>{{ shipment.carrier or shipment.provider or 'Shipment' }}</strong>
+                            <div class="small text-muted">{{ shipment.service or 'Service pending' }}</div>
+                            <div class="small"><code>{{ shipment.tracking_number or 'Tracking pending' }}</code></div>
+                        {% else %}
+                            <span class="text-muted">Not started</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if item.shipment_state == 'delivered' %}
+                            <span class="badge bg-success">Delivered</span>
+                        {% elif item.shipment_state == 'in_transit' %}
+                            <span class="badge bg-success">In transit</span>
+                        {% elif item.shipment_state == 'accepted' %}
+                            <span class="badge bg-success">Carrier accepted</span>
+                        {% elif item.shipment_state == 'acceptance_overdue' %}
+                            <span class="badge bg-danger">Acceptance overdue</span>
+                        {% elif item.shipment_state == 'awaiting_carrier_acceptance' %}
+                            <span class="badge bg-warning text-dark">Awaiting carrier</span>
+                        {% elif item.shipment_state == 'awaiting_label' %}
+                            <span class="badge bg-light text-dark border">Awaiting label</span>
+                        {% else %}
+                            <span class="badge bg-light text-dark border">Not started</span>
+                        {% endif %}
+                        {% if shipment and shipment.handover_due_at %}
+                            <div class="small text-muted mt-1">Due {{ shipment.handover_due_at.strftime('%d/%m/%Y %H:%M') }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if item.case.eligible %}
+                            <button class="btn btn-sm btn-outline-danger" type="button" disabled title="Provider case write is not enabled yet">Open case</button>
+                            <div class="small text-danger mt-1">Carrier acceptance overdue</div>
+                        {% elif item.case.reason == 'case_already_open' %}
+                            <span class="badge bg-warning text-dark">Case open</span>
+                        {% else %}
+                            <span class="text-muted small">—</span>
+                        {% endif %}
                     </td>
                 </tr>
             {% else %}
