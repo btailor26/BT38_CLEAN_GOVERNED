@@ -9,16 +9,23 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, render_template, request
-from flask_login import login_required
+from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db
 from models import MarketplaceOrder
-from fbm_models import FBMOrderProfile, FBMRateQuote, FBMShipment
+from fbm_models import (
+    FBMCarrierServiceMapping,
+    FBMOrderProfile,
+    FBMRateQuote,
+    FBMShipment,
+)
 from services.fbm_amazon_order_profile import AmazonOrderProfileError, get_or_refresh_amazon_profile
 from services.fbm_amazon_shipping_adapter import AmazonShippingAdapter, AmazonShippingError
+from services.fbm_carrier_mapping import mapping_payload, verify_mapping
 from services.fbm_order_mapper import apply_parcel_overrides, order_lines, parcel_from_db, provider_parcel, ship_to
 from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkConfigurationError, PacklinkRequestError
+from services.fbm_post_purchase import persist_external_label
 from services.fbm_shipping_state import provider_case_eligibility, shipment_confirmation_state
 
 
@@ -50,7 +57,10 @@ def _route_state(order: MarketplaceOrder) -> str:
 
 
 def _profile_for(order: MarketplaceOrder) -> FBMOrderProfile | None:
-    return FBMOrderProfile.query.filter_by(store_id=order.store_id, marketplace_order_id=order.marketplace_order_id).first()
+    return FBMOrderProfile.query.filter_by(
+        store_id=order.store_id,
+        marketplace_order_id=order.marketplace_order_id,
+    ).first()
 
 
 def _amazon_profile(order: MarketplaceOrder, *, refresh: bool = False) -> tuple[FBMOrderProfile | None, str | None]:
@@ -74,11 +84,33 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str, profile: 
             "manual": profile_known and not is_prime,
             "prime_locked": is_prime,
             "profile_known": profile_known,
-            "reason": "Prime/SFP order: Amazon Buy Shipping only; Amazon decides the eligible carrier/service." if is_prime else "Amazon Buy Shipping is available; non-Prime orders may also use permitted external providers." if profile_known else "Amazon shipping profile has not yet been verified; external shipping stays locked until Prime status is known.",
+            "reason": (
+                "Prime/SFP order: Amazon Buy Shipping only; Amazon decides the eligible carrier/service."
+                if is_prime
+                else "Amazon Buy Shipping is available; non-Prime orders may also use permitted external providers."
+                if profile_known
+                else "Amazon shipping profile has not yet been verified; external shipping stays locked until Prime status is known."
+            ),
         }
     if normalized == "ebay":
-        return {"recommended": "Best connected provider", "marketplace_buy_shipping": True, "external_provider": True, "manual": True, "prime_locked": False, "profile_known": True, "reason": "Use eBay-native shipping where supported, otherwise connected provider/carrier."}
-    return {"recommended": "Best connected provider", "marketplace_buy_shipping": False, "external_provider": True, "manual": True, "prime_locked": False, "profile_known": True, "reason": "Provider availability is determined by connected accounts."}
+        return {
+            "recommended": "Best connected provider",
+            "marketplace_buy_shipping": True,
+            "external_provider": True,
+            "manual": True,
+            "prime_locked": False,
+            "profile_known": True,
+            "reason": "Use eBay-native shipping where supported, otherwise connected provider/carrier.",
+        }
+    return {
+        "recommended": "Best connected provider",
+        "marketplace_buy_shipping": False,
+        "external_provider": True,
+        "manual": True,
+        "prime_locked": False,
+        "profile_known": True,
+        "reason": "Provider availability is determined by connected accounts.",
+    }
 
 
 def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile | None = None, profile_error: str | None = None) -> list[dict]:
@@ -92,28 +124,85 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
         creds = getattr(store, "amazon_credentials", None) if store is not None else None
         configured = bool(creds and getattr(creds, "is_valid", lambda: False)())
         options.append({
-            "provider": "amazon_buy_shipping", "label": "Amazon Buy Shipping", "kind": "marketplace", "configured": configured,
-            "available": configured, "recommended": True, "supports_prime_sfp": True, "prime_locked": is_prime,
-            "label_formats": ["PDF", "PNG", "ZPL"], "auto_print_supported": True, "requires_terms_acceptance": True,
-            "message": "Prime/SFP: Amazon controls the eligible carrier/service and this is the only allowed purchase route." if is_prime else "Amazon returns the live eligible services, price, carrier and label formats for this order." if profile_known else f"Amazon shipping profile could not yet be verified: {profile_error or 'Prime status unknown'}. External routes remain locked.",
+            "provider": "amazon_buy_shipping",
+            "label": "Amazon Buy Shipping",
+            "kind": "marketplace",
+            "configured": configured,
+            "available": configured,
+            "recommended": True,
+            "supports_prime_sfp": True,
+            "prime_locked": is_prime,
+            "label_formats": ["PDF", "PNG", "ZPL"],
+            "auto_print_supported": True,
+            "requires_terms_acceptance": True,
+            "message": (
+                "Prime/SFP: Amazon controls the eligible carrier/service and this is the only allowed purchase route."
+                if is_prime
+                else "Amazon returns the live eligible services, price, carrier and label formats for this order."
+                if profile_known
+                else f"Amazon shipping profile could not yet be verified: {profile_error or 'Prime status unknown'}. External routes remain locked."
+            ),
         })
 
     if platform == "ebay":
         creds = getattr(store, "ebay_credentials", None) if store is not None else None
         configured = bool(creds and getattr(creds, "is_valid", lambda: False)())
-        options.append({"provider": "ebay_shipping", "label": "eBay Shipping", "kind": "marketplace", "configured": configured, "available": False, "recommended": False, "supports_prime_sfp": False, "prime_locked": False, "label_formats": ["PDF"], "auto_print_supported": True, "requires_terms_acceptance": False, "message": "eBay account is connected. Native UK label buying stays capability-gated until eBay exposes it for this app/account." if configured else "eBay credentials are not available for this store."})
+        options.append({
+            "provider": "ebay_shipping",
+            "label": "eBay Shipping",
+            "kind": "marketplace",
+            "configured": configured,
+            "available": False,
+            "recommended": False,
+            "supports_prime_sfp": False,
+            "prime_locked": False,
+            "label_formats": ["PDF"],
+            "auto_print_supported": True,
+            "requires_terms_acceptance": False,
+            "message": "eBay account is connected. Native UK label buying stays capability-gated until eBay exposes it for this app/account." if configured else "eBay credentials are not available for this store.",
+        })
 
     packlink = PacklinkAdapter()
     external_allowed = platform != "amazon" or (profile_known and not is_prime)
     options.append({
-        "provider": "packlink", "label": "Packlink PRO", "kind": "provider", "configured": packlink.configured,
-        "available": packlink.configured and external_allowed, "recommended": platform != "amazon", "supports_prime_sfp": False,
-        "prime_locked": is_prime, "label_formats": ["PROVIDER"], "auto_print_supported": True, "requires_terms_acceptance": False,
-        "message": "Prime/SFP is locked to Amazon Buy Shipping." if is_prime else "External shipping is locked until Amazon Prime status is verified." if platform == "amazon" and not profile_known else "Packlink PRO is connected. Live carrier/service prices can be fetched here; BT38 keeps marketplace tracking mapping under its control." if packlink.configured else "PACKLINK_API_KEY is not configured.",
+        "provider": "packlink",
+        "label": "Packlink PRO",
+        "kind": "provider",
+        "configured": packlink.configured,
+        "available": packlink.configured and external_allowed,
+        "recommended": platform != "amazon",
+        "supports_prime_sfp": False,
+        "prime_locked": is_prime,
+        "label_formats": ["PDF"],
+        "auto_print_supported": True,
+        "requires_terms_acceptance": False,
+        "payment_mode": "provider_checkout_required",
+        "message": (
+            "Prime/SFP is locked to Amazon Buy Shipping."
+            if is_prime
+            else "External shipping is locked until Amazon Prime status is verified."
+            if platform == "amazon" and not profile_known
+            else "Packlink PRO live rates and shipment drafting are connected. Packlink's public integration flow still requires Packlink-side payment before the label becomes available."
+            if packlink.configured
+            else "PACKLINK_API_KEY is not configured."
+        ),
     })
 
     manual_allowed = platform != "amazon" or (profile_known and not is_prime)
-    options.append({"provider": "manual", "label": "Manual / own carrier", "kind": "manual", "configured": True, "available": manual_allowed, "recommended": False, "supports_prime_sfp": False, "prime_locked": is_prime, "label_formats": [], "auto_print_supported": False, "requires_terms_acceptance": False, "message": "Prime/SFP is locked to Amazon Buy Shipping." if is_prime else "Use a label bought outside BT38; BT38 will still normalise carrier/service/tracking before marketplace confirmation." if manual_allowed else "External shipping is locked until Amazon Prime status is verified."})
+    options.append({
+        "provider": "manual",
+        "label": "Manual / own carrier",
+        "kind": "manual",
+        "configured": True,
+        "available": manual_allowed,
+        "recommended": False,
+        "supports_prime_sfp": False,
+        "prime_locked": is_prime,
+        "label_formats": [],
+        "auto_print_supported": False,
+        "requires_terms_acceptance": False,
+        "message": "Prime/SFP is locked to Amazon Buy Shipping." if is_prime else "Use a label bought outside BT38; BT38 will still normalise carrier/service/tracking before marketplace confirmation." if manual_allowed else "External shipping is locked until Amazon Prime status is verified.",
+    })
     return options
 
 
@@ -123,7 +212,13 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         return {}
     store_ids = sorted({key[0] for key in keys if key[0] is not None})
     order_ids = sorted({key[1] for key in keys if key[1]})
-    shipments = FBMShipment.query.filter(FBMShipment.store_id.in_(store_ids)).filter(FBMShipment.marketplace_order_id.in_(order_ids)).order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc()).all()
+    shipments = (
+        FBMShipment.query
+        .filter(FBMShipment.store_id.in_(store_ids))
+        .filter(FBMShipment.marketplace_order_id.in_(order_ids))
+        .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+        .all()
+    )
     result = {}
     for shipment in shipments:
         key = (shipment.store_id, shipment.marketplace_order_id)
@@ -138,7 +233,14 @@ def _get_fbm_order(order_id: int) -> MarketplaceOrder | None:
 
 
 def _find_rate(quote: FBMRateQuote, rate_id: str) -> dict | None:
-    return next((rate for rate in (quote.rates or []) if isinstance(rate, dict) and str(rate.get("rate_id") or rate.get("id") or rate.get("service_id") or "") == str(rate_id)), None)
+    return next(
+        (
+            rate for rate in (quote.rates or [])
+            if isinstance(rate, dict)
+            and str(rate.get("rate_id") or rate.get("id") or rate.get("service_id") or "") == str(rate_id)
+        ),
+        None,
+    )
 
 
 def _money_value(value) -> float | None:
@@ -151,6 +253,21 @@ def _money_value(value) -> float | None:
                     return float(value[key])
                 except (TypeError, ValueError):
                     pass
+    return None
+
+
+def _tracking_code(shipment_payload: dict) -> str | None:
+    values = shipment_payload.get("trackings") or shipment_payload.get("tracking_codes") or []
+    if isinstance(values, str):
+        return values.strip() or None
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                candidate = value.get("code") or value.get("tracking_number") or value.get("tracking")
+                if candidate:
+                    return str(candidate).strip() or None
     return None
 
 
@@ -177,8 +294,29 @@ def fbm_page():
         shipment = shipments.get(key)
         shipment_state = shipment_confirmation_state(shipment) if shipment else "not_started"
         case = provider_case_eligibility(shipment) if shipment else {"eligible": False, "reason": "shipment_not_started", "case_type": None}
-        orders.append({"order": row, "platform": platform, "store_name": _store_name(row), "route_state": route_state, "shipping_mode": _marketplace_shipping_mode(row, platform, profile), "shipment": shipment, "shipment_state": shipment_state, "case": case, "profile": profile})
-    counts = {"total": len(orders), "ready": sum(1 for i in orders if i["route_state"] == "Ready for FBM routing"), "tracking": sum(1 for i in orders if i["route_state"] == "Tracking recorded"), "dispatched": sum(1 for i in orders if i["route_state"] == "Dispatched"), "marketplace_shipping": sum(1 for i in orders if i["shipping_mode"]["marketplace_buy_shipping"]), "awaiting_acceptance": sum(1 for i in orders if i["shipment_state"] == "awaiting_carrier_acceptance"), "overdue": sum(1 for i in orders if i["shipment_state"] == "acceptance_overdue")}
+        mapping_review = getattr(shipment, "mapping_review", None) if shipment else None
+        orders.append({
+            "order": row,
+            "platform": platform,
+            "store_name": _store_name(row),
+            "route_state": route_state,
+            "shipping_mode": _marketplace_shipping_mode(row, platform, profile),
+            "shipment": shipment,
+            "shipment_state": shipment_state,
+            "case": case,
+            "profile": profile,
+            "mapping_review": mapping_review,
+        })
+    counts = {
+        "total": len(orders),
+        "ready": sum(1 for i in orders if i["route_state"] == "Ready for FBM routing"),
+        "tracking": sum(1 for i in orders if i["route_state"] == "Tracking recorded"),
+        "dispatched": sum(1 for i in orders if i["route_state"] == "Dispatched"),
+        "marketplace_shipping": sum(1 for i in orders if i["shipping_mode"]["marketplace_buy_shipping"]),
+        "awaiting_acceptance": sum(1 for i in orders if i["shipment_state"] == "awaiting_carrier_acceptance"),
+        "overdue": sum(1 for i in orders if i["shipment_state"] == "acceptance_overdue"),
+        "mapping_review": sum(1 for i in orders if i["mapping_review"] and i["mapping_review"].status == "under_review"),
+    }
     return render_template("fbm.html", orders=orders, counts=counts, platform_filter=platform_filter, status_filter=status_filter)
 
 
@@ -208,10 +346,29 @@ def fbm_shipping_options():
             continue
         profile, profile_error = _amazon_profile(row) if _platform(row).strip().lower() == "amazon" else (_profile_for(row), None)
         parcel = parcel_from_db(row)
-        result.append({"id": row.id, "marketplace_order_id": row.marketplace_order_id, "platform": _platform(row), "store_name": _store_name(row), "sku": getattr(row, "sku", None), "quantity": sum(max(1, int(getattr(line, "quantity", 1) or 1)) for line in order_lines(row)), "postcode": getattr(row, "ship_to_postcode", None), "route_state": _route_state(row), "is_prime": profile.is_prime if profile else None, "prime_profile_error": profile_error, "parcel": parcel.to_dict(), "providers": _shipping_provider_options(row, profile, profile_error)})
+        result.append({
+            "id": row.id,
+            "marketplace_order_id": row.marketplace_order_id,
+            "platform": _platform(row),
+            "store_name": _store_name(row),
+            "sku": getattr(row, "sku", None),
+            "quantity": sum(max(1, int(getattr(line, "quantity", 1) or 1)) for line in order_lines(row)),
+            "postcode": getattr(row, "ship_to_postcode", None),
+            "route_state": _route_state(row),
+            "is_prime": profile.is_prime if profile else None,
+            "prime_profile_error": profile_error,
+            "parcel": parcel.to_dict(),
+            "providers": _shipping_provider_options(row, profile, profile_error),
+        })
     if not result:
         return jsonify({"success": False, "message": "No selected orders are eligible for FBM shipping."}), 404
-    return jsonify({"success": True, "orders": result, "selected_count": len(result), "printing": {"mode": "qz_tray", "auto_print_after_purchase": True, "printer_preference_required": True, "fallback": "download_label"}, "message": "Shipping routes and DB parcel defaults prepared."})
+    return jsonify({
+        "success": True,
+        "orders": result,
+        "selected_count": len(result),
+        "printing": {"mode": "qz_tray", "auto_print_after_purchase": True, "printer_preference_required": True, "fallback": "download_label"},
+        "message": "Shipping routes and DB parcel defaults prepared.",
+    })
 
 
 @governed_fbm_bp.post("/fbm/orders/<int:order_id>/packlink/rates")
@@ -237,10 +394,183 @@ def packlink_rates(order_id: int):
     except (PacklinkConfigurationError, PacklinkRequestError) as exc:
         return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
 
-    quote = FBMRateQuote(store_id=order.store_id, marketplace_order_id=order.marketplace_order_id, provider="packlink", parcel=parcel, rates=rates, expires_at=datetime.utcnow() + timedelta(minutes=15))
+    quote = FBMRateQuote(
+        store_id=order.store_id,
+        marketplace_order_id=order.marketplace_order_id,
+        provider="packlink",
+        parcel=parcel,
+        rates=rates,
+        expires_at=datetime.utcnow() + timedelta(minutes=15),
+    )
     db.session.add(quote)
     db.session.commit()
-    return jsonify({"success": True, "provider": "packlink", "order_id": order.id, "marketplace_order_id": order.marketplace_order_id, "quote_id": quote.id, "expires_at": quote.expires_at.isoformat(), "rates": rates, "parcel": parcel})
+    return jsonify({
+        "success": True,
+        "provider": "packlink",
+        "order_id": order.id,
+        "marketplace_order_id": order.marketplace_order_id,
+        "quote_id": quote.id,
+        "expires_at": quote.expires_at.isoformat(),
+        "rates": rates,
+        "parcel": parcel,
+        "payment_mode": "packlink_checkout_required",
+    })
+
+
+@governed_fbm_bp.post("/fbm/orders/<int:order_id>/packlink/draft")
+@login_required
+def packlink_create_draft(order_id: int):
+    """Create one Packlink shipment draft; this does not claim postage is paid."""
+    order = _get_fbm_order(order_id)
+    if order is None:
+        return jsonify({"success": False, "message": "FBM order not found."}), 404
+    if _platform(order).strip().lower() == "amazon":
+        profile, error = _amazon_profile(order, refresh=True)
+        if profile is None or profile.is_prime is None:
+            return jsonify({"success": False, "message": error or "Amazon Prime status must be verified first."}), 409
+        if profile.is_prime:
+            return jsonify({"success": False, "message": "Prime/SFP orders must use Amazon Buy Shipping."}), 409
+
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm_create") != "CREATE_PACKLINK_DRAFT":
+        return jsonify({"success": False, "message": "Explicit CREATE_PACKLINK_DRAFT confirmation is required."}), 400
+    try:
+        quote_id = int(body.get("quote_id"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "Valid quote_id is required."}), 400
+    rate_id = str(body.get("rate_id") or "").strip()
+    quote = db.session.get(FBMRateQuote, quote_id)
+    if quote is None or quote.provider != "packlink" or quote.store_id != order.store_id or quote.marketplace_order_id != order.marketplace_order_id:
+        return jsonify({"success": False, "message": "Packlink rate quote does not belong to this order."}), 409
+    if quote.expired:
+        return jsonify({"success": False, "message": "Packlink rate quote expired. Get fresh rates."}), 409
+    selected = _find_rate(quote, rate_id)
+    if selected is None:
+        return jsonify({"success": False, "message": "Selected Packlink service is not in the stored quote."}), 409
+
+    purchase_key = f"packlink_draft:{order.store_id}:{order.marketplace_order_id}"
+    existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
+    if existing is not None:
+        return jsonify({
+            "success": True,
+            "already_created": True,
+            "shipment_id": existing.id,
+            "provider_reference": existing.provider_shipment_id,
+            "payment_status": existing.purchase_status,
+            "message": "A Packlink shipment draft already exists for this order. No duplicate draft was created.",
+        })
+
+    shipment = FBMShipment(
+        store_id=order.store_id,
+        marketplace_order_id=order.marketplace_order_id,
+        provider="packlink",
+        provider_service_id=str(selected.get("service_id") or selected.get("id") or "") or None,
+        carrier=str(selected.get("carrier_name") or selected.get("carrier") or "").strip() or None,
+        service=str(selected.get("service_name") or selected.get("service") or "").strip() or None,
+        purchase_key=purchase_key,
+        selected_rate_id=rate_id,
+        purchase_status="draft_creating",
+        status="awaiting_provider_payment",
+    )
+    db.session.add(shipment)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
+        return jsonify({"success": False, "message": "A Packlink draft already exists or is being created.", "shipment_id": existing.id if existing else None}), 409
+
+    try:
+        draft = PacklinkAdapter().create_shipment_draft(order=order, parcel=quote.parcel or {}, rate=selected)
+    except Exception as exc:
+        shipment.purchase_status = "draft_verification_required"
+        shipment.purchase_error = str(exc)
+        shipment.status = "draft_verification_required"
+        db.session.commit()
+        return jsonify({
+            "success": False,
+            "message": "Packlink did not return a confirmed draft reference. BT38 blocked automatic retry until this attempt is checked.",
+            "detail": str(exc),
+            "shipment_id": shipment.id,
+        }), 502
+
+    shipment.provider_shipment_id = draft["reference"]
+    shipment.purchase_status = "pending_provider_payment"
+    shipment.purchase_error = None
+    shipment.status = "awaiting_provider_payment"
+    quote.used_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({
+        "success": True,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "payment_status": "pending_provider_payment",
+        "label_ready": False,
+        "message": "Packlink draft created. Packlink payment is still required before the carrier label becomes available.",
+    })
+
+
+@governed_fbm_bp.get("/fbm/shipments/<int:shipment_id>/packlink/status")
+@login_required
+def packlink_shipment_status(shipment_id: int):
+    shipment = db.session.get(FBMShipment, shipment_id)
+    if shipment is None or shipment.provider != "packlink" or not shipment.provider_shipment_id:
+        return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
+    order = MarketplaceOrder.query.filter_by(store_id=shipment.store_id, marketplace_order_id=shipment.marketplace_order_id).first()
+    if order is None:
+        return jsonify({"success": False, "message": "Marketplace order for this shipment is missing."}), 404
+
+    adapter = PacklinkAdapter()
+    try:
+        provider_payload = adapter.get_shipment(shipment.provider_shipment_id)
+        labels = adapter.get_labels(shipment.provider_shipment_id)
+        tracking_history = adapter.get_tracking_status(reference=shipment.provider_shipment_id)
+    except (PacklinkConfigurationError, PacklinkRequestError) as exc:
+        return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
+
+    provider_state = str(provider_payload.get("state") or provider_payload.get("status") or "").strip()
+    shipment.last_provider_status = provider_state or shipment.last_provider_status
+    shipment.last_provider_checked_at = datetime.utcnow()
+    carrier = str(provider_payload.get("carrier") or shipment.carrier or "").strip() or None
+    service = str(provider_payload.get("service") or shipment.service or "").strip() or None
+    tracking = _tracking_code(provider_payload) or shipment.tracking_number
+
+    if labels:
+        first_label = labels[0]
+        label_url = first_label if isinstance(first_label, str) else (first_label.get("url") if isinstance(first_label, dict) else None)
+        result = persist_external_label(
+            shipment=shipment,
+            marketplace=_platform(order),
+            provider="packlink",
+            provider_shipment_id=shipment.provider_shipment_id,
+            carrier=carrier,
+            service=service,
+            tracking_number=tracking,
+            provider_service_id=str(provider_payload.get("service_id") or shipment.provider_service_id or "") or None,
+            label={"type": "LABEL", "format": "PDF", "url": label_url, "storage_ref": shipment.provider_shipment_id},
+        )
+        return jsonify({
+            "success": True,
+            "payment_complete": True,
+            "label_ready": True,
+            "label": {"format": "PDF", "url": label_url},
+            "provider_status": provider_state,
+            "tracking": tracking,
+            "tracking_history": tracking_history,
+            **result,
+        })
+
+    db.session.commit()
+    return jsonify({
+        "success": True,
+        "payment_complete": False,
+        "label_ready": False,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "provider_status": provider_state,
+        "payment_status": shipment.purchase_status,
+        "message": "Packlink label is not available yet. The shipment may still require Packlink-side payment or label generation.",
+    })
 
 
 @governed_fbm_bp.post("/fbm/orders/<int:order_id>/amazon/rates")
@@ -275,10 +605,31 @@ def amazon_rates(order_id: int):
     if not result.request_token:
         return jsonify({"success": False, "message": "Amazon returned rates without a purchase token."}), 502
 
-    quote = FBMRateQuote(store_id=order.store_id, marketplace_order_id=order.marketplace_order_id, provider="amazon_buy_shipping", request_token=result.request_token, parcel=resolved.to_dict(), rates=result.rates, ineligible_rates=result.ineligible_rates, expires_at=datetime.utcnow() + timedelta(minutes=9))
+    quote = FBMRateQuote(
+        store_id=order.store_id,
+        marketplace_order_id=order.marketplace_order_id,
+        provider="amazon_buy_shipping",
+        request_token=result.request_token,
+        parcel=resolved.to_dict(),
+        rates=result.rates,
+        ineligible_rates=result.ineligible_rates,
+        expires_at=datetime.utcnow() + timedelta(minutes=9),
+    )
     db.session.add(quote)
     db.session.commit()
-    return jsonify({"success": True, "provider": "amazon_buy_shipping", "order_id": order.id, "marketplace_order_id": order.marketplace_order_id, "is_prime": profile.is_prime, "prime_locked": profile.is_prime is True, "quote_id": quote.id, "expires_at": quote.expires_at.isoformat(), "rates": result.rates, "ineligible_rates": result.ineligible_rates, "parcel": resolved.to_dict()})
+    return jsonify({
+        "success": True,
+        "provider": "amazon_buy_shipping",
+        "order_id": order.id,
+        "marketplace_order_id": order.marketplace_order_id,
+        "is_prime": profile.is_prime,
+        "prime_locked": profile.is_prime is True,
+        "quote_id": quote.id,
+        "expires_at": quote.expires_at.isoformat(),
+        "rates": result.rates,
+        "ineligible_rates": result.ineligible_rates,
+        "parcel": resolved.to_dict(),
+    })
 
 
 @governed_fbm_bp.post("/fbm/orders/<int:order_id>/amazon/purchase")
@@ -292,7 +643,6 @@ def amazon_purchase(order_id: int):
     body = request.get_json(silent=True) or {}
     if body.get("confirm_purchase") != "BUY_POSTAGE":
         return jsonify({"success": False, "message": "Explicit BUY_POSTAGE confirmation is required."}), 400
-
     try:
         quote_id = int(body.get("quote_id"))
     except (TypeError, ValueError):
@@ -333,7 +683,17 @@ def amazon_purchase(order_id: int):
     existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
     if existing is not None:
         if existing.purchase_status == "purchased":
-            return jsonify({"success": True, "already_purchased": True, "shipment_id": existing.id, "provider_shipment_id": existing.provider_shipment_id, "tracking_number": existing.tracking_number, "carrier": existing.carrier, "service": existing.service, "label": None, "message": "Postage was already purchased for this order. No second charge was made."})
+            return jsonify({
+                "success": True,
+                "already_purchased": True,
+                "shipment_id": existing.id,
+                "provider_shipment_id": existing.provider_shipment_id,
+                "tracking_number": existing.tracking_number,
+                "carrier": existing.carrier,
+                "service": existing.service,
+                "label": None,
+                "message": "Postage was already purchased for this order. No second charge was made.",
+            })
         return jsonify({"success": False, "message": "A previous purchase attempt exists for this order and must be verified before any retry.", "purchase_status": existing.purchase_status, "shipment_id": existing.id}), 409
 
     shipment = FBMShipment(
@@ -370,7 +730,12 @@ def amazon_purchase(order_id: int):
         shipment.purchase_error = str(exc)
         shipment.status = "purchase_verification_required"
         db.session.commit()
-        return jsonify({"success": False, "message": "Amazon purchase did not return a confirmed success. BT38 has blocked automatic retry to prevent a duplicate postage charge.", "detail": str(exc), "shipment_id": shipment.id}), 502
+        return jsonify({
+            "success": False,
+            "message": "Amazon purchase did not return a confirmed success. BT38 has blocked automatic retry to prevent a duplicate postage charge.",
+            "detail": str(exc),
+            "shipment_id": shipment.id,
+        }), 502
 
     now = datetime.utcnow()
     label = purchase.get("label") or {}
@@ -397,8 +762,7 @@ def amazon_purchase(order_id: int):
     shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
     quote.used_at = now
 
-    lines = order_lines(order)
-    for line in lines:
+    for line in order_lines(order):
         line.carrier = shipment.carrier
         if shipment.tracking_number:
             line.tracking_number = shipment.tracking_number
@@ -426,8 +790,9 @@ def amazon_purchase(order_id: int):
         "carrier": shipment.carrier,
         "service": shipment.service,
         "label": printable_label,
+        "mapping_status": "marketplace_native",
         "marketplace_confirmation": shipment.marketplace_confirmation_status,
-        "message": "Amazon Buy Shipping purchase succeeded and was persisted before printing. Amazon manages the on-Amazon shipment confirmation for labels purchased through Shipping API.",
+        "message": "Amazon Buy Shipping purchase succeeded and was persisted before printing. Amazon manages the on-Amazon shipment confirmation for this marketplace-native label.",
     })
 
 
@@ -464,9 +829,60 @@ def amazon_tracking(shipment_id: int):
     return jsonify({"success": True, "shipment_id": shipment.id, "tracking_number": shipment.tracking_number, "status": shipment.status, "provider_status": shipment.last_provider_status, "tracking": payload})
 
 
+@governed_fbm_bp.get("/fbm/mappings/pending")
+@login_required
+def pending_carrier_mappings():
+    mappings = FBMCarrierServiceMapping.query.filter_by(verification_status="pending_review").order_by(FBMCarrierServiceMapping.created_at.asc()).limit(100).all()
+    return jsonify({"success": True, "count": len(mappings), "mappings": [mapping_payload(mapping) for mapping in mappings]})
+
+
+@governed_fbm_bp.post("/fbm/mappings/<int:mapping_id>/verify")
+@login_required
+def verify_carrier_mapping(mapping_id: int):
+    mapping = db.session.get(FBMCarrierServiceMapping, mapping_id)
+    if mapping is None:
+        return jsonify({"success": False, "message": "Carrier/service mapping not found."}), 404
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm_mapping") != "SAVE_MAPPING":
+        return jsonify({"success": False, "message": "Explicit SAVE_MAPPING confirmation is required."}), 400
+    try:
+        verify_mapping(
+            mapping,
+            marketplace_carrier_code=body.get("marketplace_carrier_code"),
+            marketplace_carrier_name=body.get("marketplace_carrier_name"),
+            marketplace_service_code=body.get("marketplace_service_code"),
+            marketplace_service_name=body.get("marketplace_service_name"),
+            verified_by=f"user:{getattr(current_user, 'id', 'unknown')}",
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    for review in mapping.shipment_reviews:
+        shipment = getattr(review, "shipment", None)
+        if shipment and shipment.marketplace_confirmation_status == "mapping_under_review":
+            shipment.marketplace_confirmation_status = "mapping_verified_ready"
+            shipment.marketplace_confirmation_error = None
+    db.session.commit()
+    return jsonify({
+        "success": True,
+        "mapping": mapping_payload(mapping),
+        "message": "Mapping verified and saved. Future matching shipments will reuse it automatically.",
+    })
+
+
 @governed_fbm_bp.get("/fbm/providers/packlink/connection")
 @login_required
 def packlink_connection_check():
     result = PacklinkAdapter().connection_check()
     status = 200 if result.ok else (result.status_code or 503)
-    return jsonify({"success": result.ok, "provider": "packlink", "configured": result.configured, "authenticated": result.ok, "status_code": result.status_code, "account_country": result.account_country, "account_email": result.account_email, "message": result.message, "read_only": True}), status
+    return jsonify({
+        "success": result.ok,
+        "provider": "packlink",
+        "configured": result.configured,
+        "authenticated": result.ok,
+        "status_code": result.status_code,
+        "account_country": result.account_country,
+        "account_email": result.account_email,
+        "message": result.message,
+        "read_only": True,
+    }), status
