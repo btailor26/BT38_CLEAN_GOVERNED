@@ -241,12 +241,10 @@
           'warehouse-sync-button'
         );
 
+        // Warehouse Sync is a narrow recent/pending-order recovery shortcut.
+        // It must not force a second full page request after the recovery call.
+        // Live committed-state signals update the bell/other event-aware views.
         alert(result.message || 'Warehouse sync complete');
-
-        // Existing governed Warehouse Sync has completed marketplace
-        // listing/inventory hydration. Re-read the Warehouse route once so
-        // newly discovered listings and WarehouseStock rows are rendered.
-        window.location.reload();
       } catch (err) {
         alert(err.message || 'Warehouse sync failed');
         console.error(err);
