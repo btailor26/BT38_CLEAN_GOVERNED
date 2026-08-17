@@ -63,14 +63,7 @@ def _route_state(order: MarketplaceOrder) -> str:
 
 
 def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
-    """Return the governed shipping choices FBM is allowed to present.
-
-    This is decision metadata only. No rates are fetched and no label is bought.
-    Amazon marketplace orders are explicitly eligible for Amazon Buy Shipping,
-    including Prime/SFP when Amazon returns an eligible service. External
-    providers remain available as a user choice for ordinary FBM flows, while
-    BT38 remains responsible for correct marketplace mapping.
-    """
+    """Return the governed shipping choices FBM is allowed to present."""
     normalized = platform.strip().lower()
 
     if normalized == "amazon":
@@ -85,10 +78,10 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
     if normalized == "ebay":
         return {
             "recommended": "Best connected provider",
-            "marketplace_buy_shipping": False,
+            "marketplace_buy_shipping": True,
             "external_provider": True,
             "manual": True,
-            "reason": "Use native eBay label buying only when the account/API exposes a supported UK route; otherwise use the seller's connected provider.",
+            "reason": "Show eBay-native shipping when the connected account/API exposes it; otherwise Packlink/direct carrier remains available.",
         }
 
     return {
@@ -98,6 +91,84 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
         "manual": True,
         "reason": "Provider availability is determined by the seller's connected accounts.",
     }
+
+
+def _shipping_provider_options(order: MarketplaceOrder) -> list[dict]:
+    """Describe shipping routes available to the chooser without buying anything.
+
+    This endpoint intentionally returns capability/connection truth only. Live
+    rates are fetched by the individual provider adapter after the user chooses
+    an order/route. No shipment is created here.
+    """
+    platform = _platform(order).strip().lower()
+    store = getattr(order, "store", None)
+    options: list[dict] = []
+
+    if platform == "amazon":
+        creds = getattr(store, "amazon_credentials", None) if store is not None else None
+        configured = bool(creds and getattr(creds, "is_valid", lambda: False)())
+        options.append({
+            "provider": "amazon_buy_shipping",
+            "label": "Amazon Buy Shipping",
+            "kind": "marketplace",
+            "configured": configured,
+            "available": configured,
+            "recommended": True,
+            "supports_prime_sfp": True,
+            "message": (
+                "Connected Amazon credentials are available. Amazon must return the eligible services for this order."
+                if configured
+                else "Amazon credentials are not available for this store."
+            ),
+        })
+
+    if platform == "ebay":
+        creds = getattr(store, "ebay_credentials", None) if store is not None else None
+        configured = bool(creds and getattr(creds, "is_valid", lambda: False)())
+        options.append({
+            "provider": "ebay_shipping",
+            "label": "eBay Shipping",
+            "kind": "marketplace",
+            "configured": configured,
+            # Native UK label buying is capability-gated. Do not pretend access
+            # exists merely because the Trading API credentials are connected.
+            "available": False,
+            "recommended": False,
+            "supports_prime_sfp": False,
+            "message": (
+                "eBay account is connected. Native label buying will enable only when the eBay app/account exposes a supported UK shipping-label API."
+                if configured
+                else "eBay credentials are not available for this store."
+            ),
+        })
+
+    packlink = PacklinkAdapter()
+    options.append({
+        "provider": "packlink",
+        "label": "Packlink PRO",
+        "kind": "provider",
+        "configured": packlink.configured,
+        "available": packlink.configured,
+        "recommended": platform != "amazon",
+        "supports_prime_sfp": False,
+        "message": (
+            "Packlink PRO is connected. BT38 will use Packlink for rates/label execution but keep marketplace dispatch mapping under BT38 control."
+            if packlink.configured
+            else "PACKLINK_API_KEY is not configured."
+        ),
+    })
+
+    options.append({
+        "provider": "manual",
+        "label": "Manual / own carrier",
+        "kind": "manual",
+        "configured": True,
+        "available": True,
+        "recommended": False,
+        "supports_prime_sfp": False,
+        "message": "Use a label bought outside BT38. BT38 will still normalise the carrier, service and tracking before marketplace confirmation.",
+    })
+    return options
 
 
 def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShipment]:
@@ -193,6 +264,60 @@ def fbm_page():
         platform_filter=platform_filter,
         status_filter=status_filter,
     )
+
+
+@governed_fbm_bp.get("/fbm/shipping-options")
+@login_required
+def fbm_shipping_options():
+    """Return chooser data for one or more selected DB-backed FBM orders."""
+    raw_ids = str(request.args.get("order_ids") or "")
+    order_ids: list[int] = []
+    for value in raw_ids.split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            order_id = int(value)
+        except ValueError:
+            continue
+        if order_id > 0 and order_id not in order_ids:
+            order_ids.append(order_id)
+        if len(order_ids) >= 50:
+            break
+
+    if not order_ids:
+        return jsonify({"success": False, "message": "Select at least one FBM order."}), 400
+
+    rows = MarketplaceOrder.query.filter(MarketplaceOrder.id.in_(order_ids)).all()
+    by_id = {row.id: row for row in rows if _is_fbm_eligible(row)}
+
+    result = []
+    for order_id in order_ids:
+        row = by_id.get(order_id)
+        if row is None:
+            continue
+        result.append({
+            "id": row.id,
+            "marketplace_order_id": row.marketplace_order_id,
+            "platform": _platform(row),
+            "store_name": _store_name(row),
+            "sku": getattr(row, "sku", None),
+            "quantity": getattr(row, "quantity", None),
+            "postcode": getattr(row, "ship_to_postcode", None),
+            "route_state": _route_state(row),
+            "providers": _shipping_provider_options(row),
+        })
+
+    if not result:
+        return jsonify({"success": False, "message": "No selected orders are eligible for FBM shipping."}), 404
+
+    return jsonify({
+        "success": True,
+        "read_only": True,
+        "orders": result,
+        "selected_count": len(result),
+        "message": "Shipping routes prepared. No label has been purchased and no marketplace has been updated.",
+    })
 
 
 @governed_fbm_bp.get("/fbm/providers/packlink/connection")
