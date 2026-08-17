@@ -101,10 +101,14 @@
               {% endif %}
             </td>
             <td>
-              {% if row.state == 'submitted' %}
-                <span class="badge bg-info text-dark">Submitted / processing</span>
-              {% elif row.state == 'failed' %}
+              {% if row.state == 'failed' %}
                 <span class="badge bg-danger">Failed</span>
+              {% elif row.mcf and row.mcf.tracking_number %}
+                <span class="badge bg-success">Dispatched / tracking received</span>
+              {% elif row.mcf and row.anchor.shipped_at %}
+                <span class="badge bg-info text-dark">Dispatched / tracking pending</span>
+              {% elif row.state == 'submitted' %}
+                <span class="badge bg-info text-dark">Submitted / processing</span>
               {% elif row.state == 'ready' %}
                 <span class="badge bg-success">Ready for MCF</span>
               {% else %}
@@ -113,8 +117,12 @@
             </td>
             <td>
               {% if row.mcf %}
-                <span class="badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
-                  {{ row.mcf.amazon_status or row.mcf.status }}
+                <span class="badge {% if row.mcf.status == 'failed' %}bg-danger{% elif row.mcf.tracking_number or row.mcf.status == 'completed' %}bg-success{% else %}bg-info text-dark{% endif %}">
+                  {% if row.mcf.tracking_number %}
+                    Dispatched
+                  {% else %}
+                    {{ row.mcf.amazon_status or row.mcf.status }}
+                  {% endif %}
                 </span>
                 {% if row.mcf.tracking_number %}
                   <div class="small mt-1">{{ row.mcf.carrier or 'Carrier' }} · {{ row.mcf.tracking_number }}</div>
