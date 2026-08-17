@@ -1,13 +1,14 @@
-"""Exact post-submit Amazon MCF confirmation and FBA verification handoff.
+"""Exact post-submit Amazon MCF confirmation.
 
 Amazon remains authority for both MCF lifecycle state and FBA inventory. This
-module never derives an FBA quantity from the source marketplace sale and never
-starts a marketplace-wide inventory scan.
+module may verify the exact MCF order after submission, but it must never start
+FBA inventory propagation. FBA-led group propagation begins only from a real
+Amazon webhook signal and the existing exact FBA verifier.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from extensions import db
@@ -20,7 +21,7 @@ def confirm_exact_mcf_after_submission(
     mcf_order_id: int,
     source: str = "mcf_post_submit_exact_confirmation",
 ) -> dict[str, Any]:
-    """Verify one exact MCF order and queue exact FBA truth checks for its SKUs."""
+    """Verify one exact MCF order without starting inventory propagation."""
     mcf = db.session.get(MCFOrder, int(mcf_order_id))
     if mcf is None:
         return {
@@ -42,38 +43,15 @@ def confirm_exact_mcf_after_submission(
         and not status_result.get("pending_visibility")
     )
 
-    queued = []
-    if verified:
-        from services.governed_runtime_engine import notify_governed_runtime_work
-
-        seen = set()
-        for item in mcf.items.all():
-            seller_sku = str(getattr(item, "fba_sku", None) or "").strip()
-            if not seller_sku or seller_sku in seen:
-                continue
-            seen.add(seller_sku)
-            queued.append(
-                notify_governed_runtime_work(
-                    source="mcf_exact_fba_verification",
-                    event={
-                        "event_type": "fba_inventory_alignment",
-                        "marketplace": "amazon_fba",
-                        "store_id": mcf.fba_store_id,
-                        "seller_sku": seller_sku,
-                        "verify_after": datetime.utcnow() + timedelta(seconds=30),
-                        "payload": {
-                            "mcf_order_id": mcf.id,
-                            "seller_fulfillment_order_id": (
-                                mcf.seller_fulfillment_order_id
-                            ),
-                            "source_order_id": mcf.source_order_id,
-                        },
-                    },
-                )
-            )
+    # Critical FBA contract:
+    # submitting/confirming MCF is not inventory authority and must not queue a
+    # marketplace push or an exact FBA inventory check. FBA verification is
+    # woken only by Amazon webhook processing (ORDER_CHANGE or
+    # FULFILLMENT_ORDER_STATUS), after which the existing changed-only FBA
+    # verifier performs at most one group propagation for the new Amazon truth.
 
     # Persist diagnostic confirmation independently of the notification bell.
-    # Real FULFILLMENT_ORDER_STATUS notifications remain the bell/webhook source.
+    # Real Amazon notifications remain the bell/webhook source.
     db.session.add(
         SyncLog(
             store_id=mcf.fba_store_id,
@@ -86,7 +64,8 @@ def confirm_exact_mcf_after_submission(
                 f"seller_fulfillment_order_id={mcf.seller_fulfillment_order_id} "
                 f"amazon_order_id={mcf.amazon_order_id or ''} "
                 f"amazon_status={mcf.amazon_status or ''} "
-                f"pending_visibility={bool(status_result.get('pending_visibility'))}"
+                f"pending_visibility={bool(status_result.get('pending_visibility'))} "
+                "fba_verification_queued=false webhook_gate=true"
             )[:500],
             created_at=datetime.utcnow(),
         )
@@ -104,7 +83,8 @@ def confirm_exact_mcf_after_submission(
         "confirmation_visible": confirmation_visible,
         "pending_visibility": bool(status_result.get("pending_visibility")),
         "status_result": status_result,
-        "fba_exact_verifications_queued": len(queued),
+        "fba_exact_verifications_queued": 0,
+        "fba_verification_waiting_for_amazon_webhook": True,
         "full_scan_started": False,
         "marketplace_write_started": False,
     }
