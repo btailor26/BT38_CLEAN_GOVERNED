@@ -50,14 +50,16 @@ def test_amazon_mcf_status_bypasses_listing_resolution_and_reuses_existing_handl
     assert '"mcf_fulfillment_status_processed"' in source
 
 
-def test_post_submit_confirmation_is_exact_and_never_scans_inventory():
+def test_post_submit_confirmation_is_exact_but_cannot_start_fba_propagation():
     source = _read("services/governed_mcf_confirmation.py")
     mutation = _read("services/governed_order_stock_mutation.py")
 
     assert "refresh_mcf_status(mcf)" in source
-    assert '"event_type": "fba_inventory_alignment"' in source
-    assert '"marketplace": "amazon_fba"' in source
+    assert '"fba_exact_verifications_queued": 0' in source
+    assert '"fba_verification_waiting_for_amazon_webhook": True' in source
     assert '"full_scan_started": False' in source
+    assert '"marketplace_write_started": False' in source
+    assert "notify_governed_runtime_work" not in source
     assert "AmazonSPAPIAdapter" not in source
     assert "run_governed_amazon_inventory_import" not in source
     assert "confirm_exact_mcf_after_submission" in mutation
@@ -69,4 +71,21 @@ def test_fba_quantity_is_never_derived_from_source_marketplace_sale():
     assert "expected_quantity" not in source
     assert "available_quantity" not in source
     assert "quantity -" not in source
-    assert "marketplace_write_started\": False" in source
+    assert '"marketplace_write_started": False' in source
+
+
+def test_mcf_page_reuses_shared_live_signal_and_opens_no_second_eventsource():
+    source = _read("templates/mcf_orders.html")
+
+    assert "bt38-marketplace-event" in source
+    assert "new EventSource(" not in source
+    assert "/governed/ui/events/stream" not in source
+
+
+def test_warehouse_sync_does_not_force_second_page_request():
+    source = _read("static/js/warehouse-governed.js")
+
+    sync_tail = source[source.index("governedWarehouseSyncBtn"):]
+    assert "/governed/warehouse/sync" in sync_tail
+    assert "window.location.reload()" not in sync_tail
+    assert "marketplace listing/inventory hydration" not in sync_tail
