@@ -9,6 +9,7 @@ Contract:
 """
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
 from datetime import datetime
@@ -160,8 +161,6 @@ def publish_governed_ui_event(
     safe_scope = {}
     _merge_scope(safe_scope, dict(scope or {}))
 
-    # Keep singular identity compatible with existing page selectors while the
-    # arrays remain the authoritative complete mutation contract.
     if safe_scope.get("listing_id") in (None, ""):
         ids = safe_scope.get("affected_listing_ids") or []
         if ids:
@@ -177,7 +176,7 @@ def publish_governed_ui_event(
 
     with _condition:
         _revision += 1
-        event = {
+        ui_event = {
             "revision": _revision,
             "changed": True,
             "source": str(source or "").strip().lower(),
@@ -185,8 +184,8 @@ def publish_governed_ui_event(
             **safe_scope,
         }
         if notification_record_id is not None:
-            event["notification_record_id"] = int(notification_record_id)
-        _events.append(event)
+            ui_event["notification_record_id"] = int(notification_record_id)
+        _events.append(ui_event)
         _condition.notify_all()
         return _revision
 
@@ -197,7 +196,6 @@ def publish_webhook_ui_event(
     notification_record_id: int,
     scope: dict | None = None,
 ) -> int:
-    """Preserve the existing webhook publisher on the shared UI event path."""
     return publish_governed_ui_event(
         source=f"webhook_{str(platform or '').strip().lower()}",
         notification_record_id=notification_record_id,
@@ -207,9 +205,9 @@ def publish_webhook_ui_event(
 
 def _events_after(seen_revision: int):
     return [
-        dict(event)
-        for event in _events
-        if int(event.get("revision") or 0) > int(seen_revision)
+        dict(ui_event)
+        for ui_event in _events
+        if int(ui_event.get("revision") or 0) > int(seen_revision)
     ]
 
 
@@ -227,9 +225,8 @@ def _collapse_events(events: list[dict]) -> dict | None:
         "affected_group_ids": [],
     }
 
-    for event in events:
-        _merge_scope(collapsed, event)
-        # latest simple metadata is useful for diagnostics and single-record UI
+    for ui_event in events:
+        _merge_scope(collapsed, ui_event)
         for key in (
             "platform",
             "notification_record_id",
@@ -239,8 +236,8 @@ def _collapse_events(events: list[dict]) -> dict | None:
             "order_id",
             "store_id",
         ):
-            if event.get(key) not in (None, ""):
-                collapsed[key] = event.get(key)
+            if ui_event.get(key) not in (None, ""):
+                collapsed[key] = ui_event.get(key)
 
     if collapsed.get("listing_id") in (None, "") and collapsed["affected_listing_ids"]:
         collapsed["listing_id"] = collapsed["affected_listing_ids"][0]
@@ -254,38 +251,25 @@ def _collapse_events(events: list[dict]) -> dict | None:
 
 @app.get("/governed/ui/events")
 def governed_ui_events():
-    """Return immediately for compatibility with already-open browser pages.
-
-    The global bell is now an explicit sales shortcut.  It must not reserve a
-    Gunicorn request thread (or cause Flask-Login to open a Neon transaction)
-    while a browser waits for an unrelated runtime event.
-    """
     with _condition:
         current_revision = _revision
 
     response = jsonify({
         "ok": True,
         "revision": current_revision,
-        # Compatibility callers are deliberately not page-refresh authority.
         "event": None,
     })
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
 
-
 @app.get("/governed/ui/events/stream")
 def governed_ui_event_stream():
     """Signal-only SSE over the existing governed UI event condition.
 
-    No DB read.
-    No marketplace call.
-    No polling.
-    No second event queue.
+    No DB read. No marketplace call. No polling. No second event queue.
+    The payload is the already-committed in-memory scope for the changed rows.
     """
-    # Flask-Login stores the authenticated user ID in the signed session.
-    # Do not resolve current_user here because this connection is long-lived
-    # and must never hold a Neon read transaction.
     if not session.get("_user_id"):
         return Response(status=401)
 
@@ -294,127 +278,161 @@ def governed_ui_event_stream():
 
     def _stream():
         seen_revision = initial_revision
-
         yield "retry: 3000\n\n"
 
         while True:
             with _condition:
                 if int(_revision) == seen_revision:
-                    # In-memory sleep only. Zero SQL/API activity.
                     _condition.wait(timeout=25.0)
                 current_revision = int(_revision)
+                pending_events = (
+                    _events_after(seen_revision)
+                    if current_revision != seen_revision
+                    else []
+                )
 
             if current_revision != seen_revision:
+                contract = _collapse_events(pending_events) or {
+                    "changed": True,
+                    "revision": current_revision,
+                }
                 seen_revision = current_revision
                 yield (
                     "event: marketplace\n"
-                    f"data: {seen_revision}\n\n"
+                    f"data: {json.dumps(contract, separators=(',', ':'))}\n\n"
                 )
             else:
-                # Network keepalive only.
                 yield ": keepalive\n\n"
 
-    response = Response(
-        _stream(),
-        mimetype="text/event-stream",
-    )
+    response = Response(_stream(), mimetype="text/event-stream")
     response.headers["Cache-Control"] = "no-cache, no-transform"
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Connection"] = "keep-alive"
     return response
 
 
-@event.listens_for(Session, "before_flush")
-def _bt38_existing_ui_signal_before_flush(
-    session_obj,
-    flush_context,
-    instances,
-):
-    """Wake the existing UI signal for canonical marketplace commits.
+def _sync_log_push_scope(row) -> dict:
+    """Recover exact push identity from the persisted governed SyncLog line."""
+    message = str(getattr(row, "message", "") or "").strip()
+    values = {}
+    for token in message.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        values[key.strip().lower()] = value.strip()
 
-    Product Linking and webhook routes already publish through this module.
-    These model checks cover DB-originating sales/listings and persisted pushes.
-    """
+    scope = {
+        "event_type": values.get("event_type") or "marketplace_push",
+        "seller_sku": values.get("sku"),
+        "store_id": values.get("store_id"),
+        "listing_id": values.get("listing_id"),
+        "warehouse_stock_id": values.get("warehouse_stock_id"),
+        "group_id": values.get("group_id"),
+    }
+    for singular, plural in (
+        ("listing_id", "affected_listing_ids"),
+        ("warehouse_stock_id", "affected_warehouse_stock_ids"),
+        ("group_id", "affected_group_ids"),
+    ):
+        value = scope.get(singular)
+        if value not in (None, "", "None"):
+            scope[plural] = [value]
+        elif value == "None":
+            scope[singular] = None
+    return scope
+
+
+@event.listens_for(Session, "before_flush")
+def _bt38_existing_ui_signal_before_flush(session_obj, flush_context, instances):
     if session_obj.info.get("_bt38_ui_commit_wake"):
         return
 
     from models import MarketplaceListing, MarketplaceOrder, SyncLog
 
     for row in session_obj.new:
-        if isinstance(row, (MarketplaceListing, MarketplaceOrder)):
+        if isinstance(row, MarketplaceListing):
             session_obj.info["_bt38_ui_commit_wake"] = True
+            session_obj.info["_bt38_ui_commit_scope"] = {
+                "event_type": "marketplace_listing",
+                "seller_sku": getattr(row, "external_sku", None),
+                "listing_id": getattr(row, "id", None),
+                "warehouse_stock_id": getattr(row, "warehouse_stock_id", None),
+                "group_id": getattr(row, "master_product_group_id", None),
+            }
+            return
+
+        if isinstance(row, MarketplaceOrder):
+            session_obj.info["_bt38_ui_commit_wake"] = True
+            session_obj.info["_bt38_ui_commit_scope"] = {
+                "event_type": "marketplace_order",
+                "seller_sku": getattr(row, "sku", None),
+                "order_id": getattr(row, "marketplace_order_id", None),
+                "warehouse_stock_id": getattr(row, "warehouse_stock_id", None),
+                "store_id": getattr(row, "store_id", None),
+            }
             return
 
         if isinstance(row, SyncLog):
             message = str(getattr(row, "message", "") or "").lower()
-            if (
-                message.startswith("event_type=marketplace_push")
-                or message.startswith("event_type=product_linking_")
-            ):
+            if message.startswith("event_type=marketplace_push"):
                 session_obj.info["_bt38_ui_commit_wake"] = True
+                session_obj.info["_bt38_ui_commit_scope"] = _sync_log_push_scope(row)
+                return
+            if message.startswith("event_type=product_linking_"):
+                session_obj.info["_bt38_ui_commit_wake"] = True
+                session_obj.info["_bt38_ui_commit_scope"] = {
+                    "event_type": "product_linking_change",
+                }
                 return
 
 
 @event.listens_for(Session, "after_commit")
 def _bt38_existing_ui_signal_after_commit(session_obj):
-    if session_obj.info.pop("_bt38_ui_commit_wake", False):
+    should_wake = session_obj.info.pop("_bt38_ui_commit_wake", False)
+    scope = session_obj.info.pop("_bt38_ui_commit_scope", None) or {
+        "event_type": "committed_marketplace_state",
+    }
+    if should_wake:
         publish_governed_ui_event(
             source="committed_marketplace_state",
-            scope={
-                "event_type": "committed_marketplace_state",
-            },
+            scope=scope,
         )
 
 
 @event.listens_for(Session, "after_rollback")
 def _bt38_existing_ui_signal_after_rollback(session_obj):
     session_obj.info.pop("_bt38_ui_commit_wake", None)
+    session_obj.info.pop("_bt38_ui_commit_scope", None)
+
 
 def _result_has_committed_change(value) -> bool:
     if not isinstance(value, dict):
         return False
-
     for key in (
-        "changed",
-        "stock_changed",
-        "fba_inventory_changed",
-        "page_refresh_required",
-        "warehouse_refresh_required",
-        "created",
-        "inserted",
-        "imported",
+        "changed", "stock_changed", "fba_inventory_changed",
+        "page_refresh_required", "warehouse_refresh_required",
+        "created", "inserted", "imported",
     ):
         if value.get(key) is True:
             return True
-
     for key in ("rows_updated", "rows_inserted", "created_count", "updated_count"):
         try:
             if int(value.get(key) or 0) > 0:
                 return True
         except Exception:
             pass
-
     if str(value.get("status") or "").strip().lower() in {
-        "cancellation_processed",
-        "group_processed",
-        "warehouse_processed",
+        "cancellation_processed", "group_processed", "warehouse_processed",
         "fba_inventory_updated",
     }:
         return True
-
     for key in (
-        "verification_queue",
-        "immediate",
-        "order_intake",
-        "stock_mutation",
-        "push_result",
-        "result",
-        "listing_discovery",
+        "verification_queue", "immediate", "order_intake", "stock_mutation",
+        "push_result", "result", "listing_discovery",
     ):
         nested = value.get(key)
         if isinstance(nested, dict) and _result_has_committed_change(nested):
             return True
-
     return False
 
 
@@ -437,15 +455,12 @@ def _ui_scope_from_response(payload) -> dict:
 
 @app.after_request
 def publish_completed_webhook_and_attach_live_ui(response):
-    """Publish changed webhooks and install the shared sleeping browser waiter."""
+    """Publish changed webhooks; the old browser waiter remains retired."""
     path = request.path.rstrip("/") or "/"
 
     if request.method == "POST" and path in _RELATIONSHIP_EVENT_PATHS:
         payload = response.get_json(silent=True)
-        if (
-            response.status_code < 400
-            and _result_has_committed_change(payload)
-        ):
+        if response.status_code < 400 and _result_has_committed_change(payload):
             publish_governed_ui_event(
                 source=_RELATIONSHIP_EVENT_PATHS[path],
                 scope=payload,
@@ -457,13 +472,11 @@ def publish_completed_webhook_and_attach_live_ui(response):
         record_id = getattr(g, "bt38_notification_record_id", None)
         if record_id is None and isinstance(payload, dict):
             record_id = payload.get("notification_record_id")
-
         failed_after_capture = (
             isinstance(payload, dict)
             and payload.get("status") == "processing_failed"
         )
         committed_change = _response_has_committed_change(payload)
-
         if (
             record_id is not None
             and response.status_code < 400
@@ -477,211 +490,6 @@ def publish_completed_webhook_and_attach_live_ui(response):
             )
         return response
 
-    if request.method != "GET":
-        return response
-    if not LIVE_BROWSER_EVENT_WAITER_ENABLED:
-        return response
-    if "text/html" not in str(response.content_type or "").lower():
-        return response
-
-    body = response.get_data(as_text=True)
-    if path not in _LIVE_UI_PATHS and 'id="bt38NotificationBell"' not in body:
-        return response
-    if "bt38WebhookLiveEvents" in body or "</body>" not in body:
-        return response
-
-    revision_seed = int(_revision)
-    script = r'''
-<script id="bt38WebhookLiveEvents">
-(function(){
-  if (window.bt38WebhookLiveEventsInstalled) return;
-  window.bt38WebhookLiveEventsInstalled = true;
-
-  let revision = __BT38_REVISION__;
-  let pendingEvent = null;
-  let waiting = false;
-  let stopped = false;
-  let refreshRunning = false;
-
-  function currentPath(){
-    return window.location.pathname.replace(/\/$/, "") || "/";
-  }
-
-  function ids(values){
-    return Array.from(new Set((values || []).filter(function(value){
-      return value !== null && value !== undefined && value !== "";
-    }).map(String)));
-  }
-
-  function exactDetails(contract){
-    const rows = [];
-    const stockIds = ids(contract?.affected_warehouse_stock_ids);
-    const listingIds = ids(contract?.affected_listing_ids);
-    const groupIds = ids(contract?.affected_group_ids);
-    const max = Math.max(stockIds.length, listingIds.length, groupIds.length, 1);
-    for (let i = 0; i < max; i += 1) {
-      rows.push({
-        ...contract,
-        warehouse_stock_id: stockIds[i] || contract?.warehouse_stock_id || null,
-        listing_id: listingIds[i] || contract?.listing_id || null,
-        group_id: groupIds[i] || contract?.group_id || null
-      });
-    }
-    return rows;
-  }
-
-  function escapeSelector(value){
-    const text = String(value ?? "");
-    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(text);
-    return text.replace(/["\\]/g, "\\$&");
-  }
-
-  function selectorFor(detail){
-    const path = currentPath();
-    if (path === "/warehouse") {
-      if (detail?.warehouse_stock_id != null) return `tr[data-stock-id="${escapeSelector(detail.warehouse_stock_id)}"]`;
-      if (detail?.listing_id != null) return `tr[data-listing-id="${escapeSelector(detail.listing_id)}"]`;
-      if (detail?.seller_sku) return `tr[data-sku="${escapeSelector(detail.seller_sku)}"]`;
-      if (detail?.group_id != null) return `tr[data-group-id="${escapeSelector(detail.group_id)}"]`;
-    }
-    if (path === "/amazon-fba-stock" && detail?.seller_sku) return `tr[data-bt38-seller-sku="${escapeSelector(detail.seller_sku)}"]`;
-    if (path === "/orders-mcf" && detail?.order_id) return `tr[data-bt38-order-id="${escapeSelector(detail.order_id)}"]`;
-    if (path === "/listings") {
-      if (detail?.listing_id != null) return `tr[data-listing-id="${escapeSelector(detail.listing_id)}"]`;
-      if (detail?.seller_sku) return `tr[data-sku="${escapeSelector(detail.seller_sku)}"]`;
-    }
-    return null;
-  }
-
-  function markRows(root){
-    const path = currentPath();
-    if (path === "/amazon-fba-stock") {
-      root.querySelectorAll("table tbody tr").forEach(function(row){
-        const sku = row.querySelector("td code")?.textContent?.trim();
-        if (sku) row.dataset.bt38SellerSku = sku;
-      });
-    }
-    if (path === "/orders-mcf") {
-      root.querySelectorAll(".mcf-order-row").forEach(function(row){
-        const orderId = row.querySelector("td:nth-child(2) strong")?.textContent?.trim();
-        if (orderId) row.dataset.bt38OrderId = orderId;
-      });
-    }
-  }
-
-  function targetedUrl(detail){
-    const url = new URL(window.location.href);
-    const path = currentPath();
-    if (path === "/warehouse" && detail?.seller_sku) {
-      url.searchParams.set("q", String(detail.seller_sku));
-      url.searchParams.set("page", "1");
-      url.searchParams.set("per_page", "15");
-    }
-    if (path === "/amazon-fba-stock" && detail?.seller_sku) {
-      url.searchParams.set("search", String(detail.seller_sku));
-      url.searchParams.set("status", "all");
-      url.searchParams.set("page", "1");
-      url.searchParams.set("per_page", "15");
-    }
-    return url.toString();
-  }
-
-  async function refreshHtmlRow(detail){
-    const path = currentPath();
-    if (path === "/product-linking" || path === "/orders-mcf") return;
-    markRows(document);
-    const selector = selectorFor(detail);
-    if (!selector) return;
-    const currentRow = document.querySelector(selector);
-    if (!currentRow) return;
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(function(){ controller.abort(); }, 1500);
-    try {
-      const response = await fetch(targetedUrl(detail), {
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: {"X-BT38-UI-Refresh": "targeted"},
-        signal: controller.signal
-      });
-      if (!response.ok) return;
-      const html = await response.text();
-      const parsed = new DOMParser().parseFromString(html, "text/html");
-      markRows(parsed);
-      const freshRow = parsed.querySelector(selector);
-      if (freshRow) currentRow.replaceWith(document.importNode(freshRow, true));
-    } catch (error) {
-      if (error?.name !== "AbortError") console.warn("[BT38 UI] targeted refresh failed", error);
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }
-
-  async function handleEvent(contract){
-    if (!contract || refreshRunning) return;
-    refreshRunning = true;
-    try {
-      window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: contract}));
-      if (currentPath() === "/product-linking" && typeof window.bt38ApplyProductLinkingMutation === "function") {
-        const identity = {
-          warehouseId: contract.warehouse_stock_id,
-          groupId: contract.group_id,
-          listingId: contract.listing_id,
-          listingSku: contract.seller_sku,
-          warehouseSku: contract.seller_sku
-        };
-        await window.bt38ApplyProductLinkingMutation(contract, identity);
-        return;
-      }
-
-      for (const detail of exactDetails(contract)) await refreshHtmlRow(detail);
-    } finally {
-      refreshRunning = false;
-    }
-  }
-
-  async function waitForNextEvent(){
-    if (stopped || waiting) return;
-    waiting = true;
-    try {
-      const response = await fetch(
-        "/governed/ui/events?after=" + encodeURIComponent(revision),
-        {credentials: "same-origin", cache: "no-store"}
-      );
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = await response.json();
-      revision = Math.max(revision, Number(payload?.revision || 0));
-      const detail = payload?.event || null;
-      if (detail) {
-        if (document.hidden) pendingEvent = detail;
-        else await handleEvent(detail);
-      }
-    } catch (error) {
-      if (!stopped) console.warn("[BT38 UI] event wait unavailable", error);
-    } finally {
-      waiting = false;
-      if (!stopped) window.setTimeout(waitForNextEvent, 50);
-    }
-  }
-
-  document.addEventListener("visibilitychange", function(){
-    if (!document.hidden && pendingEvent) {
-      const detail = pendingEvent;
-      pendingEvent = null;
-      void handleEvent(detail);
-    }
-  });
-
-  window.addEventListener("beforeunload", function(){ stopped = true; }, {once: true});
-
-  // Page sessions remain unchanged. Runtime events no longer create a
-  // permanent browser request; the notification bell pulls sales on demand.
-  function start(){ markRows(document); }
-  if (document.readyState === "complete") window.setTimeout(start, 0);
-  else window.addEventListener("load", function(){ window.setTimeout(start, 0); }, {once: true});
-})();
-</script>
-'''.replace("__BT38_REVISION__", str(revision_seed))
-
-    response.set_data(body.replace("</body>", script + "\n</body>", 1))
+    # The legacy injected browser waiter is deliberately retired. The shared
+    # base.html EventSource consumes /governed/ui/events/stream instead.
     return response
