@@ -6,38 +6,39 @@
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
     <div>
         <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
-        <p class="text-muted mb-0">Unified merchant-fulfilled order routing. Marketplace orders remain the source; shipping providers execute postage on the seller's own account.</p>
+        <p class="text-muted mb-0">One DB-backed workspace for merchant-fulfilled orders, shipping choice, labels, tracking and marketplace mapping.</p>
     </div>
-    <span class="badge bg-secondary fs-6">Phase 1 · Read only</span>
+    <span class="badge bg-secondary fs-6">Build mode · no label writes enabled</span>
 </div>
 
 <div class="alert alert-info">
-    <strong>Governed boundary:</strong> BT38 will recommend and map fulfilment services. It will not take shipping payments or own carrier loss/damage disputes. Amazon-protected shipping routes will stay inside Amazon's supported shipping workflow.
+    <strong>Source of truth:</strong> FBM reads orders already committed to the BT38 database. It does not run a second Amazon/eBay order import. Shipping charges stay on the seller's marketplace, Packlink or carrier account; BT38 does not handle postage money or carrier claims.
 </div>
 
 <div class="row g-3 mb-4">
-    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
-    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready for routing</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
-    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">Tracking recorded</div><div class="fs-3 fw-bold">{{ counts.tracking }}</div></div></div></div>
-    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">Dispatched</div><div class="fs-3 fw-bold">{{ counts.dispatched }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Marketplace shipping</div><div class="fs-3 fw-bold">{{ counts.marketplace_shipping }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Tracking</div><div class="fs-3 fw-bold">{{ counts.tracking }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Dispatched</div><div class="fs-3 fw-bold">{{ counts.dispatched }}</div></div></div></div>
 </div>
 
 <div class="card mb-4">
-    <div class="card-header fw-semibold">FBM routing contract</div>
+    <div class="card-header fw-semibold">FBM fulfilment contract</div>
     <div class="card-body">
         <div class="row g-3 small">
-            <div class="col-md-3"><strong>1. Order</strong><br><span class="text-muted">Amazon/eBay order already stored by BT38.</span></div>
-            <div class="col-md-3"><strong>2. Decide</strong><br><span class="text-muted">Cut-off, delivery promise, parcel, price and marketplace rules.</span></div>
-            <div class="col-md-3"><strong>3. Provider</strong><br><span class="text-muted">Packlink/direct carrier/Amazon shipping on the seller's account.</span></div>
-            <div class="col-md-3"><strong>4. Map</strong><br><span class="text-muted">BT38 normalises carrier, service and tracking before marketplace dispatch.</span></div>
+            <div class="col-md-3"><strong>1. DB order</strong><br><span class="text-muted">Use the existing marketplace order and committed customer/order data.</span></div>
+            <div class="col-md-3"><strong>2. Recommend</strong><br><span class="text-muted">Cut-off, promise, parcel, price and marketplace rules determine the recommendation.</span></div>
+            <div class="col-md-3"><strong>3. User chooses</strong><br><span class="text-muted">Marketplace Buy Shipping, Packlink/direct carrier or manual route. User may override.</span></div>
+            <div class="col-md-3"><strong>4. BT38 maps</strong><br><span class="text-muted">Actual carrier + service + tracking are normalised before marketplace dispatch.</span></div>
         </div>
     </div>
 </div>
 
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <span class="fw-semibold">Orders</span>
-        <span class="text-muted small">No postage purchase or dispatch action is enabled yet.</span>
+        <span class="fw-semibold">FBM Orders</span>
+        <span class="text-muted small">Recommendations shown only. Purchase/dispatch remains disabled until provider adapters pass audit.</span>
     </div>
     <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
@@ -49,12 +50,15 @@
                     <th>SKU</th>
                     <th>Qty</th>
                     <th>Postcode</th>
-                    <th>Current route</th>
+                    <th>State</th>
+                    <th>Recommended shipping</th>
+                    <th>Available routes</th>
                 </tr>
             </thead>
             <tbody>
             {% for item in orders %}
                 {% set order = item.order %}
+                {% set shipping = item.shipping_mode %}
                 <tr>
                     <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div></td>
                     <td>{{ order.marketplace_order_id }}</td>
@@ -63,9 +67,18 @@
                     <td>{{ order.quantity or 0 }}</td>
                     <td>{{ order.ship_to_postcode or '—' }}</td>
                     <td><span class="badge bg-light text-dark border">{{ item.route_state }}</span></td>
+                    <td>
+                        <strong>{{ shipping.recommended }}</strong>
+                        <div class="small text-muted" style="max-width: 360px;">{{ shipping.reason }}</div>
+                    </td>
+                    <td class="small">
+                        {% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace Buy Shipping</span>{% endif %}
+                        {% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Provider / Carrier</span>{% endif %}
+                        {% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}
+                    </td>
                 </tr>
             {% else %}
-                <tr><td colspan="7" class="text-center text-muted py-5">No marketplace orders are currently available.</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-5">No marketplace orders are currently available in the BT38 database.</td></tr>
             {% endfor %}
             </tbody>
         </table>
