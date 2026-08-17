@@ -101,10 +101,20 @@ jobs:
             main.py \
             app.py \
             models.py \
+            fbm_models.py \
             governed_routes.py \
             governed_group_routes.py \
             governed_group_propagation_routes.py \
             governed_runtime_visibility_routes.py \
+            governed_fbm_routes.py \
+            services/fbm_provider_contract.py \
+            services/fbm_order_mapper.py \
+            services/fbm_amazon_order_profile.py \
+            services/fbm_amazon_shipping_adapter.py \
+            services/fbm_packlink_adapter.py \
+            services/fbm_carrier_mapping.py \
+            services/fbm_post_purchase.py \
+            services/fbm_shipping_state.py \
             services/governed_runtime_engine.py \
             services/governed_webhook_execution.py \
             services/governed_webhook_alignment.py \
