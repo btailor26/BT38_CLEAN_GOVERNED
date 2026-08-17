@@ -13,81 +13,79 @@ from extensions import db
 
 
 class FBMOrderProfile(db.Model):
-    """Shipping-specific marketplace facts persisted before FBM routing.
-
-    MarketplaceOrder remains the commercial/order record. This profile stores
-    marketplace shipping facts such as Amazon Prime/SFP eligibility so the FBM
-    UI can make governed choices from the DB instead of guessing from titles,
-    SKUs, or browser state.
-    """
+    """Shipping-specific marketplace facts persisted before FBM routing."""
 
     __tablename__ = "fbm_order_profiles"
-
     id = db.Column(db.Integer, primary_key=True)
     store_id = db.Column(db.Integer, db.ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
     marketplace_order_id = db.Column(db.String(200), nullable=False, index=True)
     platform = db.Column(db.String(50), nullable=False, index=True)
-
     is_prime = db.Column(db.Boolean, nullable=True, index=True)
     is_premium = db.Column(db.Boolean, nullable=True)
     fulfillment_channel = db.Column(db.String(50), nullable=True)
     shipment_service_level = db.Column(db.String(100), nullable=True)
     latest_ship_at = db.Column(db.DateTime, nullable=True)
-
-    # Audit where the marketplace fact came from; no full customer payload is
-    # duplicated here.
     source = db.Column(db.String(100), nullable=False, default="marketplace_shipping_profile")
     checked_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     last_error = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    __table_args__ = (db.UniqueConstraint("store_id", "marketplace_order_id", name="uq_fbm_order_profile_store_order"),)
 
-    __table_args__ = (
-        db.UniqueConstraint("store_id", "marketplace_order_id", name="uq_fbm_order_profile_store_order"),
-    )
+
+class FBMRateQuote(db.Model):
+    """Short-lived provider quote persisted so purchases cannot trust browser metadata."""
+
+    __tablename__ = "fbm_rate_quotes"
+    id = db.Column(db.Integer, primary_key=True)
+    store_id = db.Column(db.Integer, db.ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    marketplace_order_id = db.Column(db.String(200), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=False, index=True)
+    request_token = db.Column(db.Text, nullable=True)
+    parcel = db.Column(db.JSON, nullable=False, default=dict)
+    rates = db.Column(db.JSON, nullable=False, default=list)
+    ineligible_rates = db.Column(db.JSON, nullable=False, default=list)
+    expires_at = db.Column(db.DateTime, nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    used_at = db.Column(db.DateTime, nullable=True)
+
+    @property
+    def expired(self) -> bool:
+        return bool(self.expires_at and datetime.utcnow() >= self.expires_at)
 
 
 class FBMShipment(db.Model):
     """One physical FBM shipment for an existing marketplace order."""
 
     __tablename__ = "fbm_shipments"
-
     id = db.Column(db.Integer, primary_key=True)
-
-    # Existing BT38 order identity. Kept as values rather than a hard FK because
-    # MarketplaceOrder can contain multiple line rows for one marketplace order.
     store_id = db.Column(db.Integer, db.ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
     marketplace_order_id = db.Column(db.String(100), nullable=False, index=True)
 
-    # Provider execution details. Payment stays with provider/marketplace account.
-    provider = db.Column(db.String(50), nullable=True, index=True)  # amazon_buy_shipping, ebay_shipping, packlink, carrier_direct, manual
+    provider = db.Column(db.String(50), nullable=True, index=True)
     provider_shipment_id = db.Column(db.String(200), nullable=True, index=True)
+    provider_carrier_id = db.Column(db.String(200), nullable=True)
+    provider_service_id = db.Column(db.String(200), nullable=True)
     carrier = db.Column(db.String(100), nullable=True)
     service = db.Column(db.String(200), nullable=True)
     tracking_number = db.Column(db.String(200), nullable=True, index=True)
 
-    # Preserve the label exactly as supplied by the marketplace/provider. BT38
-    # must not assume every provider returns the same file type or page size.
     label_url = db.Column(db.Text, nullable=True)
-    label_format = db.Column(db.String(20), nullable=True)  # PDF, PNG, ZPL, provider-specific
+    label_format = db.Column(db.String(20), nullable=True)
     label_document_type = db.Column(db.String(30), nullable=True, default="LABEL")
     label_width = db.Column(db.Float, nullable=True)
     label_length = db.Column(db.Float, nullable=True)
     label_size_unit = db.Column(db.String(20), nullable=True)
     label_dpi = db.Column(db.Integer, nullable=True)
     label_page_layout = db.Column(db.String(50), nullable=True)
-    label_source = db.Column(db.String(50), nullable=True)  # amazon, ebay, packlink, carrier_direct, manual
-    label_storage_ref = db.Column(db.Text, nullable=True)  # internal/provider reference; never assumes a public URL
+    label_source = db.Column(db.String(50), nullable=True)
+    label_storage_ref = db.Column(db.Text, nullable=True)
 
-    # Purchase idempotency. A successful provider purchase must be persisted
-    # before printing/marketplace confirmation, and the same key can never be
-    # used to purchase postage twice.
     purchase_key = db.Column(db.String(200), nullable=True, unique=True, index=True)
     selected_rate_id = db.Column(db.String(300), nullable=True)
-    purchase_status = db.Column(db.String(50), nullable=True, index=True)  # pending, purchased, failed, cancelled
+    purchase_status = db.Column(db.String(50), nullable=True, index=True)
     purchase_error = db.Column(db.Text, nullable=True)
 
-    # Confirmation lifecycle.
     status = db.Column(db.String(50), nullable=False, default="awaiting_label", index=True)
     label_purchased_at = db.Column(db.DateTime, nullable=True)
     handover_due_at = db.Column(db.DateTime, nullable=True, index=True)
@@ -97,17 +95,13 @@ class FBMShipment(db.Model):
     last_provider_status = db.Column(db.String(100), nullable=True)
     last_provider_checked_at = db.Column(db.DateTime, nullable=True)
 
-    # Marketplace acknowledgement is separate from carrier acceptance.
     marketplace_confirmed_at = db.Column(db.DateTime, nullable=True)
     marketplace_confirmation_status = db.Column(db.String(50), nullable=True)
     marketplace_confirmation_error = db.Column(db.Text, nullable=True)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    __table_args__ = (
-        db.Index("idx_fbm_shipment_order", "store_id", "marketplace_order_id"),
-    )
+    __table_args__ = (db.Index("idx_fbm_shipment_order", "store_id", "marketplace_order_id"),)
 
     @property
     def carrier_acceptance_overdue(self) -> bool:
@@ -120,10 +114,8 @@ class FBMProviderCase(db.Model):
     """Carrier/provider support case attached to an FBM shipment."""
 
     __tablename__ = "fbm_provider_cases"
-
     id = db.Column(db.Integer, primary_key=True)
     shipment_id = db.Column(db.Integer, db.ForeignKey("fbm_shipments.id", ondelete="CASCADE"), nullable=False, index=True)
-
     provider = db.Column(db.String(50), nullable=False)
     case_type = db.Column(db.String(50), nullable=False, default="no_carrier_acceptance")
     provider_case_id = db.Column(db.String(200), nullable=True, index=True)
@@ -133,8 +125,6 @@ class FBMProviderCase(db.Model):
     closed_at = db.Column(db.DateTime, nullable=True)
     last_response_at = db.Column(db.DateTime, nullable=True)
     last_error = db.Column(db.Text, nullable=True)
-
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
     shipment = db.relationship("FBMShipment", backref=db.backref("provider_cases", lazy=True, cascade="all, delete-orphan"))
