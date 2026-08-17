@@ -25,12 +25,24 @@ class FBMShipment(db.Model):
     marketplace_order_id = db.Column(db.String(100), nullable=False, index=True)
 
     # Provider execution details. Payment stays with provider/marketplace account.
-    provider = db.Column(db.String(50), nullable=True, index=True)  # amazon_buy_shipping, packlink, carrier_direct, manual
+    provider = db.Column(db.String(50), nullable=True, index=True)  # amazon_buy_shipping, ebay_shipping, packlink, carrier_direct, manual
     provider_shipment_id = db.Column(db.String(200), nullable=True, index=True)
     carrier = db.Column(db.String(100), nullable=True)
     service = db.Column(db.String(200), nullable=True)
     tracking_number = db.Column(db.String(200), nullable=True, index=True)
+
+    # Preserve the label exactly as supplied by the marketplace/provider. BT38
+    # must not assume every provider returns the same file type or page size.
     label_url = db.Column(db.Text, nullable=True)
+    label_format = db.Column(db.String(20), nullable=True)  # PDF, PNG, ZPL, provider-specific
+    label_document_type = db.Column(db.String(30), nullable=True, default="LABEL")
+    label_width = db.Column(db.Float, nullable=True)
+    label_length = db.Column(db.Float, nullable=True)
+    label_size_unit = db.Column(db.String(20), nullable=True)
+    label_dpi = db.Column(db.Integer, nullable=True)
+    label_page_layout = db.Column(db.String(50), nullable=True)
+    label_source = db.Column(db.String(50), nullable=True)  # amazon, ebay, packlink, carrier_direct, manual
+    label_storage_ref = db.Column(db.Text, nullable=True)  # internal/provider reference; never assumes a public URL
 
     # Confirmation lifecycle.
     status = db.Column(db.String(50), nullable=False, default="awaiting_label", index=True)
