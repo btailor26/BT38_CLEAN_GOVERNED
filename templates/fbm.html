@@ -15,6 +15,19 @@
     <strong>Source of truth:</strong> FBM reads orders already committed to the BT38 database. It does not run a second Amazon/eBay order import. Shipping charges stay on the seller's marketplace, Packlink or carrier account; BT38 does not handle postage money or carrier claims.
 </div>
 
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <strong>Packlink PRO</strong>
+            <div class="small text-muted">Read-only connection test. No shipment or label is created.</div>
+        </div>
+        <button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test Packlink connection</button>
+    </div>
+    <div class="card-body py-3">
+        <div id="packlinkConnectionStatus" class="small text-muted">Not tested in this browser session.</div>
+    </div>
+</div>
+
 <div class="row g-3 mb-4">
     <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
     <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
@@ -121,4 +134,45 @@
         </table>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const button = document.getElementById('packlinkConnectionTest');
+    const status = document.getElementById('packlinkConnectionStatus');
+    if (!button || !status) return;
+
+    button.addEventListener('click', async function () {
+        if (button.disabled) return;
+        button.disabled = true;
+        status.className = 'small text-muted';
+        status.textContent = 'Testing Packlink PRO authentication…';
+
+        try {
+            const response = await fetch('/fbm/providers/packlink/connection', {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: {'Accept': 'application/json'}
+            });
+            const payload = await response.json();
+            if (!response.ok || payload.success !== true) {
+                throw new Error(payload.message || `Packlink returned HTTP ${response.status}`);
+            }
+
+            status.className = 'small text-success';
+            const account = [payload.account_email, payload.account_country].filter(Boolean).join(' · ');
+            status.textContent = account
+                ? `Connected successfully · ${account}`
+                : 'Connected successfully to Packlink PRO.';
+        } catch (error) {
+            status.className = 'small text-danger';
+            status.textContent = error instanceof Error ? error.message : 'Packlink connection test failed.';
+        } finally {
+            button.disabled = false;
+        }
+    });
+})();
+</script>
 {% endblock %}
