@@ -42,11 +42,12 @@ def ensure_mapping_review(
     carrier: str | None,
     service: str | None,
 ) -> tuple[FBMCarrierServiceMapping, FBMShipmentMappingReview, bool]:
-    """Return mapping + review and whether marketplace confirmation is safe now.
+    """Return mapping + shipment review + whether marketplace confirmation is safe.
 
-    New combinations are inserted once as pending_review. Every shipment keeps a
-    small review row so the UI can explain why a purchased/printed label has not
-    yet been sent back to the marketplace.
+    The identity is marketplace + provider + carrier + service. A new identity is
+    saved once as ``pending_review``. The purchased label is still printable.
+    After that identity is verified, every future matching shipment reuses the
+    saved marketplace mapping automatically and does not ask for another review.
     """
     carrier_text = str(carrier or "").strip()
     service_text = str(service or "").strip()
@@ -57,7 +58,12 @@ def ensure_mapping_review(
         service=service_text,
     )
     if mapping is None:
-        key = mapping_key(marketplace=marketplace, provider=provider, carrier=carrier_text, service=service_text)
+        key = mapping_key(
+            marketplace=marketplace,
+            provider=provider,
+            carrier=carrier_text,
+            service=service_text,
+        )
         mapping = FBMCarrierServiceMapping(
             **key,
             provider_carrier_display=carrier_text or "Unknown carrier",
@@ -68,10 +74,9 @@ def ensure_mapping_review(
         db.session.add(mapping)
         db.session.flush()
 
-    mapping.usage_count = int(mapping.usage_count or 0) + 1
-    mapping.last_used_at = datetime.utcnow()
-
     review = FBMShipmentMappingReview.query.filter_by(shipment_id=shipment.id).first()
+    first_use_of_mapping_for_shipment = review is None or review.mapping_id != mapping.id
+
     if review is None:
         review = FBMShipmentMappingReview(
             shipment_id=shipment.id,
@@ -83,11 +88,20 @@ def ensure_mapping_review(
         review.mapping_id = mapping.id
         review.status = "verified" if mapping.verification_status == "verified" else "under_review"
 
+    # Provider status polling can call this path repeatedly for the same shipment.
+    # Count the mapping once for that shipment rather than inflating usage_count on
+    # every poll. The DB unique key separately guarantees one stored mapping row per
+    # marketplace/provider/carrier/service identity.
+    if first_use_of_mapping_for_shipment:
+        mapping.usage_count = int(mapping.usage_count or 0) + 1
+    mapping.last_used_at = datetime.utcnow()
+
     if mapping.verification_status == "verified":
         review.resolved_at = review.resolved_at or datetime.utcnow()
         review.review_reason = None
         return mapping, review, True
 
+    review.resolved_at = None
     review.review_reason = (
         f"{mapping.provider_carrier_display} · {mapping.provider_service_display} has not yet been verified "
         f"for {marketplace}. Label printing is allowed; marketplace tracking confirmation is held."
@@ -104,6 +118,7 @@ def verify_mapping(
     marketplace_service_name: str | None = None,
     verified_by: str | None = None,
 ) -> FBMCarrierServiceMapping:
+    """Verify one mapping identity so all future matching labels reuse it."""
     carrier_code = str(marketplace_carrier_code or "").strip()
     if not carrier_code:
         raise ValueError("Marketplace carrier code is required.")
