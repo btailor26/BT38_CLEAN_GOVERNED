@@ -30,8 +30,9 @@
     updateActionBar();
   }
 
-  function postJson(endpoint, body, actor) {
+  function postJson(endpoint, body, actor, options) {
     const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    const requestOptions = options || {};
 
     return fetch(endpoint, {
       method: 'POST',
@@ -42,7 +43,8 @@
         'X-CSRF-Token': csrf,
         'X-Actor': actor || 'warehouse-governed'
       },
-      body: JSON.stringify(body || {})
+      body: JSON.stringify(body || {}),
+      signal: requestOptions.signal
     }).then(async res => {
       const data = await res.json().catch(() => ({}));
 
@@ -63,31 +65,21 @@
     };
   }
 
-  // ==============================
-  // GOVERNED ACTIONS (NO RELOAD)
-  // ==============================
-
   function pushListing(row) {
     const { listingId } = getRow(row);
-
-    // Original warehouse rule:
-    // marketplace icon push is listing-specific.
-    // Group push belongs to explicit group actions only.
     if (!listingId) return Promise.reject("Missing listingId");
-
     return postJson(`/governed/actions/listings/${listingId}/push`, {}, "push");
   }
+
   function saveQuantity(row, quantity) {
     const { listingId } = getRow(row);
     if (!listingId) return Promise.reject('Missing listingId');
-
     return postJson(`/governed/actions/listings/${listingId}/quantity`, { quantity }, 'qty');
   }
 
   function savePrice(row, price) {
     const { listingId } = getRow(row);
     if (!listingId) return Promise.reject('Missing listingId');
-
     return postJson(`/governed/actions/listings/${listingId}/price`, { price }, 'price');
   }
 
@@ -100,10 +92,6 @@
     }, 'transfer');
   }
 
-  // ==============================
-  // ACTION HANDLER
-  // ==============================
-
   async function chooseAction(value) {
     const selected = selectedRows();
 
@@ -113,7 +101,6 @@
     }
 
     try {
-
       if (value === 'push') {
         await Promise.all(selected.map(cb => pushListing(cb.closest('tr'))));
         alert('Push complete');
@@ -129,18 +116,15 @@
           const { stockId } = getRow(cb.closest('tr'));
           return postJson(`/governed/warehouse/${stockId}/archive`, {}, 'archive');
         }));
-
         alert('Archive complete');
       }
 
       clearSelection();
       updateActionBar();
-
     } catch (e) {
       alert(e.message || 'Action failed');
     }
   }
-
 
   document.addEventListener('click', async function (e) {
     const marketBadge = e.target && e.target.closest ? e.target.closest('.bt38-marketplace-control') : null;
@@ -166,7 +150,6 @@
     }
   });
 
-
   document.addEventListener('click', async function (e) {
     const qtyButton = e.target && e.target.closest ? e.target.closest('.bt38-qty-action') : null;
     if (!qtyButton) return;
@@ -178,7 +161,6 @@
     if (!row) return;
 
     const current = (qtyButton.querySelector('span') || {}).textContent || '';
-
     const value = window.prompt('Enter new quantity', current.trim());
     if (value === null) return;
 
@@ -190,18 +172,14 @@
 
     try {
       await saveQuantity(row, quantity);
-
       const span = qtyButton.querySelector('span');
       if (span) span.textContent = String(quantity);
-
       console.log('[warehouse-qty-button] quantity updated');
     } catch (err) {
       alert(err.message || 'Quantity update failed');
       console.error(err);
     }
   });
-
-
 
   document.addEventListener('DOMContentLoaded', function () {
     if (!warehouseActive()) return;
@@ -221,6 +199,7 @@
 
   window.bt38ChooseAction = chooseAction;
   window.bt38UpdateActionBar = updateActionBar;
+
   document.addEventListener('DOMContentLoaded', function () {
     const btn = document.getElementById('governedWarehouseSyncBtn');
     if (!btn) return;
@@ -229,6 +208,8 @@
       if (btn.disabled) return;
 
       const originalText = btn.textContent;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
       btn.disabled = true;
       btn.textContent = 'Syncing...';
 
@@ -238,17 +219,22 @@
           {
             shortcut_source: 'warehouse-sync-button'
           },
-          'warehouse-sync-button'
+          'warehouse-sync-button',
+          {signal: controller.signal}
         );
 
         // Warehouse Sync is a narrow recent/pending-order recovery shortcut.
         // It must not force a second full page request after the recovery call.
-        // Live committed-state signals update the bell/other event-aware views.
         alert(result.message || 'Warehouse sync complete');
       } catch (err) {
-        alert(err.message || 'Warehouse sync failed');
-        console.error(err);
+        if (err && err.name === 'AbortError') {
+          alert('Warehouse sync is taking longer than expected. The page has been released; do not press Sync again immediately.');
+        } else {
+          alert(err.message || 'Warehouse sync failed');
+          console.error(err);
+        }
       } finally {
+        window.clearTimeout(timeout);
         btn.disabled = false;
         btn.textContent = originalText;
       }
