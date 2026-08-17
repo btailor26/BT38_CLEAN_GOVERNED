@@ -10,11 +10,12 @@ carrier/service/tracking mapping submitted back to each marketplace.
 """
 from __future__ import annotations
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, jsonify, render_template, request
 from flask_login import login_required
 
 from models import MarketplaceOrder
 from fbm_models import FBMShipment
+from services.fbm_packlink_adapter import PacklinkAdapter
 from services.fbm_shipping_state import (
     provider_case_eligibility,
     shipment_confirmation_state,
@@ -186,3 +187,27 @@ def fbm_page():
         platform_filter=platform_filter,
         status_filter=status_filter,
     )
+
+
+@governed_fbm_bp.get("/fbm/providers/packlink/connection")
+@login_required
+def packlink_connection_check():
+    """Explicit read-only Packlink authentication check.
+
+    This route never returns the API key and performs no shipment/order writes.
+    It exists only so an authenticated BT38 user can prove that the Fly secret
+    reaches Packlink successfully before rate or label workflows are enabled.
+    """
+    result = PacklinkAdapter().connection_check()
+    status = 200 if result.ok else (result.status_code or 503)
+    return jsonify({
+        "success": result.ok,
+        "provider": "packlink",
+        "configured": result.configured,
+        "authenticated": result.ok,
+        "status_code": result.status_code,
+        "account_country": result.account_country,
+        "account_email": result.account_email,
+        "message": result.message,
+        "read_only": True,
+    }), status
