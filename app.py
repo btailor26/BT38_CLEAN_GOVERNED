@@ -261,8 +261,11 @@ def migrate_database():
     Each ALTER is executed in its own transaction to prevent batch failures.
     """
     try:
-        # Import models to ensure tables are created
+        # Import models to ensure tables are created. FBM shipment models are
+        # isolated from MarketplaceOrder but still registered on the same DB
+        # metadata before the existing safe create_all() call.
         import models
+        import fbm_models
 
         # Create all tables (this is safe - won't drop existing data)
         db.create_all()
@@ -370,6 +373,8 @@ def bt38_block_legacy_operational_write_routes():
     # Governed execution layer is the only allowed operational write path.
     if path.startswith("/governed/"):
         return None
+
+    # Governed FBM writes are not enabled yet; /fbm is read-only.
 
     # Admin reporting/export pages stay readable, but old admin write backfill is blocked.
     legacy_exact = {
@@ -551,6 +556,12 @@ try:
     app.register_blueprint(governed_runtime_visibility_bp)
 except Exception as exc:
     logging.error(f"Failed to register governed runtime visibility routes: {exc}")
+
+try:
+    from governed_fbm_routes import governed_fbm_bp
+    app.register_blueprint(governed_fbm_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed FBM routes: {exc}")
 
 
 # Import and register admin reporting blueprint
