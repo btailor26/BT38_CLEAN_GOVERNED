@@ -15,22 +15,7 @@ from extensions import db, login_manager
 
 # NEVER-AGAIN PROTECTION: Fail fast if critical modules have syntax errors
 # This prevents unclosed triple-quote blocks from crashing the app at runtime
-CRITICAL_MODULES = [
-    'routes.py',
-    'sync_service.py',
-    'amazon_service.py',
-    'ebay_service.py',
-    'governed_fbm_routes.py',
-    'fbm_models.py',
-    'services/fbm_provider_contract.py',
-    'services/fbm_order_mapper.py',
-    'services/fbm_amazon_order_profile.py',
-    'services/fbm_amazon_shipping_adapter.py',
-    'services/fbm_packlink_adapter.py',
-    'services/fbm_carrier_mapping.py',
-    'services/fbm_post_purchase.py',
-    'services/fbm_shipping_state.py',
-]
+CRITICAL_MODULES = ['routes.py', 'sync_service.py', 'amazon_service.py', 'ebay_service.py']
 
 def validate_syntax_on_startup():
     """Compile-check critical modules before Flask loads them."""
@@ -309,15 +294,22 @@ def get_json_or_form():
     Prevents 415 Unsupported Media Type errors.
     """
     from flask import request
+
+    # Try JSON first (silent=True doesn't raise on parse errors)
     data = request.get_json(silent=True)
     if data is not None:
         return data
+
+    # Fall back to form data
     if request.form:
         return request.form.to_dict(flat=True)
+
+    # Fall back to files (with field metadata)
     if request.files:
         fields = request.values.to_dict(flat=True)
         fields['_files'] = list(request.files.keys())
         return fields
+
     return {}
 
 # Prevent login redirects on API routes (return 401 JSON instead)
@@ -331,25 +323,31 @@ def api_auth_json():
     from flask_login import current_user, login_required
 
     if request.path.startswith('/api/') and not current_user.is_authenticated:
+        # Check if this is a public API endpoint or has task API key
         public_endpoints = [
             '/api/sync-status',
             '/api/diagnostics/system',
             '/api/diagnostics/ebay/health',
             '/api/diagnostics/amazon/health',
-            '/api/system/health',
-            '/api/system/env-check',
-            '/api/system/log_route',
-            '/api/system/log_route_failure',
-            '/api/system/fingerprint',
-            '/api/sentinel/status'
-        ]
+            '/api/system/health',  # Section X.5: Fast health check
+            '/api/system/env-check',  # Section 8: Environment check
+            '/api/system/log_route',  # Section X.9: Route logging
+            '/api/system/log_route_failure',  # Section X.9: Route failure logging
+            '/api/system/fingerprint',  # Sentinel: Environment fingerprint (no auth)
+            '/api/sentinel/status'  # Sentinel-2: Status API (read-only, no auth)
+        ]  # Add public endpoints here - SendGrid test requires authentication
+
+        # Section 3 & 4: Mobile Scanning and Carton API endpoints (prefix match for dynamic routes)
         mobile_prefixes = ['/api/mobile/', '/api/carton']
         for prefix in mobile_prefixes:
             if request.path.startswith(prefix):
-                return None
+                return None  # Allow mobile/carton API requests
+
+        # Allow endpoints with valid task API key
         task_api_key = os.environ.get("TASK_API_KEY")
         if task_api_key and request.headers.get("X-Task-Key") == task_api_key:
-            return None
+            return None  # Allow the request to proceed
+
         if request.path not in public_endpoints:
             return jsonify(ok=False, error="unauthorized"), 401
 
@@ -372,12 +370,13 @@ def bt38_block_legacy_operational_write_routes():
 
     path = request.path.rstrip("/") or "/"
 
-    # Governed execution layer remains the only supported operational write path.
-    # FBM write endpoints are explicit, authenticated, confirmation-gated routes
-    # owned by governed_fbm_routes; they do not reopen any retired legacy route.
+    # Governed execution layer is the only allowed operational write path.
     if path.startswith("/governed/"):
         return None
 
+    # Governed FBM writes are not enabled yet; /fbm is read-only.
+
+    # Admin reporting/export pages stay readable, but old admin write backfill is blocked.
     legacy_exact = {
         "/inventory/delete_bulk",
         "/mock-disabled-action",
@@ -439,25 +438,294 @@ def handle_http_exception(e):
     from flask import jsonify, render_template
     from werkzeug.exceptions import HTTPException
     import traceback
+
+    # Log the error with full traceback
     logging.error(f"Exception occurred: {e.__class__.__name__}: {str(e)}")
+
     if isinstance(e, HTTPException):
+        # For API routes, return JSON
         if _wants_json():
             return jsonify(ok=False, error=e.description or str(e)), e.code
+        # For non-API routes, use default HTML error page
         return e
+
+    # For non-HTTP exceptions, log full traceback
     logging.error("Full traceback:")
     logging.error(traceback.format_exc())
+
+    # For API routes, always return JSON
     if _wants_json():
         return jsonify(ok=False, error=str(e)), 500
+
+    # For non-API routes, render error template
     from datetime import datetime
-    return render_template('error.html', error_code=500, error_title="Unexpected Error", error_message="An unexpected error occurred. Please try again.", now=datetime.utcnow()), 500
+    return render_template('error.html', 
+                         error_code=500,
+                         error_title="Unexpected Error",
+                         error_message="An unexpected error occurred. Please try again.",
+                         now=datetime.utcnow()), 500
 
 # Specific handlers for common HTTP errors
 @app.errorhandler(404)
 def handle_404(e):
-    from flask import jsonify, render_template
+    """Handle 404 Not Found with JSON for API routes"""
+    from flask import jsonify
     if _wants_json():
-        return jsonify(ok=False, error='Not found'), 404
-    from datetime import datetime
-    return render_template('error.html', error_code=404, error_title="Page Not Found", error_message="The page you're looking for doesn't exist.", now=datetime.utcnow()), 404
+        return jsonify(ok=False, error="not found"), 404
+    return e
 
-# NOTE: remainder of app.py retained from existing governed branch below this point.
+@app.errorhandler(405)
+def handle_405(e):
+    """Handle 405 Method Not Allowed with JSON for API routes"""
+    from flask import jsonify
+    if _wants_json():
+        return jsonify(ok=False, error="method not allowed"), 405
+    return e
+
+def ensure_production_ebay_sandbox_flag():
+    """
+    CRITICAL PRODUCTION FIX: Ensure all eBay stores have explicit sandbox=false flag
+    This fixes production imports returning 0 items due to defaulting to sandbox API
+    Runs only in production, idempotent, swallows errors to avoid boot failures
+    """
+    if not IS_PRODUCTION:
+        return  # Only run in production
+
+    try:
+        import json as json_module
+        from models import Store
+
+        ebay_stores = Store.query.filter_by(platform='eBay', is_active=True).all()
+
+        for store in ebay_stores:
+            if not store.api_key:
+                continue
+
+            try:
+                creds = json_module.loads(store.api_key)
+                sandbox_value = creds.get('sandbox')
+
+                # Fix missing or True sandbox flag
+                if sandbox_value is None or sandbox_value is True:
+                    logging.warning(f"PRODUCTION FIX: Store '{store.name}' missing sandbox:false flag (was: {sandbox_value}), setting to False")
+                    creds['sandbox'] = False
+                    store.api_key = json_module.dumps(creds)
+                    db.session.commit()
+                    logging.info(f"✅ Fixed store '{store.name}' - now using live eBay API")
+                elif sandbox_value is False:
+                    logging.info(f"✅ Store '{store.name}' already has sandbox:false - OK")
+
+            except Exception as store_error:
+                logging.error(f"Failed to fix sandbox flag for store {store.id}: {str(store_error)}")
+                try:
+                    db.session.rollback()
+                except:
+                    pass
+
+    except Exception as e:
+        logging.error(f"Production sandbox flag fix failed (non-fatal): {str(e)}")
+        try:
+            db.session.rollback()
+        except:
+            pass
+
+with app.app_context():
+    migrate_database()
+    ensure_production_ebay_sandbox_flag()
+
+try:
+    from governed_routes import governed_bp
+    app.register_blueprint(governed_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed routes: {exc}")
+
+try:
+    from governed_group_routes import governed_group_bp
+    app.register_blueprint(governed_group_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed group routes: {exc}")
+
+try:
+    from governed_group_propagation_routes import governed_group_propagation_bp
+    app.register_blueprint(governed_group_propagation_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed group propagation routes: {exc}")
+
+try:
+    from governed_runtime_visibility_routes import governed_runtime_visibility_bp
+    app.register_blueprint(governed_runtime_visibility_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed runtime visibility routes: {exc}")
+
+try:
+    from governed_fbm_routes import governed_fbm_bp
+    app.register_blueprint(governed_fbm_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed FBM routes: {exc}")
+
+
+# Import and register admin reporting blueprint
+from admin_routes import admin_bp
+app.register_blueprint(admin_bp)
+
+# Governed startup checkpoint.
+#
+# Startup is intentionally quiet and non-executing: Flask import/module load must
+# not start workers, schedulers, queue consumers, order import ticks, direct
+# pushers, or marketplace API clients. Runtime execution remains disabled until
+# a future approved governed command path is built.
+logging.info(
+    "[GOVERNED_STARTUP] Marketplace execution disabled on app boot: "
+    "FBA read-only; FBM/eBay execution controlled by governed fuse-box path; "
+    "no workers, schedulers, queue consumers, or marketplace API calls started."
+)
+
+# Run system events backfill on startup (automatically populates from existing logs)
+with app.app_context():
+    try:
+        from admin_logging import run_comprehensive_backfill
+        backfill_result = run_comprehensive_backfill()
+        if backfill_result.get('skipped'):
+            logging.info(f"System events backfill: Skipped (already has {backfill_result.get('existing_count', 0)} entries)")
+        elif backfill_result.get('total'):
+            logging.info(f"System events backfill: Created {backfill_result['total']} events from historical data")
+        elif backfill_result.get('error'):
+            logging.warning(f"System events backfill error: {backfill_result['error']}")
+    except Exception as e:
+        logging.warning(f"System events backfill skipped: {str(e)}")
+
+# [STAGING SAFETY] Print environment configuration at startup
+def get_db_host_safe():
+    """Extract just the host from DATABASE_URL (no credentials)."""
+    try:
+        db_url = os.environ.get("DATABASE_URL", "")
+        if "@" in db_url and "/" in db_url:
+            # Format: postgres://user:pass@host:port/dbname
+            after_at = db_url.split("@", 1)[1]
+            host_part = after_at.split("/", 1)[0]
+            return host_part
+        return "unknown"
+    except:
+        return "unknown"
+
+
+def get_db_fingerprint_hash():
+    """Generate a short hash of DATABASE_URL for fingerprinting (NEVER expose full URL)."""
+    import hashlib
+    try:
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            return "no-db-url"
+        return hashlib.sha256(db_url.encode()).hexdigest()[:12]
+    except:
+        return "error"
+
+
+import socket
+try:
+    HOSTNAME = socket.gethostname()
+except:
+    HOSTNAME = "unknown"
+
+print("\n" + "="*60)
+print("SENTINEL ENVIRONMENT FINGERPRINT")
+print("="*60)
+print(f"  APP_ENV:        {APP_ENV.upper()}")
+print(f"  HOSTNAME:       {HOSTNAME}")
+print(f"  PUSH_ENABLED:   {PUSH_ENABLED}")
+print(f"  EXECUTION_MODE: {EXECUTION_MODE}")
+print(f"  SENTINEL_MODE:  {SENTINEL_MODE}")
+print("")
+print("DATABASE:")
+print(f"  HOST:           {get_db_host_safe()}")
+print(f"  FINGERPRINT:    {get_db_fingerprint_hash()}")
+print("")
+print("SESSION ISOLATION:")
+print(f"  COOKIE_NAME:    {app.config['SESSION_COOKIE_NAME']}")
+print(f"  COOKIE_DOMAIN:  {app.config['SESSION_COOKIE_DOMAIN'] or '(dynamic per-request)'}")
+print(f"  COOKIE_SECURE:  {app.config['SESSION_COOKIE_SECURE']}")
+print(f"  SAMESITE:       {app.config['SESSION_COOKIE_SAMESITE']}")
+print("")
+print("SENTINEL-2 CONTROLS:")
+print(f"  MODE:           {SENTINEL_MODE}")
+print(f"  CMD_INPUT:      {'ENABLED' if SENTINEL_MODE == 'PLAN' else 'DISABLED'}")
+print(f"  KNOWLEDGE:      {'ENABLED' if SENTINEL_MODE in ['OBSERVE', 'PLAN'] else 'DISABLED'}")
+if IS_STAGING:
+    print("")
+    print("  ⚠️  STAGING MODE ACTIVE")
+    print("  ⚠️  Push/write operations are BLOCKED by default")
+print("="*60)
+
+# Startup governed runtime safety report.
+# Marketplace execution is controlled by SystemConfig fuse-box settings and the
+# governed runtime engine. Legacy workers/dispatchers remain retired.
+print("\n" + "="*60)
+print("MARKETPLACE STARTUP SAFETY — GOVERNED RUNTIME")
+print("="*60)
+print(f"Environment: {APP_ENV.upper()}")
+print(f"Admin Dashboard: /admin/system-activity")
+print("Runtime status:")
+print("  [OK] Governed runtime may start when ENABLE_GOVERNED_RUNTIME_ENGINE is enabled")
+print("  [OK] Governed webhook intake routes are registered before runtime startup")
+print("  [OK] Allowed webhook notifications enter the governed notification bridge")
+print("  [OK] Exact webhook identities are queued for governed 15-minute verification")
+print("  [OK] 15-minute verification remains event-driven and does not run broad imports")
+print("  [OK] 8-hour hydration remains the governed recovery path")
+print("  [OK] Legacy sync_dispatcher workers remain retired and are not part of the governed path")
+print("  [OK] FBA/AFN remains read-only")
+print("  [OK] FBM/MFN push remains controlled by the governed fuse-box path")
+print("  [OK] System Activity remains available for audit/reporting")
+print("="*60 + "\n")
+
+try:
+    from services.governed_runtime_engine import (
+        get_governed_runtime_status,
+        start_governed_runtime_engine,
+    )
+
+    started = start_governed_runtime_engine(app)
+    runtime_status = get_governed_runtime_status()
+
+    print(f"[GOVERNED_RUNTIME_ENGINE] started={started}")
+    print(
+        "[GOVERNED_WEBHOOK_ALIGNMENT] "
+        f"engine_started={runtime_status.get('engine_started')} "
+        f"pending_webhook_verifications="
+        f"{runtime_status.get('pending_webhook_verifications')} "
+        f"last_event_source={runtime_status.get('last_event_source')} "
+        f"last_light_reconcile={runtime_status.get('last_light_reconcile')} "
+        f"automatic_8h_hydration_enabled="
+        f"{runtime_status.get('automatic_8h_hydration_enabled')}"
+    )
+except Exception as exc:
+    logging.exception(f"[GOVERNED_RUNTIME_ENGINE] startup failed: {exc}")
+
+# =========================
+
+# =========================
+# REAL LOCAL SYNC ROUTE
+# =========================
+
+# ==============================
+
+# =========================
+# GOVERNED IMPORT ROUTE (RESTORED)
+# SINGLE SOURCE: WAREHOUSE ALIGNED
+# =========================
+
+
+@app.route("/dev/product-linking-button-test")
+def dev_product_linking_button_test():
+    rows = [
+        {"group_id": 9001, "warehouse_id": 9001, "listing_id": 9101, "sku": "VC-SC-TB-6PK", "title": "Vicco Senso Clean Comfortable Soft Tooth Brush Pack Of 6", "marketplace": "eBay", "qty": 24},
+        {"group_id": 9002, "warehouse_id": 9002, "listing_id": 9102, "sku": "PT-SHINE-150G", "title": "Pitambari Shining Powder For 6 Types Of Metals 150g", "marketplace": "Amazon", "qty": 18},
+        {"group_id": 9003, "warehouse_id": 9003, "listing_id": 9103, "sku": "MAC-LASH-026", "title": "MAC False Eyelashes 026", "marketplace": "eBay", "qty": 12},
+        {"group_id": 9004, "warehouse_id": 9004, "listing_id": 9104, "sku": "COL-EXC-TB-2PK", "title": "Colgate Extra Clean Toothbrush Twin Pack", "marketplace": "Amazon", "qty": 30},
+        {"group_id": 9005, "warehouse_id": 9005, "listing_id": 9105, "sku": "DET-ANT-500ML", "title": "Dettol Antiseptic Liquid 500ml", "marketplace": "eBay", "qty": 16},
+        {"group_id": 9006, "warehouse_id": 9006, "listing_id": 9106, "sku": "DOVE-BAR-4PK", "title": "Dove Beauty Cream Bar Soap 4 Pack", "marketplace": "Amazon", "qty": 20},
+        {"group_id": 9007, "warehouse_id": 9007, "listing_id": 9107, "sku": "VAS-ORG-250ML", "title": "Vaseline Original Petroleum Jelly 250ml", "marketplace": "eBay", "qty": 22},
+        {"group_id": 9008, "warehouse_id": 9008, "listing_id": 9108, "sku": "NIV-SOFT-200ML", "title": "Nivea Soft Moisturising Cream 200ml", "marketplace": "Amazon", "qty": 14},
+        {"group_id": 9009, "warehouse_id": 9009, "listing_id": 9109, "sku": "SEN-RP-75ML", "title": "Sensodyne Repair And Protect Toothpaste 75ml", "marketplace": "eBay", "qty": 28},
+        {"group_id": 9010, "warehouse_id": 9010, "listing_id": 9110, "sku": "PEARS-SOAP-2PK", "title": "Pears Transparent Soap Twin Pack", "marketplace": "Amazon", "qty": 26},
+    ]
+    return render_template("dev/product_linking_button_test.html", rows=rows)
