@@ -49,6 +49,8 @@ def process_marketplace_notification(
     # Amazon MCF lifecycle signals do not need a MarketplaceListing identity.
     # Reuse the existing exact MCF signal handler before listing resolution so
     # FULFILLMENT_ORDER_STATUS can update the existing MCF row and tracking.
+    # This lifecycle signal is deliberately not a second inventory trigger;
+    # FBA-led quantity propagation is owned by ORDER_CHANGE/exact FBA truth.
     if (
         marketplace == "amazon"
         and str(event_type or "").strip().upper()
@@ -73,12 +75,13 @@ def process_marketplace_notification(
             event_type=event_type,
             business_event="mcf_fulfillment_status",
             reason=(
-                "Amazon MCF status signal used the existing exact MCF lifecycle handler."
+                "Amazon MCF status signal used the existing exact MCF lifecycle handler without starting a second inventory push."
                 if mcf_success
                 else "Amazon MCF status signal could not refresh the existing MCF lifecycle."
             ),
             payload=payload,
             changed=bool(mcf_result.get("database_touched")),
+            inventory_push_started=False,
             mcf_result=mcf_result,
         )
 
@@ -382,6 +385,66 @@ def process_marketplace_notification(
                 group_context=group_context,
             )
 
+        group_members = (
+            MarketplaceListing.query
+            .filter(
+                MarketplaceListing.master_product_group_id == int(group_id),
+                MarketplaceListing.is_active == True,  # noqa: E712
+            )
+            .all()
+        )
+        fba_authority = next(
+            (
+                member
+                for member in group_members
+                if _listing_is_amazon_fba(member)
+            ),
+            None,
+        )
+
+        # FBA-led groups must never use the source marketplace sale or the
+        # Warehouse decrement as inventory authority. MCF submission/acceptance
+        # may happen during order mutation, but the one automatic group push is
+        # allowed only after Amazon ORDER_CHANGE causes the exact FBA refresh.
+        # FBM/non-FBA groups continue through the existing immediate push below.
+        if fba_authority is not None:
+            return _log_result(
+                status="fba_group_waiting_for_amazon_confirmation",
+                marketplace=marketplace,
+                event_type=event_type,
+                business_event=business_event,
+                reason=(
+                    "FBA-led group sale was stored and MCF handoff may proceed, "
+                    "but marketplace propagation is waiting for Amazon webhook "
+                    "confirmation and exact FBA inventory truth."
+                ),
+                payload=payload,
+                store_id=getattr(listing, "store_id", None),
+                listing_id=listing.id,
+                warehouse_stock_id=stock.id,
+                group_id=int(group_id),
+                fba_authority_listing_id=int(fba_authority.id),
+                seller_sku=(
+                    getattr(listing, "external_sku", None)
+                    or getattr(stock, "sku", None)
+                ),
+                group_context=group_context,
+                before_qty=before_qty,
+                after_qty=int(
+                    getattr(stock, "available_quantity", 0) or 0
+                ),
+                stock_changed=bool(
+                    mutation_result.get("success")
+                    and not mutation_result.get("skipped")
+                ),
+                correction_started=False,
+                push_started=False,
+                waiting_for_amazon_fba_confirmation=True,
+                order_id=order_intake.get("marketplace_order_id"),
+                order_intake=order_intake.get("result"),
+                stock_mutation=mutation_result,
+            )
+
         push_result = push_group_listings(
             group_id=int(group_id),
             actor=actor,
@@ -396,7 +459,7 @@ def process_marketplace_notification(
             event_type=event_type,
             business_event=business_event,
             reason=(
-                "Grouped sale notification created MarketplaceOrder, "
+                "Grouped non-FBA sale notification created MarketplaceOrder, "
                 "updated Warehouse truth through governed order mutation, and "
                 "handed the exact current group to the shared Warehouse-controlled correction path."
             ),
@@ -469,6 +532,24 @@ def process_marketplace_notification(
         order_intake=order_intake.get("result"),
         stock_mutation=mutation_result,
         push_result=push_result,
+    )
+
+
+def _listing_is_amazon_fba(listing) -> bool:
+    store = getattr(listing, "store", None)
+    platform = str(getattr(store, "platform", None) or "").strip().lower()
+    if "amazon" not in platform:
+        return False
+
+    explicit_fba = bool(getattr(listing, "is_fba", False))
+    channel = str(
+        getattr(listing, "normalized_amazon_fulfillment_channel", None)
+        or getattr(listing, "amazon_fulfillment_channel", None)
+        or ""
+    ).strip().upper()
+    return bool(
+        explicit_fba
+        or channel not in {"MFN", "FBM", "MERCHANT"}
     )
 
 
@@ -1158,7 +1239,7 @@ def _log_result(**data) -> Dict[str, Any]:
         "fba_pending_stored", "fba_received_stored", "fba_adjustment_stored", "fba_lost_stored",
         "fba_damaged_stored", "fba_reimbursement_stored", "fba_inventory_updated",
         "fba_inventory_unchanged", "fba_order_processed", "cancellation_processed",
-        "mcf_fulfillment_status_processed",
+        "mcf_fulfillment_status_processed", "fba_group_waiting_for_amazon_confirmation",
     }
 
     return {
