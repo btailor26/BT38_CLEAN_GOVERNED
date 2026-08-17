@@ -247,6 +247,17 @@ def _attempt_immediate_mcf_handoff(line: Any) -> dict[str, Any]:
             db.session.refresh(line)
         from governed_mcf_routes import run_governed_mcf_submission
         result = run_governed_mcf_submission(row_id, auto_release=True, form_data={}, actor_user=None)
+        if isinstance(result, dict) and result.get("success"):
+            db.session.refresh(line)
+            mcf_order_id = _safe_int(getattr(line, "mcf_order_id", None), 0)
+            if mcf_order_id > 0:
+                from services.governed_mcf_confirmation import (
+                    confirm_exact_mcf_after_submission,
+                )
+                result["mcf_confirmation"] = confirm_exact_mcf_after_submission(
+                    mcf_order_id=mcf_order_id,
+                    source="automatic_mcf_handoff",
+                )
         if hydration is not None and isinstance(result, dict):
             result["exact_order_hydration"] = hydration
         return result
