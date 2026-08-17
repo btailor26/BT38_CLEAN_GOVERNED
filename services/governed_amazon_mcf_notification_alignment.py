@@ -20,7 +20,6 @@ from models import Store
 from services.governed_amazon_eventbridge_alignment import (
     _ensure_destination,
     _ensure_partner_bus,
-    _ensure_queue_policy,
     _queue_identity,
 )
 from services.governed_amazon_listing_fulfillment_refresh import (
@@ -32,6 +31,55 @@ from services.governed_amazon_listing_fulfillment_refresh import (
 RULE_NAME = "bt38-amazon-mcf-notifications"
 TARGET_ID = "bt38-existing-amazon-sqs-mcf"
 MCF_NOTIFICATION_TYPE = "FULFILLMENT_ORDER_STATUS"
+MCF_QUEUE_POLICY_SID = "BT38AmazonMCFEventBridgeSendMessage"
+
+
+def _ensure_mcf_queue_policy(
+    sqs,
+    *,
+    queue_url: str,
+    queue_arn: str,
+    policy_raw: Any,
+    rule_arn: str,
+) -> None:
+    """Add the MCF rule without replacing the existing listing-rule policy SID."""
+    try:
+        policy = json.loads(policy_raw) if policy_raw else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        policy = {}
+
+    if not isinstance(policy, dict):
+        policy = {}
+    policy.setdefault("Version", "2012-10-17")
+    statements = policy.get("Statement") or []
+    if isinstance(statements, dict):
+        statements = [statements]
+
+    # Replace only our own MCF statement. The listing EventBridge statement and
+    # any other existing queue policy entries remain byte-for-byte represented.
+    statements = [
+        row
+        for row in statements
+        if not (
+            isinstance(row, dict)
+            and row.get("Sid") == MCF_QUEUE_POLICY_SID
+        )
+    ]
+    statements.append(
+        {
+            "Sid": MCF_QUEUE_POLICY_SID,
+            "Effect": "Allow",
+            "Principal": {"Service": "events.amazonaws.com"},
+            "Action": "sqs:SendMessage",
+            "Resource": queue_arn,
+            "Condition": {"ArnEquals": {"aws:SourceArn": rule_arn}},
+        }
+    )
+    policy["Statement"] = statements
+    sqs.set_queue_attributes(
+        QueueUrl=queue_url,
+        Attributes={"Policy": json.dumps(policy, separators=(",", ":"))},
+    )
 
 
 def align_governed_amazon_mcf_notification_to_existing_sqs(
@@ -97,7 +145,7 @@ def align_governed_amazon_mcf_notification_to_existing_sqs(
     if not rule_arn:
         raise RuntimeError("amazon_mcf_eventbridge_rule_arn_missing")
 
-    _ensure_queue_policy(
+    _ensure_mcf_queue_policy(
         queue["client"],
         queue_url=queue["queue_url"],
         queue_arn=queue["queue_arn"],
@@ -160,6 +208,8 @@ def align_governed_amazon_mcf_notification_to_existing_sqs(
         "rule_arn": rule_arn,
         "target": "existing_amazon_sqs",
         "queue_arn": queue["queue_arn"],
+        "listing_queue_policy_sid_untouched": "BT38AmazonEventBridgeSendMessage",
+        "mcf_queue_policy_sid": MCF_QUEUE_POLICY_SID,
         "new_queue_created": False,
         "new_consumer_created": False,
         "new_importer_created": False,
