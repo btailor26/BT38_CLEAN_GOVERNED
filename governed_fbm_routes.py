@@ -1,8 +1,12 @@
 """Governed FBM fulfilment workspace.
 
-Phase 1 is deliberately read-only. It reuses MarketplaceOrder as the single
-order source and does not create a second order/import path, buy postage,
-dispatch marketplace orders, or alter the existing MCF/webhook runtime.
+The BT38 database remains the single source of truth. FBM reads existing
+MarketplaceOrder rows only; it does not import orders independently and does
+not alter the existing webhook, inventory, Product Linking or MCF paths.
+
+Shipping payments remain with the seller's marketplace/provider account.
+This module may recommend a route, but the user can override it. BT38 owns the
+carrier/service/tracking mapping submitted back to each marketplace.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ def _store_name(order: MarketplaceOrder) -> str:
 
 
 def _route_state(order: MarketplaceOrder) -> str:
-    """Describe the current fulfilment route without executing anything."""
+    """Describe committed DB fulfilment state without executing anything."""
     fulfillment = str(getattr(order, "fulfillment_type", "") or "").upper()
     status = str(getattr(order, "status", "") or "").lower()
     if fulfillment == "FBA" or status.startswith("mcf_"):
@@ -38,10 +42,59 @@ def _route_state(order: MarketplaceOrder) -> str:
     return "Ready for FBM routing"
 
 
+def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
+    """Return the governed shipping choices FBM is allowed to present.
+
+    This is decision metadata only. No rates are fetched and no label is bought.
+    Amazon marketplace orders are explicitly eligible for Amazon Buy Shipping,
+    including Prime/SFP when Amazon returns an eligible service. External
+    providers remain available as a user choice for ordinary FBM flows, while
+    BT38 remains responsible for correct marketplace mapping.
+    """
+    normalized = platform.strip().lower()
+    fulfillment = str(getattr(order, "fulfillment_type", "") or "").upper()
+    status = str(getattr(order, "status", "") or "").lower()
+
+    if fulfillment == "FBA" or status.startswith("mcf_"):
+        return {
+            "recommended": "Amazon MCF",
+            "marketplace_buy_shipping": False,
+            "external_provider": False,
+            "manual": False,
+            "reason": "Amazon fulfils this order; it is outside the FBM label-buying path.",
+        }
+
+    if normalized == "amazon":
+        return {
+            "recommended": "Amazon Buy Shipping",
+            "marketplace_buy_shipping": True,
+            "external_provider": True,
+            "manual": True,
+            "reason": "Amazon-native rates/labels are first-class; SFP/Prime eligibility must come from Amazon, not BT38.",
+        }
+
+    if normalized == "ebay":
+        return {
+            "recommended": "Best connected provider",
+            "marketplace_buy_shipping": False,
+            "external_provider": True,
+            "manual": True,
+            "reason": "Use native eBay label buying only when the account/API exposes a supported UK route; otherwise use the seller's connected provider.",
+        }
+
+    return {
+        "recommended": "Best connected provider",
+        "marketplace_buy_shipping": False,
+        "external_provider": True,
+        "manual": True,
+        "reason": "Provider availability is determined by the seller's connected accounts.",
+    }
+
+
 @governed_fbm_bp.get("/fbm")
 @login_required
 def fbm_page():
-    """Unified read-only FBM queue backed by existing marketplace orders."""
+    """Unified FBM queue backed only by existing MarketplaceOrder DB rows."""
     platform_filter = str(request.args.get("platform") or "").strip().lower()
     status_filter = str(request.args.get("status") or "").strip().lower()
 
@@ -72,6 +125,7 @@ def fbm_page():
             "platform": platform,
             "store_name": _store_name(row),
             "route_state": route_state,
+            "shipping_mode": _marketplace_shipping_mode(row, platform),
         })
 
     counts = {
@@ -79,6 +133,7 @@ def fbm_page():
         "ready": sum(1 for item in orders if item["route_state"] == "Ready for FBM routing"),
         "tracking": sum(1 for item in orders if item["route_state"] == "Tracking recorded"),
         "dispatched": sum(1 for item in orders if item["route_state"] == "Dispatched"),
+        "marketplace_shipping": sum(1 for item in orders if item["shipping_mode"]["marketplace_buy_shipping"]),
     }
 
     return render_template(
