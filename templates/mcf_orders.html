@@ -341,24 +341,12 @@
   prev.addEventListener('click', () => { if (page > 1) { page -= 1; render(); } });
   next.addEventListener('click', () => { page += 1; render(); });
 
+  // Reuse the single global live signal installed by base.html. Do not open a
+  // second EventSource from this page; that would consume another Gunicorn
+  // request thread and can make unrelated pages appear to hang.
   window.addEventListener('bt38-marketplace-event', () => {
     void refreshMcfTable();
   });
-
-  let eventSource = null;
-  if (typeof window.EventSource === 'function') {
-    eventSource = new EventSource('/governed/ui/events/stream');
-    eventSource.addEventListener('marketplace', () => {
-      void refreshMcfTable();
-    });
-    eventSource.addEventListener('error', () => {
-      console.warn('[Orders/MCF] live committed-state signal unavailable');
-    });
-  }
-
-  window.addEventListener('beforeunload', () => {
-    if (eventSource) eventSource.close();
-  }, {once: true});
 
   render();
 })();
