@@ -18,7 +18,6 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}">
 </head>
 <body class="bg-light">
-    <!-- STAGING BANNER - Only shown when APP_ENV=staging -->
     {% if config.get('IS_STAGING', False) %}
     <div class="staging-banner" style="background: linear-gradient(90deg, #dc3545, #fd7e14); color: white; text-align: center; padding: 8px 0; font-weight: bold; font-size: 14px; position: sticky; top: 0; z-index: 9999;">
         <i data-feather="alert-triangle" style="width: 16px; height: 16px; display: inline;"></i>
@@ -27,82 +26,42 @@
     </div>
     {% endif %}
     
-    <!-- Governed Navigation Shell -->
     <nav class="navbar navbar-expand navbar-dark bg-dark">
         <div class="container-fluid px-3">
             <button class="btn btn-dark border me-3" type="button" data-bs-toggle="offcanvas" data-bs-target="#bt38SideNav" aria-controls="bt38SideNav" aria-label="Open navigation">
                 <i data-feather="menu"></i>
             </button>
-
             <a class="navbar-brand fw-bold mb-0" href="{{ url_for('governed.governed_dashboard_page') }}">
                 <i data-feather="package" class="me-2"></i>BT38 Inventory
             </a>
-
             <div class="ms-auto d-flex align-items-center gap-2">
-                <button
-                    class="btn btn-dark border-0 d-inline-flex align-items-center justify-content-center position-relative"
-                    type="button"
-                    data-bs-toggle="offcanvas"
-                    data-bs-target="#bt38NotificationPanel"
-                    aria-controls="bt38NotificationPanel"
-                    aria-label="Open notifications"
-                    title="Notifications"
-                    id="bt38NotificationBell"
-                >
+                <button class="btn btn-dark border-0 d-inline-flex align-items-center justify-content-center position-relative" type="button" data-bs-toggle="offcanvas" data-bs-target="#bt38NotificationPanel" aria-controls="bt38NotificationPanel" aria-label="Open notifications" title="Notifications" id="bt38NotificationBell">
                     <i data-feather="bell"></i>
                     <span id="bt38NotificationBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
                 </button>
-
-                <a class="nav-link text-light" href="/login">
-                    <i data-feather="log-in" class="me-1"></i>Login
-                </a>
+                <a class="nav-link text-light" href="/login"><i data-feather="log-in" class="me-1"></i>Login</a>
             </div>
         </div>
     </nav>
 
     <div class="offcanvas offcanvas-start text-bg-dark" tabindex="-1" id="bt38SideNav" aria-labelledby="bt38SideNavLabel">
         <div class="offcanvas-header border-bottom border-secondary">
-            <h5 class="offcanvas-title fw-bold" id="bt38SideNavLabel">
-                <i data-feather="package" class="me-2"></i>BT38 Inventory
-            </h5>
+            <h5 class="offcanvas-title fw-bold" id="bt38SideNavLabel"><i data-feather="package" class="me-2"></i>BT38 Inventory</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
-
         <div class="offcanvas-body p-0">
             <div class="list-group list-group-flush">
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed.governed_dashboard_page') }}">
-                    <i data-feather="home" class="me-2"></i>Dashboard
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed.governed_warehouse_page') }}">
-                    <i data-feather="box" class="me-2"></i>Master Stock
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/amazon-fba-stock">
-                    <i data-feather="archive" class="me-2"></i>FBA Read Only
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/product-linking">
-                    <i data-feather="link-2" class="me-2"></i>Product Linking
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed_mcf.orders_mcf_page') }}">
-                    <i data-feather="truck" class="me-2"></i>Orders / MCF
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/stores">
-                    <i data-feather="git-merge" class="me-2"></i>Stores
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/settings">
-                    <i data-feather="tag" class="me-2"></i>Settings
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/listings">
-                    <i data-feather="shopping-cart" class="me-2"></i>Listings
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/groups">
-                    <i data-feather="repeat" class="me-2"></i>Groups
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/admin/system-activity">
-                    <i data-feather="activity" class="me-2"></i>System Activity
-                </a>
-                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/login">
-                    <i data-feather="log-in" class="me-2"></i>Login
-                </a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed.governed_dashboard_page') }}"><i data-feather="home" class="me-2"></i>Dashboard</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed.governed_warehouse_page') }}"><i data-feather="box" class="me-2"></i>Master Stock</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/amazon-fba-stock"><i data-feather="archive" class="me-2"></i>FBA Read Only</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/product-linking"><i data-feather="link-2" class="me-2"></i>Product Linking</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="{{ url_for('governed_mcf.orders_mcf_page') }}"><i data-feather="truck" class="me-2"></i>Orders / MCF</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/stores"><i data-feather="git-merge" class="me-2"></i>Stores</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/settings"><i data-feather="tag" class="me-2"></i>Settings</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/listings"><i data-feather="shopping-cart" class="me-2"></i>Listings</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/groups"><i data-feather="repeat" class="me-2"></i>Groups</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/admin/system-activity"><i data-feather="activity" class="me-2"></i>System Activity</a>
+                <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/login"><i data-feather="log-in" class="me-2"></i>Login</a>
             </div>
         </div>
     </div>
@@ -116,21 +75,14 @@
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
         <div class="offcanvas-body p-0">
-            <div id="bt38NotificationLoading" class="text-center text-muted py-5">
-                <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading notifications…
-            </div>
+            <div id="bt38NotificationLoading" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading notifications…</div>
             <div id="bt38NotificationError" class="alert alert-danger m-3 d-none" role="alert"></div>
-            <div id="bt38NotificationEmpty" class="text-center text-muted py-5 d-none">
-                <i data-feather="bell-off" class="mb-2"></i><div>No marketplace events found.</div>
-            </div>
+            <div id="bt38NotificationEmpty" class="text-center text-muted py-5 d-none"><i data-feather="bell-off" class="mb-2"></i><div>No marketplace events found.</div></div>
             <div id="bt38NotificationList" class="list-group list-group-flush d-none"></div>
         </div>
-        <div class="border-top p-3">
-            <a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('governed.governed_dashboard_page') }}">View sales dashboard</a>
-        </div>
+        <div class="border-top p-3"><a class="btn btn-outline-secondary btn-sm w-100" href="{{ url_for('governed.governed_dashboard_page') }}">View sales dashboard</a></div>
     </div>
 
-    <!-- Flash Messages -->
     <div class="container mt-3">
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
@@ -144,40 +96,23 @@
         {% endwith %}
     </div>
 
-    <!-- Main Content -->
     <main class="container-fluid px-4 py-4">
         {% block content %}{% endblock %}
     </main>
 
-    <!-- Footer -->
     <footer class="bg-white border-top py-3 mt-auto">
         <div class="container-fluid px-4">
             <div class="row align-items-center">
-                <div class="col-md-4">
-                    <span class="text-muted small">BT38 Inventory Management</span>
-                </div>
-                <div class="col-md-4 text-center">
-                    <span class="text-muted small">Help (retired)</span>
-                </div>
-                <div class="col-md-4 text-md-end">
-                    <span class="text-muted small">Updated: <span id="last-update"></span></span>
-                </div>
+                <div class="col-md-4"><span class="text-muted small">BT38 Inventory Management</span></div>
+                <div class="col-md-4 text-center"><span class="text-muted small">Help (retired)</span></div>
+                <div class="col-md-4 text-md-end"><span class="text-muted small">Updated: <span id="last-update"></span></span></div>
             </div>
         </div>
     </footer>
 
-    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
-    <!-- Section X: Routing Stability -->
-    
-    <!-- Custom JavaScript -->
-    
-    <!-- Initialize Feather Icons -->
     <script>
         feather.replace();
-        
-        // Update last update time
         document.getElementById('last-update').textContent = new Date().toLocaleString();
     </script>
 
@@ -209,84 +144,47 @@
         function escapeHtml(value) {
             return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
         }
-
         function timestamp(record) {
             const value = Date.parse(record?.created_at || "");
             return Number.isFinite(value) ? value : 0;
         }
-
         function setBellLight(on) {
             const active = Boolean(on);
             bell.classList.toggle("text-warning", active);
             bell.setAttribute("aria-label", active ? "Open notifications - new marketplace event" : "Open notifications");
-            if (active) window.localStorage.setItem(lightKey, "1");
-            else window.localStorage.removeItem(lightKey);
+            if (active) window.localStorage.setItem(lightKey, "1"); else window.localStorage.removeItem(lightKey);
         }
-
         function setBadge(count) {
             const value = Math.max(0, Number(count) || 0);
             badge.textContent = value > 99 ? "99+" : String(value);
             badge.classList.toggle("d-none", value === 0);
         }
-
-        function eventKey(record) {
-            return String(record?.event_key || "").trim();
-        }
-
+        function eventKey(record) { return String(record?.event_key || "").trim(); }
         function readSeenEventKeys() {
             try {
-                const value = JSON.parse(
-                    window.localStorage.getItem(seenEventsKey) || "[]"
-                );
-                return new Set(
-                    Array.isArray(value)
-                        ? value.map((item) => String(item || "").trim()).filter(Boolean)
-                        : []
-                );
-            } catch (error) {
-                return new Set();
-            }
+                const value = JSON.parse(window.localStorage.getItem(seenEventsKey) || "[]");
+                return new Set(Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : []);
+            } catch (error) { return new Set(); }
         }
-
         function updateUnread() {
             const seenEvents = readSeenEventKeys();
             const lastSeen = Number(window.localStorage.getItem(seenKey) || 0);
-
             const unread = records.filter(function (record) {
                 const key = eventKey(record);
-
-                if (key) {
-                    return !seenEvents.has(key);
-                }
-
-                // Compatibility only for historical records without event_key.
+                if (key) return !seenEvents.has(key);
                 return timestamp(record) > lastSeen;
             }).length;
-
             setBadge(unread);
             setBellLight(unread > 0);
         }
-
         function markSeen() {
-            const newest = records.reduce(
-                (value, record) => Math.max(value, timestamp(record)),
-                Date.now()
-            );
-
-            const seenEvents = records
-                .map(eventKey)
-                .filter(Boolean);
-
+            const newest = records.reduce((value, record) => Math.max(value, timestamp(record)), Date.now());
+            const seenEvents = records.map(eventKey).filter(Boolean);
             window.localStorage.setItem(seenKey, String(newest));
-            window.localStorage.setItem(
-                seenEventsKey,
-                JSON.stringify(seenEvents)
-            );
-
+            window.localStorage.setItem(seenEventsKey, JSON.stringify(seenEvents));
             setBadge(0);
             setBellLight(false);
         }
-
         function iconName(record) {
             if (record.log_type === "product_linking_link") return "link-2";
             if (record.log_type === "marketplace_listing") return "tag";
@@ -294,7 +192,6 @@
             if (String(record.log_type || "").includes("push")) return "upload-cloud";
             return "bell";
         }
-
         function render() {
             list.innerHTML = "";
             emptyBox.classList.toggle("d-none", records.length !== 0);
@@ -304,40 +201,13 @@
                 const date = timestamp(record) ? new Date(record.created_at).toLocaleString() : "Time unavailable";
                 const title = record.title || record.message || "Marketplace event";
                 const eventMeta = record.log_type === "marketplace_sale"
-                    ? [
-                        record.sku ? `${record.sku} · Qty ${record.quantity || 0}` : "",
-                        record.order_id ? `Order ${record.order_id}` : ""
-                      ].filter(Boolean)
+                    ? [record.sku ? `${record.sku} · Qty ${record.quantity || 0}` : "", record.order_id ? `Order ${record.order_id}` : ""].filter(Boolean)
                     : record.log_type === "marketplace_listing"
-                    ? [
-                        record.sku ? `SKU ${record.sku}` : "",
-                        record.listing_id ? `${
-                            String(record.platform || "").toLowerCase().includes("amazon")
-                                ? "ASIN"
-                                : "Item"
-                          } ${record.listing_id}` : ""
-                      ].filter(Boolean)
+                    ? [record.sku ? `SKU ${record.sku}` : "", record.listing_id ? `${String(record.platform || "").toLowerCase().includes("amazon") ? "ASIN" : "Item"} ${record.listing_id}` : ""].filter(Boolean)
                     : String(record.log_type || "").includes("push")
-                    ? [
-                        record.product_title || "",
-                        record.sku ? `SKU ${record.sku}` : "",
-                        record.listing_id
-                            ? `${
-                                String(record.platform || "").toLowerCase().includes("amazon")
-                                    ? "ASIN"
-                                    : "Item ID"
-                              } ${record.asin || record.listing_id}`
-                            : "",
-                        record.quantity !== undefined && record.quantity !== null
-                            ? `Qty ${record.quantity}`
-                            : "",
-                        record.group_id ? `Group ${record.group_id}` : ""
-                      ].filter(Boolean)
+                    ? [record.product_title || "", record.sku ? `SKU ${record.sku}` : "", record.listing_id ? `${String(record.platform || "").toLowerCase().includes("amazon") ? "ASIN" : "Item ID"} ${record.asin || record.listing_id}` : "", record.quantity !== undefined && record.quantity !== null ? `Qty ${record.quantity}` : "", record.group_id ? `Group ${record.group_id}` : ""].filter(Boolean)
                     : String(record.log_type || "").startsWith("product_linking_")
-                    ? [
-                        record.sku ? `SKU ${record.sku}` : "",
-                        record.group_id ? `Group ${record.group_id}` : ""
-                      ].filter(Boolean)
+                    ? [record.sku ? `SKU ${record.sku}` : "", record.group_id ? `Group ${record.group_id}` : ""].filter(Boolean)
                     : [];
                 item.innerHTML = `<div class="d-flex align-items-start gap-3"><div class="pt-1"><i data-feather="${iconName(record)}"></i></div><div class="flex-grow-1 min-w-0"><div class="d-flex justify-content-between gap-2"><strong class="small">${escapeHtml(record.platform || "Marketplace")}</strong><span class="text-muted small text-nowrap">${escapeHtml(date)}</span></div><div class="mt-1 fw-semibold">${escapeHtml(title)}</div>${eventMeta.map(value => `<div class="small text-muted mt-1">${escapeHtml(value)}</div>`).join("")}</div></div>`;
                 list.appendChild(item);
@@ -345,7 +215,6 @@
             list.classList.toggle("d-none", records.length === 0);
             feather.replace();
         }
-
         async function loadNotifications() {
             if (!stale && loaded) return;
             loading.classList.remove("d-none");
@@ -356,26 +225,11 @@
                 const payload = await response.json();
                 if (payload?.success !== true) throw new Error(payload?.error || payload?.message || "Notification response was not successful.");
                 records = Array.isArray(payload.records) ? payload.records : [];
-
-                if (
-                    window.localStorage.getItem(seenEventsKey) === null
-                    && window.localStorage.getItem(seenKey) !== null
-                ) {
-                    const previousLastSeen = Number(
-                        window.localStorage.getItem(seenKey) || 0
-                    );
-
-                    const previouslySeenKeys = records
-                        .filter((record) => timestamp(record) <= previousLastSeen)
-                        .map(eventKey)
-                        .filter(Boolean);
-
-                    window.localStorage.setItem(
-                        seenEventsKey,
-                        JSON.stringify(previouslySeenKeys)
-                    );
+                if (window.localStorage.getItem(seenEventsKey) === null && window.localStorage.getItem(seenKey) !== null) {
+                    const previousLastSeen = Number(window.localStorage.getItem(seenKey) || 0);
+                    const previouslySeenKeys = records.filter((record) => timestamp(record) <= previousLastSeen).map(eventKey).filter(Boolean);
+                    window.localStorage.setItem(seenEventsKey, JSON.stringify(previouslySeenKeys));
                 }
-
                 loaded = true;
                 stale = false;
                 render();
@@ -389,343 +243,84 @@
         }
 
         setBellLight(window.localStorage.getItem(lightKey) === "1");
-
-        window.addEventListener("bt38-marketplace-event", function () {
-            stale = true;
-            setBellLight(true);
-        });
-
+        window.addEventListener("bt38-marketplace-event", function () { stale = true; setBellLight(true); });
         function dispatchLiveBellSignal(detail) {
-            window.dispatchEvent(
-                new CustomEvent(
-                    "bt38-marketplace-event",
-                    {
-                        detail: detail || {
-                            source: "server_commit"
-                        }
-                    }
-                )
-            );
+            window.dispatchEvent(new CustomEvent("bt38-marketplace-event", {detail: detail || {source: "server_commit"}}));
         }
-
         function stopLiveSignal() {
-            if (liveSource) {
-                try {
-                    liveSource.close();
-                } catch (error) {
-                    // Transport cleanup only.
-                }
-                liveSource = null;
-            }
-
-            if (releaseLiveLeader) {
-                const release = releaseLiveLeader;
-                releaseLiveLeader = null;
-                release();
-            }
+            if (liveSource) { try { liveSource.close(); } catch (error) {} liveSource = null; }
+            if (releaseLiveLeader) { const release = releaseLiveLeader; releaseLiveLeader = null; release(); }
         }
-
         function installCrossTabLiveSignal() {
-            /*
-             * One browser profile = one server SSE connection.
-             *
-             * Every BT38 tab waits on the browser-native Web Lock.
-             * Only the lock holder opens EventSource.
-             *
-             * Other tabs receive the wake through BroadcastChannel and consume
-             * ZERO Gunicorn threads.
-             *
-             * No timer. No DB polling. No marketplace polling.
-             */
-            if (
-                !("EventSource" in window)
-                || !("BroadcastChannel" in window)
-                || !navigator.locks?.request
-            ) {
-                // Safe fallback: startup persisted-event hydration still works.
-                // Never open per-tab SSE and risk request starvation.
-                return;
-            }
-
+            if (!("EventSource" in window) || !("BroadcastChannel" in window) || !navigator.locks?.request) return;
             liveChannel = new BroadcastChannel(liveChannelName);
-
-            liveChannel.addEventListener(
-                "message",
-                function (event) {
-                    if (event?.data?.type !== "marketplace") return;
-
-                    dispatchLiveBellSignal({
-                        source: "browser_leader",
-                        sequence: event.data.sequence || ""
-                    });
-                }
-            );
-
-            navigator.locks.request(
-                liveLeaderLock,
-                {mode: "exclusive"},
-                async function () {
-                    liveSource = new EventSource(
-                        liveUrl,
-                        {withCredentials: true}
-                    );
-
-                    liveSource.addEventListener(
-                        "marketplace",
-                        function (event) {
-                            // Wake this tab.
-                            dispatchLiveBellSignal({
-                                source: "server_commit",
-                                sequence: event.data || ""
-                            });
-
-                            // Wake every other BT38 tab without another
-                            // server connection.
-                            try {
-                                liveChannel.postMessage({
-                                    type: "marketplace",
-                                    sequence: event.data || ""
-                                });
-                            } catch (error) {
-                                // Bell signal remains local if channel closes.
-                            }
-                        }
-                    );
-
-                    await new Promise(function (resolve) {
-                        releaseLiveLeader = resolve;
-                    });
-
-                    if (liveSource) {
-                        try {
-                            liveSource.close();
-                        } catch (error) {
-                            // Transport cleanup only.
-                        }
-                        liveSource = null;
-                    }
-                }
-            );
+            liveChannel.addEventListener("message", function (event) {
+                if (event?.data?.type !== "marketplace") return;
+                dispatchLiveBellSignal({source: "browser_leader", sequence: event.data.sequence || ""});
+            });
+            navigator.locks.request(liveLeaderLock, {mode: "exclusive"}, async function () {
+                liveSource = new EventSource(liveUrl, {withCredentials: true});
+                liveSource.addEventListener("marketplace", function (event) {
+                    dispatchLiveBellSignal({source: "server_commit", sequence: event.data || ""});
+                    try { liveChannel.postMessage({type: "marketplace", sequence: event.data || ""}); } catch (error) {}
+                });
+                await new Promise(function (resolve) { releaseLiveLeader = resolve; });
+                if (liveSource) { try { liveSource.close(); } catch (error) {} liveSource = null; }
+            });
         }
-
         installCrossTabLiveSignal();
+        window.addEventListener("pagehide", function () {
+            stopLiveSignal();
+            if (liveChannel) { try { liveChannel.close(); } catch (error) {} liveChannel = null; }
+        }, {once: true});
+        panel.addEventListener("show.bs.offcanvas", async function () { stale = true; await loadNotifications(); markSeen(); });
 
-        window.addEventListener(
-            "pagehide",
-            function () {
-                stopLiveSignal();
-
-                if (liveChannel) {
-                    try {
-                        liveChannel.close();
-                    } catch (error) {
-                        // Browser cleanup only.
-                    }
-                    liveChannel = null;
-                }
-            },
-            {once: true}
-        );
-
-        panel.addEventListener("show.bs.offcanvas", async function () {
-            stale = true;
-            await loadNotifications();
-            markSeen();
-        });
-
-        // Refresh ONLY persisted bell truth when the browser first opens
-        // or becomes visible again after laptop/tab suspension.
-        //
-        // Event driven only:
-        // - no polling
-        // - no interval
-        // - no timer
-        // - no page refresh
-        // - no marketplace call
-        // - no background DB loop
         let bellWakeHydrationInFlight = false;
         let bellPageWasHidden = document.visibilityState === "hidden";
-
         async function hydrateBellAfterWake() {
             if (bellWakeHydrationInFlight) return;
-
             bellWakeHydrationInFlight = true;
-            try {
-                stale = true;
-                await loadNotifications();
-            } finally {
-                bellWakeHydrationInFlight = false;
-            }
+            try { stale = true; await loadNotifications(); } finally { bellWakeHydrationInFlight = false; }
         }
-
-        window.addEventListener(
-            "pageshow",
-            function () {
-                hydrateBellAfterWake();
-            }
-        );
-
-        document.addEventListener(
-            "visibilitychange",
-            function () {
-                if (document.visibilityState === "hidden") {
-                    bellPageWasHidden = true;
-                    return;
-                }
-
-                if (
-                    document.visibilityState === "visible"
-                    && bellPageWasHidden
-                ) {
-                    bellPageWasHidden = false;
-                    hydrateBellAfterWake();
-                }
-            }
-        );
+        window.addEventListener("pageshow", function () { hydrateBellAfterWake(); });
+        document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "hidden") { bellPageWasHidden = true; return; }
+            if (document.visibilityState === "visible" && bellPageWasHidden) { bellPageWasHidden = false; hydrateBellAfterWake(); }
+        });
     })();
     </script>
-    
-    {% block scripts %}{% endblock %}
 
+    <script src="{{ url_for('static', filename='js/bt38-live-page-refresh.js') }}"></script>
+    {% block scripts %}{% endblock %}
 
 <script id="bt38GovernedTemplateGhostBlocker">
 (function(){
   if (window.bt38GovernedTemplateGhostBlockerInstalled) return;
   window.bt38GovernedTemplateGhostBlockerInstalled = true;
-
   const originalFetch = window.fetch.bind(window);
-
-  function asUrl(input){
-    if (typeof input === "string") return input;
-    if (input && input.url) return input.url;
-    return "";
-  }
-
-  function getMethod(init){
-    return String((init && init.method) || "GET").toUpperCase();
-  }
-
-  function governedBlockedPayload(url){
-    return {
-      success:false,
-      ok:false,
-      legacy_route_disabled:true,
-      governed_required:true,
-      url:url,
-      message:"This old action is disabled. Use the governed warehouse, store, listing, or group path."
-    };
-  }
-
-  function blockedResponse(url){
-    const payload = governedBlockedPayload(url);
-    try { alert(payload.message); } catch(e) {}
-    return Promise.resolve(new Response(JSON.stringify(payload), {
-      status:409,
-      headers:{"Content-Type":"application/json"}
-    }));
-  }
-
+  function asUrl(input){ if (typeof input === "string") return input; if (input && input.url) return input.url; return ""; }
+  function getMethod(init){ return String((init && init.method) || "GET").toUpperCase(); }
+  function governedBlockedPayload(url){ return {success:false,ok:false,legacy_route_disabled:true,governed_required:true,url:url,message:"This old action is disabled. Use the governed warehouse, store, listing, or group path."}; }
+  function blockedResponse(url){ const payload = governedBlockedPayload(url); try { alert(payload.message); } catch(e) {} return Promise.resolve(new Response(JSON.stringify(payload), {status:409,headers:{"Content-Type":"application/json"}})); }
   function legacyWriteUrl(url){
     return (
-      url === "/api/group-push" ||
-      url.startsWith("/api/group-push/") ||
-      url.startsWith("/api/listings/bulk") ||
-      url.startsWith("/api/product-linking") ||
-      url.startsWith("/api/product_linking") ||
-      url.startsWith("/api/link_listing_to_warehouse") ||
-      url.startsWith("/api/unlink_listing") ||
-      url.startsWith("/api/bulk_link_products") ||
-      url.startsWith("/api/warehouse/") ||
-      url.startsWith("/api/stock_transfer/") ||
-      url.startsWith("/api/shelf/") ||
-      url.startsWith("/inventory/delete_bulk") ||
-      url.startsWith("/mock-disabled-action") ||
-      url.startsWith("/search_ungrouped_items") ||
-      url.startsWith("/groups/") ||
-      url.startsWith("/release_from_group/") ||
-      url.startsWith("/add_sku_to_group/") ||
-      url.startsWith("/push_stock/") ||
-      url.startsWith("/push_stock_bulk") ||
-      url.startsWith("/push_stock_all") ||
-      url.startsWith("/warehouse/upload-image/") ||
-      url.startsWith("/auth/amazon") ||
-      url.startsWith("/bt38-setup") ||
-      url.startsWith("/admin/api/backfill")
+      url === "/api/group-push" || url.startsWith("/api/group-push/") || url.startsWith("/api/listings/bulk") || url.startsWith("/api/product-linking") || url.startsWith("/api/product_linking") || url.startsWith("/api/link_listing_to_warehouse") || url.startsWith("/api/unlink_listing") || url.startsWith("/api/bulk_link_products") || url.startsWith("/api/warehouse/") || url.startsWith("/api/stock_transfer/") || url.startsWith("/api/shelf/") || url.startsWith("/inventory/delete_bulk") || url.startsWith("/mock-disabled-action") || url.startsWith("/search_ungrouped_items") || url.startsWith("/groups/") || url.startsWith("/release_from_group/") || url.startsWith("/add_sku_to_group/") || url.startsWith("/push_stock/") || url.startsWith("/push_stock_bulk") || url.startsWith("/push_stock_all") || url.startsWith("/warehouse/upload-image/") || url.startsWith("/auth/amazon") || url.startsWith("/bt38-setup") || url.startsWith("/admin/api/backfill")
     );
   }
-
   window.fetch = function(input, init){
-    const url = asUrl(input);
-    const method = getMethod(init);
-
+    const url = asUrl(input); const method = getMethod(init);
     if (method === "GET") return originalFetch(input, init);
     if (url.startsWith("/governed/")) return originalFetch(input, init);
-
-    const listingPush = url.match(/^\/api\/listings\/(\d+)\/push$/);
-    if (listingPush) {
-      return originalFetch(`/governed/actions/listings/${listingPush[1]}/push`, init);
-    }
-    const groupPush = url.match(/^\/groups\/(\d+)\/push$/);
-    if (groupPush) {
-      return originalFetch(`/governed/actions/groups/${groupPush[1]}/push`, init);
-    }
-
-    const groupQty = url.match(/^\/groups\/(\d+)\/update-stock$/);
-    if (groupQty) {
-      return originalFetch(`/governed/groups/${groupQty[1]}/propagate-quantity`, init);
-    }
-
-
+    const listingPush = url.match(/^\/api\/listings\/(\d+)\/push$/); if (listingPush) return originalFetch(`/governed/actions/listings/${listingPush[1]}/push`, init);
+    const groupPush = url.match(/^\/groups\/(\d+)\/push$/); if (groupPush) return originalFetch(`/governed/actions/groups/${groupPush[1]}/push`, init);
+    const groupQty = url.match(/^\/groups\/(\d+)\/update-stock$/); if (groupQty) return originalFetch(`/governed/groups/${groupQty[1]}/propagate-quantity`, init);
     if (legacyWriteUrl(url)) return blockedResponse(url);
-
     return originalFetch(input, init);
   };
-
-  window.bt38GovernedDisabledAction = function(label){
-    const message = `${label || "This action"} is disabled until it is wired to a governed route.`;
-    try { alert(message); } catch(e) {}
-    return false;
-  };
-
-  const disabledFunctionNames = [
-    "bulkPush",
-    "bulkUnblock",
-    "bulkSyncFromWarehouse",
-    "bulkActivate",
-    "bulkDeactivate",
-    "submitBulkJob",
-    "deleteListing",
-    "saveNewLink",
-    "saveAmazonFbmLink",
-    "saveAmazonFbaLink",
-    "saveEbayLink",
-    "bulkPushSelected",
-    "bulkDiagnostics",
-    "bulkRepairLinks",
-    "bulkUngroup",
-    "executeMerge",
-    "executeReassign",
-    "repairResetFailures",
-    "repairRebuildLinks",
-    "repairCreateMissingSKUs",
-    "repairSyncNow",
-    "fixAllIssues",
-    "ungroupProduct",
-    "markNotSameProduct",
-    "repairLinks"
-  ];
-
-  disabledFunctionNames.forEach(function(name){
-    if (typeof window[name] === "function") {
-      window[name] = function(){
-        return window.bt38GovernedDisabledAction(name);
-      };
-    }
-  });
+  window.bt38GovernedDisabledAction = function(label){ const message = `${label || "This action"} is disabled until it is wired to a governed route.`; try { alert(message); } catch(e) {} return false; };
+  const disabledFunctionNames = ["bulkPush","bulkUnblock","bulkSyncFromWarehouse","bulkActivate","bulkDeactivate","submitBulkJob","deleteListing","saveNewLink","saveAmazonFbmLink","saveAmazonFbaLink","saveEbayLink","bulkPushSelected","bulkDiagnostics","bulkRepairLinks","bulkUngroup","executeMerge","executeReassign","repairResetFailures","repairRebuildLinks","repairCreateMissingSKUs","repairSyncNow","fixAllIssues","ungroupProduct","markNotSameProduct","repairLinks"];
+  disabledFunctionNames.forEach(function(name){ if (typeof window[name] === "function") { window[name] = function(){ return window.bt38GovernedDisabledAction(name); }; } });
 })();
 </script>
-
-
-
 </body>
 </html>
