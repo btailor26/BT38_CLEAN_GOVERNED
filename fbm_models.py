@@ -128,3 +128,53 @@ class FBMProviderCase(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     shipment = db.relationship("FBMShipment", backref=db.backref("provider_cases", lazy=True, cascade="all, delete-orphan"))
+
+
+class FBMCarrierServiceMapping(db.Model):
+    """Verified provider carrier/service -> marketplace mapping, learned once."""
+
+    __tablename__ = "fbm_carrier_service_mappings"
+    id = db.Column(db.Integer, primary_key=True)
+    marketplace = db.Column(db.String(50), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=False, index=True)
+    provider_carrier = db.Column(db.String(200), nullable=False)
+    provider_service = db.Column(db.String(300), nullable=False)
+    provider_carrier_display = db.Column(db.String(200), nullable=False)
+    provider_service_display = db.Column(db.String(300), nullable=False)
+
+    marketplace_carrier_code = db.Column(db.String(200), nullable=True)
+    marketplace_carrier_name = db.Column(db.String(200), nullable=True)
+    marketplace_service_code = db.Column(db.String(300), nullable=True)
+    marketplace_service_name = db.Column(db.String(300), nullable=True)
+
+    verification_status = db.Column(db.String(50), nullable=False, default="pending_review", index=True)
+    verified_at = db.Column(db.DateTime, nullable=True)
+    verified_by = db.Column(db.String(100), nullable=True)
+    usage_count = db.Column(db.Integer, nullable=False, default=0)
+    last_used_at = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "marketplace", "provider", "provider_carrier", "provider_service",
+            name="uq_fbm_carrier_mapping_identity",
+        ),
+    )
+
+
+class FBMShipmentMappingReview(db.Model):
+    """Per-shipment hold explaining that printing is allowed but mapping is pending."""
+
+    __tablename__ = "fbm_shipment_mapping_reviews"
+    id = db.Column(db.Integer, primary_key=True)
+    shipment_id = db.Column(db.Integer, db.ForeignKey("fbm_shipments.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    mapping_id = db.Column(db.Integer, db.ForeignKey("fbm_carrier_service_mappings.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = db.Column(db.String(50), nullable=False, default="under_review", index=True)
+    review_reason = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    resolved_at = db.Column(db.DateTime, nullable=True)
+
+    shipment = db.relationship("FBMShipment", backref=db.backref("mapping_review", uselist=False, cascade="all, delete-orphan"))
+    mapping = db.relationship("FBMCarrierServiceMapping", backref=db.backref("shipment_reviews", lazy=True))
