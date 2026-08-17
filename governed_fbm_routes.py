@@ -35,12 +35,26 @@ def _store_name(order: MarketplaceOrder) -> str:
     return str(getattr(store, "name", "") or "").strip() or "Unknown store"
 
 
-def _route_state(order: MarketplaceOrder) -> str:
-    """Describe committed DB fulfilment state without executing anything."""
+def _is_fbm_eligible(order: MarketplaceOrder) -> bool:
+    """Return True only for orders that belong in the merchant-fulfilled queue.
+
+    MCF and FBA are Amazon-fulfilled workflows and must never be surfaced in
+    FBM. Filtering happens before shipment lookup/counting so the FBM page has
+    no dependency on, or visibility into, the MCF execution queue.
+    """
     fulfillment = str(getattr(order, "fulfillment_type", "") or "").upper()
     status = str(getattr(order, "status", "") or "").lower()
-    if fulfillment == "FBA" or status.startswith("mcf_"):
-        return "MCF / Amazon fulfilment"
+
+    if fulfillment in {"FBA", "AFN", "MCF"}:
+        return False
+    if status.startswith("mcf_"):
+        return False
+
+    return True
+
+
+def _route_state(order: MarketplaceOrder) -> str:
+    """Describe committed DB FBM fulfilment state without executing anything."""
     if getattr(order, "tracking_number", None):
         return "Tracking recorded"
     if getattr(order, "shipped_at", None):
@@ -58,17 +72,6 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
     BT38 remains responsible for correct marketplace mapping.
     """
     normalized = platform.strip().lower()
-    fulfillment = str(getattr(order, "fulfillment_type", "") or "").upper()
-    status = str(getattr(order, "status", "") or "").lower()
-
-    if fulfillment == "FBA" or status.startswith("mcf_"):
-        return {
-            "recommended": "Amazon MCF",
-            "marketplace_buy_shipping": False,
-            "external_provider": False,
-            "manual": False,
-            "reason": "Amazon fulfils this order; it is outside the FBM label-buying path.",
-        }
 
     if normalized == "amazon":
         return {
@@ -128,12 +131,15 @@ def fbm_page():
     platform_filter = str(request.args.get("platform") or "").strip().lower()
     status_filter = str(request.args.get("status") or "").strip().lower()
 
-    rows = (
+    raw_rows = (
         MarketplaceOrder.query
         .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
         .limit(300)
         .all()
     )
+
+    # MCF/FBA are excluded before any FBM shipment lookup or page counting.
+    rows = [row for row in raw_rows if _is_fbm_eligible(row)]
     shipments = _shipment_map(rows)
 
     seen = set()
