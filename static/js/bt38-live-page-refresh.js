@@ -1,15 +1,13 @@
 // Shared BT38 event-driven page refresh controller.
 // One server SSE connection is owned by base.html; this file never opens one.
 // No polling, no intervals, no marketplace reads. A committed live event causes
-// at most one browser refresh per distinct sequence, with rapid duplicate events
-// coalesced before navigation.
+// an immediate browser refresh for each distinct sequence.
 (function () {
   'use strict';
 
   if (window.bt38LivePageRefreshInstalled) return;
   window.bt38LivePageRefreshInstalled = true;
 
-  let scheduled = false;
   let pendingWhileHidden = false;
   let lastSequence = '';
 
@@ -25,21 +23,15 @@
 
   function refreshCurrentPage() {
     if (pageOwnsCommittedRefresh()) return;
-    if (scheduled) return;
-    scheduled = true;
 
-    // Event coalescing only. This timer never queries the DB and is not polling.
-    window.setTimeout(function () {
-      if (document.visibilityState === 'hidden') {
-        scheduled = false;
-        pendingWhileHidden = true;
-        return;
-      }
+    if (document.visibilityState === 'hidden') {
+      pendingWhileHidden = true;
+      return;
+    }
 
-      // Reuse each page's existing server-rendered DB contract. One committed
-      // event causes one navigation; there is no periodic refresh loop.
-      window.location.reload();
-    }, 250);
+    // Immediate event-driven navigation. There is no timer, periodic refresh,
+    // polling loop, marketplace read, or duplicate SSE connection here.
+    window.location.reload();
   }
 
   window.addEventListener('bt38-marketplace-event', function (event) {
