@@ -46,6 +46,42 @@ def process_marketplace_notification(
         payload,
     )
 
+    # Amazon MCF lifecycle signals do not need a MarketplaceListing identity.
+    # Reuse the existing exact MCF signal handler before listing resolution so
+    # FULFILLMENT_ORDER_STATUS can update the existing MCF row and tracking.
+    if (
+        marketplace == "amazon"
+        and str(event_type or "").strip().upper()
+        == "FULFILLMENT_ORDER_STATUS"
+    ):
+        from services.governed_mcf_execution import (
+            refresh_mcf_from_amazon_signal,
+        )
+
+        mcf_result = refresh_mcf_from_amazon_signal(payload)
+        mcf_success = bool(
+            mcf_result.get("success")
+            or mcf_result.get("skipped")
+        )
+        return _log_result(
+            status=(
+                "mcf_fulfillment_status_processed"
+                if mcf_success
+                else "mcf_fulfillment_status_failed"
+            ),
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event="mcf_fulfillment_status",
+            reason=(
+                "Amazon MCF status signal used the existing exact MCF lifecycle handler."
+                if mcf_success
+                else "Amazon MCF status signal could not refresh the existing MCF lifecycle."
+            ),
+            payload=payload,
+            changed=bool(mcf_result.get("database_touched")),
+            mcf_result=mcf_result,
+        )
+
     if business_event == "cancellation":
         return _handle_marketplace_cancellation(
             marketplace=marketplace,
@@ -1122,6 +1158,7 @@ def _log_result(**data) -> Dict[str, Any]:
         "fba_pending_stored", "fba_received_stored", "fba_adjustment_stored", "fba_lost_stored",
         "fba_damaged_stored", "fba_reimbursement_stored", "fba_inventory_updated",
         "fba_inventory_unchanged", "fba_order_processed", "cancellation_processed",
+        "mcf_fulfillment_status_processed",
     }
 
     return {
