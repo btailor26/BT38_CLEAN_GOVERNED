@@ -6,6 +6,35 @@ name: Governed Fly Deployment
 # - Fly builds remotely from the exact manually approved GitHub commit.
 # - Pushes, merges, tests, and audits never deploy automatically.
 # - This workflow does not merge branches.
+#
+# HOW THE DEPLOY COMMAND IS CREATED AND USED:
+# 1. Resolve the exact draft branch to test, for example:
+#      fix/full-system-release-alignment
+# 2. Resolve that branch's current GitHub HEAD SHA. The SHA supplied as
+#    expected_commit MUST exactly match the selected workflow ref's github.sha.
+# 3. Dispatch this existing GitHub Actions workflow from GitHub UI or GitHub CLI.
+#    The operator PC command only asks GitHub to start workflow_dispatch; it does
+#    not build BT38, supply application files, or deploy directly to Fly.
+# 4. Example Git Bash / GitHub CLI dispatch for the current governed branch:
+#
+#      GH_EXE="$(find /c/Users/btail/AppData/Local/BT38-GitHubCLI -type f -iname gh.exe 2>/dev/null | head -1)"
+#
+#      "$GH_EXE" workflow run deploy-fly.yml \
+#        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
+#        --ref fix/full-system-release-alignment \
+#        -f confirm_production_deploy=DEPLOY_GITHUB_COMMIT_TO_BT38_PROD \
+#        -f expected_commit=<CURRENT_BRANCH_HEAD_SHA>
+#
+#      "$GH_EXE" run watch \
+#        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
+#        --exit-status
+#
+# 5. GitHub then performs the real deployment chain:
+#      exact branch/SHA -> source-deploy-guard -> audit -> exact GitHub checkout
+#      -> Fly remote builder -> bt38-prod -> post-deploy reconciliations.
+# 6. A draft PR may be deployed for testing. workflow_dispatch does NOT merge it.
+# 7. Never hard-code an old SHA into a future deploy command. Re-read the branch
+#    HEAD first and use that exact SHA as expected_commit.
 
 on:
   workflow_dispatch:
