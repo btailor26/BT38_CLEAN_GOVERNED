@@ -20,6 +20,15 @@ def test_mcf_notification_reuses_existing_eventbridge_and_sqs_transport():
     assert '"new_importer_created": False' in source
 
 
+def test_mcf_queue_permission_cannot_replace_listing_webhook_permission():
+    source = _read("services/governed_amazon_mcf_notification_alignment.py")
+
+    assert 'MCF_QUEUE_POLICY_SID = "BT38AmazonMCFEventBridgeSendMessage"' in source
+    assert '"BT38AmazonEventBridgeSendMessage"' in source
+    assert "row.get(\"Sid\") == MCF_QUEUE_POLICY_SID" in source
+    assert "_ensure_queue_policy" not in source
+
+
 def test_mcf_notification_does_not_modify_listing_notification_topics():
     listing = _read("services/governed_amazon_listing_fulfillment_refresh.py")
     mcf = _read("services/governed_amazon_mcf_notification_alignment.py")
