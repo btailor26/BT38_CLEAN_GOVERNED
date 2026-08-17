@@ -1,6 +1,6 @@
 // Shared BT38 event-driven page refresh controller.
 // One server SSE connection is owned by base.html; this file never opens one.
-// No polling, no intervals and no marketplace reads.
+// No polling, no intervals, no marketplace reads, and no full-page reloads.
 (function () {
   'use strict';
 
@@ -59,12 +59,13 @@
     }
 
     if (document.querySelector('[data-bt38-page="productLinking"]')) {
-      const refreshed = await refreshProductLinkingSilently();
-      if (refreshed) return;
+      await refreshProductLinkingSilently();
+      return;
     }
 
-    // Fallback for pages that do not own a targeted live updater yet.
-    window.location.reload();
+    // Pages without a targeted live updater must remain visually stable.
+    // Never reload or rerender the whole page on a marketplace event because
+    // that can interrupt active edits, searches, modals, or quantity changes.
   }
 
   window.addEventListener('bt38-marketplace-event', function (event) {
