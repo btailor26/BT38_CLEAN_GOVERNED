@@ -113,6 +113,8 @@ jobs:
             services/governed_amazon_inventory_import.py \
             services/governed_amazon_listing_fulfillment_refresh.py \
             services/governed_amazon_subscription_visibility.py \
+            services/governed_amazon_mcf_notification_alignment.py \
+            services/governed_mcf_confirmation.py \
             services/governed_marketplace_order_import.py \
             services/governed_order_stock_mutation.py \
             services/governed_warehouse_sync.py
@@ -125,7 +127,8 @@ jobs:
             tests/test_webhook_scoped_reconcile_contract.py \
             tests/test_webhook_push_alignment_contract.py \
             tests/test_ui_production_alignment_contract.py \
-            tests/test_amazon_subscription_visibility_contract.py
+            tests/test_amazon_subscription_visibility_contract.py \
+            tests/test_amazon_mcf_notification_alignment_contract.py
 
   deploy:
     needs: audit
@@ -157,6 +160,15 @@ jobs:
           flyctl ssh console \
             --app bt38-prod \
             --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_subscription_visibility import record_governed_amazon_listing_subscription_reconciliation; ctx=app.app_context(); ctx.push(); result=record_governed_amazon_listing_subscription_reconciliation(store_id=22, source=\\\"post_deploy_subscription_audit\\\"); print(json.dumps(result, default=str))'\""
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Reconcile Amazon MCF status subscription
+        shell: bash
+        run: |
+          flyctl ssh console \
+            --app bt38-prod \
+            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_mcf_notification_alignment import align_governed_amazon_mcf_notification_to_existing_sqs; ctx=app.app_context(); ctx.push(); result=align_governed_amazon_mcf_notification_to_existing_sqs(store_id=22); print(json.dumps(result, default=str)); raise SystemExit(0 if result.get(\\\"success\\\") else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
