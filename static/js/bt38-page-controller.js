@@ -10,11 +10,45 @@ window.BT38.pages = window.BT38.pages || {};
   const root = document.querySelector("[data-bt38-page]");
 
   // Product Linking has its own complete-working-set session controller.
-  // Do not register handlers, replace globals, cache rendered rows or alter pagination here.
+  // Its legacy async loader is retired; the page already contains the Neon
+  // server-rendered working set. Reveal that state immediately and never wait
+  // on a second request that no longer exists.
   if (root && root.dataset.bt38Page === "productLinking") {
+    const revealServerRenderedProductLinking = function () {
+      const loading = document.getElementById("warehouseLoadingState");
+      const data = document.getElementById("warehouseDataContainer");
+      if (loading) loading.classList.add("d-none");
+      if (data) data.classList.remove("d-none");
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener(
+        "DOMContentLoaded",
+        revealServerRenderedProductLinking,
+        {once: true}
+      );
+    } else {
+      revealServerRenderedProductLinking();
+    }
+
+    // Compatibility only for legacy template callbacks. Relationship writes
+    // remain owned by product-linking-session.js; this function performs no
+    // fetch, scan, marketplace read or write.
+    if (typeof window.loadProductLinkingData !== "function") {
+      window.loadProductLinkingData = function () {
+        revealServerRenderedProductLinking();
+        return Promise.resolve({
+          success: true,
+          server_rendered: true,
+          network_request_started: false
+        });
+      };
+    }
+
     window.BT38.PageController = {
       owner: "product-linking-session.js",
-      skipped: true
+      skipped: true,
+      serverRendered: true
     };
     return;
   }
