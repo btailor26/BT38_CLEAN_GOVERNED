@@ -16,16 +16,17 @@ def test_base_wires_one_shared_page_refresh_controller():
     assert "bt38-marketplace-event" in controller
     assert "new EventSource(" not in controller
     assert "setInterval(" not in controller
+    assert "setTimeout(" not in controller
     assert "fetch(" not in controller
 
 
-def test_shared_refresh_is_event_driven_and_coalesced():
+def test_shared_refresh_is_immediate_event_driven_and_deduplicated():
     controller = _read("static/js/bt38-live-page-refresh.js")
 
     assert "lastSequence" in controller
-    assert "scheduled" in controller
     assert "window.location.reload()" in controller
     assert "document.visibilityState === 'hidden'" in controller
+    assert "pendingWhileHidden" in controller
 
 
 def test_mcf_keeps_its_single_narrow_refresh_without_global_duplicate():
