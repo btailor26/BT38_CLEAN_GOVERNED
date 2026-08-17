@@ -8,25 +8,32 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_mcf_notification_reuses_existing_eventbridge_and_sqs_transport():
+def test_mcf_notification_reuses_existing_sqs_transport_without_eventbridge():
     source = _read("services/governed_amazon_mcf_notification_alignment.py")
 
     assert 'MCF_NOTIFICATION_TYPE = "FULFILLMENT_ORDER_STATUS"' in source
     assert "_queue_identity" in source
-    assert "_ensure_destination" in source
-    assert '"target": "existing_amazon_sqs"' in source
+    assert "create_destination" in source
+    assert '"transport": "sp_api_sqs"' in source
     assert '"new_queue_created": False' in source
     assert '"new_consumer_created": False' in source
     assert '"new_importer_created": False' in source
+    assert "boto3.client(\"events\"" not in source
+    assert "put_rule(" not in source
+    assert "put_targets(" not in source
+    assert "_ensure_partner_bus" not in source
+    assert "_ensure_destination" not in source
 
 
-def test_mcf_queue_permission_cannot_replace_listing_webhook_permission():
+def test_mcf_queue_permission_adds_spapi_direct_delivery_without_replacing_existing_policy():
     source = _read("services/governed_amazon_mcf_notification_alignment.py")
 
-    assert 'MCF_QUEUE_POLICY_SID = "BT38AmazonMCFEventBridgeSendMessage"' in source
-    assert '"BT38AmazonEventBridgeSendMessage"' in source
+    assert 'MCF_QUEUE_POLICY_SID = "BT38AmazonSPAPISQSSendMessage"' in source
+    assert 'SPAPI_SQS_PRINCIPAL = "arn:aws:iam::437568002678:root"' in source
+    assert '"sqs:GetQueueAttributes"' in source
+    assert '"sqs:SendMessage"' in source
     assert "row.get(\"Sid\") == MCF_QUEUE_POLICY_SID" in source
-    assert "_ensure_queue_policy" not in source
+    assert '"listing_eventbridge_untouched": True' in source
 
 
 def test_mcf_notification_does_not_modify_listing_notification_topics():
