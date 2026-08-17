@@ -14,6 +14,11 @@ from flask import Blueprint, render_template, request
 from flask_login import login_required
 
 from models import MarketplaceOrder
+from fbm_models import FBMShipment
+from services.fbm_shipping_state import (
+    provider_case_eligibility,
+    shipment_confirmation_state,
+)
 
 
 governed_fbm_bp = Blueprint("governed_fbm", __name__)
@@ -91,6 +96,30 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str) -> dict:
     }
 
 
+def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShipment]:
+    """Load the latest FBM shipment for visible DB orders in one bounded query."""
+    keys = {(row.store_id, row.marketplace_order_id) for row in rows}
+    if not keys:
+        return {}
+
+    store_ids = sorted({key[0] for key in keys if key[0] is not None})
+    order_ids = sorted({key[1] for key in keys if key[1]})
+    shipments = (
+        FBMShipment.query
+        .filter(FBMShipment.store_id.in_(store_ids))
+        .filter(FBMShipment.marketplace_order_id.in_(order_ids))
+        .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+        .all()
+    )
+
+    result = {}
+    for shipment in shipments:
+        key = (shipment.store_id, shipment.marketplace_order_id)
+        if key in keys and key not in result:
+            result[key] = shipment
+    return result
+
+
 @governed_fbm_bp.get("/fbm")
 @login_required
 def fbm_page():
@@ -104,6 +133,7 @@ def fbm_page():
         .limit(300)
         .all()
     )
+    shipments = _shipment_map(rows)
 
     seen = set()
     orders = []
@@ -120,12 +150,23 @@ def fbm_page():
         if status_filter and route_state.lower() != status_filter:
             continue
 
+        shipment = shipments.get(key)
+        shipment_state = shipment_confirmation_state(shipment) if shipment else "not_started"
+        case = provider_case_eligibility(shipment) if shipment else {
+            "eligible": False,
+            "reason": "shipment_not_started",
+            "case_type": None,
+        }
+
         orders.append({
             "order": row,
             "platform": platform,
             "store_name": _store_name(row),
             "route_state": route_state,
             "shipping_mode": _marketplace_shipping_mode(row, platform),
+            "shipment": shipment,
+            "shipment_state": shipment_state,
+            "case": case,
         })
 
     counts = {
@@ -134,6 +175,8 @@ def fbm_page():
         "tracking": sum(1 for item in orders if item["route_state"] == "Tracking recorded"),
         "dispatched": sum(1 for item in orders if item["route_state"] == "Dispatched"),
         "marketplace_shipping": sum(1 for item in orders if item["shipping_mode"]["marketplace_buy_shipping"]),
+        "awaiting_acceptance": sum(1 for item in orders if item["shipment_state"] == "awaiting_carrier_acceptance"),
+        "overdue": sum(1 for item in orders if item["shipment_state"] == "acceptance_overdue"),
     }
 
     return render_template(
