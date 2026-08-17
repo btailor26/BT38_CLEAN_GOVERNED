@@ -12,6 +12,41 @@ from datetime import datetime
 from extensions import db
 
 
+class FBMOrderProfile(db.Model):
+    """Shipping-specific marketplace facts persisted before FBM routing.
+
+    MarketplaceOrder remains the commercial/order record. This profile stores
+    marketplace shipping facts such as Amazon Prime/SFP eligibility so the FBM
+    UI can make governed choices from the DB instead of guessing from titles,
+    SKUs, or browser state.
+    """
+
+    __tablename__ = "fbm_order_profiles"
+
+    id = db.Column(db.Integer, primary_key=True)
+    store_id = db.Column(db.Integer, db.ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    marketplace_order_id = db.Column(db.String(200), nullable=False, index=True)
+    platform = db.Column(db.String(50), nullable=False, index=True)
+
+    is_prime = db.Column(db.Boolean, nullable=True, index=True)
+    is_premium = db.Column(db.Boolean, nullable=True)
+    fulfillment_channel = db.Column(db.String(50), nullable=True)
+    shipment_service_level = db.Column(db.String(100), nullable=True)
+    latest_ship_at = db.Column(db.DateTime, nullable=True)
+
+    # Audit where the marketplace fact came from; no full customer payload is
+    # duplicated here.
+    source = db.Column(db.String(100), nullable=False, default="marketplace_shipping_profile")
+    checked_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("store_id", "marketplace_order_id", name="uq_fbm_order_profile_store_order"),
+    )
+
+
 class FBMShipment(db.Model):
     """One physical FBM shipment for an existing marketplace order."""
 
@@ -43,6 +78,14 @@ class FBMShipment(db.Model):
     label_page_layout = db.Column(db.String(50), nullable=True)
     label_source = db.Column(db.String(50), nullable=True)  # amazon, ebay, packlink, carrier_direct, manual
     label_storage_ref = db.Column(db.Text, nullable=True)  # internal/provider reference; never assumes a public URL
+
+    # Purchase idempotency. A successful provider purchase must be persisted
+    # before printing/marketplace confirmation, and the same key can never be
+    # used to purchase postage twice.
+    purchase_key = db.Column(db.String(200), nullable=True, unique=True, index=True)
+    selected_rate_id = db.Column(db.String(300), nullable=True)
+    purchase_status = db.Column(db.String(50), nullable=True, index=True)  # pending, purchased, failed, cancelled
+    purchase_error = db.Column(db.Text, nullable=True)
 
     # Confirmation lifecycle.
     status = db.Column(db.String(50), nullable=False, default="awaiting_label", index=True)
