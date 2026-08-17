@@ -4,6 +4,7 @@ import ast
 
 LEDGER_PATH = Path("services/governed_order_stock_mutation.py")
 MCF_TEMPLATE = Path("templates/mcf_orders.html")
+WAREHOUSE_JS = Path("static/js/warehouse-governed.js")
 
 
 def _source(path: Path) -> str:
@@ -28,13 +29,13 @@ def test_stock_ledger_update_source_respects_existing_varchar_50_contract():
     assert 'reason=f"{source}: marketplace order updated grouped warehouse stock"' in mutation
 
 
-def test_mcf_page_refreshes_from_existing_event_stream_without_polling():
+def test_mcf_page_reuses_global_event_stream_without_second_sse_connection():
     source = _source(MCF_TEMPLATE)
 
-    assert "new EventSource('/governed/ui/events/stream')" in source
-    assert "eventSource.addEventListener('marketplace'" in source
+    assert "window.addEventListener('bt38-marketplace-event'" in source
     assert "refreshMcfTable" in source
     assert "X-BT38-UI-Refresh': 'mcf-committed-state'" in source
+    assert "new EventSource(" not in source
     assert "setInterval(" not in source
 
 
@@ -45,3 +46,13 @@ def test_mcf_refresh_is_database_page_read_only():
     assert "cache: 'no-store'" in source
     assert "run_governed_marketplace_import_refresh" not in source
     assert "run_governed_marketplace_order_import" not in source
+
+
+def test_warehouse_sync_browser_wait_is_bounded_and_does_not_force_reload():
+    source = _source(WAREHOUSE_JS)
+
+    assert "new AbortController()" in source
+    assert "controller.abort()" in source
+    assert "15000" in source
+    assert "{signal: controller.signal}" in source
+    assert "window.location.reload()" not in source
