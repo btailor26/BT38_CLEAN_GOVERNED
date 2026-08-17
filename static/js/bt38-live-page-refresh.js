@@ -17,11 +17,18 @@
     return String(event?.detail?.sequence || '').trim();
   }
 
+  function pageOwnsCommittedRefresh() {
+    // Orders / MCF already performs one narrow DB-only table refresh from the
+    // same shared event. Do not add a second current-page request there.
+    return Boolean(document.getElementById('mcf-orders-body'));
+  }
+
   function refreshCurrentPage() {
+    if (pageOwnsCommittedRefresh()) return;
     if (scheduled) return;
     scheduled = true;
 
-    // Event coalescing only. This is not polling and performs no DB read itself.
+    // Event coalescing only. This timer never queries the DB and is not polling.
     window.setTimeout(function () {
       if (document.visibilityState === 'hidden') {
         scheduled = false;
@@ -29,9 +36,8 @@
         return;
       }
 
-      // A normal navigation gives every page its existing server-rendered DB
-      // contract and re-runs its own controller safely. No partial-DOM script
-      // re-execution, no duplicate page-specific fetch path.
+      // Reuse each page's existing server-rendered DB contract. One committed
+      // event causes one navigation; there is no periodic refresh loop.
       window.location.reload();
     }, 250);
   }
