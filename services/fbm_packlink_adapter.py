@@ -1,11 +1,7 @@
 """Packlink PRO adapter for BT38 FBM.
 
-Packlink's public integration API supports authenticated service discovery,
-shipment draft creation, shipment reads, labels, tracking and one callback URL
-per Packlink client. Creating a draft is NOT represented as payment/purchase:
-Packlink PRO keeps incomplete shipments in Draft/Ready for payment until the
-merchant completes payment in Packlink. BT38 must never claim the API key
-charged postage when it did not.
+Packlink shipment creation is a draft/payment hand-off, not a BT38 postage
+purchase. Provider responses are normalised before they enter BT38 mapping.
 """
 from __future__ import annotations
 
@@ -19,7 +15,6 @@ from urllib.request import Request, urlopen
 
 from services.fbm_order_mapper import order_lines, ship_from, ship_to
 from services.fbm_provider_contract import ProviderCapabilities
-
 
 PACKLINK_BASE_URL = "https://api.packlink.com/v1/"
 PACKLINK_TIMEOUT_SECONDS = 12
@@ -46,15 +41,9 @@ class PacklinkConnectionResult:
 
 
 class PacklinkAdapter:
-    """Packlink PRO provider adapter using only integration API calls."""
-
     capabilities = ProviderCapabilities(
-        provider="packlink",
-        quotes=True,
-        label_purchase=False,
-        tracking_status=True,
-        case_opening=False,
-        return_labels=False,
+        provider="packlink", quotes=True, label_purchase=False,
+        tracking_status=True, case_opening=False, return_labels=False,
     )
 
     def __init__(self, api_key: str | None = None):
@@ -74,14 +63,7 @@ class PacklinkAdapter:
             "User-Agent": "BT38-FBM/1.0",
         }
 
-    def _request_json(
-        self,
-        method: str,
-        endpoint: str,
-        *,
-        query: list[tuple[str, str]] | None = None,
-        body: dict[str, Any] | None = None,
-    ) -> Any:
+    def _request_json(self, method: str, endpoint: str, *, query=None, body=None) -> Any:
         url = PACKLINK_BASE_URL + endpoint.lstrip("/")
         if query:
             url += "?" + urlencode(query)
@@ -97,18 +79,12 @@ class PacklinkAdapter:
             try:
                 payload = json.loads(raw) if raw else {}
                 if isinstance(payload, dict):
-                    message = str(
-                        payload.get("message")
-                        or payload.get("error")
-                        or payload.get("detail")
-                        or message
-                    )
+                    message = str(payload.get("message") or payload.get("error") or payload.get("detail") or message)
             except Exception:
                 pass
             raise PacklinkRequestError(message, status_code=exc.code) from exc
         except URLError as exc:
             raise PacklinkRequestError("Packlink could not be reached.") from exc
-
         if status < 200 or status >= 300:
             raise PacklinkRequestError("Packlink request failed.", status_code=status)
         if not raw:
@@ -118,7 +94,7 @@ class PacklinkAdapter:
         except json.JSONDecodeError as exc:
             raise PacklinkRequestError("Packlink returned an invalid JSON response.", status_code=status) from exc
 
-    def _get_json(self, endpoint: str, *, query: list[tuple[str, str]] | None = None) -> Any:
+    def _get_json(self, endpoint: str, *, query=None) -> Any:
         return self._request_json("GET", endpoint, query=query)
 
     def _post_json(self, endpoint: str, body: dict[str, Any]) -> Any:
@@ -126,41 +102,17 @@ class PacklinkAdapter:
 
     def connection_check(self) -> PacklinkConnectionResult:
         if not self.configured:
-            return PacklinkConnectionResult(
-                False,
-                False,
-                None,
-                message="PACKLINK_API_KEY is not configured.",
-            )
+            return PacklinkConnectionResult(False, False, None, message="PACKLINK_API_KEY is not configured.")
         try:
             payload = self._get_json("users/api/keys")
         except PacklinkRequestError as exc:
-            return PacklinkConnectionResult(
-                False,
-                True,
-                exc.status_code,
-                message=str(exc),
-            )
-
-        returned_token = ""
-        if isinstance(payload, dict):
-            returned_token = str(payload.get("token") or "").strip()
+            return PacklinkConnectionResult(False, True, exc.status_code, message=str(exc))
+        returned_token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
         if not returned_token:
-            return PacklinkConnectionResult(
-                False,
-                True,
-                200,
-                message="Packlink did not confirm the configured API key.",
-            )
-        return PacklinkConnectionResult(
-            True,
-            True,
-            200,
-            message="Packlink PRO authentication succeeded.",
-        )
+            return PacklinkConnectionResult(False, True, 200, message="Packlink did not confirm the configured API key.")
+        return PacklinkConnectionResult(True, True, 200, message="Packlink PRO authentication succeeded.")
 
     def register_callback(self, callback_url: str) -> bool:
-        """Register the single event callback URL for this Packlink client."""
         callback_url = str(callback_url or "").strip()
         if not callback_url.startswith("https://"):
             raise PacklinkConfigurationError("Packlink callback URL must use HTTPS.")
@@ -170,26 +122,29 @@ class PacklinkAdapter:
         if isinstance(payload, bool):
             return payload
         if isinstance(payload, dict):
-            if payload.get("success") is False:
-                return False
-            return True
+            return payload.get("success") is not False
         return bool(payload)
 
     def get_rates(self, *, order: Any, parcel: dict) -> list[dict]:
+        # Draft creation requires these recipient facts. Validate them before
+        # exposing a selectable rate so a missing phone can never create BT38's
+        # idempotency lock and then fail before Packlink creates a shipment.
+        destination = ship_to(order)
+        missing_destination = [
+            field for field in ("name", "address1", "city", "postcode", "country", "phone")
+            if not destination.get(field)
+        ]
+        if missing_destination:
+            raise PacklinkConfigurationError(
+                "Missing Packlink destination fields: " + ", ".join(missing_destination)
+            )
         required = (
-            "from_country",
-            "from_zip",
-            "to_country",
-            "to_zip",
-            "width_cm",
-            "height_cm",
-            "length_cm",
-            "weight_kg",
+            "from_country", "from_zip", "to_country", "to_zip",
+            "width_cm", "height_cm", "length_cm", "weight_kg",
         )
         missing = [name for name in required if parcel.get(name) in (None, "")]
         if missing:
             raise PacklinkConfigurationError("Missing Packlink rate fields: " + ", ".join(missing))
-
         query = [
             ("from[country]", str(parcel["from_country"])),
             ("from[zip]", str(parcel["from_zip"])),
@@ -203,25 +158,12 @@ class PacklinkAdapter:
         payload = self._get_json("services", query=query)
         if not isinstance(payload, list):
             return []
-
-        # Packlink is the postage source. Do not hide or rewrite carrier/service
-        # offers before purchase. The paid shipment's actual carrier/service is
-        # persisted after Packlink returns it; any new Amazon combination then
-        # enters the one-time mapping review while label printing stays allowed.
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
-    def create_shipment_draft(
-        self,
-        *,
-        order: Any,
-        parcel: dict[str, Any],
-        rate: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Create a Packlink shipment draft. This does not claim payment occurred."""
+    def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
-
         origin = ship_from()
         destination = ship_to(order)
         for field in ("name", "address1", "city", "postcode", "country", "phone"):
@@ -231,80 +173,64 @@ class PacklinkAdapter:
             if not parcel.get(field):
                 raise PacklinkConfigurationError(f"Parcel {field} is missing.")
 
-        customer_name, customer_surname = self._split_name(
-            destination.get("name"), fallback_surname="Customer"
-        )
-        sender_name, sender_surname = self._split_name(
-            origin.get("name") or "B & T Outlet", fallback_surname="Outlet"
-        )
-
-        lines = order_lines(order)
-        content_parts = []
-        content_value = 0.0
-        for line in lines:
+        customer_name, customer_surname = self._split_name(destination.get("name"), fallback_surname="Customer")
+        sender_name, sender_surname = self._split_name(origin.get("name") or "B & T Outlet", fallback_surname="Outlet")
+        content_parts, content_value = [], 0.0
+        for line in order_lines(order):
             qty = max(1, int(getattr(line, "quantity", 1) or 1))
             sku = str(getattr(line, "sku", "Item") or "Item")
             content_parts.append(f"{qty} {sku}")
             content_value += max(0.0, float(getattr(line, "unit_price", 0) or 0)) * qty
-        content = ", ".join(content_parts)[:60] or "Goods"
-
         body = {
             "from": {
-                "name": sender_name,
-                "surname": sender_surname,
-                "street1": origin.get("address1"),
-                "zip_code": origin.get("postcode"),
-                "city": origin.get("city"),
-                "country": origin.get("country") or "GB",
-                "phone": origin.get("phone") or "",
-                "email": origin.get("email") or None,
+                "name": sender_name, "surname": sender_surname,
+                "street1": origin.get("address1"), "zip_code": origin.get("postcode"),
+                "city": origin.get("city"), "country": origin.get("country") or "GB",
+                "phone": origin.get("phone") or "", "email": origin.get("email") or None,
             },
             "to": {
-                "name": customer_name,
-                "surname": customer_surname,
-                "street1": destination.get("address1"),
-                "zip_code": destination.get("postcode"),
-                "city": destination.get("city"),
-                "country": destination.get("country") or "GB",
-                "phone": destination.get("phone") or "",
-                "email": destination.get("email") or None,
+                "name": customer_name, "surname": customer_surname,
+                "street1": destination.get("address1"), "zip_code": destination.get("postcode"),
+                "city": destination.get("city"), "country": destination.get("country") or "GB",
+                "phone": destination.get("phone") or "", "email": destination.get("email") or None,
             },
             "service_id": int(service_id) if service_id.isdigit() else service_id,
-            "packages": [
-                {
-                    "width": int(round(float(parcel["width_cm"]))),
-                    "height": int(round(float(parcel["height_cm"]))),
-                    "length": int(round(float(parcel["length_cm"]))),
-                    "weight": round(float(parcel["weight_kg"]), 2),
-                }
-            ],
-            "content": content,
+            "packages": [{
+                "width": int(round(float(parcel["width_cm"]))),
+                "height": int(round(float(parcel["height_cm"]))),
+                "length": int(round(float(parcel["length_cm"]))),
+                "weight": round(float(parcel["weight_kg"]), 2),
+            }],
+            "content": ", ".join(content_parts)[:60] or "Goods",
             "contentvalue": round(content_value, 2),
-            "shipment_custom_reference": str(
-                getattr(order, "marketplace_order_id", "")
-            )[:50],
+            "shipment_custom_reference": str(getattr(order, "marketplace_order_id", ""))[:50],
             "source": "bt38",
         }
         payload = self._post_json("shipments", body)
         reference = ""
         if isinstance(payload, dict):
-            reference = str(
-                payload.get("shipment_reference")
-                or payload.get("reference")
-                or ""
-            ).strip()
+            reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
         if not reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
-        return {
-            "reference": reference,
-            "payment_status": "pending_packlink_payment",
-            "label_ready": False,
-            "raw": payload,
-        }
+        return {"reference": reference, "payment_status": "pending_packlink_payment", "label_ready": False, "raw": payload}
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return {}
+        # Keep the raw provider payload shape except for carrier/service identity,
+        # which every BT38 path expects to be stable text. This aligns callback
+        # and manual Check Packlink processing and prevents str(dict) mappings.
+        result = dict(payload)
+        carrier = payload.get("carrier")
+        if isinstance(carrier, dict):
+            result["carrier"] = carrier.get("name") or carrier.get("label") or carrier.get("code")
+            result.setdefault("carrier_id", carrier.get("id") or carrier.get("code"))
+        service = payload.get("service")
+        if isinstance(service, dict):
+            result["service"] = service.get("name") or service.get("label") or service.get("code")
+            result.setdefault("service_id", service.get("id") or service.get("code"))
+        return result
 
     def get_labels(self, reference: str) -> list[Any]:
         try:
@@ -327,9 +253,7 @@ class PacklinkAdapter:
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
     def purchase_label(self, **_: Any) -> dict:
-        raise NotImplementedError(
-            "Packlink integration creates shipment drafts but does not expose a documented BT38-safe payment call."
-        )
+        raise NotImplementedError("Packlink integration creates shipment drafts but does not expose a documented BT38-safe payment call.")
 
     def open_case(self, **_: Any) -> dict:
         raise NotImplementedError("Packlink case opening is not enabled yet.")
@@ -355,53 +279,26 @@ class PacklinkAdapter:
     @staticmethod
     def _normalise_rate(rate: dict[str, Any]) -> dict[str, Any]:
         carrier = rate.get("carrier")
-        if isinstance(carrier, dict):
-            carrier_name = carrier.get("name") or carrier.get("label")
-        else:
-            carrier_name = carrier or rate.get("carrier_name")
-
-        service_name = rate.get("service") or rate.get("name") or rate.get("service_name")
+        carrier_name = (carrier.get("name") or carrier.get("label")) if isinstance(carrier, dict) else (carrier or rate.get("carrier_name"))
+        service = rate.get("service")
+        service_name = (service.get("name") or service.get("label")) if isinstance(service, dict) else (service or rate.get("name") or rate.get("service_name"))
         price = rate.get("price")
         if isinstance(price, dict):
             normal_price = {
-                "value": (
-                    price.get("total_price")
-                    if price.get("total_price") is not None
-                    else price.get("value")
-                ),
+                "value": price.get("total_price") if price.get("total_price") is not None else price.get("value"),
                 "unit": price.get("currency") or rate.get("currency") or "GBP",
-                "base_price": price.get("base_price"),
-                "tax_price": price.get("tax_price"),
+                "base_price": price.get("base_price"), "tax_price": price.get("tax_price"),
                 "total_price": price.get("total_price"),
             }
         else:
-            fallback_price = (
-                price
-                if price is not None
-                else rate.get("total_price")
-                if rate.get("total_price") is not None
-                else rate.get("base_price")
-            )
-            normal_price = (
-                {"value": fallback_price, "unit": rate.get("currency") or "GBP"}
-                if fallback_price is not None
-                else {}
-            )
-
+            fallback_price = price if price is not None else (rate.get("total_price") if rate.get("total_price") is not None else rate.get("base_price"))
+            normal_price = {"value": fallback_price, "unit": rate.get("currency") or "GBP"} if fallback_price is not None else {}
         service_id = rate.get("service_id") or rate.get("id") or rate.get("serviceId")
         return {
-            "id": service_id,
-            "service_id": service_id,
-            "carrier": carrier_name,
-            "carrier_name": carrier_name,
-            "service": service_name,
-            "service_name": service_name,
+            "id": service_id, "service_id": service_id,
+            "carrier": carrier_name, "carrier_name": carrier_name,
+            "service": service_name, "service_name": service_name,
             "price": normal_price,
-            "delivery": (
-                rate.get("delivery")
-                or rate.get("delivery_time")
-                or rate.get("estimated_delivery")
-                or rate.get("transit_time")
-            ),
+            "delivery": rate.get("delivery") or rate.get("delivery_time") or rate.get("estimated_delivery") or rate.get("transit_time"),
             "raw": rate,
         }
