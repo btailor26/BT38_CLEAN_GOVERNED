@@ -160,6 +160,9 @@ class AmazonShippingAdapter:
         rates = self._normalise_rates(payload.get("ShippingServiceList") or [])
 
         unavailable: list[dict] = []
+        for item in payload.get("RejectedShippingServiceList") or []:
+            if isinstance(item, dict):
+                unavailable.append({"reason": "rejected", **item})
         for item in payload.get("TemporarilyUnavailableCarrierList") or []:
             if isinstance(item, dict):
                 unavailable.append({"reason": "temporarily_unavailable", **item})
@@ -184,7 +187,7 @@ class AmazonShippingAdapter:
         rate_id: str,
         requested_document_specification: dict[str, Any],
         requested_value_added_services: list[dict] | None = None,
-        additional_inputs: dict[str, Any] | None = None,
+        additional_inputs: Any = None,
     ) -> dict[str, Any]:
         """Purchase exactly one Amazon Buy Shipping offer from the persisted quote."""
         if not request_token:
@@ -236,13 +239,15 @@ class AmazonShippingAdapter:
         if offer_id:
             kwargs["ShippingServiceOfferId"] = offer_id
 
+        # Merchant Fulfillment selects the requested document format through the
+        # same ShippingServiceOptions object used when the offer is purchased.
         label_format = str(
             (requested_document_specification or {}).get("format")
             or (requested_document_specification or {}).get("LabelFormat")
             or ""
         ).strip()
         if label_format and label_format != "ShippingServiceDefault":
-            kwargs["LabelFormatOption"] = {"LabelFormat": label_format}
+            details["ShippingServiceOptions"]["LabelFormat"] = label_format
 
         if additional_inputs:
             if isinstance(additional_inputs, dict) and additional_inputs.get("ShipmentLevelSellerInputsList"):
