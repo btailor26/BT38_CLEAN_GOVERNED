@@ -35,14 +35,22 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     now = datetime.utcnow()
     checked_at = getattr(existing, "checked_at", None) if existing is not None else None
     cache_fresh = bool(checked_at and (now - checked_at) < PROFILE_CACHE_TTL)
-    order_has_destination = bool(
-        _text(getattr(order, "ship_to_postcode", None))
-        and _text(getattr(order, "ship_to_country", None))
+
+    # Packlink requires a real delivery contact, not merely a postcode. A
+    # partially hydrated Amazon row must therefore force another exact Amazon
+    # address read even when its FBM profile cache is still fresh.
+    order_has_destination = all(
+        _text(getattr(order, field, None))
+        for field in (
+            "ship_to_name",
+            "ship_to_address",
+            "ship_to_city",
+            "ship_to_postcode",
+            "ship_to_country",
+            "ship_to_phone",
+        )
     )
 
-    # Shipping facts must not remain permanently stale just because a profile
-    # row already exists. Reuse only a recent profile when the MarketplaceOrder
-    # also has the minimum destination data required by the shipping desk.
     if existing is not None and not force and cache_fresh and order_has_destination:
         return existing
 
@@ -84,9 +92,6 @@ def _hydrate_marketplace_order(order: Any, payload: dict[str, Any], address_payl
     """
     address = address_payload or payload.get("ShippingAddress") or {}
     if isinstance(address, dict):
-        # Orders v0 getOrderAddress returns {"payload": {"ShippingAddress": ...}}
-        # through some client versions and the address object directly through
-        # others. Normalise both shapes here.
         if isinstance(address.get("ShippingAddress"), dict):
             address = address["ShippingAddress"]
 
@@ -94,9 +99,11 @@ def _hydrate_marketplace_order(order: Any, payload: dict[str, Any], address_payl
         address1 = _text(address.get("AddressLine1"))
         address2 = _text(address.get("AddressLine2"))
         address3 = _text(address.get("AddressLine3"))
-        city = _text(address.get("City"))
+        city = _text(address.get("City")) or _text(address.get("District"))
         postcode = _text(address.get("PostalCode"))
         country = _text(address.get("CountryCode"))
+        phone = _text(address.get("Phone"))
+        email = _text(address.get("Email"))
 
         address_parts = [value for value in (address1, address2, address3) if value]
         if name:
@@ -109,6 +116,10 @@ def _hydrate_marketplace_order(order: Any, payload: dict[str, Any], address_payl
             order.ship_to_postcode = postcode
         if country:
             order.ship_to_country = country.upper()[:2]
+        if phone:
+            order.ship_to_phone = phone
+        if email:
+            order.ship_to_email = email
 
     status = (_text(payload.get("OrderStatus")) or "").upper()
     if status == "SHIPPED":
@@ -167,8 +178,6 @@ def _fetch_order(store: Any, order_id: str) -> tuple[dict[str, Any], dict[str, A
                 if isinstance(candidate, dict):
                     address_payload = candidate
             except Exception as exc:
-                # Preserve the order/profile refresh, but surface a useful error
-                # if BT38 still has no destination after hydration.
                 address_payload = {"_bt38_address_error": str(exc)}
 
     return payload, address_payload
