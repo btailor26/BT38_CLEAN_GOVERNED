@@ -40,29 +40,25 @@ def persist_external_label(
     shipment.provider_shipment_id = str(provider_shipment_id or "").strip() or shipment.provider_shipment_id
     shipment.provider_carrier_id = str(provider_carrier_id or "").strip() or shipment.provider_carrier_id
     shipment.provider_service_id = str(provider_service_id or "").strip() or shipment.provider_service_id
-    shipment.carrier = str(carrier or "").strip() or None
-    shipment.service = str(service or "").strip() or None
-    shipment.tracking_number = str(tracking_number or "").strip() or None
+    shipment.carrier = str(carrier or "").strip() or shipment.carrier
+    shipment.service = str(service or "").strip() or shipment.service
+    shipment.tracking_number = str(tracking_number or "").strip() or shipment.tracking_number
 
-    shipment.label_format = str(label.get("format") or "").strip().upper() or None
-    shipment.label_document_type = str(label.get("type") or "LABEL").strip() or "LABEL"
-    shipment.label_url = str(label.get("url") or "").strip() or None
-    shipment.label_storage_ref = str(label.get("storage_ref") or label.get("reference") or "").strip() or None
+    shipment.label_format = str(label.get("format") or "").strip().upper() or shipment.label_format
+    shipment.label_document_type = str(label.get("type") or "LABEL").strip() or shipment.label_document_type or "LABEL"
+    shipment.label_url = str(label.get("url") or "").strip() or shipment.label_url
+    shipment.label_storage_ref = str(label.get("storage_ref") or label.get("reference") or "").strip() or shipment.label_storage_ref
     shipment.label_source = provider
-    shipment.label_width = _float_or_none(label.get("width"))
-    shipment.label_length = _float_or_none(label.get("height") or label.get("length"))
-    shipment.label_size_unit = str(label.get("units") or label.get("size_unit") or "").strip() or None
-    shipment.label_dpi = _int_or_none(label.get("dpi"))
-    shipment.label_page_layout = str(label.get("page_layout") or "").strip() or None
+    shipment.label_width = _float_or_none(label.get("width")) or shipment.label_width
+    shipment.label_length = _float_or_none(label.get("height") or label.get("length")) or shipment.label_length
+    shipment.label_size_unit = str(label.get("units") or label.get("size_unit") or "").strip() or shipment.label_size_unit
+    shipment.label_dpi = _int_or_none(label.get("dpi")) or shipment.label_dpi
+    shipment.label_page_layout = str(label.get("page_layout") or "").strip() or shipment.label_page_layout
 
     shipment.purchase_status = "purchased"
     shipment.purchase_error = None
     shipment.label_purchased_at = shipment.label_purchased_at or now
 
-    # A repeated Packlink label/status read must never move a shipment backwards.
-    # New labels begin at awaiting carrier acceptance, but once Packlink has
-    # already reported acceptance, movement or delivery, preserve that stronger
-    # provider lifecycle state.
     current_status = str(shipment.status or "").strip().lower()
     if current_status not in STRONGER_PROVIDER_STATES:
         shipment.status = "awaiting_carrier_acceptance"
@@ -76,15 +72,18 @@ def persist_external_label(
     )
 
     if mapping_ready:
-        shipment.marketplace_confirmation_status = "mapping_verified_ready"
+        # A repeated provider status/label read must preserve a completed
+        # marketplace confirmation rather than moving it back to a ready state.
+        shipment.marketplace_confirmation_status = (
+            "confirmed"
+            if shipment.marketplace_confirmed_at
+            else "mapping_verified_ready"
+        )
         shipment.marketplace_confirmation_error = None
     else:
         shipment.marketplace_confirmation_status = "mapping_under_review"
         shipment.marketplace_confirmation_error = review.review_reason
 
-    # Provider success and label/mapping state are committed together before any
-    # marketplace write or caller attempts browser/QZ printing. A marketplace
-    # confirmation failure can therefore never lose an already-paid label.
     db.session.commit()
 
     confirmation = None
