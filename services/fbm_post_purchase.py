@@ -13,6 +13,7 @@ from typing import Any
 from extensions import db
 from fbm_models import FBMShipment
 from services.fbm_carrier_mapping import ensure_mapping_review, mapping_payload
+from services.fbm_marketplace_confirmation import confirm_external_shipment
 
 
 def persist_external_label(
@@ -72,8 +73,13 @@ def persist_external_label(
         shipment.marketplace_confirmation_error = review.review_reason
 
     # Provider success and label/mapping state are committed together before any
-    # caller attempts browser/QZ printing.
+    # marketplace write or caller attempts browser/QZ printing. A marketplace
+    # confirmation failure can therefore never lose an already-paid label.
     db.session.commit()
+
+    confirmation = None
+    if mapping_ready:
+        confirmation = confirm_external_shipment(shipment=shipment, mapping=mapping)
 
     return {
         "shipment_id": shipment.id,
@@ -87,6 +93,7 @@ def persist_external_label(
         "mapping_message": None if mapping_ready else "Under review for correct marketplace mapping. Label printing is available now.",
         "print_allowed": True,
         "marketplace_confirmation_allowed": mapping_ready,
+        "marketplace_confirmation": confirmation,
     }
 
 
