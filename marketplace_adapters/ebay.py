@@ -166,11 +166,30 @@ class EbayAdapter(GovernedMarketplaceAdapter):
             if stock:
                 quantity = getattr(stock, "quantity", 0)
 
-        sku = (
+        sku = str(
             payload.get("sku")
             or getattr(listing, "external_sku", None)
             or ""
+        ).strip()
+
+        # Historical BT38 imports used the eBay ItemID as a fallback seller SKU
+        # for single listings that do not actually have a seller-defined SKU.
+        # eBay ReviseInventoryStatus must identify those ItemID-tracked listings
+        # by ItemID alone. Variation children still require their true SKU.
+        is_variation = bool(
+            getattr(listing, "parent_item_id", None)
+            or getattr(listing, "external_parent_id", None)
+            or getattr(listing, "variation_sku_map", None)
         )
+        itemid_tracked_single = bool(
+            not is_variation
+            and (
+                not str(getattr(listing, "external_sku", None) or "").strip()
+                or sku == str(item_id).strip()
+            )
+        )
+        request_sku = "" if itemid_tracked_single else sku
+        sku_xml = f"\n    <SKU>{request_sku}</SKU>" if request_sku else ""
 
         xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -180,8 +199,7 @@ class EbayAdapter(GovernedMarketplaceAdapter):
   <ErrorLanguage>en_GB</ErrorLanguage>
   <WarningLevel>High</WarningLevel>
   <InventoryStatus>
-    <ItemID>{item_id}</ItemID>
-    <SKU>{sku}</SKU>
+    <ItemID>{item_id}</ItemID>{sku_xml}
     <Quantity>{int(quantity or 0)}</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>"""
@@ -249,7 +267,7 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                     if variations:
                         matched = None
                         for variation in variations:
-                            if _xml_text(variation, "{*}SKU") == str(sku):
+                            if _xml_text(variation, "{*}SKU") == str(request_sku):
                                 matched = variation
                                 break
                         if matched is None:
@@ -268,8 +286,6 @@ class EbayAdapter(GovernedMarketplaceAdapter):
                     else:
                         # GetItem returns Item.Quantity as lifetime total
                         # (available + sold), just like Variation.Quantity.
-                        # QuantityAvailable is not the stock field for this
-                        # seller-side exact read-back and may be absent/zero.
                         listed_quantity = int(
                             _xml_text(detail, "{*}Quantity", "0") or 0
                         )
@@ -307,7 +323,7 @@ class EbayAdapter(GovernedMarketplaceAdapter):
         ok = bool(write_acknowledged and readback_verified)
 
         response_summary = (
-            f"Ack={ack}; ItemID={item_id}; SKU={sku}; "
+            f"Ack={ack}; ItemID={item_id}; SKU={request_sku or '[ItemID-tracked]'}; "
             f"Quantity={int(quantity or 0)}"
         )
         if observed_quantity is not None:
@@ -346,6 +362,7 @@ class EbayAdapter(GovernedMarketplaceAdapter):
             "ebay_call": "ReviseInventoryStatus",
             "readback_call": "GetItem" if write_acknowledged else None,
             "external_listing_id": item_id,
-            "sku": sku,
+            "sku": request_sku,
+            "itemid_tracked_single": itemid_tracked_single,
             "quantity": quantity,
         }
