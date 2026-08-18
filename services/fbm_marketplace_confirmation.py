@@ -82,6 +82,41 @@ def _amazon_ship_date(shipment: FBMShipment) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _confirm_ebay_external(
+    *,
+    order: MarketplaceOrder,
+    shipment: FBMShipment,
+    mapping: FBMCarrierServiceMapping,
+    tracking: str,
+) -> dict[str, Any]:
+    """Use BT38's existing governed eBay CompleteSale implementation.
+
+    Packlink/manual shipping is already a deliberate dispatch action by the time
+    it reaches this function: the provider label/tracking has been persisted and
+    the carrier/service mapping has been verified. Reuse the canonical eBay
+    writer rather than introducing a second eBay shipping client.
+    """
+    from services.governed_ebay_dispatch import complete_sale
+
+    carrier = str(
+        mapping.marketplace_carrier_name
+        or mapping.marketplace_carrier_code
+        or shipment.carrier
+        or "Other"
+    ).strip() or "Other"
+
+    result = complete_sale(
+        order,
+        carrier=carrier,
+        tracking_number=tracking,
+    )
+    if not result.get("success"):
+        raise FBMMarketplaceConfirmationError(
+            str(result.get("error") or "eBay CompleteSale did not confirm the external shipment.")
+        )
+    return result
+
+
 def confirm_external_shipment(
     *,
     shipment: FBMShipment,
@@ -91,8 +126,8 @@ def confirm_external_shipment(
 
     The call is idempotent at BT38 level: once ``marketplace_confirmed_at`` is
     stored, ordinary retries return the persisted result without another
-    marketplace write. Amazon also receives a stable packageReferenceId based on
-    the BT38 shipment ID so an intentional edit can target the same package.
+    marketplace write. Amazon receives a stable packageReferenceId based on the
+    BT38 shipment ID. eBay uses BT38's existing governed CompleteSale writer.
     """
     if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
         shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
@@ -131,38 +166,47 @@ def confirm_external_shipment(
         return {"success": False, "held": True, "reason": "order_missing"}
 
     platform = _platform(order)
-    if platform != "amazon":
-        shipment.marketplace_confirmation_status = "marketplace_confirmation_not_implemented"
-        shipment.marketplace_confirmation_error = f"External confirmation is not implemented for {platform or 'this marketplace'} yet."
-        db.session.commit()
-        return {"success": False, "held": True, "reason": "marketplace_confirmation_not_implemented"}
-
     try:
-        client, marketplace_id = _amazon_client(order)
-        amazon_items = _amazon_order_items(order)
-        carrier_code = str(mapping.marketplace_carrier_code or "").strip()
-        carrier_name = str(mapping.marketplace_carrier_name or shipment.carrier or carrier_code).strip()
-        shipping_method = str(
-            mapping.marketplace_service_name
-            or mapping.marketplace_service_code
-            or shipment.service
-            or carrier_name
-        ).strip()
+        if platform == "amazon":
+            client, marketplace_id = _amazon_client(order)
+            amazon_items = _amazon_order_items(order)
+            carrier_code = str(mapping.marketplace_carrier_code or "").strip()
+            carrier_name = str(mapping.marketplace_carrier_name or shipment.carrier or carrier_code).strip()
+            shipping_method = str(
+                mapping.marketplace_service_name
+                or mapping.marketplace_service_code
+                or shipment.service
+                or carrier_name
+            ).strip()
 
-        client.confirm_shipment(
-            str(order.marketplace_order_id),
-            marketplaceId=marketplace_id,
-            codCollectionMethod="",
-            packageDetail={
-                "packageReferenceId": int(shipment.id),
-                "carrierCode": carrier_code,
-                "carrierName": carrier_name,
-                "shippingMethod": shipping_method,
-                "trackingNumber": tracking,
-                "shipDate": _amazon_ship_date(shipment),
-                "orderItems": amazon_items,
-            },
-        )
+            client.confirm_shipment(
+                str(order.marketplace_order_id),
+                marketplaceId=marketplace_id,
+                codCollectionMethod="",
+                packageDetail={
+                    "packageReferenceId": int(shipment.id),
+                    "carrierCode": carrier_code,
+                    "carrierName": carrier_name,
+                    "shippingMethod": shipping_method,
+                    "trackingNumber": tracking,
+                    "shipDate": _amazon_ship_date(shipment),
+                    "orderItems": amazon_items,
+                },
+            )
+        elif platform == "ebay":
+            _confirm_ebay_external(
+                order=order,
+                shipment=shipment,
+                mapping=mapping,
+                tracking=tracking,
+            )
+        else:
+            shipment.marketplace_confirmation_status = "marketplace_confirmation_not_implemented"
+            shipment.marketplace_confirmation_error = (
+                f"External confirmation is not implemented for {platform or 'this marketplace'} yet."
+            )
+            db.session.commit()
+            return {"success": False, "held": True, "reason": "marketplace_confirmation_not_implemented"}
     except Exception as exc:
         shipment.marketplace_confirmation_status = "confirmation_failed"
         shipment.marketplace_confirmation_error = str(exc)
@@ -173,8 +217,13 @@ def confirm_external_shipment(
     shipment.marketplace_confirmed_at = now
     shipment.marketplace_confirmation_status = "confirmed"
     shipment.marketplace_confirmation_error = None
+    carrier_for_db = (
+        shipment.carrier
+        or mapping.marketplace_carrier_name
+        or mapping.marketplace_carrier_code
+    )
     for line in order_lines(order):
-        line.carrier = shipment.carrier or mapping.marketplace_carrier_name or mapping.marketplace_carrier_code
+        line.carrier = carrier_for_db
         line.tracking_number = tracking
         line.shipped_at = line.shipped_at or now
         line.updated_at = now
@@ -183,7 +232,7 @@ def confirm_external_shipment(
         "success": True,
         "already_confirmed": False,
         "confirmed_at": now.isoformat(),
-        "marketplace": "amazon",
+        "marketplace": platform,
         "carrier_code": mapping.marketplace_carrier_code,
         "service_code": mapping.marketplace_service_code,
         "tracking_number": tracking,
