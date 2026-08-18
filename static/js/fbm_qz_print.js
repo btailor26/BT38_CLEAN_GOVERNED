@@ -108,7 +108,7 @@
         scope.querySelectorAll('.packlink-status').forEach(button => statuses.push(button));
 
         drafts.forEach(button => {
-            button.textContent = 'Buy with Packlink';
+            button.textContent = 'Prepare Packlink';
         });
 
         statuses.forEach(button => {
