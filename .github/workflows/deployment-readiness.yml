@@ -41,6 +41,12 @@ jobs:
             governed_group_propagation_routes.py \
             governed_mcf_routes.py \
             governed_runtime_visibility_routes.py \
+            governed_fbm_routes.py \
+            governed_packlink_callback_routes.py \
+            services/fbm_packlink_adapter.py \
+            services/fbm_packlink_callback.py \
+            services/fbm_post_purchase.py \
+            services/fbm_marketplace_confirmation.py \
             services/governed_runtime_engine.py \
             services/governed_webhook_execution.py \
             services/governed_webhook_alignment.py \
@@ -74,4 +80,5 @@ jobs:
             tests/test_ui_production_alignment_contract.py \
             tests/test_amazon_eventbridge_listing_subscription_contract.py \
             tests/test_listing_structure_sync_contract.py \
-            tests/test_github_fly_only_deployment_contract.py
+            tests/test_github_fly_only_deployment_contract.py \
+            tests/test_fbm_packlink_contract.py
