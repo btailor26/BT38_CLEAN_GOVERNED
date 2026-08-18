@@ -6,6 +6,8 @@ Shipping execution is isolated from inventory, Product Linking and MCF.
 """
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, render_template, request
@@ -13,7 +15,7 @@ from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db
-from models import MarketplaceOrder
+from models import MarketplaceOrder, Store
 from fbm_models import (
     FBMCarrierServiceMapping,
     FBMOrderProfile,
@@ -256,6 +258,151 @@ def _tracking_code(shipment_payload: dict) -> str | None:
                 if candidate:
                     return str(candidate).strip() or None
     return None
+
+
+def _report_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _amazon_report_delivery(row: dict) -> dict[str, str]:
+    address_parts = [
+        _report_text(row.get("ship-address-1")),
+        _report_text(row.get("ship-address-2")),
+        _report_text(row.get("ship-address-3")),
+    ]
+    return {
+        "ship_to_name": _report_text(row.get("recipient-name")) or _report_text(row.get("buyer-name")),
+        "ship_to_address": ", ".join(part for part in address_parts if part),
+        "ship_to_city": _report_text(row.get("ship-city")),
+        "ship_to_postcode": _report_text(row.get("ship-postal-code")),
+        "ship_to_country": _report_text(row.get("ship-country")).upper()[:2],
+        "ship_to_email": _report_text(row.get("buyer-email")),
+        "ship_to_phone": _report_text(row.get("buyer-phone-number")),
+    }
+
+
+@governed_fbm_bp.get("/fbm/amazon-unshipped-report")
+@login_required
+def amazon_unshipped_report_page():
+    return render_template("fbm_amazon_report.html")
+
+
+@governed_fbm_bp.post("/fbm/amazon-unshipped-report")
+@login_required
+def amazon_unshipped_report_upload():
+    uploaded = request.files.get("report")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"success": False, "message": "Choose an Amazon Unshipped Orders Report .txt file."}), 400
+
+    raw = uploaded.stream.read((5 * 1024 * 1024) + 1)
+    if len(raw) > 5 * 1024 * 1024:
+        return jsonify({"success": False, "message": "Report is larger than the 5 MB safety limit."}), 413
+
+    try:
+        text_value = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({"success": False, "message": "Amazon report must be UTF-8 text."}), 400
+
+    reader = csv.DictReader(io.StringIO(text_value), delimiter="\t")
+    headers = set(reader.fieldnames or [])
+    required = {
+        "order-id",
+        "recipient-name",
+        "ship-address-1",
+        "ship-city",
+        "ship-postal-code",
+        "ship-country",
+    }
+    missing_headers = sorted(required - headers)
+    if missing_headers:
+        return jsonify({
+            "success": False,
+            "message": "This is not the expected Amazon FBM Unshipped Orders Report format.",
+            "missing_columns": missing_headers,
+        }), 400
+
+    report_orders: dict[str, dict[str, str]] = {}
+    report_rows = 0
+    for report_row in reader:
+        report_rows += 1
+        order_id = _report_text(report_row.get("order-id"))
+        if not order_id:
+            continue
+        delivery = _amazon_report_delivery(report_row)
+        current = report_orders.setdefault(order_id, {})
+        for field, value in delivery.items():
+            if value and not current.get(field):
+                current[field] = value
+
+    if not report_orders:
+        return jsonify({"success": False, "message": "No Amazon order IDs were found in the uploaded report."}), 400
+
+    order_ids = sorted(report_orders)
+    existing_rows = (
+        MarketplaceOrder.query
+        .join(Store, Store.id == MarketplaceOrder.store_id)
+        .filter(MarketplaceOrder.marketplace_order_id.in_(order_ids))
+        .filter(Store.platform.ilike("%amazon%"))
+        .order_by(MarketplaceOrder.id)
+        .all()
+    )
+
+    rows_by_order: dict[str, list[MarketplaceOrder]] = {}
+    for order in existing_rows:
+        rows_by_order.setdefault(str(order.marketplace_order_id), []).append(order)
+
+    fields_filled = 0
+    order_lines_updated = 0
+    orders_unchanged = 0
+    matched_order_ids = set(rows_by_order)
+    now = datetime.utcnow()
+
+    for order_id, lines in rows_by_order.items():
+        delivery = report_orders.get(order_id) or {}
+        order_changed = False
+        for line in lines:
+            line_changed = False
+            for field in (
+                "ship_to_name",
+                "ship_to_address",
+                "ship_to_city",
+                "ship_to_postcode",
+                "ship_to_country",
+                "ship_to_email",
+                "ship_to_phone",
+            ):
+                existing_value = _report_text(getattr(line, field, None))
+                incoming_value = _report_text(delivery.get(field))
+                if not existing_value and incoming_value:
+                    setattr(line, field, incoming_value)
+                    fields_filled += 1
+                    line_changed = True
+            if line_changed:
+                line.updated_at = now
+                order_lines_updated += 1
+                order_changed = True
+        if not order_changed:
+            orders_unchanged += 1
+
+    if fields_filled:
+        db.session.commit()
+
+    orders_not_found = len(set(order_ids) - matched_order_ids)
+    return jsonify({
+        "success": True,
+        "report_rows": report_rows,
+        "report_orders": len(report_orders),
+        "orders_matched": len(matched_order_ids),
+        "order_lines_updated": order_lines_updated,
+        "fields_filled": fields_filled,
+        "orders_unchanged": orders_unchanged,
+        "orders_not_found": orders_not_found,
+        "created_orders": 0,
+        "overwritten_fields": 0,
+        "stock_touched": False,
+        "status_touched": False,
+        "message": "Amazon FBM report applied to missing delivery fields only. Existing values were preserved and no orders were created.",
+    })
 
 
 @governed_fbm_bp.get("/fbm")
