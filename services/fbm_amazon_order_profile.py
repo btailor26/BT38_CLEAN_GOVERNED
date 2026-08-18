@@ -7,12 +7,15 @@ Amazon delivery address and shipped/unshipped state needed by the shipping desk.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from extensions import db
 from fbm_models import FBMOrderProfile
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
+
+
+PROFILE_CACHE_TTL = timedelta(minutes=5)
 
 
 class AmazonOrderProfileError(RuntimeError):
@@ -28,7 +31,19 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
         store_id=order.store_id,
         marketplace_order_id=order.marketplace_order_id,
     ).first()
-    if existing is not None and not force:
+
+    now = datetime.utcnow()
+    checked_at = getattr(existing, "checked_at", None) if existing is not None else None
+    cache_fresh = bool(checked_at and (now - checked_at) < PROFILE_CACHE_TTL)
+    order_has_destination = bool(
+        _text(getattr(order, "ship_to_postcode", None))
+        and _text(getattr(order, "ship_to_country", None))
+    )
+
+    # Shipping facts must not remain permanently stale just because a profile
+    # row already exists. Reuse only a recent profile when the MarketplaceOrder
+    # also has the minimum destination data required by the shipping desk.
+    if existing is not None and not force and cache_fresh and order_has_destination:
         return existing
 
     creds = getattr(store, "amazon_credentials", None)
@@ -54,7 +69,7 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     profile.fulfillment_channel = fulfillment
     profile.shipment_service_level = service_level
     profile.latest_ship_at = latest_ship
-    profile.checked_at = datetime.utcnow()
+    profile.checked_at = now
     profile.last_error = None
     db.session.add(profile)
     db.session.commit()
