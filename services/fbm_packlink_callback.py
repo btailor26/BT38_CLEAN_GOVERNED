@@ -99,6 +99,30 @@ def _provider_identity(provider_payload: dict[str, Any], shipment: FBMShipment) 
     return carrier, service, service_id
 
 
+def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime) -> None:
+    """Apply the strongest provider lifecycle state after label persistence.
+
+    ``persist_external_label`` intentionally resets a newly paid label to
+    awaiting carrier acceptance. Later Packlink callbacks must therefore be
+    applied after that function so in-transit/delivered state can never be
+    downgraded by a repeated label read.
+    """
+    if event_name == "shipment.carrier.success":
+        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
+        if shipment.delivered_at is None and shipment.first_movement_at is None:
+            shipment.status = "accepted"
+    elif event_name == "shipment.tracking.update":
+        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
+        shipment.first_movement_at = shipment.first_movement_at or now
+        if shipment.delivered_at is None:
+            shipment.status = "in_transit"
+    elif event_name == "shipment.delivered":
+        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
+        shipment.first_movement_at = shipment.first_movement_at or now
+        shipment.delivered_at = shipment.delivered_at or now
+        shipment.status = "delivered"
+
+
 def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapter | None = None) -> dict[str, Any]:
     """Process one Packlink callback safely and idempotently."""
     if not isinstance(payload, dict):
@@ -178,17 +202,8 @@ def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapt
     if tracking:
         shipment.tracking_number = tracking
 
-    if event_name == "shipment.carrier.success":
-        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
-        shipment.status = "accepted"
-    elif event_name == "shipment.tracking.update":
-        shipment.first_movement_at = shipment.first_movement_at or now
-        shipment.status = "in_transit"
-    elif event_name == "shipment.delivered":
-        shipment.delivered_at = shipment.delivered_at or now
-        shipment.status = "delivered"
-
     label_url = _first_label_url(labels)
+    result: dict[str, Any] | None = None
     if label_url:
         order = MarketplaceOrder.query.filter_by(
             store_id=shipment.store_id,
@@ -221,23 +236,26 @@ def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapt
                 "storage_ref": reference,
             },
         )
-        return {
-            "success": True,
-            "event": event_name,
-            "shipment_id": shipment.id,
-            "provider_reference": reference,
-            "label_ready": True,
-            "tracking_number": tracking,
-            **result,
-        }
 
+    # Apply provider movement/delivery AFTER label persistence, because the
+    # shared post-purchase function correctly initializes a new label at
+    # awaiting_carrier_acceptance. This makes repeated callbacks monotonic.
+    _apply_lifecycle_state(shipment, event_name, now)
     db.session.commit()
-    return {
+
+    response = {
         "success": True,
         "event": event_name,
         "shipment_id": shipment.id,
         "provider_reference": reference,
-        "label_ready": False,
+        "label_ready": bool(label_url),
         "tracking_number": tracking,
         "provider_status": provider_state,
+        "shipment_status": shipment.status,
     }
+    if result:
+        response.update(result)
+        # Preserve the lifecycle state in the response even when the shared
+        # post-purchase result is merged in.
+        response["shipment_status"] = shipment.status
+    return response
