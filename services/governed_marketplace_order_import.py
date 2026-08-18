@@ -524,6 +524,60 @@ def _amazon_credentials(store: Store) -> dict[str, Any]:
     return credentials
 
 
+def _amazon_delivery_fields(client, order_id: str, order_payload: dict[str, Any]) -> tuple[dict[str, str], str | None]:
+    shipping_address = order_payload.get("ShippingAddress") or {}
+    address_error = None
+
+    if not shipping_address:
+        try:
+            address_response = client.get_order_address(order_id)
+            address_payload = address_response.payload or {}
+            shipping_address = address_payload.get("ShippingAddress") or {}
+        except Exception as exc:
+            address_error = str(exc)
+
+    address_parts = [
+        _text(shipping_address.get("AddressLine1")),
+        _text(shipping_address.get("AddressLine2")),
+        _text(shipping_address.get("AddressLine3")),
+    ]
+
+    return {
+        "name": _text(shipping_address.get("Name")),
+        "address": ", ".join(part for part in address_parts if part),
+        "city": _text(shipping_address.get("City")) or _text(shipping_address.get("District")),
+        "postcode": _text(shipping_address.get("PostalCode")),
+        "country": _text(shipping_address.get("CountryCode")).upper()[:2],
+        "phone": _text(shipping_address.get("Phone")),
+    }, address_error
+
+
+def _hydrate_existing_amazon_rows(
+    rows: list[MarketplaceOrder],
+    *,
+    delivery: dict[str, str],
+    shipped_at: datetime | None,
+) -> None:
+    for row in rows:
+        if delivery.get("name"):
+            row.ship_to_name = delivery["name"]
+        if delivery.get("address"):
+            row.ship_to_address = delivery["address"]
+        if delivery.get("city"):
+            row.ship_to_city = delivery["city"]
+        if delivery.get("postcode"):
+            row.ship_to_postcode = delivery["postcode"]
+        if delivery.get("country"):
+            row.ship_to_country = delivery["country"]
+        if delivery.get("phone"):
+            row.ship_to_phone = delivery["phone"]
+        if shipped_at is not None:
+            row.shipped_at = shipped_at
+        row.updated_at = datetime.utcnow()
+
+    db.session.flush()
+
+
 def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
     from sp_api.api import Orders
     from sp_api.base import Marketplaces
@@ -552,7 +606,10 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
     skipped = 0
     unmatched = 0
     existing_skipped = 0
+    existing_hydrated = 0
     item_read_attempts = 0
+    address_read_attempts = 0
+    address_read_failures = 0
     line_results = []
 
     allowed_statuses = {"UNSHIPPED", "PARTIALLYSHIPPED", "SHIPPED", "PENDING"}
@@ -571,16 +628,56 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
             skipped += 1
             continue
 
-        existing_order = (
+        shipped_at = None
+        if order_status == "SHIPPED":
+            shipped_at = (
+                _parse_ebay_datetime(order.get("LastUpdateDate"))
+                or _parse_ebay_datetime(order.get("LatestShipDate"))
+                or datetime.utcnow()
+            )
+
+        delivery = {
+            "name": "",
+            "address": "",
+            "city": "",
+            "postcode": "",
+            "country": "",
+            "phone": "",
+        }
+        address_error = None
+
+        if fulfillment_channel != "AFN":
+            address_read_attempts += 1
+            delivery, address_error = _amazon_delivery_fields(client, order_id, order)
+            if address_error:
+                address_read_failures += 1
+
+        existing_rows = (
             MarketplaceOrder.query
             .filter(MarketplaceOrder.store_id == store.id)
             .filter(MarketplaceOrder.marketplace_order_id == order_id)
-            .first()
+            .all()
         )
 
-        if existing_order:
+        if existing_rows:
+            _hydrate_existing_amazon_rows(
+                existing_rows,
+                delivery=delivery,
+                shipped_at=shipped_at,
+            )
+            existing_hydrated += 1
             existing_skipped += 1
             skipped += 1
+            line_results.append({
+                "success": True,
+                "skipped": True,
+                "reason": "existing_order_hydrated_stock_processing_skipped",
+                "order_id": order_id,
+                "rows_hydrated": len(existing_rows),
+                "address_hydrated": bool(delivery.get("postcode") or delivery.get("address")),
+                "address_error": address_error,
+                "shipped": shipped_at is not None,
+            })
             continue
 
         try:
@@ -620,15 +717,33 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
                 unit_price=price_value,
                 fulfillment_type=fulfillment_type,
                 status="pending",
+                shipped_at=shipped_at,
+                ship_to_name=delivery.get("name"),
+                ship_to_address=delivery.get("address"),
+                ship_to_city=delivery.get("city"),
+                ship_to_postcode=delivery.get("postcode"),
+                ship_to_country=delivery.get("country"),
+                ship_to_phone=delivery.get("phone"),
                 marketplace_created_at=marketplace_created_at,
                 import_source=source,
             )
 
-            processing_result = _process_exact_imported_order(
-                result,
-                source=f"{source}:amazon_exact_order",
-            )
-            result["processing"] = processing_result
+            if result.get("created"):
+                processing_result = _process_exact_imported_order(
+                    result,
+                    source=f"{source}:amazon_exact_order",
+                )
+                result["processing"] = processing_result
+            else:
+                result.pop("_order_row", None)
+                result["processing"] = {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "existing_line_stock_processing_skipped",
+                }
+
+            if address_error:
+                result["address_error"] = address_error
             line_results.append(result)
 
             if result.get("success") and not result.get("skipped"):
@@ -647,8 +762,9 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         message=(
             f"governed_amazon_order_import imported={imported} "
             f"created={created} skipped={skipped} existing_skipped={existing_skipped} "
-            f"item_read_attempts={item_read_attempts} unmatched={unmatched} "
-            f"window_hours=24 source={source}"
+            f"existing_hydrated={existing_hydrated} item_read_attempts={item_read_attempts} "
+            f"address_read_attempts={address_read_attempts} address_read_failures={address_read_failures} "
+            f"unmatched={unmatched} window_hours=24 source={source}"
         ),
     )
     db.session.commit()
@@ -664,7 +780,10 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         "created": created,
         "skipped": skipped,
         "existing_skipped": existing_skipped,
+        "existing_hydrated": existing_hydrated,
         "item_read_attempts": item_read_attempts,
+        "address_read_attempts": address_read_attempts,
+        "address_read_failures": address_read_failures,
         "unmatched": unmatched,
         "results": line_results[:50],
     }
