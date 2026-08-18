@@ -35,10 +35,16 @@ class AmazonShippingAdapter:
 
     def _client(self):
         try:
-            from sp_api.api import ShippingV2
             from sp_api.base import Marketplaces
+            try:
+                from sp_api.api import ShippingV2
+            except ImportError:
+                # python-amazon-sp-api 1.9.x already contains the Shipping V2
+                # client, but it is not exported from sp_api.api. In that line
+                # the class is named Shipping inside shipping/shippingV2.py.
+                from sp_api.api.shipping.shippingV2 import Shipping as ShippingV2
         except Exception as exc:
-            raise AmazonShippingError("Installed amazon-sp-api library does not expose ShippingV2.") from exc
+            raise AmazonShippingError("Installed amazon-sp-api library does not expose a compatible Shipping V2 client.") from exc
 
         creds = {
             "refresh_token": self.credentials.refresh_token,
