@@ -5,6 +5,13 @@ The governed event queue is process-memory only, so HTTP requests and the
 single runtime owner must share one process. Threaded concurrency keeps normal
 page/API requests concurrent without creating a second process-local event
 queue that the runtime cannot see.
+
+Strict event-driven startup policy:
+- app import must not start the historical runtime loop because that loop still
+  contains startup recovery scans;
+- after the worker/app is initialized, install the event-only loop and start the
+  existing governed runtime owner;
+- no webhook/event means no Neon recovery work or marketplace hydration.
 """
 
 # One process is required while the governed event queue remains in memory.
@@ -35,3 +42,23 @@ errorlog = '-'
 
 # Bind address (may be overridden by command line --bind).
 bind = '0.0.0.0:5000'
+
+# Prevent app.py from starting the legacy loop while the application module is
+# importing. The worker-init hook below starts the same governed runtime only
+# after its event-only loop policy has been installed.
+raw_env = [
+    'ENABLE_GOVERNED_RUNTIME_ENGINE=false',
+    'ENABLE_GOVERNED_8H_HYDRATION=false',
+]
+
+
+def post_worker_init(worker):
+    """Start one governed event listener after the WSGI app is fully loaded."""
+    from main import app
+    from services.governed_event_runtime import start_event_only_runtime
+
+    started = start_event_only_runtime(app)
+    app.logger.info(
+        'BT38 strict event-only governed runtime started=%s; no startup recovery or automatic hydration',
+        started,
+    )
