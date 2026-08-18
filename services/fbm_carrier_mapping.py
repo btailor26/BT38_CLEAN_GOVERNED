@@ -85,7 +85,7 @@ def _canonical_amazon_packlink_names(
     mapping: FBMCarrierServiceMapping,
     *, carrier_code: str, carrier_name: str | None, service_code: str | None, service_name: str | None,
 ) -> tuple[str | None, str | None]:
-    """Fill known account-proven Amazon display values when the UI supplies codes only."""
+    """Fill account-proven Amazon display values when the UI supplies codes only."""
     if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
         return carrier_name, service_name
     provider_carrier = _norm(mapping.provider_carrier_display)
@@ -95,7 +95,7 @@ def _canonical_amazon_packlink_names(
         return carrier_name or "Yodel", service_name or ("Xpert" if _norm(service_code) == "xpert" else None)
     if ("evri" in provider_carrier or "hermes" in provider_carrier) and "hermes" in code_key:
         if "twoday" in service_code_key and "dropoff" in service_code_key:
-            return carrier_name or "Hermes", service_name or "Hermes UK 2nd Day Drop Off"
+            return carrier_name or "Hermes UK", service_name or "Hermes Two Day - Drop Off"
     return carrier_name, service_name
 
 
