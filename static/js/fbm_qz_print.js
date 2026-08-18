@@ -108,11 +108,15 @@
         scope.querySelectorAll('.packlink-status').forEach(button => statuses.push(button));
 
         drafts.forEach(button => {
-            button.textContent = 'Prepare Packlink';
+            if (button.textContent !== 'Prepare Packlink') {
+                button.textContent = 'Prepare Packlink';
+            }
         });
 
         statuses.forEach(button => {
-            button.textContent = 'Check label';
+            if (button.textContent !== 'Check label') {
+                button.textContent = 'Check label';
+            }
             const box = button.closest('.rate-results');
             if (!box || box.querySelector('.packlink-pay-link')) return;
             const pay = document.createElement('a');
@@ -125,26 +129,57 @@
         });
     }
 
+    function processMutationTarget(target) {
+        if (!target || target.nodeType !== 1) return;
+        const rateBox = target.matches && target.matches('.rate-results')
+            ? target
+            : (target.closest ? target.closest('.rate-results') : null);
+        if (!rateBox) return;
+        ensureDownloadFallback(rateBox);
+        alignPacklinkPaymentHandoff(rateBox);
+    }
+
     if (global.MutationObserver && global.document) {
-        const observer = new MutationObserver(mutations => {
+        let observer = null;
+        let scheduled = false;
+        const pending = new Set();
+
+        const flush = () => {
+            scheduled = false;
+            const targets = Array.from(pending);
+            pending.clear();
+            targets.forEach(processMutationTarget);
+        };
+
+        const schedule = target => {
+            if (!target || target.nodeType !== 1) return;
+            pending.add(target);
+            if (scheduled) return;
+            scheduled = true;
+            global.requestAnimationFrame ? global.requestAnimationFrame(flush) : global.setTimeout(flush, 0);
+        };
+
+        observer = new MutationObserver(mutations => {
             mutations.forEach(mutation => {
-                if (mutation.target) {
-                    const target = mutation.target.closest ? mutation.target.closest('.rate-results') || mutation.target : mutation.target;
-                    ensureDownloadFallback(target);
-                    alignPacklinkPaymentHandoff(target);
-                }
+                if (mutation.target) schedule(mutation.target);
                 mutation.addedNodes.forEach(node => {
-                    if (node && node.nodeType === 1) {
-                        ensureDownloadFallback(node);
-                        alignPacklinkPaymentHandoff(node);
-                    }
+                    if (node && node.nodeType === 1) schedule(node);
                 });
             });
         });
+
         const start = () => {
             ensureDownloadFallback(document);
             alignPacklinkPaymentHandoff(document);
-            observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-label']});
+            const ordersRoot = document.getElementById('fbmShippingOrders');
+            if (ordersRoot) {
+                observer.observe(ordersRoot, {
+                    subtree: true,
+                    childList: true,
+                    attributes: true,
+                    attributeFilter: ['data-label']
+                });
+            }
         };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
         else start();
