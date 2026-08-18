@@ -35,29 +35,13 @@ def find_mapping(*, marketplace: str, provider: str, carrier: str, service: str)
 
 
 def ensure_mapping_review(
-    *,
-    shipment,
-    marketplace: str,
-    provider: str,
-    carrier: str | None,
-    service: str | None,
+    *, shipment, marketplace: str, provider: str, carrier: str | None, service: str | None,
 ) -> tuple[FBMCarrierServiceMapping, FBMShipmentMappingReview, bool]:
-    """Return mapping + shipment review + whether marketplace confirmation is safe."""
     carrier_text = str(carrier or "").strip()
     service_text = str(service or "").strip()
-    mapping = find_mapping(
-        marketplace=marketplace,
-        provider=provider,
-        carrier=carrier_text,
-        service=service_text,
-    )
+    mapping = find_mapping(marketplace=marketplace, provider=provider, carrier=carrier_text, service=service_text)
     if mapping is None:
-        key = mapping_key(
-            marketplace=marketplace,
-            provider=provider,
-            carrier=carrier_text,
-            service=service_text,
-        )
+        key = mapping_key(marketplace=marketplace, provider=provider, carrier=carrier_text, service=service_text)
         mapping = FBMCarrierServiceMapping(
             **key,
             provider_carrier_display=carrier_text or "Unknown carrier",
@@ -70,7 +54,6 @@ def ensure_mapping_review(
 
     review = FBMShipmentMappingReview.query.filter_by(shipment_id=shipment.id).first()
     first_use_of_mapping_for_shipment = review is None or review.mapping_id != mapping.id
-
     if review is None:
         review = FBMShipmentMappingReview(
             shipment_id=shipment.id,
@@ -85,7 +68,6 @@ def ensure_mapping_review(
     if first_use_of_mapping_for_shipment:
         mapping.usage_count = int(mapping.usage_count or 0) + 1
     mapping.last_used_at = datetime.utcnow()
-
     if mapping.verification_status == "verified":
         review.resolved_at = review.resolved_at or datetime.utcnow()
         review.review_reason = None
@@ -99,22 +81,33 @@ def ensure_mapping_review(
     return mapping, review, False
 
 
+def _canonical_amazon_packlink_names(
+    mapping: FBMCarrierServiceMapping,
+    *, carrier_code: str, carrier_name: str | None, service_code: str | None, service_name: str | None,
+) -> tuple[str | None, str | None]:
+    """Fill known account-proven Amazon display values when the UI supplies codes only."""
+    if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
+        return carrier_name, service_name
+    provider_carrier = _norm(mapping.provider_carrier_display)
+    code_key = _norm(carrier_code)
+    service_code_key = _norm(service_code).replace("_", "").replace("-", "")
+    if "yodel" in provider_carrier and "yodel" in code_key:
+        return carrier_name or "Yodel", service_name or ("Xpert" if _norm(service_code) == "xpert" else None)
+    if ("evri" in provider_carrier or "hermes" in provider_carrier) and "hermes" in code_key:
+        if "twoday" in service_code_key and "dropoff" in service_code_key:
+            return carrier_name or "Hermes", service_name or "Hermes UK 2nd Day Drop Off"
+    return carrier_name, service_name
+
+
 def _validate_amazon_packlink_mapping(
     mapping: FBMCarrierServiceMapping,
-    *,
-    carrier_code: str,
-    carrier_name: str | None,
-    service_code: str | None,
-    service_name: str | None,
+    *, carrier_code: str, carrier_name: str | None, service_code: str | None, service_name: str | None,
 ) -> None:
-    """Fail closed before saving an Amazon+Packlink VTR mapping."""
     if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
         return
-
     values = [carrier_code, carrier_name or "", service_code or "", service_name or ""]
     if any(_norm(value) == "other" for value in values if str(value or "").strip()):
         raise ValueError("Amazon Packlink mappings cannot use Other for carrier or shipping service.")
-
     resolved_carrier = str(carrier_name or carrier_code or "").strip()
     resolved_service = str(service_name or service_code or "").strip()
     if not resolved_carrier:
@@ -125,26 +118,21 @@ def _validate_amazon_packlink_mapping(
     provider_carrier = _norm(mapping.provider_carrier_display)
     carrier_key = _norm(resolved_carrier)
     service_key = _norm(resolved_service)
-    service_code_key = _norm(service_code)
-
+    service_code_key = _norm(service_code).replace("_", "").replace("-", "")
     if "yodel" in provider_carrier:
         if "yodel" not in carrier_key:
             raise ValueError("Yodel Packlink shipments must map to Amazon carrier Yodel.")
         if service_key != "xpert":
             raise ValueError("Yodel Packlink shipments must map to Amazon shipping service Xpert.")
-
     if "evri" in provider_carrier or "hermes" in provider_carrier:
         if "hermes" not in carrier_key:
             raise ValueError("Evri/Hermes Packlink shipments must map to Amazon's Hermes carrier identity.")
-        readable_two_day_dropoff = (
+        readable = (
             ("two day" in service_key or "2nd day" in service_key or "2 day" in service_key)
             and ("drop off" in service_key or "drop-off" in service_key or "dropoff" in service_key)
         )
-        coded_two_day_dropoff = (
-            "twoday" in service_code_key
-            and "dropoff" in service_code_key.replace("_", "").replace("-", "")
-        )
-        if not (readable_two_day_dropoff or coded_two_day_dropoff):
+        coded = "twoday" in service_code_key and "dropoff" in service_code_key
+        if not (readable or coded):
             raise ValueError("Evri/Hermes Packlink shipments must map to the exact Amazon two-day drop-off service.")
 
 
@@ -157,15 +145,19 @@ def verify_mapping(
     marketplace_service_name: str | None = None,
     verified_by: str | None = None,
 ) -> FBMCarrierServiceMapping:
-    """Verify one mapping identity and release all shipments waiting on it."""
     carrier_code = str(marketplace_carrier_code or "").strip()
     if not carrier_code:
         raise ValueError("Marketplace carrier code is required.")
-
     carrier_name = str(marketplace_carrier_name or "").strip() or None
     service_code = str(marketplace_service_code or "").strip() or None
     service_name = str(marketplace_service_name or "").strip() or None
-
+    carrier_name, service_name = _canonical_amazon_packlink_names(
+        mapping,
+        carrier_code=carrier_code,
+        carrier_name=carrier_name,
+        service_code=service_code,
+        service_name=service_name,
+    )
     _validate_amazon_packlink_mapping(
         mapping,
         carrier_code=carrier_code,
@@ -174,12 +166,8 @@ def verify_mapping(
         service_name=service_name,
     )
 
-    waiting_reviews = FBMShipmentMappingReview.query.filter_by(
-        mapping_id=mapping.id,
-        status="under_review",
-    ).all()
+    waiting_reviews = FBMShipmentMappingReview.query.filter_by(mapping_id=mapping.id, status="under_review").all()
     waiting_shipments = [review.shipment for review in waiting_reviews if review.shipment is not None]
-
     mapping.marketplace_carrier_code = carrier_code
     mapping.marketplace_carrier_name = carrier_name
     mapping.marketplace_service_code = service_code
@@ -188,13 +176,11 @@ def verify_mapping(
     mapping.verified_at = datetime.utcnow()
     mapping.verified_by = str(verified_by or "user").strip() or "user"
     mapping.last_error = None
-
     now = datetime.utcnow()
     for review in waiting_reviews:
         review.status = "verified"
         review.resolved_at = now
         review.review_reason = None
-
     db.session.commit()
 
     release_results: list[dict[str, Any]] = []
@@ -202,12 +188,7 @@ def verify_mapping(
         from services.fbm_marketplace_confirmation import confirm_external_shipment
         for shipment in waiting_shipments:
             result = confirm_external_shipment(shipment=shipment, mapping=mapping)
-            release_results.append({
-                "shipment_id": shipment.id,
-                "marketplace_order_id": shipment.marketplace_order_id,
-                **(result or {}),
-            })
-
+            release_results.append({"shipment_id": shipment.id, "marketplace_order_id": shipment.marketplace_order_id, **(result or {})})
     failed = [item for item in release_results if not item.get("success")]
     mapping._release_summary = {
         "attempted": len(release_results),
@@ -216,12 +197,8 @@ def verify_mapping(
         "results": release_results,
     }
     if failed:
-        mapping.last_error = (
-            f"Mapping saved, but {len(failed)} waiting shipment"
-            f"{'s' if len(failed) != 1 else ''} could not be confirmed to the marketplace."
-        )
+        mapping.last_error = f"Mapping saved, but {len(failed)} waiting shipment{'s' if len(failed) != 1 else ''} could not be confirmed to the marketplace."
         db.session.commit()
-
     return mapping
 
 
