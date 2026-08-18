@@ -12,7 +12,7 @@ from typing import Any
 from extensions import db
 from fbm_models import FBMShipment
 from models import MarketplaceOrder
-from services.fbm_packlink_adapter import PacklinkAdapter
+from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkRequestError
 from services.fbm_post_purchase import persist_external_label
 
 
@@ -55,9 +55,6 @@ def _tracking_code(payload: Any) -> str | None:
             if nested:
                 return nested
 
-    # Packlink shipment details use tracking_codes as an array. Accept both
-    # strings and object forms so a label-ready callback can immediately carry
-    # tracking into the existing marketplace confirmation path.
     for key in ("tracking_codes", "trackings"):
         values = payload.get(key)
         if isinstance(values, str) and values.strip():
@@ -140,13 +137,7 @@ def _provider_identity(
 
 
 def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime) -> None:
-    """Apply the strongest provider lifecycle state after label persistence.
-
-    ``persist_external_label`` intentionally resets a newly paid label to
-    awaiting carrier acceptance. Later Packlink callbacks must therefore be
-    applied after that function so in-transit/delivered state can never be
-    downgraded by a repeated label read.
-    """
+    """Apply the strongest provider lifecycle state after label persistence."""
     if event_name == "shipment.carrier.success":
         shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
         if shipment.delivered_at is None and shipment.first_movement_at is None:
@@ -258,6 +249,15 @@ def process_packlink_callback(
         shipment.tracking_number = tracking
 
     label_url = _first_label_url(labels)
+    if event_name == "shipment.label.ready" and not label_url:
+        # Packlink can emit the event just before the label URL is readable on
+        # the labels endpoint. Return a retryable provider error through the
+        # callback route instead of acknowledging and losing the wake-up event.
+        raise PacklinkRequestError(
+            "Packlink reported label ready but the label URL is not readable yet.",
+            status_code=503,
+        )
+
     result: dict[str, Any] | None = None
     if label_url:
         order = MarketplaceOrder.query.filter_by(
@@ -292,9 +292,6 @@ def process_packlink_callback(
             },
         )
 
-    # Apply provider movement/delivery AFTER label persistence, because the
-    # shared post-purchase function correctly initializes a new label at
-    # awaiting_carrier_acceptance. This makes repeated callbacks monotonic.
     _apply_lifecycle_state(shipment, event_name, now)
     db.session.commit()
 
@@ -310,7 +307,5 @@ def process_packlink_callback(
     }
     if result:
         response.update(result)
-        # Preserve the lifecycle state in the response even when the shared
-        # post-purchase result is merged in.
         response["shipment_status"] = shipment.status
     return response
