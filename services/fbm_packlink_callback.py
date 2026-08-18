@@ -38,6 +38,7 @@ def _platform(order: MarketplaceOrder) -> str:
 def _tracking_code(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
+
     for key in (
         "tracking_number",
         "trackingNumber",
@@ -53,6 +54,27 @@ def _tracking_code(payload: Any) -> str | None:
             nested = _tracking_code(value)
             if nested:
                 return nested
+
+    # Packlink shipment details use tracking_codes as an array. Accept both
+    # strings and object forms so a label-ready callback can immediately carry
+    # tracking into the existing marketplace confirmation path.
+    for key in ("tracking_codes", "trackings"):
+        values = payload.get(key)
+        if isinstance(values, str) and values.strip():
+            return values.strip()
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, dict):
+                    candidate = (
+                        value.get("code")
+                        or value.get("tracking_number")
+                        or value.get("tracking")
+                    )
+                    if candidate:
+                        return str(candidate).strip() or None
+
     for key in ("carrier", "shipment", "package", "tracking_info"):
         nested = payload.get(key)
         if isinstance(nested, dict):
@@ -82,20 +104,38 @@ def _first_label_url(labels: list[Any]) -> str | None:
     return None
 
 
-def _provider_identity(provider_payload: dict[str, Any], shipment: FBMShipment) -> tuple[str | None, str | None, str | None]:
+def _provider_identity(
+    provider_payload: dict[str, Any],
+    shipment: FBMShipment,
+) -> tuple[str | None, str | None, str | None]:
     carrier_raw = provider_payload.get("carrier")
     if isinstance(carrier_raw, dict):
-        carrier = str(carrier_raw.get("name") or carrier_raw.get("label") or "").strip() or shipment.carrier
+        carrier = (
+            str(carrier_raw.get("name") or carrier_raw.get("label") or "").strip()
+            or shipment.carrier
+        )
     else:
         carrier = str(carrier_raw or shipment.carrier or "").strip() or None
 
     service_raw = provider_payload.get("service")
     if isinstance(service_raw, dict):
-        service = str(service_raw.get("name") or service_raw.get("label") or "").strip() or shipment.service
-        service_id = str(service_raw.get("id") or provider_payload.get("service_id") or shipment.provider_service_id or "").strip() or None
+        service = (
+            str(service_raw.get("name") or service_raw.get("label") or "").strip()
+            or shipment.service
+        )
+        service_id = str(
+            service_raw.get("id")
+            or provider_payload.get("service_id")
+            or shipment.provider_service_id
+            or ""
+        ).strip() or None
     else:
-        service = str(service_raw or provider_payload.get("service_name") or shipment.service or "").strip() or None
-        service_id = str(provider_payload.get("service_id") or shipment.provider_service_id or "").strip() or None
+        service = str(
+            service_raw or provider_payload.get("service_name") or shipment.service or ""
+        ).strip() or None
+        service_id = str(
+            provider_payload.get("service_id") or shipment.provider_service_id or ""
+        ).strip() or None
     return carrier, service, service_id
 
 
@@ -123,7 +163,11 @@ def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime
         shipment.status = "delivered"
 
 
-def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapter | None = None) -> dict[str, Any]:
+def process_packlink_callback(
+    payload: dict[str, Any],
+    *,
+    adapter: PacklinkAdapter | None = None,
+) -> dict[str, Any]:
     """Process one Packlink callback safely and idempotently."""
     if not isinstance(payload, dict):
         raise PacklinkCallbackError("Packlink callback payload must be a JSON object.")
@@ -146,7 +190,12 @@ def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapt
     if not event_name:
         raise PacklinkCallbackError("Packlink callback event name is missing.")
     if event_name not in SUPPORTED_EVENTS:
-        return {"success": True, "ignored": True, "event": event_name, "reason": "unsupported_event"}
+        return {
+            "success": True,
+            "ignored": True,
+            "event": event_name,
+            "reason": "unsupported_event",
+        }
     if not reference:
         raise PacklinkCallbackError("Packlink callback shipment reference is missing.")
 
@@ -187,11 +236,17 @@ def process_packlink_callback(payload: dict[str, Any], *, adapter: PacklinkAdapt
     labels = adapter.get_labels(reference)
     tracking_history = adapter.get_tracking_status(reference=reference)
 
-    provider_state = str(provider_payload.get("state") or provider_payload.get("status") or event_name).strip()
+    provider_state = str(
+        provider_payload.get("state") or provider_payload.get("status") or event_name
+    ).strip()
     shipment.last_provider_status = provider_state
     shipment.last_provider_checked_at = now
     carrier, service, service_id = _provider_identity(provider_payload, shipment)
-    tracking = _tracking_code(provider_payload) or _latest_tracking(tracking_history) or shipment.tracking_number
+    tracking = (
+        _tracking_code(provider_payload)
+        or _latest_tracking(tracking_history)
+        or shipment.tracking_number
+    )
 
     if carrier:
         shipment.carrier = carrier
