@@ -2,7 +2,8 @@
 
 This is not an order import path. MarketplaceOrder already exists and remains
 source of truth. We only persist Amazon shipping facts required to govern FBM
-routing (Prime/SFP, MFN, service level, latest ship time).
+routing (Prime/SFP, MFN, service level, latest ship time), plus the current
+Amazon delivery address and shipped/unshipped state needed by the shipping desk.
 """
 from __future__ import annotations
 
@@ -41,6 +42,8 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     service_level = _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel"))
     latest_ship = _parse_iso(payload.get("LatestShipDate"))
 
+    _hydrate_marketplace_order(order, payload)
+
     profile = existing or FBMOrderProfile(
         store_id=order.store_id,
         marketplace_order_id=order.marketplace_order_id,
@@ -56,6 +59,48 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     db.session.add(profile)
     db.session.commit()
     return profile
+
+
+def _hydrate_marketplace_order(order: Any, payload: dict[str, Any]) -> None:
+    """Persist current Amazon delivery/shipping facts onto the existing order.
+
+    This deliberately does not create orders, mutate inventory, or submit any
+    marketplace action. It only refreshes fields Amazon already owns.
+    """
+    address = payload.get("ShippingAddress") or {}
+    if isinstance(address, dict):
+        name = _text(address.get("Name"))
+        address1 = _text(address.get("AddressLine1"))
+        address2 = _text(address.get("AddressLine2"))
+        address3 = _text(address.get("AddressLine3"))
+        city = _text(address.get("City"))
+        postcode = _text(address.get("PostalCode"))
+        country = _text(address.get("CountryCode"))
+
+        address_parts = [value for value in (address1, address2, address3) if value]
+        if name:
+            order.ship_to_name = name
+        if address_parts:
+            order.ship_to_address = ", ".join(address_parts)
+        if city:
+            order.ship_to_city = city
+        if postcode:
+            order.ship_to_postcode = postcode
+        if country:
+            order.ship_to_country = country.upper()[:2]
+
+    status = (_text(payload.get("OrderStatus")) or "").upper()
+    if status == "SHIPPED":
+        order.shipped_at = (
+            _parse_iso(payload.get("LastUpdateDate"))
+            or _parse_iso(payload.get("LatestShipDate"))
+            or order.shipped_at
+            or datetime.utcnow()
+        )
+    elif status in {"UNSHIPPED", "PARTIALLYSHIPPED", "PENDING"}:
+        order.shipped_at = None
+
+    order.updated_at = datetime.utcnow()
 
 
 def _fetch_order(store: Any, order_id: str) -> dict[str, Any]:
