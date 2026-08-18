@@ -79,13 +79,14 @@ def _retire_stale_ebay_siblings(store_id: int, import_result: dict) -> dict:
             if int(sibling.id) in current_ids:
                 continue
 
+            # Do not delete or relink stale identities. Deactivation removes
+            # them from current marketplace operation while preserving their
+            # historical Warehouse/Product Linking relationship for review.
             sibling.is_active = False
             if hasattr(sibling, "updated_at"):
                 sibling.updated_at = now
             if hasattr(sibling, "last_synced_at"):
                 sibling.last_synced_at = now
-            if hasattr(sibling, "last_push_status"):
-                sibling.last_push_status = "retired_marketplace_identity"
             retired_ids.append(int(sibling.id))
 
     db.session.commit()
