@@ -1,8 +1,8 @@
 from app import app
 
-# Load the existing MCF compatibility binding before any startup recovery can
-# attempt Amazon submission. This keeps MCFService UI/fee compatibility while
-# all live Amazon execution remains on services.governed_mcf_execution.
+# Load the existing MCF compatibility binding. This keeps MCFService UI/fee
+# compatibility while all live Amazon execution remains on
+# services.governed_mcf_execution.
 import services.governed_mcf_compat  # noqa: F401
 import services.governed_ui_event_signal  # noqa: F401
 import services.governed_webhook_rejection_recovery  # noqa: F401
@@ -138,6 +138,18 @@ def _install_governed_webhook_runtime_alignment():
         if platform != "amazon":
             return result
 
+        # FULFILLMENT_ORDER_STATUS is already terminally handled by the
+        # canonical webhook executor through refresh_mcf_from_amazon_signal().
+        # Do not call the same MCF lifecycle handler a second time. One webhook
+        # means one exact lifecycle operation, then the process returns to idle.
+        if (
+            result.get("business_event") == "mcf_fulfillment_status"
+            or str(result.get("status") or "").startswith(
+                "mcf_fulfillment_status_"
+            )
+        ):
+            return result
+
         from services.governed_mcf_execution import (
             refresh_mcf_from_amazon_signal,
         )
@@ -145,9 +157,10 @@ def _install_governed_webhook_runtime_alignment():
         mcf_result = refresh_mcf_from_amazon_signal(payload or {})
         result["mcf_signal_refresh"] = mcf_result
 
-        # An exact MCF signal must not be acknowledged as fully processed when
-        # Amazon status/tracking refresh or the governed marketplace enrichment
-        # failed. SQS can then retain/retry the same durable commercial event.
+        # An exact MCF-relevant signal must not be acknowledged as fully
+        # processed when Amazon status/tracking refresh or the governed
+        # marketplace enrichment failed. SQS can then retain/retry that exact
+        # durable event; no broad recovery scan is started.
         if (
             not mcf_result.get("success", False)
             and not mcf_result.get("skipped", False)
@@ -173,30 +186,12 @@ def _install_governed_webhook_runtime_alignment():
 
 _install_governed_webhook_runtime_alignment()
 
-
-try:
-    from services.governed_recovery_alignment import (
-        run_bounded_startup_recovery_alignment,
-    )
-    from services.governed_failed_mcf_retry import retry_failed_linked_mcf
-
-    recovery_result = run_bounded_startup_recovery_alignment(app)
-    app.logger.info(
-        "BT38 bounded recovery alignment: %s",
-        recovery_result,
-    )
-
-    with app.app_context():
-        failed_mcf_retry_result = retry_failed_linked_mcf()
-    app.logger.info(
-        "BT38 failed linked MCF retry alignment: %s",
-        failed_mcf_retry_result,
-    )
-except Exception:
-    from extensions import db
-
-    db.session.rollback()
-    app.logger.exception("BT38 bounded recovery alignment failed")
+# Strict event-driven rule: process startup never searches historical
+# notifications/orders and never retries MCF merely because the process booted.
+# Recovery helpers remain available to explicit governed/manual actions only.
+app.logger.info(
+    "BT38 startup recovery disabled: no webhook means no recovery DB work"
+)
 
 
 @app.teardown_request
