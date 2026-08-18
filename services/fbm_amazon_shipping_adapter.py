@@ -3,18 +3,45 @@
 Amazon is authoritative for on-Amazon Buy Shipping eligibility. This module
 uses the existing Store Amazon credentials and never imports orders. Prime/SFP
 orders are expected to be locked to this provider by the FBM routing layer.
+
+The deployed python-amazon-sp-api build does not guarantee that ShippingV2 is
+exported as a service class. BT38 therefore uses the library's stable generic
+Client + sp_endpoint transport for the Shipping v2 operations needed here.
+Authentication/signing remains owned by python-amazon-sp-api; no parallel raw
+HTTP signing path is introduced.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+from sp_api.base import Client, sp_endpoint
+
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
-from services.fbm_order_mapper import order_lines, ship_from
+from services.fbm_order_mapper import order_lines, ship_from, ship_to
 
 
 class AmazonShippingError(RuntimeError):
     pass
+
+
+class _BT38ShippingV2(Client):
+    """Minimal Amazon Shipping API v2 client on the installed SP-API transport."""
+
+    @sp_endpoint("/shipping/v2/shipments/rates", method="POST")
+    def get_rates(self, *, body: dict[str, Any], **kwargs):
+        return self._request(kwargs.pop("path"), data=body)
+
+    @sp_endpoint("/shipping/v2/shipments", method="POST")
+    def purchase_shipment(self, *, body: dict[str, Any], **kwargs):
+        return self._request(kwargs.pop("path"), data=body)
+
+    @sp_endpoint("/shipping/v2/tracking")
+    def get_tracking(self, *, trackingId: str, carrierId: str, **kwargs):
+        return self._request(
+            kwargs.pop("path"),
+            params={"trackingId": trackingId, "carrierId": carrierId},
+        )
 
 
 @dataclass(frozen=True)
@@ -36,15 +63,8 @@ class AmazonShippingAdapter:
     def _client(self):
         try:
             from sp_api.base import Marketplaces
-            try:
-                from sp_api.api import ShippingV2
-            except ImportError:
-                # python-amazon-sp-api 1.9.x already contains the Shipping V2
-                # client, but it is not exported from sp_api.api. In that line
-                # the class is named Shipping inside shipping/shippingV2.py.
-                from sp_api.api.shipping.shippingV2 import Shipping as ShippingV2
         except Exception as exc:
-            raise AmazonShippingError("Installed amazon-sp-api library does not expose a compatible Shipping V2 client.") from exc
+            raise AmazonShippingError("Installed amazon-sp-api library is missing its base client support.") from exc
 
         creds = {
             "refresh_token": self.credentials.refresh_token,
@@ -56,7 +76,10 @@ class AmazonShippingAdapter:
             "aws_secret_access_key": getattr(self.credentials, "aws_secret_access_key", None),
             "role_arn": getattr(self.credentials, "aws_user_arn", None),
         }
-        return ShippingV2(credentials=_sp_api_credentials(creds), marketplace=_marketplace_for_id(self.credentials.marketplace_id, Marketplaces))
+        return _BT38ShippingV2(
+            credentials=_sp_api_credentials(creds),
+            marketplace=_marketplace_for_id(self.credentials.marketplace_id, Marketplaces),
+        )
 
     @staticmethod
     def _response_payload(response: Any) -> dict:
@@ -70,16 +93,19 @@ class AmazonShippingAdapter:
         return payload
 
     @staticmethod
-    def _address_payload(address: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "name": address.get("name") or address.get("company") or "B & T Outlet",
+    def _address_payload(address: dict[str, Any], *, fallback_name: str) -> dict[str, Any]:
+        payload = {
+            "name": address.get("name") or address.get("company") or fallback_name,
             "addressLine1": address.get("address1") or "",
             "city": address.get("city") or "",
             "postalCode": address.get("postcode") or "",
             "countryCode": address.get("country") or "GB",
-            "email": address.get("email") or None,
-            "phoneNumber": address.get("phone") or None,
         }
+        if address.get("email"):
+            payload["email"] = address["email"]
+        if address.get("phone"):
+            payload["phoneNumber"] = address["phone"]
+        return payload
 
     def get_rates(self, *, order: Any, parcel: dict[str, Any]) -> AmazonRateResult:
         required = ("weight_kg", "length_cm", "width_cm", "height_cm")
@@ -93,10 +119,18 @@ class AmazonShippingAdapter:
             raise AmazonShippingError("Amazon order item ID is missing from one or more BT38 DB order lines.")
 
         origin = ship_from()
+        destination = ship_to(order)
+        if not destination.get("postcode") or not destination.get("address1"):
+            raise AmazonShippingError("Amazon delivery address is incomplete for this order.")
+
         total_weight_g = round(float(parcel["weight_kg"]) * 1000, 3)
         total_units = sum(max(1, int(getattr(line, "quantity", 1) or 1)) for line in lines)
         fallback_unit_weight_g = max(1.0, total_weight_g / max(1, total_units))
-        total_value = sum(max(0.0, float(getattr(line, "unit_price", 0) or 0)) * max(1, int(getattr(line, "quantity", 1) or 1)) for line in lines)
+        total_value = sum(
+            max(0.0, float(getattr(line, "unit_price", 0) or 0))
+            * max(1, int(getattr(line, "quantity", 1) or 1))
+            for line in lines
+        )
 
         items: list[dict[str, Any]] = []
         for line in lines:
@@ -115,28 +149,45 @@ class AmazonShippingAdapter:
             })
 
         body = {
-            "shipFrom": self._address_payload(origin),
+            "shipTo": self._address_payload(destination, fallback_name="Customer"),
+            "shipFrom": self._address_payload(origin, fallback_name="B & T Outlet"),
             "packages": [{
-                "dimensions": {"length": float(parcel["length_cm"]), "width": float(parcel["width_cm"]), "height": float(parcel["height_cm"]), "unit": "CENTIMETER"},
+                "dimensions": {
+                    "length": float(parcel["length_cm"]),
+                    "width": float(parcel["width_cm"]),
+                    "height": float(parcel["height_cm"]),
+                    "unit": "CENTIMETER",
+                },
                 "weight": {"unit": "GRAM", "value": total_weight_g},
                 "insuredValue": {"value": total_value, "unit": "GBP"},
                 "isHazmat": False,
                 "packageClientReferenceId": f"BT38-{order.store_id}-{order.marketplace_order_id}",
                 "items": items,
             }],
-            "channelDetails": {"channelType": "AMAZON", "amazonOrderDetails": {"orderId": str(order.marketplace_order_id)}},
+            "channelDetails": {
+                "channelType": "AMAZON",
+                "amazonOrderDetails": {"orderId": str(order.marketplace_order_id)},
+            },
         }
 
-        client = self._client()
-        method = getattr(client, "get_rates", None)
-        if method is None:
-            raise AmazonShippingError("Installed amazon-sp-api ShippingV2 client does not implement get_rates().")
-        response = method(body=body)
+        response = self._client().get_rates(body=body)
         payload = self._response_payload(response)
         request_token = str(payload.get("requestToken") or "").strip() or None
-        return AmazonRateResult(request_token=request_token, rates=self._normalise_rates(payload.get("rates") or []), ineligible_rates=self._normalise_ineligible(payload.get("ineligibleRates") or []))
+        return AmazonRateResult(
+            request_token=request_token,
+            rates=self._normalise_rates(payload.get("rates") or []),
+            ineligible_rates=self._normalise_ineligible(payload.get("ineligibleRates") or []),
+        )
 
-    def purchase_shipment(self, *, request_token: str, rate_id: str, requested_document_specification: dict[str, Any], requested_value_added_services: list[dict] | None = None, additional_inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    def purchase_shipment(
+        self,
+        *,
+        request_token: str,
+        rate_id: str,
+        requested_document_specification: dict[str, Any],
+        requested_value_added_services: list[dict] | None = None,
+        additional_inputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Purchase exactly one Amazon Buy Shipping rate using the token from getRates."""
         if not request_token:
             raise AmazonShippingError("Amazon request token is required.")
@@ -145,27 +196,23 @@ class AmazonShippingAdapter:
         if not requested_document_specification:
             raise AmazonShippingError("Amazon document specification is required.")
 
-        body: dict[str, Any] = {"requestToken": request_token, "rateId": rate_id, "requestedDocumentSpecification": requested_document_specification}
+        body: dict[str, Any] = {
+            "requestToken": request_token,
+            "rateId": rate_id,
+            "requestedDocumentSpecification": requested_document_specification,
+        }
         if requested_value_added_services:
             body["requestedValueAddedServices"] = requested_value_added_services
         if additional_inputs:
             body["additionalInputs"] = additional_inputs
 
-        client = self._client()
-        method = getattr(client, "purchase_shipment", None)
-        if method is None:
-            raise AmazonShippingError("Installed amazon-sp-api ShippingV2 client does not implement purchase_shipment().")
-        response = method(body=body)
+        response = self._client().purchase_shipment(body=body)
         return self._normalise_purchase(self._response_payload(response))
 
     def get_tracking(self, *, tracking_id: str, carrier_id: str) -> dict[str, Any]:
         if not tracking_id or not carrier_id:
             raise AmazonShippingError("Amazon tracking ID and carrier ID are required.")
-        client = self._client()
-        method = getattr(client, "get_tracking", None)
-        if method is None:
-            raise AmazonShippingError("Installed amazon-sp-api ShippingV2 client does not implement get_tracking().")
-        response = method(trackingId=tracking_id, carrierId=carrier_id)
+        response = self._client().get_tracking(trackingId=tracking_id, carrierId=carrier_id)
         return self._response_payload(response)
 
     @staticmethod
@@ -175,10 +222,17 @@ class AmazonShippingAdapter:
             if not isinstance(rate, dict):
                 continue
             result.append({
-                "rate_id": rate.get("rateId"), "carrier_id": rate.get("carrierId"), "carrier_name": rate.get("carrierName"),
-                "service_id": rate.get("serviceId"), "service_name": rate.get("serviceName"), "price": rate.get("totalCharge") or {},
-                "promise": rate.get("promise"), "supported_documents": rate.get("supportedDocumentSpecifications") or [],
-                "benefits": rate.get("benefits"), "requires_additional_inputs": bool(rate.get("requiresAdditionalInputs")), "raw": rate,
+                "rate_id": rate.get("rateId"),
+                "carrier_id": rate.get("carrierId"),
+                "carrier_name": rate.get("carrierName"),
+                "service_id": rate.get("serviceId"),
+                "service_name": rate.get("serviceName"),
+                "price": rate.get("totalCharge") or {},
+                "promise": rate.get("promise"),
+                "supported_documents": rate.get("supportedDocumentSpecifications") or [],
+                "benefits": rate.get("benefits"),
+                "requires_additional_inputs": bool(rate.get("requiresAdditionalInputs")),
+                "raw": rate,
             })
         return result
 
@@ -191,11 +245,25 @@ class AmazonShippingAdapter:
         package_details = payload.get("packageDocumentDetails") or []
         first_package = package_details[0] if package_details and isinstance(package_details[0], dict) else {}
         documents = first_package.get("packageDocuments") or []
-        first_label = next((doc for doc in documents if isinstance(doc, dict) and str(doc.get("type") or "").upper() == "LABEL"), documents[0] if documents else {})
+        first_label = next(
+            (
+                doc
+                for doc in documents
+                if isinstance(doc, dict) and str(doc.get("type") or "").upper() == "LABEL"
+            ),
+            documents[0] if documents else {},
+        )
         return {
             "shipment_id": payload.get("shipmentId"),
             "tracking_id": first_package.get("trackingId"),
             "package_client_reference_id": first_package.get("packageClientReferenceId"),
-            "label": {"type": first_label.get("type") if isinstance(first_label, dict) else None, "format": first_label.get("format") if isinstance(first_label, dict) else None, "contents": first_label.get("contents") if isinstance(first_label, dict) else None},
-            "promise": payload.get("promise"), "benefits": payload.get("benefits"), "total_charge": payload.get("totalChargeWithAdjustments"), "raw": payload,
+            "label": {
+                "type": first_label.get("type") if isinstance(first_label, dict) else None,
+                "format": first_label.get("format") if isinstance(first_label, dict) else None,
+                "contents": first_label.get("contents") if isinstance(first_label, dict) else None,
+            },
+            "promise": payload.get("promise"),
+            "benefits": payload.get("benefits"),
+            "total_charge": payload.get("totalChargeWithAdjustments"),
+            "raw": payload,
         }
