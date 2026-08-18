@@ -89,14 +89,34 @@ def _confirm_ebay_external(
     mapping: FBMCarrierServiceMapping,
     tracking: str,
 ) -> dict[str, Any]:
-    """Use BT38's existing governed eBay CompleteSale implementation.
-
-    Packlink/manual shipping is already a deliberate dispatch action by the time
-    it reaches this function: the provider label/tracking has been persisted and
-    the carrier/service mapping has been verified. Reuse the canonical eBay
-    writer rather than introducing a second eBay shipping client.
-    """
+    """Use BT38's existing governed eBay CompleteSale implementation."""
     from services.governed_ebay_dispatch import complete_sale
+    from services.runtime_action_guard import is_runtime_action_allowed
+
+    store = getattr(order, "store", None)
+    if store is None:
+        raise FBMMarketplaceConfirmationError("eBay store is missing from this BT38 order.")
+
+    provider = str(shipment.provider or "").strip().lower()
+    manual = provider == "manual"
+    guard = is_runtime_action_allowed(
+        store,
+        "push",
+        manual=manual,
+        context={
+            "actor_user": None,
+            "context": (
+                "fbm_manual_external_confirmation"
+                if manual
+                else "fbm_packlink_event_confirmation"
+            ),
+        },
+    )
+    if not guard.get("allowed"):
+        raise FBMMarketplaceConfirmationError(
+            "eBay external shipment confirmation blocked by governed runtime: "
+            + str(guard.get("reason") or "runtime_guard_blocked")
+        )
 
     carrier = str(
         mapping.marketplace_carrier_name
@@ -127,7 +147,8 @@ def confirm_external_shipment(
     The call is idempotent at BT38 level: once ``marketplace_confirmed_at`` is
     stored, ordinary retries return the persisted result without another
     marketplace write. Amazon receives a stable packageReferenceId based on the
-    BT38 shipment ID. eBay uses BT38's existing governed CompleteSale writer.
+    BT38 shipment ID. eBay reuses BT38's governed CompleteSale writer and the
+    same runtime action guard used by other event-driven marketplace writes.
     """
     if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
         shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
