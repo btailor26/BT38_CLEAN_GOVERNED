@@ -9,9 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 
-# Canonical Amazon UK carrier names. Keep this deliberately strict: when
-# Packlink returns an unknown carrier BT38 must hold the Amazon confirmation
-# rather than inventing a carrier identity that could damage VTR.
 _AMAZON_UK_CARRIERS = {
     "amazon shipping": "Amazon Shipping",
     "apc": "APC",
@@ -20,7 +17,11 @@ _AMAZON_UK_CARRIERS = {
     "dhl parcel uk": "DHL Parcel UK",
     "dpd": "DPD",
     "dx freight": "DX FREIGHT",
-    "evri": "Evri",
+    # Amazon's own UK Shipping API examples still expose the legacy Hermes
+    # identity for this exact carrier/service family.
+    "evri": "Hermes UK",
+    "hermes": "Hermes UK",
+    "hermes uk": "Hermes UK",
     "fedex": "Fedex",
     "gls": "GLS",
     "mhi": "MHI",
@@ -35,9 +36,6 @@ _AMAZON_UK_CARRIERS = {
     "yodel": "Yodel",
 }
 
-# Packlink/provider display aliases -> Amazon's canonical carrier identity.
-# These aliases do not create a persistent marketplace mapping and cannot be
-# edited by an operator from the FBM screen.
 _PACKLINK_ALIASES = {
     "apc overnight": "APC",
     "dhl": "DHL Parcel UK",
@@ -45,10 +43,6 @@ _PACKLINK_ALIASES = {
     "dpd uk": "DPD",
     "dx": "DX FREIGHT",
     "fedex uk": "Fedex",
-    # Packlink may still surface the pre-rebrand Hermes carrier name. Amazon UK
-    # currently expects the carrier identity Evri for VTR measurement.
-    "hermes": "Evri",
-    "hermes uk": "Evri",
     "parcel force": "Parcelforce",
     "parcelforce worldwide": "Parcelforce",
     "royalmail": "Royal Mail",
@@ -68,7 +62,7 @@ def _norm(value: Any) -> str:
 
 
 def resolve_amazon_uk_carrier(provider_carrier: Any) -> str:
-    """Return Amazon's canonical UK carrier name or fail closed."""
+    """Return Amazon's canonical UK carrier display name or fail closed."""
     normalized = _norm(provider_carrier)
     if not normalized:
         raise AmazonVTRCarrierError("Packlink did not return a carrier name.")
@@ -81,8 +75,15 @@ def resolve_amazon_uk_carrier(provider_carrier: Any) -> str:
     )
 
 
+def amazon_carrier_code(carrier_name: str) -> str:
+    """Return the Amazon carrier code used for shipment confirmation."""
+    if carrier_name == "Hermes UK":
+        return "HERMES_UK"
+    return carrier_name
+
+
 def amazon_vtr_safe_rate(rate: dict[str, Any]) -> bool:
-    """True only when a Packlink rate resolves to a known Amazon UK carrier."""
+    """True only when a Packlink rate resolves to a proven Amazon UK identity."""
     carrier = rate.get("carrier_name") or rate.get("carrier")
     service = rate.get("service_name") or rate.get("service")
     try:
@@ -99,42 +100,38 @@ def validate_amazon_tracking(carrier: str, tracking_number: Any) -> str:
     if not tracking:
         raise AmazonVTRCarrierError("Packlink tracking number is missing.")
 
-    # Yodel exposes an internal YOD* reference as well as the scannable parcel
-    # barcode on some flows. Amazon UK needs the parcel tracking identifier.
     if carrier == "Yodel" and tracking.upper().startswith("YOD"):
         raise AmazonVTRCarrierError(
             "Packlink returned a Yodel internal YOD reference, not the scannable parcel tracking number required for Amazon VTR."
         )
-    # Hyphens/spaces have caused Yodel IDs to fail Amazon/Yodel recognition in
-    # real UK VTR cases. Preserve only the compact identifier sent to tracking.
     if carrier == "Yodel":
         tracking = tracking.replace("-", "")
     return tracking
 
 
 def amazon_shipping_method(provider_service: Any, carrier: str) -> str:
-    """Resolve the Packlink product into the Amazon UK ship-confirm service.
-
-    Yodel is strict because generic/mismatched Yodel service reporting has caused
-    VTR failures. Evri is intentionally different: Amazon UK currently exposes
-    Evri with an ``Other`` service and states that this does not reduce VTR.
-    """
+    """Resolve the Packlink product into Amazon's UK ship-confirm service."""
     service = " ".join(str(provider_service or "").strip().split())
     normalized = _norm(service)
 
-    if carrier == "Evri":
-        # Packlink can still expose legacy Hermes product names such as a
-        # 2nd-day/drop-off service. Amazon wants the rebranded carrier Evri; its
-        # supported ship-confirm sub-option is Other.
-        return "Other"
+    if carrier == "Hermes UK":
+        if not normalized:
+            raise AmazonVTRCarrierError(
+                "Packlink did not return the Hermes/Evri service. BT38 will not guess the Amazon service."
+            )
+        two_day = any(token in normalized for token in ("2nd day", "2 day", "2-day", "two day", "two-day", "48"))
+        drop_off = any(token in normalized for token in ("drop off", "drop-off", "dropoff", "parcelshop", "parcel shop"))
+        if two_day and drop_off:
+            return "Hermes Two Day - Drop Off"
+        raise AmazonVTRCarrierError(
+            f"Packlink Hermes/Evri service '{service}' is not the Amazon Hermes Two Day - Drop Off service; shipment confirmation is held for VTR safety."
+        )
 
     if carrier == "Yodel":
         if not normalized:
             raise AmazonVTRCarrierError(
                 "Packlink did not return the Yodel service. BT38 will not guess an Amazon VTR service."
             )
-        # Normalise known Xpect two-day forms to the Amazon service wording that
-        # has been recommended for UK Yodel VTR issues.
         is_xpect = "xpect" in normalized
         is_48 = any(token in normalized for token in ("48", "2 day", "2-day", "two day", "two-day"))
         if is_xpect and is_48:
