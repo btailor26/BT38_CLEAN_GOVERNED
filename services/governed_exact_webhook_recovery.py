@@ -3,13 +3,16 @@
 Contract:
 - Recover only the durable notification that failed.
 - Never launch a recent-order/platform scan.
-- Check canonical MarketplaceOrder first.
+- Check canonical MarketplaceOrder first for order events that require it.
 - If the exact order already exists, never replay order/stock mutation.
+- Amazon MCF lifecycle events terminate in the existing MCF lifecycle path and
+  do not require a canonical MarketplaceOrder row.
 - Amazon FBA may still perform one exact Seller-SKU settlement verification;
   this is read-only marketplace truth and is not an order replay.
-- If the exact order is missing, replay only the captured payload through the
-  existing governed webhook executor, then verify the canonical order exists.
-- Any committed recovery/FBA change uses the existing DB -> UI publisher.
+- If an order event requiring canonical intake is missing, replay only the
+  captured payload through the existing governed webhook executor, then verify
+  the canonical order exists.
+- Any committed recovery/FBA/MCF change uses the existing DB -> UI publisher.
 """
 from __future__ import annotations
 
@@ -191,6 +194,32 @@ def _verify_existing_amazon_fba(
     return result
 
 
+def _mcf_lifecycle_completed(replay_result: dict | None) -> bool:
+    """Return True when one Amazon MCF lifecycle signal was fully handled.
+
+    MCF fulfilment status is not a marketplace sale/order-intake event. Its
+    canonical object is the existing MCF lifecycle row, so requiring a
+    MarketplaceOrder after successful handling creates false recovery failures
+    and unnecessary follow-on DB work.
+    """
+    if not isinstance(replay_result, dict):
+        return False
+    status = str(replay_result.get("status") or "").strip().lower()
+    business_event = str(
+        replay_result.get("business_event") or ""
+    ).strip().lower()
+    mcf_result = replay_result.get("mcf_result")
+    mcf_handled = isinstance(mcf_result, dict) and bool(
+        mcf_result.get("success") or mcf_result.get("skipped")
+    )
+    return bool(
+        status == "mcf_fulfillment_status_processed"
+        and business_event == "mcf_fulfillment_status"
+        and mcf_handled
+        and replay_result.get("inventory_push_started") is False
+    )
+
+
 def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> dict[str, Any]:
     """Recover one captured webhook, never a marketplace window."""
     platform = str(platform or "").strip().lower()
@@ -254,6 +283,31 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
         actor=f"{platform}_webhook_exact_recovery",
         notification_record_id=int(notification_record_id),
     )
+
+    # MCF status signals terminate in the existing MCF lifecycle handler. They
+    # intentionally do not create MarketplaceOrder rows and must return to
+    # sleep immediately after that one exact handler completes.
+    if _mcf_lifecycle_completed(replay_result):
+        ui_event_published = _publish_committed_change(
+            platform,
+            int(notification_record_id),
+            replay_result,
+        )
+        return {
+            "success": True,
+            "recovered": True,
+            "handled_without_canonical_order": True,
+            "canonical_order_required": False,
+            "order_replayed": False,
+            "inventory_push_started": False,
+            "order_id": identity.get("order_id"),
+            "store_id": store_id,
+            "notification_record_id": int(notification_record_id),
+            "platform": platform,
+            "replay_result": replay_result,
+            "ui_event_published": ui_event_published,
+            "broad_scan_started": False,
+        }
 
     db.session.expire_all()
     recovered = _canonical_order_exists(store_id, identity.get("order_id"))
