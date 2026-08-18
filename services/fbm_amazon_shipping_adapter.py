@@ -1,21 +1,21 @@
 """Amazon Buy Shipping adapter for BT38 FBM.
 
-Amazon is authoritative for on-Amazon Buy Shipping eligibility, carrier/service
-selection, customer delivery details and shipment confirmation. BT38 supplies
-only the Amazon order identity, the seller ship-from address and packed parcel
-facts required by Amazon's Merchant Fulfillment Buy Shipping operations.
+Amazon owns on-Amazon Buy Shipping eligibility, carrier/service selection,
+customer delivery details and shipment confirmation. BT38 supplies the Amazon
+order identity, seller ship-from address and packed parcel facts required by the
+Merchant Fulfillment Buy Shipping operations.
 
-This deliberately does not require BT38's local copy of the customer delivery
-address. Prime/SFP orders remain locked to this provider by the FBM routing
-layer. The existing BT38 quote, duplicate-purchase, label persistence and QZ
-printing contracts remain unchanged.
+Prime/SFP orders remain locked to this provider by the FBM routing layer. This
+adapter deliberately does not require BT38's local copy of the buyer address.
 """
 from __future__ import annotations
 
 import base64
 import gzip
+import inspect
 import secrets
 from dataclasses import dataclass
+from datetime import timezone
 from typing import Any
 
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
@@ -47,7 +47,9 @@ class AmazonShippingAdapter:
             from sp_api.api import MerchantFulfillment
             from sp_api.base import Marketplaces
         except Exception as exc:
-            raise AmazonShippingError("Installed amazon-sp-api library does not expose Merchant Fulfillment Buy Shipping.") from exc
+            raise AmazonShippingError(
+                "Installed amazon-sp-api library does not expose Merchant Fulfillment Buy Shipping."
+            ) from exc
 
         creds = {
             "refresh_token": self.credentials.refresh_token,
@@ -79,18 +81,41 @@ class AmazonShippingAdapter:
 
     @staticmethod
     def _ship_from_payload(address: dict[str, Any]) -> dict[str, Any]:
+        required = {
+            "address1": "dispatch address",
+            "city": "dispatch city",
+            "postcode": "dispatch postcode",
+            "country": "dispatch country",
+        }
+        missing = [label for key, label in required.items() if not str(address.get(key) or "").strip()]
+        if missing:
+            raise AmazonShippingError("BT38 ship-from details are incomplete: " + ", ".join(missing))
+
         payload = {
             "Name": address.get("name") or address.get("company") or "B & T Outlet",
-            "AddressLine1": address.get("address1") or "",
-            "City": address.get("city") or "",
-            "PostalCode": address.get("postcode") or "",
-            "CountryCode": address.get("country") or "GB",
+            "AddressLine1": str(address["address1"]).strip(),
+            "City": str(address["city"]).strip(),
+            "PostalCode": str(address["postcode"]).strip(),
+            "CountryCode": str(address["country"]).strip().upper(),
         }
         if address.get("email"):
-            payload["Email"] = address["email"]
+            payload["Email"] = str(address["email"]).strip()
         if address.get("phone"):
-            payload["Phone"] = address["phone"]
+            payload["Phone"] = str(address["phone"]).strip()
         return payload
+
+    @staticmethod
+    def _amazon_timestamp(value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc)
+            return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+        except Exception:
+            return None
 
     @staticmethod
     def _shipment_request_details(order: Any, parcel: dict[str, Any]) -> dict[str, Any]:
@@ -104,7 +129,6 @@ class AmazonShippingAdapter:
         if missing_item_ids:
             raise AmazonShippingError("Amazon order item ID is missing from one or more BT38 DB order lines.")
 
-        origin = ship_from()
         details: dict[str, Any] = {
             "AmazonOrderId": str(order.marketplace_order_id),
             "ItemList": [
@@ -114,7 +138,7 @@ class AmazonShippingAdapter:
                 }
                 for line in lines
             ],
-            "ShipFromAddress": AmazonShippingAdapter._ship_from_payload(origin),
+            "ShipFromAddress": AmazonShippingAdapter._ship_from_payload(ship_from()),
             "PackageDimensions": {
                 "Length": float(parcel["length_cm"]),
                 "Width": float(parcel["width_cm"]),
@@ -132,9 +156,6 @@ class AmazonShippingAdapter:
             },
         }
 
-        # The FBM route refreshes this profile immediately before requesting
-        # rates. Amazon's Prime guidance says LatestShipDate should be reused as
-        # ShipDate when available; absence of it does not justify inventing one.
         try:
             from fbm_models import FBMOrderProfile
             profile = FBMOrderProfile.query.filter_by(
@@ -142,41 +163,73 @@ class AmazonShippingAdapter:
                 marketplace_order_id=order.marketplace_order_id,
             ).first()
             latest_ship = getattr(profile, "latest_ship_at", None) if profile is not None else None
-            if latest_ship is not None:
-                details["ShipDate"] = latest_ship.isoformat(timespec="seconds") + "Z"
+            ship_date = AmazonShippingAdapter._amazon_timestamp(latest_ship)
+            if ship_date:
+                details["ShipDate"] = ship_date
         except Exception:
             pass
-
         return details
+
+    @staticmethod
+    def _assert_method_contract(method: Any, required_names: set[str], operation: str) -> None:
+        """Fail before any charge if the installed wrapper signature is incompatible."""
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError) as exc:
+            raise AmazonShippingError(f"Could not verify installed amazon-sp-api {operation} signature.") from exc
+        params = signature.parameters
+        has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        missing = sorted(name for name in required_names if name not in params and not has_kwargs)
+        if missing:
+            raise AmazonShippingError(
+                f"Installed amazon-sp-api {operation} signature is incompatible; missing: {', '.join(missing)}."
+            )
 
     def get_rates(self, *, order: Any, parcel: dict[str, Any]) -> AmazonRateResult:
         details = self._shipment_request_details(order, parcel)
+        client = self._client()
+        method = getattr(client, "get_eligible_shipment_services", None)
+        if method is None:
+            raise AmazonShippingError("Installed amazon-sp-api does not expose get_eligible_shipment_services.")
+        self._assert_method_contract(method, {"shipment_request_details"}, "rate")
         try:
-            response = self._client().get_eligible_shipment_services(details)
+            response = method(shipment_request_details=details)
+        except TypeError:
+            # Older compatible wrapper builds accept the request body positionally.
+            try:
+                response = method(details)
+            except Exception as exc:
+                raise AmazonShippingError(str(exc)) from exc
         except Exception as exc:
             raise AmazonShippingError(str(exc)) from exc
 
         payload = self._response_payload(response)
-        rates = self._normalise_rates(payload.get("ShippingServiceList") or [])
-
+        normalised = self._normalise_rates(payload.get("ShippingServiceList") or [])
         unavailable: list[dict] = []
-        for item in payload.get("RejectedShippingServiceList") or []:
-            if isinstance(item, dict):
-                unavailable.append({"reason": "rejected", **item})
-        for item in payload.get("TemporarilyUnavailableCarrierList") or []:
-            if isinstance(item, dict):
-                unavailable.append({"reason": "temporarily_unavailable", **item})
-        for item in payload.get("TermsAndConditionsNotAcceptedCarrierList") or []:
-            if isinstance(item, dict):
-                unavailable.append({"reason": "terms_not_accepted", **item})
+        purchasable: list[dict] = []
+        for rate in normalised:
+            if rate.get("requires_additional_inputs"):
+                unavailable.append({
+                    "reason": "additional_seller_inputs_required",
+                    "carrier": rate.get("carrier_name"),
+                    "service": rate.get("service_name"),
+                    "service_id": rate.get("service_id"),
+                    "message": "Amazon requires additional seller inputs for this service; BT38 is holding this offer until those inputs are supported.",
+                })
+            else:
+                purchasable.append(rate)
+        for key, reason in (
+            ("RejectedShippingServiceList", "rejected"),
+            ("TemporarilyUnavailableCarrierList", "temporarily_unavailable"),
+            ("TermsAndConditionsNotAcceptedCarrierList", "terms_not_accepted"),
+        ):
+            for item in payload.get(key) or []:
+                if isinstance(item, dict):
+                    unavailable.append({"reason": reason, **item})
 
-        # Merchant Fulfillment does not return a purchase requestToken. Keep the
-        # existing BT38 quote contract by issuing an opaque BT38-only token. The
-        # token is used only to locate the exact persisted quote/order at purchase.
-        request_token = "mfn_" + secrets.token_urlsafe(24)
         return AmazonRateResult(
-            request_token=request_token,
-            rates=rates,
+            request_token="mfn_" + secrets.token_urlsafe(24),
+            rates=purchasable,
             ineligible_rates=unavailable,
         )
 
@@ -189,15 +242,11 @@ class AmazonShippingAdapter:
         requested_value_added_services: list[dict] | None = None,
         additional_inputs: Any = None,
     ) -> dict[str, Any]:
-        """Purchase exactly one Amazon Buy Shipping offer from the persisted quote."""
         if not request_token:
             raise AmazonShippingError("Amazon Buy Shipping quote token is required.")
         if not rate_id:
             raise AmazonShippingError("Amazon Buy Shipping rate ID is required.")
 
-        # Resolve the exact DB quote generated by get_rates. This preserves the
-        # existing route signature and duplicate-purchase protection while the
-        # actual Amazon purchase uses Merchant Fulfillment's shipment details.
         from fbm_models import FBMRateQuote
         from models import MarketplaceOrder
 
@@ -208,7 +257,6 @@ class AmazonShippingAdapter:
         ).first()
         if quote is None:
             raise AmazonShippingError("Amazon Buy Shipping quote could not be resolved.")
-
         selected = next(
             (
                 rate for rate in (quote.rates or [])
@@ -219,8 +267,8 @@ class AmazonShippingAdapter:
         )
         if selected is None:
             raise AmazonShippingError("Selected Amazon Buy Shipping offer is not in the persisted quote.")
-        if selected.get("requires_additional_inputs") and not additional_inputs:
-            raise AmazonShippingError("This Amazon shipping service requires additional seller inputs before purchase.")
+        if selected.get("requires_additional_inputs"):
+            raise AmazonShippingError("This Amazon shipping service requires additional seller inputs and is not purchasable through the current BT38 UI.")
 
         order = MarketplaceOrder.query.filter_by(
             store_id=quote.store_id,
@@ -235,12 +283,6 @@ class AmazonShippingAdapter:
         if not service_id:
             raise AmazonShippingError("Amazon shipping service ID is missing from the selected offer.")
 
-        kwargs: dict[str, Any] = {}
-        if offer_id:
-            kwargs["ShippingServiceOfferId"] = offer_id
-
-        # Merchant Fulfillment selects the requested document format through the
-        # same ShippingServiceOptions object used when the offer is purchased.
         label_format = str(
             (requested_document_specification or {}).get("format")
             or (requested_document_specification or {}).get("LabelFormat")
@@ -249,14 +291,21 @@ class AmazonShippingAdapter:
         if label_format and label_format != "ShippingServiceDefault":
             details["ShippingServiceOptions"]["LabelFormat"] = label_format
 
-        if additional_inputs:
-            if isinstance(additional_inputs, dict) and additional_inputs.get("ShipmentLevelSellerInputsList"):
-                kwargs["ShipmentLevelSellerInputsList"] = additional_inputs["ShipmentLevelSellerInputsList"]
-            elif isinstance(additional_inputs, list):
-                kwargs["ShipmentLevelSellerInputsList"] = additional_inputs
+        kwargs: dict[str, Any] = {}
+        if offer_id:
+            kwargs["ShippingServiceOfferId"] = offer_id
 
+        client = self._client()
+        method = getattr(client, "create_shipment", None)
+        if method is None:
+            raise AmazonShippingError("Installed amazon-sp-api does not expose create_shipment.")
+        self._assert_method_contract(
+            method,
+            {"shipment_request_details", "shipping_service_id"},
+            "purchase",
+        )
         try:
-            response = self._client().create_shipment(
+            response = method(
                 shipment_request_details=details,
                 shipping_service_id=service_id,
                 **kwargs,
@@ -264,10 +313,22 @@ class AmazonShippingAdapter:
         except Exception as exc:
             raise AmazonShippingError(str(exc)) from exc
 
-        return self._normalise_purchase(self._response_payload(response))
+        result = self._normalise_purchase(self._response_payload(response))
+        # Preserve Amazon-returned physical label dimensions in the existing
+        # route contract without changing the route or DB schema.
+        label = result.get("label") or {}
+        width, length, unit = label.get("width"), label.get("length"), label.get("unit")
+        if width is not None and length is not None:
+            requested_document_specification["size"] = {
+                "width": width,
+                "length": length,
+                "unit": unit,
+            }
+        if label.get("format"):
+            requested_document_specification["format"] = label["format"]
+        return result
 
-    def get_tracking(self, *, tracking_id: str, carrier_id: str) -> dict[str, Any]:
-        """Return Amazon shipment status using the shipment created by Buy Shipping."""
+    def get_tracking(self, *, tracking_id: str, carrier_id: str | None = None) -> dict[str, Any]:
         if not tracking_id:
             raise AmazonShippingError("Amazon tracking ID is required.")
 
@@ -281,8 +342,12 @@ class AmazonShippingAdapter:
         if not shipment_id:
             raise AmazonShippingError("Amazon Buy Shipping shipment ID is not available for tracking refresh.")
 
+        client = self._client()
+        method = getattr(client, "get_shipment", None)
+        if method is None:
+            raise AmazonShippingError("Installed amazon-sp-api does not expose get_shipment.")
         try:
-            response = self._client().get_shipment(shipment_id)
+            response = method(shipment_id)
         except Exception as exc:
             raise AmazonShippingError(str(exc)) from exc
         payload = self._response_payload(response)
@@ -296,10 +361,7 @@ class AmazonShippingAdapter:
         amount = rate.get("Amount")
         if amount is None:
             amount = rate.get("CurrencyAmount")
-        return {
-            "value": amount,
-            "unit": rate.get("CurrencyCode") or rate.get("Currency") or "GBP",
-        }
+        return {"value": amount, "unit": rate.get("CurrencyCode") or rate.get("Currency") or "GBP"}
 
     @staticmethod
     def _normalise_rates(rates: list[Any]) -> list[dict]:
@@ -309,20 +371,17 @@ class AmazonShippingAdapter:
                 continue
             service_id = str(rate.get("ShippingServiceId") or "").strip() or None
             offer_id = str(rate.get("ShippingServiceOfferId") or "").strip() or None
-            formats = rate.get("AvailableLabelFormats") or []
-            if not formats:
-                formats = ["ShippingServiceDefault"]
-            documents = [
-                {"format": str(fmt), "LabelFormat": str(fmt)}
-                for fmt in formats
-                if fmt
-            ]
+            formats = rate.get("AvailableLabelFormats") or ["ShippingServiceDefault"]
+            documents = [{"format": str(fmt), "LabelFormat": str(fmt)} for fmt in formats if fmt]
             adjusted_rate = rate.get("RateWithAdjustments") or rate.get("Rate") or {}
+            carrier_name = str(rate.get("CarrierName") or "").strip() or "Amazon Buy Shipping"
             result.append({
                 "rate_id": offer_id or service_id,
                 "offer_id": offer_id,
-                "carrier_id": rate.get("CarrierName"),
-                "carrier_name": rate.get("CarrierName"),
+                # Existing route only uses provider_carrier_id as a non-empty
+                # marker before delegating tracking back to this adapter.
+                "carrier_id": carrier_name or "AMAZON_BUY_SHIPPING",
+                "carrier_name": carrier_name,
                 "service_id": service_id,
                 "service_name": rate.get("ShippingServiceName"),
                 "price": AmazonShippingAdapter._money(adjusted_rate),
