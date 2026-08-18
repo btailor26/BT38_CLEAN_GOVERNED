@@ -99,18 +99,26 @@ def _confirm_ebay_external(
 
     provider = str(shipment.provider or "").strip().lower()
     manual = provider == "manual"
+    guard_context = {
+        "actor_user": None,
+        "context": (
+            "fbm_manual_external_confirmation"
+            if manual
+            else "fbm_packlink_event_confirmation"
+        ),
+    }
+    if not manual:
+        # Packlink callbacks are authenticated provider events, not logged-in
+        # browser actions. Declare the automatic write explicitly so the single
+        # runtime guard applies the fuse-box/store checks without requiring a
+        # browser user inside the callback request context.
+        guard_context["automatic_push"] = True
+
     guard = is_runtime_action_allowed(
         store,
         "push",
         manual=manual,
-        context={
-            "actor_user": None,
-            "context": (
-                "fbm_manual_external_confirmation"
-                if manual
-                else "fbm_packlink_event_confirmation"
-            ),
-        },
+        context=guard_context,
     )
     if not guard.get("allowed"):
         raise FBMMarketplaceConfirmationError(
