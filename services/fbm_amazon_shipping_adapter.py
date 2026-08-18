@@ -18,7 +18,7 @@ from typing import Any
 from sp_api.base import Client, sp_endpoint
 
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
-from services.fbm_order_mapper import order_lines, ship_from
+from services.fbm_order_mapper import order_lines, ship_from, ship_to
 
 
 class AmazonShippingError(RuntimeError):
@@ -119,6 +119,10 @@ class AmazonShippingAdapter:
             raise AmazonShippingError("Amazon order item ID is missing from one or more BT38 DB order lines.")
 
         origin = ship_from()
+        destination = ship_to(order)
+        if not destination.get("postcode") or not destination.get("address1"):
+            raise AmazonShippingError("Amazon delivery address is incomplete for this order.")
+
         total_weight_g = round(float(parcel["weight_kg"]) * 1000, 3)
         total_units = sum(max(1, int(getattr(line, "quantity", 1) or 1)) for line in lines)
         fallback_unit_weight_g = max(1.0, total_weight_g / max(1, total_units))
@@ -144,12 +148,8 @@ class AmazonShippingAdapter:
                 "isHazmat": False,
             })
 
-        # Amazon already owns the buyer/delivery address for an Amazon order.
-        # Keep that address inside Amazon for marketplace-native Buy Shipping.
-        # BT38 supplies the Amazon order identity plus the packed parcel facts;
-        # external providers (for example Packlink) continue to use BT38's
-        # persisted ship-to address through their own provider path.
         body = {
+            "shipTo": self._address_payload(destination, fallback_name="Customer"),
             "shipFrom": self._address_payload(origin, fallback_name="B & T Outlet"),
             "packages": [{
                 "dimensions": {
