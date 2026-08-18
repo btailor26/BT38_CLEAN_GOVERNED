@@ -88,10 +88,6 @@ def ensure_mapping_review(
         review.mapping_id = mapping.id
         review.status = "verified" if mapping.verification_status == "verified" else "under_review"
 
-    # Provider status polling can call this path repeatedly for the same shipment.
-    # Count the mapping once for that shipment rather than inflating usage_count on
-    # every poll. The DB unique key separately guarantees one stored mapping row per
-    # marketplace/provider/carrier/service identity.
     if first_use_of_mapping_for_shipment:
         mapping.usage_count = int(mapping.usage_count or 0) + 1
     mapping.last_used_at = datetime.utcnow()
@@ -121,9 +117,9 @@ def verify_mapping(
     """Verify one mapping identity and release all shipments waiting on it.
 
     Saving the mapping is the one-time user action. The verified mapping is
-    committed before any marketplace call, then every shipment already waiting
-    on this identity is retried through the single external-confirmation path.
-    Future matching labels reuse the verified mapping automatically.
+    committed before any marketplace call. Release results are attached to the
+    returned model for the route/UI to report truthfully; a failed marketplace
+    confirmation never rolls back the saved mapping or an already-paid label.
     """
     carrier_code = str(marketplace_carrier_code or "").strip()
     if not carrier_code:
@@ -150,13 +146,32 @@ def verify_mapping(
         review.resolved_at = now
         review.review_reason = None
 
-    # Persist the one-time mapping decision before performing any external write.
     db.session.commit()
 
+    release_results: list[dict[str, Any]] = []
     if waiting_shipments:
         from services.fbm_marketplace_confirmation import confirm_external_shipment
         for shipment in waiting_shipments:
-            confirm_external_shipment(shipment=shipment, mapping=mapping)
+            result = confirm_external_shipment(shipment=shipment, mapping=mapping)
+            release_results.append({
+                "shipment_id": shipment.id,
+                "marketplace_order_id": shipment.marketplace_order_id,
+                **(result or {}),
+            })
+
+    failed = [item for item in release_results if not item.get("success")]
+    mapping._release_summary = {
+        "attempted": len(release_results),
+        "confirmed": sum(1 for item in release_results if item.get("success")),
+        "failed": len(failed),
+        "results": release_results,
+    }
+    if failed:
+        mapping.last_error = (
+            f"Mapping saved, but {len(failed)} waiting shipment"
+            f"{'s' if len(failed) != 1 else ''} could not be confirmed to the marketplace."
+        )
+        db.session.commit()
 
     return mapping
 
@@ -164,7 +179,7 @@ def verify_mapping(
 def mapping_payload(mapping: FBMCarrierServiceMapping | None) -> dict[str, Any] | None:
     if mapping is None:
         return None
-    return {
+    payload = {
         "id": mapping.id,
         "marketplace": mapping.marketplace,
         "provider": mapping.provider,
@@ -177,4 +192,9 @@ def mapping_payload(mapping: FBMCarrierServiceMapping | None) -> dict[str, Any] 
         "marketplace_service_name": mapping.marketplace_service_name,
         "verified_at": mapping.verified_at.isoformat() if mapping.verified_at else None,
         "usage_count": int(mapping.usage_count or 0),
+        "last_error": mapping.last_error,
     }
+    release_summary = getattr(mapping, "_release_summary", None)
+    if release_summary is not None:
+        payload["release_summary"] = release_summary
+    return payload
