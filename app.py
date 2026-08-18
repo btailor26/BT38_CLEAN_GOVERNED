@@ -563,6 +563,12 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed FBM routes: {exc}")
 
+try:
+    from governed_packlink_callback_routes import governed_packlink_callback_bp
+    app.register_blueprint(governed_packlink_callback_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed Packlink callback routes: {exc}")
+
 
 # Import and register admin reporting blueprint
 from admin_routes import admin_bp
