@@ -81,6 +81,13 @@ def persist_external_label(
     if mapping_ready:
         confirmation = confirm_external_shipment(shipment=shipment, mapping=mapping)
 
+    has_printable_label = bool(
+        shipment.label_url
+        or label.get("base64")
+        or label.get("data")
+        or label.get("contents")
+    )
+
     return {
         "shipment_id": shipment.id,
         "provider_shipment_id": shipment.provider_shipment_id,
@@ -91,7 +98,7 @@ def persist_external_label(
         "mapping": mapping_payload(mapping),
         "mapping_status": "verified" if mapping_ready else "under_review",
         "mapping_message": None if mapping_ready else "Under review for correct marketplace mapping. Label printing is available now.",
-        "print_allowed": True,
+        "print_allowed": has_printable_label,
         "marketplace_confirmation_allowed": mapping_ready,
         "marketplace_confirmation": confirmation,
     }
