@@ -3,11 +3,24 @@ from types import SimpleNamespace
 import pytest
 
 import services.fbm_packlink_adapter as packlink_module
+from services.fbm_carrier_mapping import _canonical_amazon_packlink_names
 from services.fbm_packlink_adapter import (
     PacklinkAdapter,
     PacklinkRequestError,
 )
 from services.fbm_packlink_callback import _tracking_code
+
+
+def _complete_destination():
+    return {
+        "name": "Test Customer",
+        "address1": "2 Test Road",
+        "city": "London",
+        "postcode": "SW1A 1AA",
+        "country": "GB",
+        "email": None,
+        "phone": "02070000000",
+    }
 
 
 def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
@@ -45,19 +58,7 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
             "phone": "01160000000",
         },
     )
-    monkeypatch.setattr(
-        packlink_module,
-        "ship_to",
-        lambda _order: {
-            "name": "Test Customer",
-            "address1": "2 Test Road",
-            "city": "London",
-            "postcode": "SW1A 1AA",
-            "country": "GB",
-            "email": None,
-            "phone": "02070000000",
-        },
-    )
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
 
     posted = {}
@@ -104,19 +105,9 @@ def test_packlink_draft_requires_destination_phone(monkeypatch):
             "phone": "01160000000",
         },
     )
-    monkeypatch.setattr(
-        packlink_module,
-        "ship_to",
-        lambda _order: {
-            "name": "Test Customer",
-            "address1": "2 Test Road",
-            "city": "London",
-            "postcode": "SW1A 1AA",
-            "country": "GB",
-            "email": None,
-            "phone": None,
-        },
-    )
+    destination = _complete_destination()
+    destination["phone"] = None
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: destination)
 
     with pytest.raises(Exception, match="Destination phone is missing"):
         adapter.create_shipment_draft(
@@ -129,6 +120,34 @@ def test_packlink_draft_requires_destination_phone(monkeypatch):
             },
             rate={"service_id": 20149},
         )
+
+
+def test_packlink_rates_require_destination_phone_before_provider_call(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-123")
+    destination = _complete_destination()
+    destination["phone"] = None
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: destination)
+
+    called = []
+    monkeypatch.setattr(adapter, "_get_json", lambda *args, **kwargs: called.append((args, kwargs)))
+
+    with pytest.raises(Exception, match="Missing Packlink destination fields: phone"):
+        adapter.get_rates(
+            order=order,
+            parcel={
+                "from_country": "GB",
+                "from_zip": "LE1 3WU",
+                "to_country": "GB",
+                "to_zip": "SW1A 1AA",
+                "width_cm": 20,
+                "height_cm": 10,
+                "length_cm": 30,
+                "weight_kg": 1,
+            },
+        )
+
+    assert called == []
 
 
 def test_packlink_tracking_unwraps_history(monkeypatch):
@@ -184,6 +203,26 @@ def test_packlink_rate_uses_total_price_and_carrier_name():
     assert rate["price"]["unit"] == "GBP"
 
 
+def test_packlink_shipment_normalises_carrier_and_service_objects(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    monkeypatch.setattr(
+        adapter,
+        "_get_json",
+        lambda endpoint, **_: {
+            "shipment_reference": "GB000123ABC",
+            "carrier": {"id": 10, "name": "Yodel"},
+            "service": {"id": 20, "name": "Xpert"},
+        },
+    )
+
+    shipment = adapter.get_shipment("GB000123ABC")
+
+    assert shipment["carrier"] == "Yodel"
+    assert shipment["service"] == "Xpert"
+    assert shipment["carrier_id"] == 10
+    assert shipment["service_id"] == 20
+
+
 def test_packlink_callback_reads_tracking_codes_array():
     assert _tracking_code({"tracking_codes": ["TRACK-123"]}) == "TRACK-123"
 
@@ -191,6 +230,7 @@ def test_packlink_callback_reads_tracking_codes_array():
 def test_amazon_packlink_rates_are_not_filtered_before_purchase(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(store=SimpleNamespace(platform="Amazon"))
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(
         adapter,
         "_get_json",
@@ -235,3 +275,41 @@ def test_amazon_packlink_rates_are_not_filtered_before_purchase(monkeypatch):
     assert rates[0]["service_name"] == "Xpert"
     assert rates[1]["carrier_name"] == "Evri"
     assert rates[1]["service_name"] == "2nd Day Drop Off"
+
+
+def test_amazon_yodel_mapping_uses_account_proven_display_values():
+    mapping = SimpleNamespace(
+        marketplace="amazon",
+        provider="packlink",
+        provider_carrier_display="Yodel",
+    )
+
+    carrier_name, service_name = _canonical_amazon_packlink_names(
+        mapping,
+        carrier_code="Yodel",
+        carrier_name=None,
+        service_code="Xpert",
+        service_name=None,
+    )
+
+    assert carrier_name == "Yodel"
+    assert service_name == "Xpert"
+
+
+def test_amazon_hermes_mapping_uses_exact_amazon_display_values():
+    mapping = SimpleNamespace(
+        marketplace="amazon",
+        provider="packlink",
+        provider_carrier_display="Evri",
+    )
+
+    carrier_name, service_name = _canonical_amazon_packlink_names(
+        mapping,
+        carrier_code="HERMES_UK",
+        carrier_name=None,
+        service_code="HERMES_UK_MFN_TWODAY_DROPOFF",
+        service_name=None,
+    )
+
+    assert carrier_name == "Hermes UK"
+    assert service_name == "Hermes Two Day - Drop Off"
