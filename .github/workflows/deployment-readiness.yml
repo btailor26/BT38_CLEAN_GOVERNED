@@ -43,6 +43,7 @@ jobs:
             governed_runtime_visibility_routes.py \
             governed_fbm_routes.py \
             governed_packlink_callback_routes.py \
+            services/fbm_amazon_order_profile.py \
             services/fbm_amazon_vtr.py \
             services/fbm_packlink_adapter.py \
             services/fbm_packlink_callback.py \
