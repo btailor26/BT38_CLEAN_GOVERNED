@@ -1,9 +1,9 @@
 """Marketplace confirmation for FBM shipments purchased outside the marketplace.
 
 Marketplace-native postage remains owned by that marketplace. Amazon Buy
-Shipping must not be confirmed a second time by BT38. Amazon shipments bought
-through Packlink are VTR-sensitive and use a strict Amazon carrier resolver,
-not the generic editable provider mapping used by other external flows.
+Shipping must not be confirmed a second time by BT38. External Packlink labels
+are saved and printable first; marketplace transfer waits for the persistent
+carrier/service mapping to be verified once.
 """
 from __future__ import annotations
 
@@ -14,13 +14,6 @@ from extensions import db
 from fbm_models import FBMCarrierServiceMapping, FBMShipment
 from models import MarketplaceOrder
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
-from services.fbm_amazon_vtr import (
-    AmazonVTRCarrierError,
-    amazon_carrier_code,
-    amazon_shipping_method,
-    resolve_amazon_uk_carrier,
-    validate_amazon_tracking,
-)
 from services.fbm_order_mapper import order_lines
 
 
@@ -111,10 +104,24 @@ def _persist_confirmed_order_lines(
         line.updated_at = now
 
 
-def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]:
-    """Confirm one paid Packlink shipment to Amazon using VTR-safe carrier data."""
+def _mapping_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def confirm_amazon_packlink_shipment(
+    *,
+    shipment: FBMShipment,
+    mapping: FBMCarrierServiceMapping,
+) -> dict[str, Any]:
+    """Send a paid Packlink shipment to Amazon using its saved verified mapping."""
     if str(shipment.provider or "").strip().casefold() != "packlink":
         return {"success": False, "held": True, "reason": "not_packlink"}
+
+    if mapping.verification_status != "verified":
+        shipment.marketplace_confirmation_status = "mapping_under_review"
+        shipment.marketplace_confirmation_error = "Carrier/service mapping is not verified yet."
+        db.session.commit()
+        return {"success": False, "held": True, "reason": "mapping_under_review"}
 
     if shipment.marketplace_confirmed_at:
         return {
@@ -130,21 +137,26 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
         db.session.commit()
         return {"success": False, "held": True, "reason": "order_missing"}
 
-    try:
-        carrier_name = resolve_amazon_uk_carrier(shipment.carrier)
-        carrier_code = amazon_carrier_code(carrier_name)
-        tracking = validate_amazon_tracking(carrier_name, shipment.tracking_number)
-        shipping_method = amazon_shipping_method(shipment.service, carrier_name)
-    except AmazonVTRCarrierError as exc:
-        shipment.marketplace_confirmation_status = "amazon_vtr_carrier_blocked"
-        shipment.marketplace_confirmation_error = str(exc)
+    carrier_code = _mapping_text(mapping.marketplace_carrier_code)
+    carrier_name = _mapping_text(mapping.marketplace_carrier_name or carrier_code)
+    shipping_method = _mapping_text(mapping.marketplace_service_name or mapping.marketplace_service_code)
+    tracking = "".join(str(shipment.tracking_number or "").strip().split())
+
+    if not carrier_code or not carrier_name or not shipping_method:
+        shipment.marketplace_confirmation_status = "mapping_under_review"
+        shipment.marketplace_confirmation_error = "Verified Amazon mapping is incomplete."
         db.session.commit()
-        return {
-            "success": False,
-            "held": True,
-            "reason": "amazon_vtr_carrier_blocked",
-            "error": str(exc),
-        }
+        return {"success": False, "held": True, "reason": "mapping_incomplete"}
+    if any(value.casefold() == "other" for value in (carrier_code, carrier_name, shipping_method)):
+        shipment.marketplace_confirmation_status = "amazon_vtr_mapping_blocked"
+        shipment.marketplace_confirmation_error = "Amazon Packlink confirmation cannot use Other."
+        db.session.commit()
+        return {"success": False, "held": True, "reason": "amazon_vtr_mapping_blocked"}
+    if not tracking:
+        shipment.marketplace_confirmation_status = "tracking_required"
+        shipment.marketplace_confirmation_error = "Packlink tracking number is required before Amazon confirmation."
+        db.session.commit()
+        return {"success": False, "held": True, "reason": "tracking_required"}
 
     try:
         client, marketplace_id = _amazon_client(order)
@@ -173,8 +185,6 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
     shipment.marketplace_confirmed_at = now
     shipment.marketplace_confirmation_status = "confirmed"
     shipment.marketplace_confirmation_error = None
-    shipment.carrier = carrier_name
-    shipment.tracking_number = tracking
     _persist_confirmed_order_lines(
         order=order,
         shipment=shipment,
@@ -192,6 +202,7 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
         "carrier_name": carrier_name,
         "shipping_method": shipping_method,
         "tracking_number": tracking,
+        "mapping_id": mapping.id,
         "vtr_safe_external": True,
     }
 
@@ -260,16 +271,12 @@ def confirm_external_shipment(
     shipment: FBMShipment,
     mapping: FBMCarrierServiceMapping,
 ) -> dict[str, Any]:
+    """Confirm one external shipment only after its saved mapping is verified."""
     if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
         shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
         shipment.marketplace_confirmation_error = None
         db.session.commit()
         return {"success": True, "managed_by_marketplace": True, "already_confirmed": True}
-
-    order = _amazon_order_for_shipment(shipment)
-    platform = _platform(order) if order is not None else ""
-    if platform == "amazon" and str(shipment.provider or "").strip().casefold() == "packlink":
-        return confirm_amazon_packlink_shipment(shipment=shipment)
 
     if mapping.verification_status != "verified" or not mapping.marketplace_carrier_code:
         shipment.marketplace_confirmation_status = "mapping_under_review"
@@ -291,11 +298,16 @@ def confirm_external_shipment(
         db.session.commit()
         return {"success": False, "held": True, "reason": "tracking_required"}
 
+    order = _amazon_order_for_shipment(shipment)
     if order is None:
         shipment.marketplace_confirmation_status = "order_missing"
         shipment.marketplace_confirmation_error = "Marketplace order is missing from BT38."
         db.session.commit()
         return {"success": False, "held": True, "reason": "order_missing"}
+
+    platform = _platform(order)
+    if platform == "amazon" and str(shipment.provider or "").strip().casefold() == "packlink":
+        return confirm_amazon_packlink_shipment(shipment=shipment, mapping=mapping)
 
     try:
         if platform == "amazon":
