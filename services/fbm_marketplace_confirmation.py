@@ -1,9 +1,9 @@
 """Marketplace confirmation for FBM shipments purchased outside the marketplace.
 
-Marketplace-native postage remains owned by that marketplace. In particular,
-Amazon Buy Shipping must not be confirmed a second time by BT38. External
-providers (Packlink/manual carrier) are confirmed only after the persistent
-carrier/service mapping has been verified.
+Marketplace-native postage remains owned by that marketplace. Amazon Buy
+Shipping must not be confirmed a second time by BT38. Amazon shipments bought
+through Packlink are VTR-sensitive and use a strict Amazon carrier resolver,
+not the generic editable provider mapping used by other external flows.
 """
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ from extensions import db
 from fbm_models import FBMCarrierServiceMapping, FBMShipment
 from models import MarketplaceOrder
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
+from services.fbm_amazon_vtr import (
+    AmazonVTRCarrierError,
+    amazon_shipping_method,
+    resolve_amazon_uk_carrier,
+    validate_amazon_tracking,
+)
 from services.fbm_order_mapper import order_lines
 
 
@@ -82,6 +88,118 @@ def _amazon_ship_date(shipment: FBMShipment) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _amazon_order_for_shipment(shipment: FBMShipment) -> MarketplaceOrder | None:
+    return MarketplaceOrder.query.filter_by(
+        store_id=shipment.store_id,
+        marketplace_order_id=shipment.marketplace_order_id,
+    ).order_by(MarketplaceOrder.id.asc()).first()
+
+
+def _persist_confirmed_order_lines(
+    *,
+    order: MarketplaceOrder,
+    shipment: FBMShipment,
+    carrier: str,
+    tracking: str,
+    now: datetime,
+) -> None:
+    for line in order_lines(order):
+        line.carrier = carrier
+        line.tracking_number = tracking
+        line.shipped_at = line.shipped_at or now
+        line.updated_at = now
+
+
+def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]:
+    """Confirm one paid Packlink shipment to Amazon using VTR-safe carrier data.
+
+    There is intentionally no editable FBMCarrierServiceMapping in this path.
+    Packlink's real carrier is resolved to Amazon's recognised UK identity and
+    unknown carriers fail closed. The provider tracking value is also validated
+    before Amazon receives it.
+    """
+    if str(shipment.provider or "").strip().casefold() != "packlink":
+        return {"success": False, "held": True, "reason": "not_packlink"}
+
+    if shipment.marketplace_confirmed_at:
+        return {
+            "success": True,
+            "already_confirmed": True,
+            "confirmed_at": shipment.marketplace_confirmed_at.isoformat(),
+        }
+
+    order = _amazon_order_for_shipment(shipment)
+    if order is None or _platform(order) != "amazon":
+        shipment.marketplace_confirmation_status = "order_missing"
+        shipment.marketplace_confirmation_error = "Amazon marketplace order is missing from BT38."
+        db.session.commit()
+        return {"success": False, "held": True, "reason": "order_missing"}
+
+    try:
+        carrier_code = resolve_amazon_uk_carrier(shipment.carrier)
+        tracking = validate_amazon_tracking(carrier_code, shipment.tracking_number)
+        shipping_method = amazon_shipping_method(shipment.service, carrier_code)
+    except AmazonVTRCarrierError as exc:
+        shipment.marketplace_confirmation_status = "amazon_vtr_carrier_blocked"
+        shipment.marketplace_confirmation_error = str(exc)
+        db.session.commit()
+        return {
+            "success": False,
+            "held": True,
+            "reason": "amazon_vtr_carrier_blocked",
+            "error": str(exc),
+        }
+
+    try:
+        client, marketplace_id = _amazon_client(order)
+        amazon_items = _amazon_order_items(order)
+        client.confirm_shipment(
+            str(order.marketplace_order_id),
+            marketplaceId=marketplace_id,
+            codCollectionMethod="",
+            packageDetail={
+                "packageReferenceId": int(shipment.id),
+                "carrierCode": carrier_code,
+                "carrierName": carrier_code,
+                "shippingMethod": shipping_method,
+                "trackingNumber": tracking,
+                "shipDate": _amazon_ship_date(shipment),
+                "orderItems": amazon_items,
+            },
+        )
+    except Exception as exc:
+        shipment.marketplace_confirmation_status = "confirmation_failed"
+        shipment.marketplace_confirmation_error = str(exc)
+        db.session.commit()
+        return {"success": False, "held": False, "reason": "confirmation_failed", "error": str(exc)}
+
+    now = datetime.utcnow()
+    shipment.marketplace_confirmed_at = now
+    shipment.marketplace_confirmation_status = "confirmed"
+    shipment.marketplace_confirmation_error = None
+    shipment.carrier = carrier_code
+    shipment.tracking_number = tracking
+    _persist_confirmed_order_lines(
+        order=order,
+        shipment=shipment,
+        carrier=carrier_code,
+        tracking=tracking,
+        now=now,
+    )
+    db.session.commit()
+    return {
+        "success": True,
+        "already_confirmed": False,
+        "confirmed_at": now.isoformat(),
+        "marketplace": "amazon",
+        "carrier_code": carrier_code,
+        "carrier_name": carrier_code,
+        "shipping_method": shipping_method,
+        "tracking_number": tracking,
+        "vtr_safe_external": True,
+    }
+
+
 def _confirm_ebay_external(
     *,
     order: MarketplaceOrder,
@@ -108,10 +226,6 @@ def _confirm_ebay_external(
         ),
     }
     if not manual:
-        # Packlink callbacks are authenticated provider events, not logged-in
-        # browser actions. Declare the automatic write explicitly so the single
-        # runtime guard applies the fuse-box/store checks without requiring a
-        # browser user inside the callback request context.
         guard_context["automatic_push"] = True
 
     guard = is_runtime_action_allowed(
@@ -150,19 +264,21 @@ def confirm_external_shipment(
     shipment: FBMShipment,
     mapping: FBMCarrierServiceMapping,
 ) -> dict[str, Any]:
-    """Confirm one externally fulfilled shipment after mapping verification.
+    """Confirm one mapped external shipment.
 
-    The call is idempotent at BT38 level: once ``marketplace_confirmed_at`` is
-    stored, ordinary retries return the persisted result without another
-    marketplace write. Amazon receives a stable packageReferenceId based on the
-    BT38 shipment ID. eBay reuses BT38's governed CompleteSale writer and the
-    same runtime action guard used by other event-driven marketplace writes.
+    Amazon+Packlink must not call this function; it uses
+    confirm_amazon_packlink_shipment so VTR identity cannot be manually mapped.
     """
     if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
         shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
         shipment.marketplace_confirmation_error = None
         db.session.commit()
         return {"success": True, "managed_by_marketplace": True, "already_confirmed": True}
+
+    order = _amazon_order_for_shipment(shipment)
+    platform = _platform(order) if order is not None else ""
+    if platform == "amazon" and str(shipment.provider or "").strip().casefold() == "packlink":
+        return confirm_amazon_packlink_shipment(shipment=shipment)
 
     if mapping.verification_status != "verified" or not mapping.marketplace_carrier_code:
         shipment.marketplace_confirmation_status = "mapping_under_review"
@@ -184,19 +300,16 @@ def confirm_external_shipment(
         db.session.commit()
         return {"success": False, "held": True, "reason": "tracking_required"}
 
-    order = MarketplaceOrder.query.filter_by(
-        store_id=shipment.store_id,
-        marketplace_order_id=shipment.marketplace_order_id,
-    ).order_by(MarketplaceOrder.id.asc()).first()
     if order is None:
         shipment.marketplace_confirmation_status = "order_missing"
         shipment.marketplace_confirmation_error = "Marketplace order is missing from BT38."
         db.session.commit()
         return {"success": False, "held": True, "reason": "order_missing"}
 
-    platform = _platform(order)
     try:
         if platform == "amazon":
+            # Non-Packlink mapped Amazon external shipments retain the legacy
+            # path, but Packlink can never reach this branch.
             client, marketplace_id = _amazon_client(order)
             amazon_items = _amazon_order_items(order)
             carrier_code = str(mapping.marketplace_carrier_code or "").strip()
@@ -251,11 +364,13 @@ def confirm_external_shipment(
         or mapping.marketplace_carrier_name
         or mapping.marketplace_carrier_code
     )
-    for line in order_lines(order):
-        line.carrier = carrier_for_db
-        line.tracking_number = tracking
-        line.shipped_at = line.shipped_at or now
-        line.updated_at = now
+    _persist_confirmed_order_lines(
+        order=order,
+        shipment=shipment,
+        carrier=carrier_for_db,
+        tracking=tracking,
+        now=now,
+    )
     db.session.commit()
     return {
         "success": True,
