@@ -78,5 +78,41 @@
         return {printer: printer, sent: true};
     }
 
+    function ensureDownloadFallback(root) {
+        const scope = root && root.querySelectorAll ? root : document;
+        const boxes = [];
+        if (root && root.matches && root.matches('.rate-results')) boxes.push(root);
+        scope.querySelectorAll('.rate-results').forEach(box => boxes.push(box));
+        boxes.forEach(box => {
+            if (!box.dataset || !box.dataset.label || box.querySelector('.label-download')) return;
+            let label = null;
+            try { label = JSON.parse(box.dataset.label); }
+            catch (_) { return; }
+            if (!label || !(label.url || label.base64)) return;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-sm btn-outline-primary label-download mt-2';
+            button.textContent = 'Download label';
+            box.appendChild(button);
+        });
+    }
+
+    if (global.MutationObserver && global.document) {
+        const observer = new MutationObserver(mutations => {
+            mutations.forEach(mutation => {
+                if (mutation.target) ensureDownloadFallback(mutation.target.closest ? mutation.target.closest('.rate-results') || mutation.target : mutation.target);
+                mutation.addedNodes.forEach(node => {
+                    if (node && node.nodeType === 1) ensureDownloadFallback(node);
+                });
+            });
+        });
+        const start = () => {
+            ensureDownloadFallback(document);
+            observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-label']});
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
+        else start();
+    }
+
     global.BT38FBMQZ = {connect, printers, savedPrinter, savePrinter, resolvePrinter, printLabel};
 })(window);
