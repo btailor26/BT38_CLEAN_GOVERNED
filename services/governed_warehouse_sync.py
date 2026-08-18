@@ -1,7 +1,12 @@
-"""BT38 governed Warehouse Sync recovery entry point.
+"""BT38 governed Warehouse Sync entry point.
 
-Warehouse Sync is a bounded pending-order recovery shortcut only.
-It must not launch marketplace-wide listing or inventory hydration.
+Warehouse Sync performs two governed recovery actions for each switched-on
+store:
+1. refresh marketplace listing structure/metadata, including variation identity;
+2. recover recent/pending marketplace orders.
+
+It never treats marketplace quantity as Warehouse truth and never starts a
+marketplace quantity push.
 """
 
 from services.runtime_action_guard import is_runtime_action_allowed
@@ -27,6 +32,9 @@ def run_governed_warehouse_sync(
 ):
     from extensions import db
     from models import Store
+    from services.governed_listing_structure_reconcile import (
+        run_governed_listing_structure_reconcile,
+    )
     from services.governed_marketplace_order_import import (
         run_governed_marketplace_order_import,
     )
@@ -44,7 +52,7 @@ def run_governed_warehouse_sync(
 
     stores = [store for store in stores if store is not None]
     guard_results = []
-    import_results = []
+    sync_results = []
 
     for store in stores:
         guard = _guard_store_sync(store, actor)
@@ -56,7 +64,7 @@ def run_governed_warehouse_sync(
         })
 
         if not guard.get("allowed"):
-            import_results.append({
+            sync_results.append({
                 "store_id": getattr(store, "id", None),
                 "store": getattr(store, "name", None),
                 "platform": getattr(store, "platform", None),
@@ -66,28 +74,41 @@ def run_governed_warehouse_sync(
             })
             continue
 
-        result = run_governed_marketplace_order_import(
+        listing_result = run_governed_listing_structure_reconcile(
+            store_id=store.id,
+            source=f"{actor}:listing_structure_reconcile",
+        )
+
+        order_result = run_governed_marketplace_order_import(
             store_id=store.id,
             source=f"{actor}:pending_order_recovery",
         )
-        result_success = (
-            bool(result.get("success", False))
-            if isinstance(result, dict)
+
+        listing_success = (
+            bool(listing_result.get("success", False))
+            if isinstance(listing_result, dict)
             else True
         )
-        import_results.append({
+        order_success = (
+            bool(order_result.get("success", False))
+            if isinstance(order_result, dict)
+            else True
+        )
+
+        sync_results.append({
             "store_id": store.id,
             "store": getattr(store, "name", None),
             "platform": getattr(store, "platform", None),
-            "success": result_success,
-            "result": result,
+            "success": listing_success and order_success,
+            "listing_structure": listing_result,
+            "order_recovery": order_result,
         })
 
     success = bool(stores) and all(
-        bool(item.get("success")) for item in import_results
+        bool(item.get("success")) for item in sync_results
     )
     blocked = sum(
-        1 for item in import_results if item.get("execution_blocked")
+        1 for item in sync_results if item.get("execution_blocked")
     )
 
     return {
@@ -97,13 +118,14 @@ def run_governed_warehouse_sync(
         "manual": True,
         "execution_blocked": bool(stores) and blocked == len(stores),
         "fuse_box_checked": True,
-        "mode": "governed_recent_order_recovery",
+        "mode": "governed_listing_and_order_recovery",
         "store_id": store_id,
         "stores_checked": len(stores),
         "stores_blocked": blocked,
         "guards": guard_results,
-        "results": import_results,
-        "full_marketplace_scan_started": False,
-        "listing_hydration_started": False,
-        "inventory_hydration_started": False,
+        "results": sync_results,
+        "listing_structure_reconcile_started": True,
+        "pending_order_recovery_started": True,
+        "marketplace_push_started": False,
+        "warehouse_quantity_changed_from_marketplace": False,
     }
