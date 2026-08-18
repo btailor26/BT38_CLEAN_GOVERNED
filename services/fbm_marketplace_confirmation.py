@@ -16,6 +16,7 @@ from models import MarketplaceOrder
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
 from services.fbm_amazon_vtr import (
     AmazonVTRCarrierError,
+    amazon_carrier_code,
     amazon_shipping_method,
     resolve_amazon_uk_carrier,
     validate_amazon_tracking,
@@ -111,13 +112,7 @@ def _persist_confirmed_order_lines(
 
 
 def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]:
-    """Confirm one paid Packlink shipment to Amazon using VTR-safe carrier data.
-
-    There is intentionally no editable FBMCarrierServiceMapping in this path.
-    Packlink's real carrier is resolved to Amazon's recognised UK identity and
-    unknown carriers fail closed. The provider tracking value is also validated
-    before Amazon receives it.
-    """
+    """Confirm one paid Packlink shipment to Amazon using VTR-safe carrier data."""
     if str(shipment.provider or "").strip().casefold() != "packlink":
         return {"success": False, "held": True, "reason": "not_packlink"}
 
@@ -136,9 +131,10 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
         return {"success": False, "held": True, "reason": "order_missing"}
 
     try:
-        carrier_code = resolve_amazon_uk_carrier(shipment.carrier)
-        tracking = validate_amazon_tracking(carrier_code, shipment.tracking_number)
-        shipping_method = amazon_shipping_method(shipment.service, carrier_code)
+        carrier_name = resolve_amazon_uk_carrier(shipment.carrier)
+        carrier_code = amazon_carrier_code(carrier_name)
+        tracking = validate_amazon_tracking(carrier_name, shipment.tracking_number)
+        shipping_method = amazon_shipping_method(shipment.service, carrier_name)
     except AmazonVTRCarrierError as exc:
         shipment.marketplace_confirmation_status = "amazon_vtr_carrier_blocked"
         shipment.marketplace_confirmation_error = str(exc)
@@ -160,7 +156,7 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
             packageDetail={
                 "packageReferenceId": int(shipment.id),
                 "carrierCode": carrier_code,
-                "carrierName": carrier_code,
+                "carrierName": carrier_name,
                 "shippingMethod": shipping_method,
                 "trackingNumber": tracking,
                 "shipDate": _amazon_ship_date(shipment),
@@ -177,12 +173,12 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
     shipment.marketplace_confirmed_at = now
     shipment.marketplace_confirmation_status = "confirmed"
     shipment.marketplace_confirmation_error = None
-    shipment.carrier = carrier_code
+    shipment.carrier = carrier_name
     shipment.tracking_number = tracking
     _persist_confirmed_order_lines(
         order=order,
         shipment=shipment,
-        carrier=carrier_code,
+        carrier=carrier_name,
         tracking=tracking,
         now=now,
     )
@@ -193,7 +189,7 @@ def confirm_amazon_packlink_shipment(*, shipment: FBMShipment) -> dict[str, Any]
         "confirmed_at": now.isoformat(),
         "marketplace": "amazon",
         "carrier_code": carrier_code,
-        "carrier_name": carrier_code,
+        "carrier_name": carrier_name,
         "shipping_method": shipping_method,
         "tracking_number": tracking,
         "vtr_safe_external": True,
@@ -264,11 +260,6 @@ def confirm_external_shipment(
     shipment: FBMShipment,
     mapping: FBMCarrierServiceMapping,
 ) -> dict[str, Any]:
-    """Confirm one mapped external shipment.
-
-    Amazon+Packlink must not call this function; it uses
-    confirm_amazon_packlink_shipment so VTR identity cannot be manually mapped.
-    """
     if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
         shipment.marketplace_confirmation_status = "amazon_buy_shipping_managed_by_amazon"
         shipment.marketplace_confirmation_error = None
@@ -308,8 +299,6 @@ def confirm_external_shipment(
 
     try:
         if platform == "amazon":
-            # Non-Packlink mapped Amazon external shipments retain the legacy
-            # path, but Packlink can never reach this branch.
             client, marketplace_id = _amazon_client(order)
             amazon_items = _amazon_order_items(order)
             carrier_code = str(mapping.marketplace_carrier_code or "").strip()
