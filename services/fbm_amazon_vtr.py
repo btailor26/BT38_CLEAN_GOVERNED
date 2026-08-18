@@ -110,7 +110,12 @@ def validate_amazon_tracking(carrier: str, tracking_number: Any) -> str:
 
 
 def amazon_shipping_method(provider_service: Any, carrier: str) -> str:
-    """Resolve the Packlink product into Amazon's UK ship-confirm service."""
+    """Resolve the Packlink product into Amazon's UK ship-confirm service.
+
+    There is intentionally no ``Other`` fallback in this function. If BT38
+    cannot prove the Amazon service identity, shipment confirmation is held so
+    the external Packlink tracking cannot create a VTR strike.
+    """
     service = " ".join(str(provider_service or "").strip().split())
     normalized = _norm(service)
 
@@ -142,4 +147,8 @@ def amazon_shipping_method(provider_service: Any, carrier: str) -> str:
             f"Packlink Yodel service '{service}' is not proven to match an Amazon Xpect service; shipment confirmation is held for VTR safety."
         )
 
-    return service or "Other"
+    if not service:
+        raise AmazonVTRCarrierError(
+            f"Packlink did not return a service for Amazon carrier '{carrier}'. BT38 will not send Other."
+        )
+    return service
