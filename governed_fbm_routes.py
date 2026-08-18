@@ -640,9 +640,17 @@ def manual_dispatch(order_id: int):
     if shipment.marketplace_confirmed_at:
         return jsonify({"success": True, "already_confirmed": True, "shipment_id": shipment.id, "tracking_number": shipment.tracking_number, "message": "This shipment has already been confirmed to the marketplace."})
     result = persist_external_label(shipment=shipment, marketplace=_platform(order), provider="manual", provider_shipment_id=tracking, carrier=carrier, service=service, tracking_number=tracking, label={})
-    return jsonify({"success": True, "manual": True, "print_allowed": False, **result})
+    return jsonify({"success": True, "manual": True, **result, "print_allowed": False})
 
 
+@governed_fbm_bp.get("/fbm/mappings/pending")
+@login_required
+def pending_carrier_mappings():
+    mappings = FBMCarrierServiceMapping.query.filter_by(verification_status="pending_review").order_by(FBMCarrierServiceMapping.created_at.asc()).limit(100).all()
+    return jsonify({"success": True, "count": len(mappings), "mappings": [mapping_payload(mapping) for mapping in mappings]})
+
+
+@governed_fbm_bp.post("/fbm/mappings/<int:mapping_id>/verify")
 @governed_fbm_bp.post("/fbm/carrier-mappings/<int:mapping_id>/verify")
 @login_required
 def verify_carrier_mapping(mapping_id: int):
@@ -655,18 +663,51 @@ def verify_carrier_mapping(mapping_id: int):
     if not marketplace_carrier_code:
         return jsonify({"success": False, "message": "Marketplace carrier code is required."}), 400
     verified_by = str(getattr(current_user, "username", None) or getattr(current_user, "email", None) or getattr(current_user, "id", "user"))
-    mapping = verify_mapping(mapping=mapping, marketplace_carrier_code=marketplace_carrier_code, marketplace_service_code=marketplace_service_code, verified_by=verified_by)
-    return jsonify({"success": True, "mapping": mapping_payload(mapping), "message": "Carrier/service mapping verified, saved, and released for waiting shipments."})
+    try:
+        mapping = verify_mapping(
+            mapping=mapping,
+            marketplace_carrier_code=marketplace_carrier_code,
+            marketplace_carrier_name=body.get("marketplace_carrier_name"),
+            marketplace_service_code=marketplace_service_code,
+            marketplace_service_name=body.get("marketplace_service_name"),
+            verified_by=verified_by,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    payload = mapping_payload(mapping)
+    release = (payload or {}).get("release_summary") or {"attempted": 0, "confirmed": 0, "failed": 0, "results": []}
+    if release.get("failed"):
+        return jsonify({
+            "success": False,
+            "mapping_saved": True,
+            "mapping": payload,
+            "release_summary": release,
+            "message": mapping.last_error or "Mapping was saved, but one or more waiting shipments could not be confirmed to the marketplace.",
+        })
+    return jsonify({
+        "success": True,
+        "mapping_saved": True,
+        "mapping": payload,
+        "release_summary": release,
+        "message": "Carrier/service mapping verified and saved. Waiting shipments were released successfully.",
+    })
 
 
+@governed_fbm_bp.get("/fbm/providers/packlink/connection")
 @governed_fbm_bp.get("/fbm/packlink/connection")
 @login_required
 def packlink_connection():
-    adapter = PacklinkAdapter()
-    if not adapter.configured:
-        return jsonify({"success": False, "message": "PACKLINK_API_KEY is not configured."}), 503
-    try:
-        result = adapter.test_connection()
-    except (PacklinkConfigurationError, PacklinkRequestError) as exc:
-        return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
-    return jsonify({"success": True, "provider": "packlink", "result": result})
+    result = PacklinkAdapter().connection_check()
+    status = 200 if result.ok else (result.status_code or 503)
+    return jsonify({
+        "success": result.ok,
+        "provider": "packlink",
+        "configured": result.configured,
+        "authenticated": result.ok,
+        "status_code": result.status_code,
+        "account_country": result.account_country,
+        "account_email": result.account_email,
+        "message": result.message,
+        "read_only": True,
+    }), status
