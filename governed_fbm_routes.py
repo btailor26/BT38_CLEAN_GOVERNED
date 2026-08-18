@@ -80,16 +80,16 @@ def _marketplace_shipping_mode(order: MarketplaceOrder, platform: str, profile: 
         return {
             "recommended": "Amazon Buy Shipping",
             "marketplace_buy_shipping": True,
-            "external_provider": profile_known and not is_prime,
-            "manual": profile_known and not is_prime,
+            # Unknown Prime status must not be treated as Prime. Only a positive
+            # Amazon Prime/SFP classification locks external/manual routes.
+            "external_provider": not is_prime,
+            "manual": not is_prime,
             "prime_locked": is_prime,
             "profile_known": profile_known,
             "reason": (
                 "Prime/SFP order: Amazon Buy Shipping only; Amazon decides the eligible carrier/service."
                 if is_prime
-                else "Amazon Buy Shipping is available; non-Prime orders may also use permitted external providers."
-                if profile_known
-                else "Amazon shipping profile has not yet been verified; external shipping stays locked until Prime status is known."
+                else "Amazon Buy Shipping is available. Packlink / external carrier and manual dispatch remain available unless Amazon positively identifies this order as Prime/SFP."
             ),
         }
     if normalized == "ebay":
@@ -138,9 +138,7 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
             "message": (
                 "Prime/SFP: Amazon controls the eligible carrier/service and this is the only allowed purchase route."
                 if is_prime
-                else "Amazon returns the live eligible services, price, carrier and label formats for this order."
-                if profile_known
-                else f"Amazon shipping profile could not yet be verified: {profile_error or 'Prime status unknown'}. External routes remain locked."
+                else "Amazon uses its own order context for Buy Shipping. BT38 supplies the packed parcel details; the buyer address is not a BT38 prerequisite for this marketplace-native route."
             ),
         })
 
@@ -163,7 +161,7 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
         })
 
     packlink = PacklinkAdapter()
-    external_allowed = platform != "amazon" or (profile_known and not is_prime)
+    external_allowed = platform != "amazon" or not is_prime
     options.append({
         "provider": "packlink",
         "label": "Packlink PRO",
@@ -180,15 +178,13 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
         "message": (
             "Prime/SFP is locked to Amazon Buy Shipping."
             if is_prime
-            else "External shipping is locked until Amazon Prime status is verified."
-            if platform == "amazon" and not profile_known
-            else "Packlink PRO live rates and shipment drafting are connected. Packlink's public integration flow still requires Packlink-side payment before the label becomes available."
+            else "Packlink PRO live rates and shipment drafting are connected. Full BT38 delivery details are required only when this external route is used. Packlink-side payment is still required before the label becomes available."
             if packlink.configured
             else "PACKLINK_API_KEY is not configured."
         ),
     })
 
-    manual_allowed = platform != "amazon" or (profile_known and not is_prime)
+    manual_allowed = platform != "amazon" or not is_prime
     options.append({
         "provider": "manual",
         "label": "Manual / own carrier",
@@ -201,7 +197,7 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
         "label_formats": [],
         "auto_print_supported": False,
         "requires_terms_acceptance": False,
-        "message": "Prime/SFP is locked to Amazon Buy Shipping." if is_prime else "Use a label bought outside BT38; BT38 will still normalise carrier/service/tracking before marketplace confirmation." if manual_allowed else "External shipping is locked until Amazon Prime status is verified.",
+        "message": "Prime/SFP is locked to Amazon Buy Shipping." if is_prime else "Use a label bought outside BT38; BT38 will normalise carrier/service/tracking before marketplace confirmation.",
     })
     return options
 
@@ -379,16 +375,24 @@ def packlink_rates(order_id: int):
         return jsonify({"success": False, "message": "FBM order not found."}), 404
     if _platform(order).strip().lower() == "amazon":
         profile, error = _amazon_profile(order)
-        if profile is None or profile.is_prime is None:
-            return jsonify({"success": False, "message": error or "Amazon Prime status must be verified before using an external provider."}), 409
-        if profile.is_prime:
+        # Unknown Prime status is not Prime. Only a positive Prime/SFP result
+        # blocks external shipping; Packlink itself still requires the full
+        # BT38 destination address before rates can be requested.
+        if profile is not None and profile.is_prime is True:
             return jsonify({"success": False, "message": "Prime/SFP orders must use Amazon Buy Shipping."}), 409
 
     body = request.get_json(silent=True) or {}
     parcel = provider_parcel(order, body.get("parcel") or {})
-    missing = [name for name in ("to_zip", "weight_kg", "length_cm", "width_cm", "height_cm") if not parcel.get(name)]
+    destination = ship_to(order)
+    missing = []
+    for key, label in (("name", "destination name"), ("address1", "destination address"), ("city", "destination city"), ("postcode", "destination postcode"), ("country", "destination country")):
+        if not destination.get(key):
+            missing.append(label)
+    for name in ("weight_kg", "length_cm", "width_cm", "height_cm"):
+        if not parcel.get(name):
+            missing.append(name)
     if missing:
-        return jsonify({"success": False, "message": "Parcel data is incomplete.", "missing": missing, "parcel": parcel}), 422
+        return jsonify({"success": False, "message": "External shipping data is incomplete.", "missing": missing, "parcel": parcel}), 422
     try:
         rates = PacklinkAdapter().get_rates(order=order, parcel=parcel)
     except (PacklinkConfigurationError, PacklinkRequestError) as exc:
@@ -426,9 +430,7 @@ def packlink_create_draft(order_id: int):
         return jsonify({"success": False, "message": "FBM order not found."}), 404
     if _platform(order).strip().lower() == "amazon":
         profile, error = _amazon_profile(order, refresh=True)
-        if profile is None or profile.is_prime is None:
-            return jsonify({"success": False, "message": error or "Amazon Prime status must be verified first."}), 409
-        if profile.is_prime:
+        if profile is not None and profile.is_prime is True:
             return jsonify({"success": False, "message": "Prime/SFP orders must use Amazon Buy Shipping."}), 409
 
     body = request.get_json(silent=True) or {}
@@ -588,10 +590,7 @@ def amazon_rates(order_id: int):
 
     body = request.get_json(silent=True) or {}
     resolved = apply_parcel_overrides(parcel_from_db(order), body.get("parcel") or {})
-    destination = ship_to(order)
     missing = []
-    if not destination.get("postcode"):
-        missing.append("destination postcode")
     for field in ("weight_kg", "length_cm", "width_cm", "height_cm"):
         if not getattr(resolved, field):
             missing.append(field)
@@ -823,66 +822,51 @@ def amazon_tracking(shipment_id: int):
         shipment.delivered_at = shipment.delivered_at or now
     elif any(token in normalized for token in ("TRANSIT", "OUT_FOR_DELIVERY", "PICKED_UP")):
         shipment.status = "in_transit"
+    elif any(token in normalized for token in ("ACCEPT", "PRE_TRANSIT", "CREATED", "LABEL")):
+        shipment.status = "accepted"
         shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
-        shipment.first_movement_at = shipment.first_movement_at or now
     db.session.commit()
-    return jsonify({"success": True, "shipment_id": shipment.id, "tracking_number": shipment.tracking_number, "status": shipment.status, "provider_status": shipment.last_provider_status, "tracking": payload})
+    return jsonify({
+        "success": True,
+        "shipment_id": shipment.id,
+        "tracking_number": shipment.tracking_number,
+        "carrier": shipment.carrier,
+        "service": shipment.service,
+        "provider_status": summary_status,
+        "state": shipment_confirmation_state(shipment),
+        "tracking": payload,
+    })
 
 
-@governed_fbm_bp.get("/fbm/mappings/pending")
-@login_required
-def pending_carrier_mappings():
-    mappings = FBMCarrierServiceMapping.query.filter_by(verification_status="pending_review").order_by(FBMCarrierServiceMapping.created_at.asc()).limit(100).all()
-    return jsonify({"success": True, "count": len(mappings), "mappings": [mapping_payload(mapping) for mapping in mappings]})
-
-
-@governed_fbm_bp.post("/fbm/mappings/<int:mapping_id>/verify")
+@governed_fbm_bp.post("/fbm/carrier-mappings/<int:mapping_id>/verify")
 @login_required
 def verify_carrier_mapping(mapping_id: int):
     mapping = db.session.get(FBMCarrierServiceMapping, mapping_id)
     if mapping is None:
-        return jsonify({"success": False, "message": "Carrier/service mapping not found."}), 404
+        return jsonify({"success": False, "message": "Carrier mapping not found."}), 404
     body = request.get_json(silent=True) or {}
-    if body.get("confirm_mapping") != "SAVE_MAPPING":
-        return jsonify({"success": False, "message": "Explicit SAVE_MAPPING confirmation is required."}), 400
-    try:
-        verify_mapping(
-            mapping,
-            marketplace_carrier_code=body.get("marketplace_carrier_code"),
-            marketplace_carrier_name=body.get("marketplace_carrier_name"),
-            marketplace_service_code=body.get("marketplace_service_code"),
-            marketplace_service_name=body.get("marketplace_service_name"),
-            verified_by=f"user:{getattr(current_user, 'id', 'unknown')}",
-        )
-    except ValueError as exc:
-        return jsonify({"success": False, "message": str(exc)}), 400
-
-    for review in mapping.shipment_reviews:
-        shipment = getattr(review, "shipment", None)
-        if shipment and shipment.marketplace_confirmation_status == "mapping_under_review":
-            shipment.marketplace_confirmation_status = "mapping_verified_ready"
-            shipment.marketplace_confirmation_error = None
-    db.session.commit()
-    return jsonify({
-        "success": True,
-        "mapping": mapping_payload(mapping),
-        "message": "Mapping verified and saved. Future matching shipments will reuse it automatically.",
-    })
+    marketplace_carrier_code = str(body.get("marketplace_carrier_code") or "").strip()
+    marketplace_service_code = str(body.get("marketplace_service_code") or "").strip() or None
+    if not marketplace_carrier_code:
+        return jsonify({"success": False, "message": "Marketplace carrier code is required."}), 400
+    verified_by = str(getattr(current_user, "username", None) or getattr(current_user, "email", None) or getattr(current_user, "id", "user"))
+    mapping = verify_mapping(
+        mapping=mapping,
+        marketplace_carrier_code=marketplace_carrier_code,
+        marketplace_service_code=marketplace_service_code,
+        verified_by=verified_by,
+    )
+    return jsonify({"success": True, "mapping": mapping_payload(mapping), "message": "Carrier/service mapping verified and saved for future matching shipments."})
 
 
-@governed_fbm_bp.get("/fbm/providers/packlink/connection")
+@governed_fbm_bp.get("/fbm/packlink/connection")
 @login_required
-def packlink_connection_check():
-    result = PacklinkAdapter().connection_check()
-    status = 200 if result.ok else (result.status_code or 503)
-    return jsonify({
-        "success": result.ok,
-        "provider": "packlink",
-        "configured": result.configured,
-        "authenticated": result.ok,
-        "status_code": result.status_code,
-        "account_country": result.account_country,
-        "account_email": result.account_email,
-        "message": result.message,
-        "read_only": True,
-    }), status
+def packlink_connection():
+    adapter = PacklinkAdapter()
+    if not adapter.configured:
+        return jsonify({"success": False, "message": "PACKLINK_API_KEY is not configured."}), 503
+    try:
+        result = adapter.test_connection()
+    except (PacklinkConfigurationError, PacklinkRequestError) as exc:
+        return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
+    return jsonify({"success": True, "provider": "packlink", "result": result})
