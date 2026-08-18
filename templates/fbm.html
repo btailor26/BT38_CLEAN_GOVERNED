@@ -108,7 +108,7 @@
     const errorBox = document.getElementById('fbmShippingError');
     const ordersBox = document.getElementById('fbmShippingOrders');
 
-    function esc(value) { return String(value ?? '').replace(/[&<>'\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c])); }
+    function esc(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
     async function jsonFetch(url, options={}) { const response = await fetch(url, {credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json','Content-Type':'application/json', ...(options.headers||{})}, ...options}); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.success !== true) { const err = new Error(payload.message || `HTTP ${response.status}`); err.payload = payload; throw err; } return payload; }
     function selectedIds() { return checkboxes.filter(box => box.checked).map(box => box.value); }
     function updateSelection() { const ids=selectedIds(); if(selectedCount) selectedCount.textContent=`${ids.length} selected`; if(readyButton) readyButton.disabled=ids.length===0; if(selectAll){selectAll.checked=checkboxes.length>0&&ids.length===checkboxes.length;selectAll.indeterminate=ids.length>0&&ids.length<checkboxes.length;} }
