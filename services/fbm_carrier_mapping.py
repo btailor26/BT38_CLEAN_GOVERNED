@@ -100,9 +100,61 @@ def ensure_mapping_review(
     review.resolved_at = None
     review.review_reason = (
         f"{mapping.provider_carrier_display} · {mapping.provider_service_display} has not yet been verified "
-        f"for {marketplace}. Label printing is allowed; marketplace tracking confirmation is held."
+        f"for {marketplace}. Label printing and physical dispatch are allowed; marketplace tracking confirmation is held."
     )
     return mapping, review, False
+
+
+def _validate_amazon_packlink_mapping(
+    mapping: FBMCarrierServiceMapping,
+    *,
+    carrier_code: str,
+    carrier_name: str | None,
+    service_code: str | None,
+    service_name: str | None,
+) -> None:
+    """Fail closed before saving an Amazon+Packlink VTR mapping."""
+    if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
+        return
+
+    values = [
+        carrier_code,
+        carrier_name or "",
+        service_code or "",
+        service_name or "",
+    ]
+    if any(_norm(value) == "other" for value in values if str(value or "").strip()):
+        raise ValueError("Amazon Packlink mappings cannot use Other for carrier or shipping service.")
+
+    resolved_carrier = str(carrier_name or carrier_code or "").strip()
+    resolved_service = str(service_name or service_code or "").strip()
+    if not resolved_carrier:
+        raise ValueError("Amazon Packlink mapping requires the exact Amazon carrier.")
+    if not resolved_service:
+        raise ValueError("Amazon Packlink mapping requires the exact Amazon shipping service.")
+
+    provider_carrier = _norm(mapping.provider_carrier_display)
+    carrier_key = _norm(resolved_carrier)
+    service_key = _norm(resolved_service)
+
+    # Proven account-specific rule: Yodel is confirmed to Amazon as Yodel with
+    # service Xpert. Do not allow a generic Yodel/Other-style mapping to be saved.
+    if "yodel" in provider_carrier:
+        if "yodel" not in carrier_key:
+            raise ValueError("Yodel Packlink shipments must map to Amazon carrier Yodel.")
+        if service_key != "xpert":
+            raise ValueError("Yodel Packlink shipments must map to Amazon shipping service Xpert.")
+
+    # Packlink may return either Evri or Hermes naming. The verified Amazon
+    # mapping must remain in the Hermes family and identify the exact service.
+    if "evri" in provider_carrier or "hermes" in provider_carrier:
+        if "hermes" not in carrier_key:
+            raise ValueError("Evri/Hermes Packlink shipments must map to Amazon's Hermes carrier identity.")
+        if not (
+            ("two day" in service_key or "2nd day" in service_key or "2 day" in service_key)
+            and ("drop off" in service_key or "drop-off" in service_key or "dropoff" in service_key)
+        ):
+            raise ValueError("Evri/Hermes Packlink shipments must map to the exact Amazon two-day drop-off service.")
 
 
 def verify_mapping(
@@ -125,6 +177,18 @@ def verify_mapping(
     if not carrier_code:
         raise ValueError("Marketplace carrier code is required.")
 
+    carrier_name = str(marketplace_carrier_name or "").strip() or None
+    service_code = str(marketplace_service_code or "").strip() or None
+    service_name = str(marketplace_service_name or "").strip() or None
+
+    _validate_amazon_packlink_mapping(
+        mapping,
+        carrier_code=carrier_code,
+        carrier_name=carrier_name,
+        service_code=service_code,
+        service_name=service_name,
+    )
+
     waiting_reviews = FBMShipmentMappingReview.query.filter_by(
         mapping_id=mapping.id,
         status="under_review",
@@ -132,9 +196,9 @@ def verify_mapping(
     waiting_shipments = [review.shipment for review in waiting_reviews if review.shipment is not None]
 
     mapping.marketplace_carrier_code = carrier_code
-    mapping.marketplace_carrier_name = str(marketplace_carrier_name or "").strip() or None
-    mapping.marketplace_service_code = str(marketplace_service_code or "").strip() or None
-    mapping.marketplace_service_name = str(marketplace_service_name or "").strip() or None
+    mapping.marketplace_carrier_name = carrier_name
+    mapping.marketplace_service_code = service_code
+    mapping.marketplace_service_name = service_name
     mapping.verification_status = "verified"
     mapping.verified_at = datetime.utcnow()
     mapping.verified_by = str(verified_by or "user").strip() or "user"
