@@ -126,23 +126,36 @@ class PacklinkAdapter:
 
     def connection_check(self) -> PacklinkConnectionResult:
         if not self.configured:
-            return PacklinkConnectionResult(False, False, None, message="PACKLINK_API_KEY is not configured.")
+            return PacklinkConnectionResult(
+                False,
+                False,
+                None,
+                message="PACKLINK_API_KEY is not configured.",
+            )
         try:
-            payload = self._get_json("clients")
+            payload = self._get_json("users/api/keys")
         except PacklinkRequestError as exc:
-            return PacklinkConnectionResult(False, True, exc.status_code, message=str(exc))
+            return PacklinkConnectionResult(
+                False,
+                True,
+                exc.status_code,
+                message=str(exc),
+            )
 
-        account_country = None
-        account_email = None
+        returned_token = ""
         if isinstance(payload, dict):
-            account_country = str(payload.get("country") or payload.get("platform_country") or "").strip() or None
-            account_email = str(payload.get("email") or "").strip() or None
+            returned_token = str(payload.get("token") or "").strip()
+        if not returned_token:
+            return PacklinkConnectionResult(
+                False,
+                True,
+                200,
+                message="Packlink did not confirm the configured API key.",
+            )
         return PacklinkConnectionResult(
             True,
             True,
             200,
-            account_country=account_country,
-            account_email=account_email,
             message="Packlink PRO authentication succeeded.",
         )
 
