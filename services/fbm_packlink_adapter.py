@@ -17,7 +17,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from services.fbm_amazon_vtr import amazon_vtr_safe_rate, resolve_amazon_uk_carrier
 from services.fbm_order_mapper import order_lines, ship_from, ship_to
 from services.fbm_provider_contract import ProviderCapabilities
 
@@ -205,14 +204,11 @@ class PacklinkAdapter:
         if not isinstance(payload, list):
             return []
 
-        rates = [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
-        if self._is_amazon_order(order):
-            # Amazon Packlink is VTR-sensitive. Never expose an external carrier
-            # that BT38 cannot submit as the real Amazon-recognised carrier.
-            # In particular, do not fall back to CarrierCode=Other because that
-            # removes Amazon's carrier scan integration.
-            rates = [rate for rate in rates if amazon_vtr_safe_rate(rate)]
-        return rates
+        # Packlink is the postage source. Do not hide or rewrite carrier/service
+        # offers before purchase. The paid shipment's actual carrier/service is
+        # persisted after Packlink returns it; any new Amazon combination then
+        # enters the one-time mapping review while label printing stays allowed.
+        return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(
         self,
@@ -225,14 +221,6 @@ class PacklinkAdapter:
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
-
-        if self._is_amazon_order(order):
-            # Re-check at the write boundary so a stale/tampered stored quote
-            # cannot create Amazon postage with an unsafe VTR carrier.
-            try:
-                resolve_amazon_uk_carrier(rate.get("carrier_name") or rate.get("carrier"))
-            except ValueError as exc:
-                raise PacklinkConfigurationError(str(exc)) from exc
 
         origin = ship_from()
         destination = ship_to(order)
