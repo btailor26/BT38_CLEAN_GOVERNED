@@ -6,6 +6,7 @@
     'use strict';
 
     const STORAGE_KEY = 'bt38_fbm_qz_printer';
+    const PACKLINK_PRO_URL = 'https://pro.packlink.com/';
 
     function requireQz() {
         if (!global.qz) throw new Error('QZ Tray browser library is not loaded.');
@@ -97,17 +98,52 @@
         });
     }
 
+    function alignPacklinkPaymentHandoff(root) {
+        const scope = root && root.querySelectorAll ? root : document;
+        const drafts = [];
+        const statuses = [];
+        if (root && root.matches && root.matches('.packlink-draft')) drafts.push(root);
+        if (root && root.matches && root.matches('.packlink-status')) statuses.push(root);
+        scope.querySelectorAll('.packlink-draft').forEach(button => drafts.push(button));
+        scope.querySelectorAll('.packlink-status').forEach(button => statuses.push(button));
+
+        drafts.forEach(button => {
+            button.textContent = 'Buy with Packlink';
+        });
+
+        statuses.forEach(button => {
+            button.textContent = 'Check label';
+            const box = button.closest('.rate-results');
+            if (!box || box.querySelector('.packlink-pay-link')) return;
+            const pay = document.createElement('a');
+            pay.href = PACKLINK_PRO_URL;
+            pay.target = '_blank';
+            pay.rel = 'noopener';
+            pay.className = 'btn btn-sm btn-success me-2 packlink-pay-link';
+            pay.textContent = 'Pay in Packlink';
+            button.parentNode.insertBefore(pay, button);
+        });
+    }
+
     if (global.MutationObserver && global.document) {
         const observer = new MutationObserver(mutations => {
             mutations.forEach(mutation => {
-                if (mutation.target) ensureDownloadFallback(mutation.target.closest ? mutation.target.closest('.rate-results') || mutation.target : mutation.target);
+                if (mutation.target) {
+                    const target = mutation.target.closest ? mutation.target.closest('.rate-results') || mutation.target : mutation.target;
+                    ensureDownloadFallback(target);
+                    alignPacklinkPaymentHandoff(target);
+                }
                 mutation.addedNodes.forEach(node => {
-                    if (node && node.nodeType === 1) ensureDownloadFallback(node);
+                    if (node && node.nodeType === 1) {
+                        ensureDownloadFallback(node);
+                        alignPacklinkPaymentHandoff(node);
+                    }
                 });
             });
         });
         const start = () => {
             ensureDownloadFallback(document);
+            alignPacklinkPaymentHandoff(document);
             observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['data-label']});
         };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, {once:true});
