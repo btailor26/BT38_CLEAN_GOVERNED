@@ -5,6 +5,7 @@ import pytest
 import services.fbm_packlink_adapter as packlink_module
 from services.fbm_amazon_vtr import (
     AmazonVTRCarrierError,
+    amazon_shipping_method,
     resolve_amazon_uk_carrier,
     validate_amazon_tracking,
 )
@@ -193,7 +194,7 @@ def test_packlink_callback_reads_tracking_codes_array():
     assert _tracking_code({"tracking_codes": ["TRACK-123"]}) == "TRACK-123"
 
 
-def test_amazon_packlink_rates_exclude_non_vtr_carriers(monkeypatch):
+def test_amazon_packlink_rates_only_keep_proven_yodel_service(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(store=SimpleNamespace(platform="Amazon"))
     monkeypatch.setattr(
@@ -203,11 +204,17 @@ def test_amazon_packlink_rates_exclude_non_vtr_carriers(monkeypatch):
             {
                 "id": 1,
                 "carrier_name": "Yodel",
-                "name": "48 Hour",
+                "name": "Yodel Xpect 48",
                 "price": {"total_price": 2.50, "currency": "GBP"},
             },
             {
                 "id": 2,
+                "carrier_name": "Yodel",
+                "name": "48 Hour",
+                "price": {"total_price": 2.40, "currency": "GBP"},
+            },
+            {
+                "id": 3,
                 "carrier_name": "InPost",
                 "name": "Locker",
                 "price": {"total_price": 2.20, "currency": "GBP"},
@@ -229,7 +236,9 @@ def test_amazon_packlink_rates_exclude_non_vtr_carriers(monkeypatch):
         },
     )
 
-    assert [rate["carrier_name"] for rate in rates] == ["Yodel"]
+    assert len(rates) == 1
+    assert rates[0]["carrier_name"] == "Yodel"
+    assert rates[0]["service_name"] == "Yodel Xpect 48"
 
 
 def test_amazon_vtr_resolver_uses_amazon_carrier_identity():
@@ -243,10 +252,26 @@ def test_amazon_vtr_resolver_blocks_inpost():
         resolve_amazon_uk_carrier("InPost")
 
 
+def test_amazon_yodel_xpect_48_maps_to_amazon_service():
+    assert amazon_shipping_method("Yodel Xpect 48", "Yodel") == "Yodel Xpect 48"
+    assert amazon_shipping_method("XPECT 48 M NON POD", "Yodel") == "Yodel Xpect 48"
+
+
+def test_amazon_yodel_generic_48_hour_is_held_not_guessed():
+    with pytest.raises(AmazonVTRCarrierError, match="not proven"):
+        amazon_shipping_method("48 Hour", "Yodel")
+
+
+def test_amazon_evri_legacy_hermes_service_uses_evri_other():
+    assert resolve_amazon_uk_carrier("Hermes") == "Evri"
+    assert amazon_shipping_method("Hermes 2nd Day Drop Off", "Evri") == "Other"
+
+
 def test_amazon_yodel_internal_reference_is_blocked():
     with pytest.raises(AmazonVTRCarrierError, match="Yodel internal YOD reference"):
         validate_amazon_tracking("Yodel", "YOD123456789")
 
 
-def test_amazon_yodel_scannable_tracking_is_allowed():
+def test_amazon_yodel_scannable_tracking_is_allowed_and_hyphens_removed():
     assert validate_amazon_tracking("Yodel", "JJD0002250031234567") == "JJD0002250031234567"
+    assert validate_amazon_tracking("Yodel", "JJD0002-250031234567") == "JJD0002250031234567"
