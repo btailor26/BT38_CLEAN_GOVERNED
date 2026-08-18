@@ -1,10 +1,11 @@
 """Packlink PRO adapter for BT38 FBM.
 
 Packlink's public integration API supports authenticated service discovery,
-shipment draft creation, shipment reads, labels and tracking. Creating a draft
-is NOT represented as payment/purchase: Packlink PRO currently keeps incomplete
-shipments in Draft/Ready for payment until the merchant completes payment in
-Packlink. BT38 must never claim the API key charged postage when it did not.
+shipment draft creation, shipment reads, labels, tracking and one callback URL
+per Packlink client. Creating a draft is NOT represented as payment/purchase:
+Packlink PRO keeps incomplete shipments in Draft/Ready for payment until the
+merchant completes payment in Packlink. BT38 must never claim the API key
+charged postage when it did not.
 """
 from __future__ import annotations
 
@@ -45,12 +46,12 @@ class PacklinkConnectionResult:
 
 
 class PacklinkAdapter:
-    """Packlink PRO provider adapter using only documented integration calls."""
+    """Packlink PRO provider adapter using only integration API calls."""
 
     capabilities = ProviderCapabilities(
         provider="packlink",
         quotes=True,
-        label_purchase=False,  # public integration flow creates a draft; payment remains Packlink-side
+        label_purchase=False,  # API draft creation is not treated as payment
         tracking_status=True,
         case_opening=False,
         return_labels=False,
@@ -142,6 +143,27 @@ class PacklinkAdapter:
             account_email=account_email,
             message="Packlink PRO authentication succeeded.",
         )
+
+    def register_callback(self, callback_url: str) -> bool:
+        """Register the single event callback URL for this Packlink client.
+
+        This method is never called on import/startup. Callers must invoke it
+        explicitly when configuring the Packlink integration. Packlink applies
+        the configured URL to status events for all shipments on the API client.
+        """
+        callback_url = str(callback_url or "").strip()
+        if not callback_url.startswith("https://"):
+            raise PacklinkConfigurationError("Packlink callback URL must use HTTPS.")
+        payload = self._post_json("shipments/callback", {"url": callback_url})
+        if payload is None:
+            return True
+        if isinstance(payload, bool):
+            return payload
+        if isinstance(payload, dict):
+            if payload.get("success") is False:
+                return False
+            return True
+        return bool(payload)
 
     def get_rates(self, *, order: Any, parcel: dict) -> list[dict]:
         required = ("from_country", "from_zip", "to_country", "to_zip", "width_cm", "height_cm", "length_cm", "weight_kg")
@@ -277,7 +299,7 @@ class PacklinkAdapter:
 
     def purchase_label(self, **_: Any) -> dict:
         raise NotImplementedError(
-            "Packlink public integration API creates shipment drafts but does not expose a documented BT38-safe payment call."
+            "Packlink integration creates shipment drafts but does not expose a documented BT38-safe payment call."
         )
 
     def open_case(self, **_: Any) -> dict:
