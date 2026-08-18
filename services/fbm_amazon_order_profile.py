@@ -50,14 +50,14 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     if not creds or not getattr(creds, "is_valid", lambda: False)():
         raise AmazonOrderProfileError("Amazon credentials are not configured for this store.")
 
-    payload = _fetch_order(store, str(order.marketplace_order_id))
+    payload, address_payload = _fetch_order(store, str(order.marketplace_order_id))
     is_prime = _bool(payload.get("IsPrime"))
     is_premium = _bool(payload.get("IsPremiumOrder"))
     fulfillment = _text(payload.get("FulfillmentChannel"))
     service_level = _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel"))
     latest_ship = _parse_iso(payload.get("LatestShipDate"))
 
-    _hydrate_marketplace_order(order, payload)
+    _hydrate_marketplace_order(order, payload, address_payload)
 
     profile = existing or FBMOrderProfile(
         store_id=order.store_id,
@@ -76,14 +76,20 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     return profile
 
 
-def _hydrate_marketplace_order(order: Any, payload: dict[str, Any]) -> None:
+def _hydrate_marketplace_order(order: Any, payload: dict[str, Any], address_payload: dict[str, Any] | None = None) -> None:
     """Persist current Amazon delivery/shipping facts onto the existing order.
 
     This deliberately does not create orders, mutate inventory, or submit any
     marketplace action. It only refreshes fields Amazon already owns.
     """
-    address = payload.get("ShippingAddress") or {}
+    address = address_payload or payload.get("ShippingAddress") or {}
     if isinstance(address, dict):
+        # Orders v0 getOrderAddress returns {"payload": {"ShippingAddress": ...}}
+        # through some client versions and the address object directly through
+        # others. Normalise both shapes here.
+        if isinstance(address.get("ShippingAddress"), dict):
+            address = address["ShippingAddress"]
+
         name = _text(address.get("Name"))
         address1 = _text(address.get("AddressLine1"))
         address2 = _text(address.get("AddressLine2"))
@@ -118,7 +124,7 @@ def _hydrate_marketplace_order(order: Any, payload: dict[str, Any]) -> None:
     order.updated_at = datetime.utcnow()
 
 
-def _fetch_order(store: Any, order_id: str) -> dict[str, Any]:
+def _fetch_order(store: Any, order_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
     try:
         from sp_api.api import Orders
         from sp_api.base import Marketplaces
@@ -141,13 +147,39 @@ def _fetch_order(store: Any, order_id: str) -> dict[str, Any]:
         marketplace=_marketplace_for_id(creds.marketplace_id, Marketplaces),
     )
     response = client.get_order(order_id)
+    payload = _response_payload(response)
+    if not isinstance(payload, dict):
+        raise AmazonOrderProfileError("Amazon Orders API returned an unexpected order payload.")
+
+    address_payload = None
+    inline_address = payload.get("ShippingAddress")
+    if isinstance(inline_address, dict) and _text(inline_address.get("PostalCode")):
+        address_payload = inline_address
+    else:
+        # Orders v0 exposes the customer delivery address through the dedicated
+        # getOrderAddress operation. This call may require Amazon's restricted
+        # Direct-to-Consumer Delivery/Shipping role for PII access.
+        method = getattr(client, "get_order_address", None)
+        if method is not None:
+            try:
+                address_response = method(order_id)
+                candidate = _response_payload(address_response)
+                if isinstance(candidate, dict):
+                    address_payload = candidate
+            except Exception as exc:
+                # Preserve the order/profile refresh, but surface a useful error
+                # if BT38 still has no destination after hydration.
+                address_payload = {"_bt38_address_error": str(exc)}
+
+    return payload, address_payload
+
+
+def _response_payload(response: Any) -> Any:
     payload = getattr(response, "payload", None)
     if payload is None and hasattr(response, "json"):
         payload = response.json()
     if isinstance(payload, dict) and isinstance(payload.get("payload"), dict):
         payload = payload["payload"]
-    if not isinstance(payload, dict):
-        raise AmazonOrderProfileError("Amazon Orders API returned an unexpected order payload.")
     return payload
 
 
