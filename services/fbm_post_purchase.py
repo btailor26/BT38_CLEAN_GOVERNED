@@ -16,6 +16,9 @@ from services.fbm_carrier_mapping import ensure_mapping_review, mapping_payload
 from services.fbm_marketplace_confirmation import confirm_external_shipment
 
 
+STRONGER_PROVIDER_STATES = {"accepted", "in_transit", "delivered"}
+
+
 def persist_external_label(
     *,
     shipment: FBMShipment,
@@ -55,7 +58,14 @@ def persist_external_label(
     shipment.purchase_status = "purchased"
     shipment.purchase_error = None
     shipment.label_purchased_at = shipment.label_purchased_at or now
-    shipment.status = "awaiting_carrier_acceptance"
+
+    # A repeated Packlink label/status read must never move a shipment backwards.
+    # New labels begin at awaiting carrier acceptance, but once Packlink has
+    # already reported acceptance, movement or delivery, preserve that stronger
+    # provider lifecycle state.
+    current_status = str(shipment.status or "").strip().lower()
+    if current_status not in STRONGER_PROVIDER_STATES:
+        shipment.status = "awaiting_carrier_acceptance"
 
     mapping, review, mapping_ready = ensure_mapping_review(
         shipment=shipment,
