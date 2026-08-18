@@ -3,6 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 import services.fbm_packlink_adapter as packlink_module
+from services.fbm_amazon_vtr import (
+    AmazonVTRCarrierError,
+    resolve_amazon_uk_carrier,
+    validate_amazon_tracking,
+)
 from services.fbm_packlink_adapter import (
     PacklinkAdapter,
     PacklinkRequestError,
@@ -186,3 +191,62 @@ def test_packlink_rate_uses_total_price_and_carrier_name():
 
 def test_packlink_callback_reads_tracking_codes_array():
     assert _tracking_code({"tracking_codes": ["TRACK-123"]}) == "TRACK-123"
+
+
+def test_amazon_packlink_rates_exclude_non_vtr_carriers(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(store=SimpleNamespace(platform="Amazon"))
+    monkeypatch.setattr(
+        adapter,
+        "_get_json",
+        lambda endpoint, **_: [
+            {
+                "id": 1,
+                "carrier_name": "Yodel",
+                "name": "48 Hour",
+                "price": {"total_price": 2.50, "currency": "GBP"},
+            },
+            {
+                "id": 2,
+                "carrier_name": "InPost",
+                "name": "Locker",
+                "price": {"total_price": 2.20, "currency": "GBP"},
+            },
+        ],
+    )
+
+    rates = adapter.get_rates(
+        order=order,
+        parcel={
+            "from_country": "GB",
+            "from_zip": "LE1 3WU",
+            "to_country": "GB",
+            "to_zip": "SW1A 1AA",
+            "width_cm": 20,
+            "height_cm": 10,
+            "length_cm": 30,
+            "weight_kg": 1,
+        },
+    )
+
+    assert [rate["carrier_name"] for rate in rates] == ["Yodel"]
+
+
+def test_amazon_vtr_resolver_uses_amazon_carrier_identity():
+    assert resolve_amazon_uk_carrier("Yodel Direct") == "Yodel"
+    assert resolve_amazon_uk_carrier("Hermes") == "Evri"
+    assert resolve_amazon_uk_carrier("DPD UK") == "DPD"
+
+
+def test_amazon_vtr_resolver_blocks_inpost():
+    with pytest.raises(AmazonVTRCarrierError, match="not approved"):
+        resolve_amazon_uk_carrier("InPost")
+
+
+def test_amazon_yodel_internal_reference_is_blocked():
+    with pytest.raises(AmazonVTRCarrierError, match="Yodel internal YOD reference"):
+        validate_amazon_tracking("Yodel", "YOD123456789")
+
+
+def test_amazon_yodel_scannable_tracking_is_allowed():
+    assert validate_amazon_tracking("Yodel", "JJD0002250031234567") == "JJD0002250031234567"
