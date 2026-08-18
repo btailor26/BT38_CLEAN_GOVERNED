@@ -118,10 +118,22 @@ def verify_mapping(
     marketplace_service_name: str | None = None,
     verified_by: str | None = None,
 ) -> FBMCarrierServiceMapping:
-    """Verify one mapping identity so all future matching labels reuse it."""
+    """Verify one mapping identity and release all shipments waiting on it.
+
+    Saving the mapping is the one-time user action. The verified mapping is
+    committed before any marketplace call, then every shipment already waiting
+    on this identity is retried through the single external-confirmation path.
+    Future matching labels reuse the verified mapping automatically.
+    """
     carrier_code = str(marketplace_carrier_code or "").strip()
     if not carrier_code:
         raise ValueError("Marketplace carrier code is required.")
+
+    waiting_reviews = FBMShipmentMappingReview.query.filter_by(
+        mapping_id=mapping.id,
+        status="under_review",
+    ).all()
+    waiting_shipments = [review.shipment for review in waiting_reviews if review.shipment is not None]
 
     mapping.marketplace_carrier_code = carrier_code
     mapping.marketplace_carrier_name = str(marketplace_carrier_name or "").strip() or None
@@ -132,12 +144,20 @@ def verify_mapping(
     mapping.verified_by = str(verified_by or "user").strip() or "user"
     mapping.last_error = None
 
-    reviews = FBMShipmentMappingReview.query.filter_by(mapping_id=mapping.id, status="under_review").all()
     now = datetime.utcnow()
-    for review in reviews:
+    for review in waiting_reviews:
         review.status = "verified"
         review.resolved_at = now
         review.review_reason = None
+
+    # Persist the one-time mapping decision before performing any external write.
+    db.session.commit()
+
+    if waiting_shipments:
+        from services.fbm_marketplace_confirmation import confirm_external_shipment
+        for shipment in waiting_shipments:
+            confirm_external_shipment(shipment=shipment, mapping=mapping)
+
     return mapping
 
 
