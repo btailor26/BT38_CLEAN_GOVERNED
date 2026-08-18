@@ -1,9 +1,9 @@
 """Single post-purchase path for externally purchased FBM labels.
 
 Provider payment must already have succeeded before this function is called.
-The function never purchases postage. Amazon+Packlink is confirmed through the
-strict VTR-safe carrier resolver; other external flows keep the persistent
-carrier/service mapping review.
+The function never purchases postage. The provider label is persisted first and
+remains printable even when a new carrier/service mapping is still under review.
+Marketplace confirmation is released only after that mapping is verified once.
 """
 from __future__ import annotations
 
@@ -13,10 +13,7 @@ from typing import Any
 from extensions import db
 from fbm_models import FBMShipment
 from services.fbm_carrier_mapping import ensure_mapping_review, mapping_payload
-from services.fbm_marketplace_confirmation import (
-    confirm_amazon_packlink_shipment,
-    confirm_external_shipment,
-)
+from services.fbm_marketplace_confirmation import confirm_external_shipment
 
 
 STRONGER_PROVIDER_STATES = {"accepted", "in_transit", "delivered"}
@@ -35,7 +32,7 @@ def persist_external_label(
     provider_carrier_id: str | None = None,
     provider_service_id: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a confirmed provider label and evaluate marketplace confirmation."""
+    """Persist a confirmed provider label and evaluate marketplace mapping."""
     now = datetime.utcnow()
     label = label or {}
 
@@ -66,42 +63,9 @@ def persist_external_label(
     if current_status not in STRONGER_PROVIDER_STATES:
         shipment.status = "awaiting_carrier_acceptance"
 
-    marketplace_key = str(marketplace or "").strip().casefold()
-    provider_key = str(provider or "").strip().casefold()
-    amazon_packlink = marketplace_key == "amazon" and provider_key == "packlink"
-
-    if amazon_packlink:
-        # Critical VTR rule: Amazon+Packlink never creates or consumes an
-        # editable FBMCarrierServiceMapping. The actual Packlink carrier is
-        # resolved against Amazon's known UK carrier identity instead.
-        shipment.marketplace_confirmation_status = (
-            "confirmed" if shipment.marketplace_confirmed_at else "amazon_vtr_ready"
-        )
-        shipment.marketplace_confirmation_error = None
-        db.session.commit()
-
-        confirmation = confirm_amazon_packlink_shipment(shipment=shipment)
-        has_printable_label = bool(
-            shipment.label_url
-            or label.get("base64")
-            or label.get("data")
-            or label.get("contents")
-        )
-        return {
-            "shipment_id": shipment.id,
-            "provider_shipment_id": shipment.provider_shipment_id,
-            "carrier": shipment.carrier,
-            "service": shipment.service,
-            "tracking_number": shipment.tracking_number,
-            "mapping_ready": True,
-            "mapping": None,
-            "mapping_status": "not_required_amazon_vtr",
-            "mapping_message": "Amazon Packlink uses the actual Amazon-recognised carrier identity; manual mapping is disabled for VTR safety.",
-            "print_allowed": has_printable_label,
-            "marketplace_confirmation_allowed": True,
-            "marketplace_confirmation": confirmation,
-        }
-
+    # The provider facts are saved first. A new marketplace mapping never blocks
+    # the already-paid label or physical dispatch; it blocks only the transfer
+    # of carrier/service/tracking to the marketplace until verified once.
     mapping, review, mapping_ready = ensure_mapping_review(
         shipment=shipment,
         marketplace=marketplace,
@@ -121,6 +85,9 @@ def persist_external_label(
         shipment.marketplace_confirmation_status = "mapping_under_review"
         shipment.marketplace_confirmation_error = review.review_reason
 
+    # Provider success, label and mapping/review state are committed before any
+    # marketplace write. A confirmation failure therefore cannot lose the paid
+    # label or stop the parcel being physically dispatched.
     db.session.commit()
 
     confirmation = None
@@ -143,7 +110,7 @@ def persist_external_label(
         "mapping_ready": mapping_ready,
         "mapping": mapping_payload(mapping),
         "mapping_status": "verified" if mapping_ready else "under_review",
-        "mapping_message": None if mapping_ready else "Under review for correct marketplace mapping. Label printing is available now.",
+        "mapping_message": None if mapping_ready else "Under review for correct marketplace mapping. Label printing and physical dispatch are available now; marketplace transfer is held until the mapping is verified.",
         "print_allowed": has_printable_label,
         "marketplace_confirmation_allowed": mapping_ready,
         "marketplace_confirmation": confirmation,
