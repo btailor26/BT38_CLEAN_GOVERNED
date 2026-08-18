@@ -591,10 +591,10 @@ def _run_amazon_order_import(store: Store, *, source: str) -> dict[str, Any]:
         credentials=_amazon_credentials(store),
     )
 
-    created_after = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+    last_updated_after = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
 
     response = client.get_orders(
-        CreatedAfter=created_after,
+        LastUpdatedAfter=last_updated_after,
         MarketplaceIds=[marketplace_id],
     )
 
