@@ -3,6 +3,7 @@
 Rules:
 - Webhook payloads are immediate marketplace truth.
 - Exact sale/order events use the canonical MarketplaceOrder + stock path.
+- Exact order lifecycle events update the existing MarketplaceOrder directly.
 - Exact cancellation events update the existing MarketplaceOrder first, then
   cancel the linked Amazon MCF order when one exists.
 - Amazon FBA inventory remains Amazon-controlled and is updated only from
@@ -92,6 +93,34 @@ def process_marketplace_notification(
             payload=payload,
         )
 
+    # Order lifecycle events are exact marketplace truth. Update an existing
+    # canonical MarketplaceOrder immediately before listing/stock handling.
+    # Shipped/tracking/delivery events are terminal for this notification: they
+    # must never re-enter the sale stock mutation or marketplace push path.
+    order_lifecycle = _apply_marketplace_order_lifecycle_event(
+        marketplace=marketplace,
+        business_event=business_event,
+        payload=payload,
+    )
+    if order_lifecycle.get("terminal"):
+        return _log_result(
+            status="order_lifecycle_updated",
+            marketplace=marketplace,
+            event_type=event_type,
+            business_event=business_event,
+            reason=(
+                "Exact marketplace order lifecycle event updated the existing "
+                "MarketplaceOrder without starting stock mutation or a "
+                "marketplace correction push."
+            ),
+            payload=payload,
+            changed=bool(order_lifecycle.get("changed")),
+            stock_changed=False,
+            correction_started=False,
+            push_started=False,
+            order_lifecycle=order_lifecycle,
+        )
+
     listing = _find_listing(
         MarketplaceListing,
         marketplace,
@@ -147,6 +176,23 @@ def process_marketplace_notification(
             )
 
     if not listing:
+        if order_lifecycle.get("handled"):
+            return _log_result(
+                status="order_lifecycle_updated",
+                marketplace=marketplace,
+                event_type=event_type,
+                business_event=business_event,
+                reason=(
+                    "Exact marketplace order lifecycle event updated the "
+                    "existing MarketplaceOrder; no listing work was required."
+                ),
+                payload=payload,
+                changed=bool(order_lifecycle.get("changed")),
+                stock_changed=False,
+                correction_started=False,
+                push_started=False,
+                order_lifecycle=order_lifecycle,
+            )
         return _log_result(
             status="unresolved",
             marketplace=marketplace,
@@ -185,6 +231,25 @@ def process_marketplace_notification(
 
     stock = listing.warehouse_stock
     if not stock:
+        if order_lifecycle.get("handled"):
+            return _log_result(
+                status="order_lifecycle_updated",
+                marketplace=marketplace,
+                event_type=event_type,
+                business_event=business_event,
+                reason=(
+                    "Exact marketplace order lifecycle event updated the "
+                    "existing MarketplaceOrder; Warehouse linkage was not "
+                    "required for lifecycle state."
+                ),
+                payload=payload,
+                listing_id=listing.id,
+                changed=bool(order_lifecycle.get("changed")),
+                stock_changed=False,
+                correction_started=False,
+                push_started=False,
+                order_lifecycle=order_lifecycle,
+            )
         return _log_result(
             status="unlinked",
             marketplace=marketplace,
@@ -247,11 +312,20 @@ def process_marketplace_notification(
     if not is_stock_event or quantity <= 0:
         group_id = getattr(listing, "master_product_group_id", None)
         return _log_result(
-            status=f"{business_event}_stored",
+            status=(
+                "order_lifecycle_updated"
+                if order_lifecycle.get("handled")
+                else f"{business_event}_stored"
+            ),
             marketplace=marketplace,
             event_type=event_type,
             business_event=business_event,
-            reason=_business_reason(business_event),
+            reason=(
+                "Exact marketplace order lifecycle event updated the existing "
+                "MarketplaceOrder without stock mutation."
+                if order_lifecycle.get("handled")
+                else _business_reason(business_event)
+            ),
             payload=payload,
             listing_id=listing.id,
             warehouse_stock_id=stock.id,
@@ -260,7 +334,8 @@ def process_marketplace_notification(
             seller_sku=getattr(listing, "external_sku", None),
             listing_discovery=listing_discovery,
             changed=bool(
-                listing_discovered
+                order_lifecycle.get("changed")
+                or listing_discovered
                 or (listing_notification and (listing_discovery or {}).get("success"))
             ),
             created=listing_discovered,
@@ -271,6 +346,7 @@ def process_marketplace_notification(
             ),
             stock_changed=False,
             correction_started=False,
+            order_lifecycle=order_lifecycle,
         )
 
     group_context = _resolve_group_context(
@@ -567,6 +643,209 @@ def _extract_marketplace_order_id(payload: dict) -> str | None:
     return text or None
 
 
+def _parse_marketplace_event_timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).strip().replace("Z", "+00:00")
+        )
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def _extract_order_lifecycle_values(
+    payload: dict,
+    *,
+    business_event: str | None = None,
+) -> dict[str, Any]:
+    raw_status = str(
+        _deep_get(payload, "OrderStatus")
+        or _deep_get(payload, "orderStatus")
+        or _deep_get(payload, "orderFulfillmentStatus")
+        or _deep_get(payload, "fulfillmentStatus")
+        or ""
+    ).strip().upper().replace("_", "").replace(" ", "")
+
+    status_map = {
+        "PENDING": "pending",
+        "UNSHIPPED": "unshipped",
+        "PARTIALLYSHIPPED": "partially_shipped",
+        "SHIPPED": "shipped",
+        "FULFILLED": "shipped",
+        "DELIVERED": "delivered",
+    }
+    lifecycle_status = status_map.get(raw_status)
+
+    changed_at = None
+    for key in (
+        "TimeOfOrderChange",
+        "timeOfOrderChange",
+        "shippedAt",
+        "shipDate",
+        "shipmentDate",
+        "EventTime",
+        "eventTime",
+        "lastModifiedDate",
+    ):
+        changed_at = _parse_marketplace_event_timestamp(
+            _deep_get(payload, key)
+        )
+        if changed_at is not None:
+            break
+
+    tracking_number = str(
+        _deep_get(payload, "tracking_number")
+        or _deep_get(payload, "trackingNumber")
+        or _deep_get(payload, "shipmentTrackingNumber")
+        or ""
+    ).strip() or None
+    carrier = str(
+        _deep_get(payload, "carrier")
+        or _deep_get(payload, "carrierName")
+        or _deep_get(payload, "shippingCarrier")
+        or ""
+    ).strip() or None
+    postcode = str(
+        _deep_get(payload, "DestinationPostalCode")
+        or _deep_get(payload, "destinationPostalCode")
+        or _deep_get(payload, "postalCode")
+        or ""
+    ).strip() or None
+
+    delivered = lifecycle_status == "delivered" or business_event == "delivery"
+    shipped = lifecycle_status in {
+        "shipped",
+        "partially_shipped",
+        "delivered",
+    } or delivered
+
+    if delivered and lifecycle_status is None:
+        lifecycle_status = "delivered"
+
+    return {
+        "recognized": bool(
+            lifecycle_status
+            or tracking_number
+            or carrier
+            or postcode
+            or business_event in {"tracking", "delivery"}
+        ),
+        "status": lifecycle_status,
+        "raw_status": raw_status or None,
+        "shipped_at": changed_at if shipped else None,
+        "changed_at": changed_at,
+        "tracking_number": tracking_number,
+        "carrier": carrier,
+        "ship_to_postcode": postcode,
+        "terminal": bool(
+            lifecycle_status in {
+                "shipped",
+                "partially_shipped",
+                "delivered",
+            }
+            or business_event in {"tracking", "delivery"}
+        ),
+    }
+
+
+def _apply_marketplace_order_lifecycle_event(
+    *,
+    marketplace: str,
+    business_event: str,
+    payload: dict,
+) -> dict[str, Any]:
+    from extensions import db
+    from models import MarketplaceOrder, Store
+
+    order_id = _extract_marketplace_order_id(payload)
+    values = _extract_order_lifecycle_values(
+        payload,
+        business_event=business_event,
+    )
+    if not order_id or not values.get("recognized"):
+        return {
+            "handled": False,
+            "changed": False,
+            "terminal": False,
+            "order_id": order_id,
+        }
+
+    query = MarketplaceOrder.query.filter(
+        MarketplaceOrder.marketplace_order_id == order_id
+    )
+
+    store_id = _deep_get(payload, "_bt38_store_id")
+    try:
+        store_id = int(store_id) if store_id is not None else None
+    except (TypeError, ValueError):
+        store_id = None
+
+    if store_id is not None:
+        query = query.filter(MarketplaceOrder.store_id == store_id)
+    elif marketplace:
+        query = query.join(
+            Store,
+            Store.id == MarketplaceOrder.store_id,
+        ).filter(Store.platform.ilike(f"%{marketplace}%"))
+
+    lines = query.order_by(MarketplaceOrder.id).all()
+    if not lines:
+        return {
+            "handled": False,
+            "changed": False,
+            "terminal": False,
+            "order_id": order_id,
+            **values,
+        }
+
+    changed = False
+    now = datetime.utcnow()
+    for line in lines:
+        new_status = values.get("status")
+        if new_status and str(line.status or "").strip().lower() != new_status:
+            line.status = new_status
+            changed = True
+
+        shipped_at = values.get("shipped_at")
+        if shipped_at is not None and line.shipped_at is None:
+            line.shipped_at = shipped_at
+            changed = True
+
+        tracking_number = values.get("tracking_number")
+        if tracking_number and line.tracking_number != tracking_number:
+            line.tracking_number = tracking_number
+            changed = True
+
+        carrier = values.get("carrier")
+        if carrier and line.carrier != carrier:
+            line.carrier = carrier
+            changed = True
+
+        postcode = values.get("ship_to_postcode")
+        if postcode and line.ship_to_postcode != postcode:
+            line.ship_to_postcode = postcode
+            changed = True
+
+        if changed:
+            line.updated_at = now
+
+    if changed:
+        db.session.commit()
+
+    return {
+        "handled": True,
+        "changed": changed,
+        "terminal": bool(values.get("terminal")),
+        "order_id": order_id,
+        "marketplace_order_row_ids": [line.id for line in lines],
+        **values,
+    }
+
+
 def _handle_marketplace_cancellation(
     *,
     marketplace: str,
@@ -817,6 +1096,11 @@ def _import_marketplace_order_from_notification(
     except (TypeError, ValueError):
         unit_price = 0.0
 
+    lifecycle = _extract_order_lifecycle_values(
+        payload,
+        business_event=_classify_business_event(event_type, payload),
+    )
+
     result = upsert_governed_marketplace_order_line(
         store=store,
         marketplace_order_id=order_id,
@@ -825,7 +1109,11 @@ def _import_marketplace_order_from_notification(
         quantity=int(quantity or 1),
         unit_price=unit_price,
         fulfillment_type=fulfillment_type,
-        status="pending",
+        status=lifecycle.get("status") or "pending",
+        carrier=lifecycle.get("carrier"),
+        tracking_number=lifecycle.get("tracking_number"),
+        shipped_at=lifecycle.get("shipped_at"),
+        ship_to_postcode=lifecycle.get("ship_to_postcode"),
         marketplace_created_at=(
             _parse_marketplace_order_timestamp(payload)
         ),
@@ -1240,6 +1528,7 @@ def _log_result(**data) -> Dict[str, Any]:
         "fba_damaged_stored", "fba_reimbursement_stored", "fba_inventory_updated",
         "fba_inventory_unchanged", "fba_order_processed", "cancellation_processed",
         "mcf_fulfillment_status_processed", "fba_group_waiting_for_amazon_confirmation",
+        "order_lifecycle_updated",
     }
 
     return {
