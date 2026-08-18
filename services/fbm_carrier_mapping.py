@@ -42,13 +42,7 @@ def ensure_mapping_review(
     carrier: str | None,
     service: str | None,
 ) -> tuple[FBMCarrierServiceMapping, FBMShipmentMappingReview, bool]:
-    """Return mapping + shipment review + whether marketplace confirmation is safe.
-
-    The identity is marketplace + provider + carrier + service. A new identity is
-    saved once as ``pending_review``. The purchased label is still printable.
-    After that identity is verified, every future matching shipment reuses the
-    saved marketplace mapping automatically and does not ask for another review.
-    """
+    """Return mapping + shipment review + whether marketplace confirmation is safe."""
     carrier_text = str(carrier or "").strip()
     service_text = str(service or "").strip()
     mapping = find_mapping(
@@ -117,12 +111,7 @@ def _validate_amazon_packlink_mapping(
     if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
         return
 
-    values = [
-        carrier_code,
-        carrier_name or "",
-        service_code or "",
-        service_name or "",
-    ]
+    values = [carrier_code, carrier_name or "", service_code or "", service_name or ""]
     if any(_norm(value) == "other" for value in values if str(value or "").strip()):
         raise ValueError("Amazon Packlink mappings cannot use Other for carrier or shipping service.")
 
@@ -136,24 +125,26 @@ def _validate_amazon_packlink_mapping(
     provider_carrier = _norm(mapping.provider_carrier_display)
     carrier_key = _norm(resolved_carrier)
     service_key = _norm(resolved_service)
+    service_code_key = _norm(service_code)
 
-    # Proven account-specific rule: Yodel is confirmed to Amazon as Yodel with
-    # service Xpert. Do not allow a generic Yodel/Other-style mapping to be saved.
     if "yodel" in provider_carrier:
         if "yodel" not in carrier_key:
             raise ValueError("Yodel Packlink shipments must map to Amazon carrier Yodel.")
         if service_key != "xpert":
             raise ValueError("Yodel Packlink shipments must map to Amazon shipping service Xpert.")
 
-    # Packlink may return either Evri or Hermes naming. The verified Amazon
-    # mapping must remain in the Hermes family and identify the exact service.
     if "evri" in provider_carrier or "hermes" in provider_carrier:
         if "hermes" not in carrier_key:
             raise ValueError("Evri/Hermes Packlink shipments must map to Amazon's Hermes carrier identity.")
-        if not (
+        readable_two_day_dropoff = (
             ("two day" in service_key or "2nd day" in service_key or "2 day" in service_key)
             and ("drop off" in service_key or "drop-off" in service_key or "dropoff" in service_key)
-        ):
+        )
+        coded_two_day_dropoff = (
+            "twoday" in service_code_key
+            and "dropoff" in service_code_key.replace("_", "").replace("-", "")
+        )
+        if not (readable_two_day_dropoff or coded_two_day_dropoff):
             raise ValueError("Evri/Hermes Packlink shipments must map to the exact Amazon two-day drop-off service.")
 
 
@@ -166,13 +157,7 @@ def verify_mapping(
     marketplace_service_name: str | None = None,
     verified_by: str | None = None,
 ) -> FBMCarrierServiceMapping:
-    """Verify one mapping identity and release all shipments waiting on it.
-
-    Saving the mapping is the one-time user action. The verified mapping is
-    committed before any marketplace call. Release results are attached to the
-    returned model for the route/UI to report truthfully; a failed marketplace
-    confirmation never rolls back the saved mapping or an already-paid label.
-    """
+    """Verify one mapping identity and release all shipments waiting on it."""
     carrier_code = str(marketplace_carrier_code or "").strip()
     if not carrier_code:
         raise ValueError("Marketplace carrier code is required.")
