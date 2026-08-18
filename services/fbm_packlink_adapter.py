@@ -51,7 +51,7 @@ class PacklinkAdapter:
     capabilities = ProviderCapabilities(
         provider="packlink",
         quotes=True,
-        label_purchase=False,  # API draft creation is not treated as payment
+        label_purchase=False,
         tracking_status=True,
         case_opening=False,
         return_labels=False,
@@ -160,12 +160,7 @@ class PacklinkAdapter:
         )
 
     def register_callback(self, callback_url: str) -> bool:
-        """Register the single event callback URL for this Packlink client.
-
-        This method is never called on import/startup. Callers must invoke it
-        explicitly when configuring the Packlink integration. Packlink applies
-        the configured URL to status events for all shipments on the API client.
-        """
+        """Register the single event callback URL for this Packlink client."""
         callback_url = str(callback_url or "").strip()
         if not callback_url.startswith("https://"):
             raise PacklinkConfigurationError("Packlink callback URL must use HTTPS.")
@@ -224,7 +219,7 @@ class PacklinkAdapter:
 
         origin = ship_from()
         destination = ship_to(order)
-        for field in ("name", "address1", "city", "postcode", "country"):
+        for field in ("name", "address1", "city", "postcode", "country", "phone"):
             if not destination.get(field):
                 raise PacklinkConfigurationError(f"Destination {field} is missing from the BT38 order.")
         for field in ("weight_kg", "width_cm", "height_cm", "length_cm"):
@@ -248,9 +243,6 @@ class PacklinkAdapter:
             content_value += max(0.0, float(getattr(line, "unit_price", 0) or 0)) * qty
         content = ", ".join(content_parts)[:60] or "Goods"
 
-        # Keep the draft payload on Packlink's shipment contract. Avoid sending
-        # UI/account metadata fields that are not part of the draft shipment
-        # body and can cause strict API validation failures.
         body = {
             "from": {
                 "name": sender_name,
@@ -310,11 +302,21 @@ class PacklinkAdapter:
         return payload if isinstance(payload, dict) else {}
 
     def get_labels(self, reference: str) -> list[Any]:
-        payload = self._get_json(f"shipments/{reference}/labels")
+        try:
+            payload = self._get_json(f"shipments/{reference}/labels")
+        except PacklinkRequestError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
         return payload if isinstance(payload, list) else []
 
     def get_tracking_status(self, *, reference: str) -> list[dict[str, Any]]:
-        payload = self._get_json(f"shipments/{reference}/track")
+        try:
+            payload = self._get_json(f"shipments/{reference}/track")
+        except PacklinkRequestError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
         if isinstance(payload, dict):
             payload = payload.get("history") or []
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
