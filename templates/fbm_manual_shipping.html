@@ -1,195 +1,34 @@
 {% extends "base.html" %}
-
 {% block title %}Manual Shipping | BT38 Inventory{% endblock %}
-
 {% block content %}
-<div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
-    <div>
-        <h2 class="mb-1"><i data-feather="package" class="me-2"></i>Create manual shipping order</h2>
-        <p class="text-muted mb-0">Create a standalone parcel without creating a marketplace sale or changing warehouse stock.</p>
-    </div>
-    <a href="/fbm" class="btn btn-outline-secondary">Back to FBM</a>
-</div>
-
-<div class="alert alert-info">
-    <strong>Manual means shipping only.</strong> Customer and parcel details are saved in BT38 before any Packlink request. This workflow does not create an Amazon/eBay order, deduct stock, or confirm anything to a marketplace.
-</div>
-
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4"><div><h2 class="mb-1"><i data-feather="package" class="me-2"></i>Create manual shipping order</h2><p class="text-muted mb-0">Create a standalone parcel without creating a marketplace sale or changing warehouse stock.</p></div><a href="/fbm" class="btn btn-outline-secondary">Back to FBM</a></div>
+<div class="alert alert-info"><strong>Manual means shipping only.</strong> Customer and parcel details are saved in BT38 before any Packlink request.</div>
 <div id="manualAlert" class="alert d-none" role="alert"></div>
-
-<div class="card mb-4">
-    <div class="card-header"><strong>Delivery details</strong></div>
-    <div class="card-body">
-        <form id="manualShippingForm" autocomplete="off">
-            <div class="row g-3">
-                <div class="col-md-6"><label class="form-label">Customer name *</label><input name="ship_to_name" class="form-control" required></div>
-                <div class="col-md-6"><label class="form-label">Phone *</label><input name="ship_to_phone" class="form-control" required></div>
-                <div class="col-md-8"><label class="form-label">Address *</label><input name="ship_to_address" class="form-control" required></div>
-                <div class="col-md-4"><label class="form-label">Address line 2</label><input name="ship_to_address2" class="form-control"></div>
-                <div class="col-md-4"><label class="form-label">City *</label><input name="ship_to_city" class="form-control" required></div>
-                <div class="col-md-4"><label class="form-label">County / region</label><input name="ship_to_region" class="form-control"></div>
-                <div class="col-md-2"><label class="form-label">Postcode *</label><input name="ship_to_postcode" class="form-control text-uppercase" required></div>
-                <div class="col-md-2"><label class="form-label">Country *</label><input name="ship_to_country" class="form-control text-uppercase" maxlength="2" value="GB" required></div>
-                <div class="col-md-6"><label class="form-label">Email</label><input name="ship_to_email" type="email" class="form-control"></div>
-            </div>
-
-            <hr class="my-4">
-            <div class="fw-semibold mb-3">Contents</div>
-            <div class="row g-3">
-                <div class="col-md-6"><label class="form-label">Item description *</label><input name="item_title" class="form-control" value="Goods" required></div>
-                <div class="col-md-3"><label class="form-label">SKU / reference</label><input name="sku" class="form-control"></div>
-                <div class="col-md-1"><label class="form-label">Qty</label><input name="quantity" type="number" min="1" step="1" value="1" class="form-control"></div>
-                <div class="col-md-2"><label class="form-label">Value £</label><input name="declared_value" type="number" min="0" step="0.01" class="form-control"></div>
-            </div>
-
-            <hr class="my-4">
-            <div class="fw-semibold mb-3">Packed parcel</div>
-            <div class="row g-3">
-                <div class="col-6 col-md-3"><label class="form-label">Weight kg *</label><input name="weight_kg" type="number" min="0.001" step="0.001" class="form-control" required></div>
-                <div class="col-6 col-md-3"><label class="form-label">Length cm *</label><input name="length_cm" type="number" min="0.1" step="0.1" class="form-control" required></div>
-                <div class="col-6 col-md-3"><label class="form-label">Width cm *</label><input name="width_cm" type="number" min="0.1" step="0.1" class="form-control" required></div>
-                <div class="col-6 col-md-3"><label class="form-label">Height cm *</label><input name="height_cm" type="number" min="0.1" step="0.1" class="form-control" required></div>
-            </div>
-
-            <div class="d-flex flex-wrap gap-2 mt-4">
-                <button id="saveManual" class="btn btn-outline-primary" type="button">Save shipping order</button>
-                <button id="saveAndRates" class="btn btn-primary" type="button"><i data-feather="truck" class="me-1"></i>Save &amp; get Packlink rates</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<div id="savedOrderCard" class="card mb-4 d-none">
-    <div class="card-header d-flex justify-content-between align-items-center"><strong>Saved manual order</strong><code id="savedReference"></code></div>
-    <div class="card-body">
-        <div id="savedSummary" class="small text-muted mb-3"></div>
-        <div id="manualRates"></div>
-    </div>
-</div>
-
-<div class="card">
-    <div class="card-header"><strong>Recent manual shipping orders</strong></div>
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead class="table-light"><tr><th>Reference</th><th>Customer</th><th>Postcode</th><th>Parcel</th><th>Provider</th><th>Status</th><th>Created</th></tr></thead>
-            <tbody>
-            {% for order in manual_orders %}
-                <tr>
-                    <td><code>{{ order.reference or ('MANUAL-' ~ order.id) }}</code></td>
-                    <td>{{ order.ship_to_name }}</td>
-                    <td>{{ order.ship_to_postcode }}</td>
-                    <td>{{ '%.3f'|format(order.weight_kg or 0) }} kg · {{ order.length_cm or 0 }} × {{ order.width_cm or 0 }} × {{ order.height_cm or 0 }} cm</td>
-                    <td>{% if order.provider_shipment_id %}Packlink<br><small class="text-muted">{{ order.provider_shipment_id }}</small>{% else %}{{ order.provider|title }}{% endif %}</td>
-                    <td><span class="badge bg-light text-dark border">{{ order.status|replace('_',' ')|title }}</span>{% if order.tracking_number %}<div><code>{{ order.tracking_number }}</code></div>{% endif %}</td>
-                    <td>{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</td>
-                </tr>
-            {% else %}
-                <tr><td colspan="7" class="text-center text-muted py-4">No manual shipping orders yet.</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
+<div class="card mb-4"><div class="card-header"><strong>Delivery details</strong></div><div class="card-body"><form id="manualShippingForm" autocomplete="off"><div class="row g-3">
+<div class="col-md-6"><label class="form-label">Customer name *</label><input name="ship_to_name" class="form-control" required></div><div class="col-md-6"><label class="form-label">Phone *</label><input name="ship_to_phone" class="form-control" required></div>
+<div class="col-md-4"><label class="form-label">Postcode *</label><div class="input-group"><input id="manualPostcode" name="ship_to_postcode" class="form-control text-uppercase" required><button id="lookupPostcode" class="btn btn-outline-primary" type="button">Search address</button></div><div class="form-text">UK postcode lookup. You can still enter the address manually.</div></div><div class="col-md-4"><label class="form-label">Country *</label><input name="ship_to_country" class="form-control text-uppercase" maxlength="2" value="GB" required></div><div class="col-md-4"><label class="form-label">Email</label><input name="ship_to_email" type="email" class="form-control"></div>
+<div id="addressResultsWrap" class="col-12 d-none"><label class="form-label">Choose address</label><select id="addressResults" class="form-select"><option value="">Select an address…</option></select></div>
+<div class="col-md-8"><label class="form-label">Address *</label><input name="ship_to_address" class="form-control" required></div><div class="col-md-4"><label class="form-label">Address line 2</label><input name="ship_to_address2" class="form-control"></div><div class="col-md-6"><label class="form-label">City *</label><input name="ship_to_city" class="form-control" required></div><div class="col-md-6"><label class="form-label">County / region</label><input name="ship_to_region" class="form-control"></div>
+</div><hr class="my-4"><div class="fw-semibold mb-3">Contents</div><div class="row g-3"><div class="col-md-6"><label class="form-label">Item description *</label><input name="item_title" class="form-control" value="Goods" required></div><div class="col-md-3"><label class="form-label">SKU / reference</label><input name="sku" class="form-control"></div><div class="col-md-1"><label class="form-label">Qty</label><input name="quantity" type="number" min="1" step="1" value="1" class="form-control"></div><div class="col-md-2"><label class="form-label">Value £</label><input name="declared_value" type="number" min="0" step="0.01" class="form-control"></div></div>
+<hr class="my-4"><div class="fw-semibold mb-3">Packed parcel</div><div class="row g-3"><div class="col-6 col-md-3"><label class="form-label">Weight kg *</label><input name="weight_kg" type="number" min="0.001" step="0.001" class="form-control" required></div><div class="col-6 col-md-3"><label class="form-label">Length cm *</label><input name="length_cm" type="number" min="0.1" step="0.1" class="form-control" required></div><div class="col-6 col-md-3"><label class="form-label">Width cm *</label><input name="width_cm" type="number" min="0.1" step="0.1" class="form-control" required></div><div class="col-6 col-md-3"><label class="form-label">Height cm *</label><input name="height_cm" type="number" min="0.1" step="0.1" class="form-control" required></div></div><div class="d-flex flex-wrap gap-2 mt-4"><button id="saveManual" class="btn btn-outline-primary" type="button">Save shipping order</button><button id="saveAndRates" class="btn btn-primary" type="button"><i data-feather="truck" class="me-1"></i>Save &amp; get Packlink rates</button></div></form></div></div>
+<div id="savedOrderCard" class="card mb-4 d-none"><div class="card-header d-flex justify-content-between"><strong>Saved manual order</strong><code id="savedReference"></code></div><div class="card-body"><div id="savedSummary" class="small text-muted mb-3"></div><div id="manualRates"></div></div></div>
+<div class="card"><div class="card-header"><strong>Recent manual shipping orders</strong></div><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>Reference</th><th>Customer</th><th>Postcode</th><th>Parcel</th><th>Provider</th><th>Status</th><th>Created</th></tr></thead><tbody>{% for order in manual_orders %}<tr><td><code>{{ order.reference or ('MANUAL-' ~ order.id) }}</code></td><td>{{ order.ship_to_name }}</td><td>{{ order.ship_to_postcode }}</td><td>{{ '%.3f'|format(order.weight_kg or 0) }} kg · {{ order.length_cm or 0 }} × {{ order.width_cm or 0 }} × {{ order.height_cm or 0 }} cm</td><td>{% if order.provider_shipment_id %}Packlink<br><small class="text-muted">{{ order.provider_shipment_id }}</small>{% else %}{{ order.provider|title }}{% endif %}</td><td><span class="badge bg-light text-dark border">{{ order.status|replace('_',' ')|title }}</span>{% if order.tracking_number %}<div><code>{{ order.tracking_number }}</code></div>{% endif %}</td><td>{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</td></tr>{% else %}<tr><td colspan="7" class="text-center text-muted py-4">No manual shipping orders yet.</td></tr>{% endfor %}</tbody></table></div></div>
 {% endblock %}
-
-{% block scripts %}
-<script>
+{% block scripts %}<script>
 (function(){
-    const form=document.getElementById('manualShippingForm');
-    const alertBox=document.getElementById('manualAlert');
-    const card=document.getElementById('savedOrderCard');
-    const refBox=document.getElementById('savedReference');
-    const summary=document.getElementById('savedSummary');
-    const ratesBox=document.getElementById('manualRates');
-    const saveButton=document.getElementById('saveManual');
-    let manualOrderId=null;
-
-    function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-    function show(message,kind='info'){
-        alertBox.className=`alert alert-${kind}`;
-        alertBox.textContent=message;
-        alertBox.classList.remove('d-none');
-        window.scrollTo({top:0,behavior:'smooth'});
-    }
-    function payload(){return Object.fromEntries(new FormData(form).entries());}
-    async function requestJson(url,options={}){
-        const response=await fetch(url,{credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json','Content-Type':'application/json'},...options});
-        const body=await response.json().catch(()=>({}));
-        if(!response.ok||body.success!==true){const e=new Error(body.message||`HTTP ${response.status}`);e.payload=body;throw e;}
-        return body;
-    }
-    function price(rate){
-        const p=rate.price||{}; const value=typeof p==='object'?(p.value??p.total_price):p;
-        return value==null?'Price unavailable':`£${Number(value).toFixed(2)}`;
-    }
-    function renderSaved(order){
-        manualOrderId=order.id;
-        saveButton.disabled=true;
-        saveButton.textContent='Saved';
-        card.classList.remove('d-none'); refBox.textContent=order.reference||`MANUAL-${order.id}`;
-        const p=order.parcel||{};
-        summary.innerHTML=`<strong>${esc(order.ship_to_name)}</strong> · ${esc(order.ship_to_postcode)} · ${esc(p.weight_kg)} kg · ${esc(p.length_cm)} × ${esc(p.width_cm)} × ${esc(p.height_cm)} cm`;
-    }
-    function renderRates(rates){
-        if(!rates.length){ratesBox.innerHTML='<div class="alert alert-warning mb-0">Packlink returned no services for this parcel.</div>';return;}
-        ratesBox.innerHTML=`<div class="fw-semibold mb-2">Choose Packlink service</div>${rates.map((r,i)=>{
-            const id=esc(r.service_id??r.id??'');
-            return `<label class="border rounded p-3 mb-2 d-flex align-items-center gap-3 w-100"><input class="form-check-input manual-rate" type="radio" name="manual_rate" value="${id}" ${i===0?'checked':''}><div class="flex-grow-1"><strong>${esc(r.carrier_name||r.carrier||'Carrier')}</strong> · ${esc(r.service_name||r.service||'Service')}<div class="small text-muted">${esc(r.delivery||'Delivery estimate from Packlink')}</div></div><strong>${price(r)}</strong></label>`;
-        }).join('')}<div class="d-flex flex-wrap gap-2 mt-3"><button id="prepareManualPacklink" type="button" class="btn btn-success">Prepare Packlink shipment</button><a class="btn btn-outline-secondary" href="https://pro.packlink.com/" target="_blank" rel="noopener">Open Packlink PRO</a></div><div id="draftResult" class="mt-3"></div>`;
-        document.getElementById('prepareManualPacklink').addEventListener('click',prepareDraft);
-    }
-    async function saveOrder(getRates){
-        if(!form.reportValidity()) return;
-        const button=getRates?document.getElementById('saveAndRates'):saveButton;
-        button.disabled=true;
-        try{
-            if(!manualOrderId){
-                const created=await requestJson('/fbm/manual',{method:'POST',body:JSON.stringify(payload())});
-                renderSaved(created.manual_order);
-                show(created.message,'success');
-            }
-            if(getRates){
-                const rates=await requestJson(`/fbm/manual/${manualOrderId}/packlink/rates`,{method:'POST',body:JSON.stringify(payload())});
-                renderRates(rates.rates||[]);
-                show('Manual shipping order saved and Packlink rates loaded.','success');
-            } else {
-                ratesBox.innerHTML='<div class="text-muted">Order saved. Use “Save & get Packlink rates” to continue this same saved parcel.</div>';
-            }
-        }catch(e){
-            const missing=e.payload?.missing; show(`${e.message}${missing?.length?' Missing: '+missing.join(', '):''}`,'danger');
-        }finally{
-            if(getRates) button.disabled=false;
-            else if(!manualOrderId) button.disabled=false;
-        }
-    }
-    async function prepareDraft(){
-        const selected=document.querySelector('.manual-rate:checked');
-        if(!selected||!manualOrderId){show('Choose a Packlink service first.','warning');return;}
-        const button=document.getElementById('prepareManualPacklink'); button.disabled=true;
-        try{
-            const result=await requestJson(`/fbm/manual/${manualOrderId}/packlink/draft`,{method:'POST',body:JSON.stringify({rate_id:selected.value,confirm_create:'CREATE_MANUAL_PACKLINK_DRAFT'})});
-            const order=result.manual_order||{};
-            const target=document.getElementById('draftResult');
-            target.innerHTML=`<div class="alert alert-success mb-2"><strong>Packlink shipment prepared.</strong><br>Reference: <code>${esc(order.provider_shipment_id||'pending')}</code><br>${esc(result.message||'')}</div><div class="d-flex gap-2 flex-wrap">${order.checkout_url?`<a class="btn btn-success" href="${esc(order.checkout_url)}" target="_blank" rel="noopener">Continue to Packlink payment</a>`:''}<a class="btn btn-outline-secondary" href="https://pro.packlink.com/" target="_blank" rel="noopener">Open Packlink PRO</a><button id="checkManualPacklink" class="btn btn-outline-primary" type="button">Check Packlink status</button></div>`;
-            document.getElementById('checkManualPacklink').addEventListener('click',checkStatus);
-            show('Manual Packlink shipment prepared. Complete payment in Packlink.','success');
-        }catch(e){show(e.message,'danger');}
-        finally{button.disabled=false;}
-    }
-    async function checkStatus(){
-        if(!manualOrderId)return;
-        const button=document.getElementById('checkManualPacklink'); if(button)button.disabled=true;
-        try{
-            const result=await requestJson(`/fbm/manual/${manualOrderId}/packlink/status`,{method:'POST',body:'{}'});
-            const order=result.manual_order||{};
-            const bits=[`Status: ${order.provider_status||order.status||'pending'}`];
-            if(order.tracking_number)bits.push(`Tracking: ${order.tracking_number}`);
-            show(bits.join(' · '),'success');
-        }catch(e){show(e.message,'danger');}
-        finally{if(button)button.disabled=false;}
-    }
-    saveButton.addEventListener('click',()=>saveOrder(false));
-    document.getElementById('saveAndRates').addEventListener('click',()=>saveOrder(true));
+const form=document.getElementById('manualShippingForm'),alertBox=document.getElementById('manualAlert'),card=document.getElementById('savedOrderCard'),refBox=document.getElementById('savedReference'),summary=document.getElementById('savedSummary'),ratesBox=document.getElementById('manualRates'),saveButton=document.getElementById('saveManual'),postcode=document.getElementById('manualPostcode'),lookup=document.getElementById('lookupPostcode'),results=document.getElementById('addressResults'),resultsWrap=document.getElementById('addressResultsWrap');let manualOrderId=null;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function show(m,k='info'){alertBox.className=`alert alert-${k}`;alertBox.textContent=m;alertBox.classList.remove('d-none');}
+function payload(){return Object.fromEntries(new FormData(form).entries());}
+async function requestJson(url,options={}){const r=await fetch(url,{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json','Content-Type':'application/json'},...options});const b=await r.json().catch(()=>({}));if(!r.ok||b.success!==true){const e=new Error(b.message||`HTTP ${r.status}`);e.payload=b;throw e;}return b;}
+lookup.addEventListener('click',async()=>{const pc=postcode.value.trim().toUpperCase();if(!pc){show('Enter a postcode first.','warning');return;}lookup.disabled=true;lookup.textContent='Searching…';resultsWrap.classList.add('d-none');try{const b=await requestJson(`/fbm/manual/address-lookup?postcode=${encodeURIComponent(pc)}`);results.innerHTML='<option value="">Select an address…</option>'+b.addresses.map(a=>`<option value="${esc(a.id)}">${esc(a.label)}</option>`).join('');if(!b.addresses.length){show('No addresses found. You can enter the address manually.','warning');return;}resultsWrap.classList.remove('d-none');show(`${b.addresses.length} address${b.addresses.length===1?'':'es'} found.`,'success');}catch(e){show(e.message,'danger');}finally{lookup.disabled=false;lookup.textContent='Search address';}});
+results.addEventListener('change',async()=>{if(!results.value)return;results.disabled=true;try{const b=await requestJson(`/fbm/manual/address-lookup/${encodeURIComponent(results.value)}`);for(const [name,value] of Object.entries(b.address||{})){const input=form.elements[name];if(input)input.value=value||'';}show('Address selected and filled in.','success');}catch(e){show(e.message,'danger');}finally{results.disabled=false;}});
+postcode.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();lookup.click();}});
+function renderSaved(o){manualOrderId=o.id;saveButton.disabled=true;saveButton.textContent='Saved';card.classList.remove('d-none');refBox.textContent=o.reference||`MANUAL-${o.id}`;const p=o.parcel||{};summary.innerHTML=`<strong>${esc(o.ship_to_name)}</strong> · ${esc(o.ship_to_postcode)} · ${esc(p.weight_kg)} kg · ${esc(p.length_cm)} × ${esc(p.width_cm)} × ${esc(p.height_cm)} cm`;}
+function price(r){const p=r.price||{},v=typeof p==='object'?(p.value??p.total_price):p;return v==null?'Price unavailable':`£${Number(v).toFixed(2)}`;}
+function renderRates(rs){if(!rs.length){ratesBox.innerHTML='<div class="alert alert-warning mb-0">Packlink returned no services for this parcel.</div>';return;}ratesBox.innerHTML='<div class="fw-semibold mb-2">Choose Packlink service</div>'+rs.map((r,i)=>`<label class="border rounded p-3 mb-2 d-flex gap-3 w-100"><input class="form-check-input manual-rate" type="radio" name="manual_rate" value="${esc(r.service_id??r.id??'')}" ${i===0?'checked':''}><div class="flex-grow-1"><strong>${esc(r.carrier_name||r.carrier||'Carrier')}</strong> · ${esc(r.service_name||r.service||'Service')}</div><strong>${price(r)}</strong></label>`).join('')+'<button id="prepareManualPacklink" type="button" class="btn btn-success mt-2">Prepare Packlink shipment</button><div id="draftResult" class="mt-3"></div>';document.getElementById('prepareManualPacklink').addEventListener('click',prepareDraft);}
+async function saveOrder(getRates){if(!form.reportValidity())return;const button=getRates?document.getElementById('saveAndRates'):saveButton;button.disabled=true;try{if(!manualOrderId){const c=await requestJson('/fbm/manual',{method:'POST',body:JSON.stringify(payload())});renderSaved(c.manual_order);show(c.message,'success');}if(getRates){const r=await requestJson(`/fbm/manual/${manualOrderId}/packlink/rates`,{method:'POST',body:JSON.stringify(payload())});renderRates(r.rates||[]);show('Manual shipping order saved and Packlink rates loaded.','success');}}catch(e){show(`${e.message}${e.payload?.missing?.length?' Missing: '+e.payload.missing.join(', '):''}`,'danger');}finally{if(getRates)button.disabled=false;else if(!manualOrderId)button.disabled=false;}}
+async function prepareDraft(){const selected=document.querySelector('.manual-rate:checked');if(!selected||!manualOrderId){show('Choose a Packlink service first.','warning');return;}const button=document.getElementById('prepareManualPacklink');button.disabled=true;try{const r=await requestJson(`/fbm/manual/${manualOrderId}/packlink/draft`,{method:'POST',body:JSON.stringify({rate_id:selected.value,confirm_create:'CREATE_MANUAL_PACKLINK_DRAFT'})});const o=r.manual_order||{};document.getElementById('draftResult').innerHTML=`<div class="alert alert-success"><strong>Packlink shipment prepared.</strong><br>Reference: <code>${esc(o.provider_shipment_id||'pending')}</code></div>`;show('Manual Packlink shipment prepared. Complete payment in Packlink.','success');}catch(e){show(e.message,'danger');}finally{button.disabled=false;}}
+saveButton.addEventListener('click',()=>saveOrder(false));document.getElementById('saveAndRates').addEventListener('click',()=>saveOrder(true));
 })();
-</script>
-{% endblock %}
+</script>{% endblock %}
