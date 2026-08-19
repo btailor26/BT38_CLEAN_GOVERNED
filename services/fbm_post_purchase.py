@@ -12,6 +12,7 @@ from typing import Any
 
 from extensions import db
 from fbm_models import FBMShipment
+from models import MarketplaceOrder
 from services.fbm_carrier_mapping import ensure_mapping_review, mapping_payload
 from services.fbm_marketplace_confirmation import confirm_external_shipment
 
@@ -34,6 +35,33 @@ def _amazon_tracking_number(value: Any) -> str | None:
     for separator in _AMAZON_TRACKING_SEPARATORS:
         compact = compact.replace(separator, "")
     return compact or None
+
+
+def _marketplace_delivery_promise(shipment: FBMShipment, marketplace: str) -> dict[str, Any] | None:
+    """Read the marketplace-owned delivery promise for the journey response.
+
+    BT38 does not calculate or rebuild the customer promise. For Amazon this is
+    an exact on-demand Orders API read. Unsupported marketplaces return no
+    promise rather than guessing from the carrier or Packlink service.
+    """
+    if str(marketplace or "").strip().casefold() != "amazon":
+        return None
+    order = MarketplaceOrder.query.filter_by(
+        store_id=shipment.store_id,
+        marketplace_order_id=shipment.marketplace_order_id,
+    ).order_by(MarketplaceOrder.id.asc()).first()
+    if order is None:
+        return None
+    try:
+        from services.fbm_amazon_order_profile import get_amazon_delivery_promise
+        return get_amazon_delivery_promise(order)
+    except Exception as exc:
+        return {
+            "source": "amazon",
+            "earliest_delivery_at": None,
+            "latest_delivery_at": None,
+            "unavailable_reason": str(exc),
+        }
 
 
 def persist_external_label(
@@ -122,6 +150,7 @@ def persist_external_label(
         or label.get("data")
         or label.get("contents")
     )
+    marketplace_promise = _marketplace_delivery_promise(shipment, marketplace)
 
     return {
         "shipment_id": shipment.id,
@@ -136,6 +165,7 @@ def persist_external_label(
         "print_allowed": has_printable_label,
         "marketplace_confirmation_allowed": mapping_ready,
         "marketplace_confirmation": confirmation,
+        "marketplace_promise": marketplace_promise,
     }
 
 
