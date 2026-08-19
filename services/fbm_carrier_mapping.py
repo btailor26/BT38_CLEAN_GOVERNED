@@ -2,7 +2,7 @@
 
 A postage purchase and label print must not be blocked merely because BT38 has
 never seen a provider's carrier/service string before. Marketplace confirmation
-*is* blocked until that mapping has been verified once.
+*is* blocked until that exact carrier/service mapping has been verified once.
 
 Mappings are marketplace-specific because Amazon/eBay carrier/service codes can
 differ even when the provider label says the same thing (for example UPS).
@@ -85,17 +85,19 @@ def _canonical_amazon_packlink_names(
     mapping: FBMCarrierServiceMapping,
     *, carrier_code: str, carrier_name: str | None, service_code: str | None, service_name: str | None,
 ) -> tuple[str | None, str | None]:
-    """Fill account-proven Amazon display values when the UI supplies codes only."""
+    """Fill carrier display names only; never infer an Amazon service from carrier alone.
+
+    Packlink service is part of the mapping key. Evri Next Day, ParcelShop Parcel,
+    and any other Evri service are distinct mappings and must be verified separately.
+    """
     if _norm(mapping.marketplace) != "amazon" or _norm(mapping.provider) != "packlink":
         return carrier_name, service_name
     provider_carrier = _norm(mapping.provider_carrier_display)
     code_key = _norm(carrier_code)
-    service_code_key = _norm(service_code).replace("_", "").replace("-", "")
     if "yodel" in provider_carrier and "yodel" in code_key:
-        return carrier_name or "Yodel", service_name or ("Xpert" if _norm(service_code) == "xpert" else None)
-    if ("evri" in provider_carrier or "hermes" in provider_carrier) and "hermes" in code_key:
-        if "twoday" in service_code_key and "dropoff" in service_code_key:
-            return carrier_name or "Hermes UK", service_name or "Hermes Two Day - Drop Off"
+        carrier_name = carrier_name or "Yodel"
+    elif ("evri" in provider_carrier or "hermes" in provider_carrier) and "hermes" in code_key:
+        carrier_name = carrier_name or "Hermes"
     return carrier_name, service_name
 
 
@@ -113,27 +115,19 @@ def _validate_amazon_packlink_mapping(
     if not resolved_carrier:
         raise ValueError("Amazon Packlink mapping requires the exact Amazon carrier.")
     if not resolved_service:
-        raise ValueError("Amazon Packlink mapping requires the exact Amazon shipping service.")
+        raise ValueError("Amazon Packlink mapping requires the exact Amazon shipping service for the exact Packlink service.")
 
     provider_carrier = _norm(mapping.provider_carrier_display)
     carrier_key = _norm(resolved_carrier)
-    service_key = _norm(resolved_service)
-    service_code_key = _norm(service_code).replace("_", "").replace("-", "")
-    if "yodel" in provider_carrier:
-        if "yodel" not in carrier_key:
-            raise ValueError("Yodel Packlink shipments must map to Amazon carrier Yodel.")
-        if service_key != "xpert":
-            raise ValueError("Yodel Packlink shipments must map to Amazon shipping service Xpert.")
-    if "evri" in provider_carrier or "hermes" in provider_carrier:
-        if "hermes" not in carrier_key:
-            raise ValueError("Evri/Hermes Packlink shipments must map to Amazon's Hermes carrier identity.")
-        readable = (
-            ("two day" in service_key or "2nd day" in service_key or "2 day" in service_key)
-            and ("drop off" in service_key or "drop-off" in service_key or "dropoff" in service_key)
-        )
-        coded = "twoday" in service_code_key and "dropoff" in service_code_key
-        if not (readable or coded):
-            raise ValueError("Evri/Hermes Packlink shipments must map to the exact Amazon two-day drop-off service.")
+    if "yodel" in provider_carrier and "yodel" not in carrier_key:
+        raise ValueError("Yodel Packlink shipments must map to Amazon carrier Yodel.")
+    if ("evri" in provider_carrier or "hermes" in provider_carrier) and "hermes" not in carrier_key:
+        raise ValueError("Evri/Hermes Packlink shipments must map to Amazon's Hermes carrier identity.")
+
+    # Deliberately do not infer or validate a service family from the carrier.
+    # The exact Packlink provider_service is already part of mapping_key(), so
+    # every distinct service (for example ParcelShop Parcel vs Next Day) gets
+    # its own Amazon service mapping and its own first-use verification.
 
 
 def verify_mapping(
