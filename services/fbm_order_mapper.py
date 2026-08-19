@@ -1,9 +1,11 @@
 """Map existing BT38 DB orders into provider-neutral FBM shipment input.
 
 MarketplaceOrder remains the order source of truth. This module does not import
-orders, call marketplaces, buy postage, or mutate inventory quantities. It may
-persist explicit single-unit parcel facts into the existing ProductPackMapping
-so the same SKU can reuse those FBM shipping defaults on later orders.
+orders, call marketplaces, buy postage, or mutate inventory quantities. Missing
+marketplace-owned delivery facts may be hydrated through the single exact-order
+hydration rule before an external provider is called. Explicit single-unit
+parcel facts may be persisted into ProductPackMapping so the same SKU can reuse
+those FBM shipping defaults on later orders.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from typing import Any
 
 from extensions import db
 from models import MarketplaceOrder, ProductPackMapping, WarehouseStock
+from services.fbm_marketplace_destination import destination_complete, hydrate_marketplace_destination
 
 
 DEFAULT_SHIP_FROM = {
@@ -78,6 +81,14 @@ def ship_from() -> dict[str, str]:
 
 
 def ship_to(order: Any) -> dict[str, str | None]:
+    """Return marketplace-owned delivery facts, hydrating the exact order if needed.
+
+    Amazon and eBay currently have exact-order readers. Any future marketplace
+    follows this same contract by adding its exact reader to the central
+    hydration service; BT38 never substitutes or invents an address.
+    """
+    if order is not None and not destination_complete(order):
+        hydrate_marketplace_destination(order)
     return {
         "name": _text(getattr(order, "ship_to_name", None)),
         "address1": _text(getattr(order, "ship_to_address", None)),
@@ -141,10 +152,11 @@ def _single_unit_mapping(order: Any, *, create: bool = False) -> ProductPackMapp
 
 
 def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, Any]) -> None:
-    """Persist only explicit safe single-unit parcel values.
+    """Persist explicit safe single-unit parcel values before provider calls.
 
-    This is best-effort. A failure to remember reusable defaults must never
-    block the current shipping request or create a second shipping path.
+    Weight and dimensions entered in the FBM desk are committed to the reusable
+    ProductPackMapping before Packlink/Amazon rate execution. A later provider
+    error therefore does not discard the entered parcel defaults.
     """
     order = base.order_ref
     if order is None:
