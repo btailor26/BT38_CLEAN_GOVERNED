@@ -268,9 +268,28 @@ def _attempt_immediate_mcf_handoff(line: Any) -> dict[str, Any]:
 def process_exact_marketplace_order_line(line: Any, source: str = "governed_exact_order") -> dict[str, Any]:
     if line is None:
         return {"success": False, "skipped": True, "reason": "marketplace_order_missing"}
-    if getattr(line, "processed_at", None):
-        return {"success": True, "skipped": True, "reason": "already_processed", "order_id": getattr(line, "marketplace_order_id", None)}
     fulfillment = _text(getattr(line, "fulfillment_type", None)).upper()
+    if getattr(line, "processed_at", None):
+        mcf_order_id = _safe_int(getattr(line, "mcf_order_id", None), 0)
+        should_resume_mcf = bool(
+            fulfillment not in {"FBA", "AFN"}
+            and is_sale(line)
+            and not _is_return(line)
+            and mcf_order_id <= 0
+        )
+        if should_resume_mcf:
+            handoff = _attempt_immediate_mcf_handoff(line)
+            handoff_ok = bool(handoff.get("success") or handoff.get("skipped"))
+            return {
+                "success": handoff_ok,
+                "skipped": True,
+                "reason": "already_processed_mcf_handoff_resumed",
+                "order_id": getattr(line, "marketplace_order_id", None),
+                "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
+                "stock_mutated": False,
+                "mcf_handoff": handoff,
+            }
+        return {"success": True, "skipped": True, "reason": "already_processed", "order_id": getattr(line, "marketplace_order_id", None)}
     if fulfillment in {"FBA", "AFN"}:
         line.status = "processed"
         line.processed_at = datetime.utcnow()
