@@ -108,6 +108,14 @@ def _mapping_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _amazon_package_reference_id(shipment: FBMShipment) -> str:
+    """Amazon Orders v0 requires a string containing a positive numeric value."""
+    value = int(getattr(shipment, "id", 0) or 0)
+    if value <= 0:
+        raise FBMMarketplaceConfirmationError("Amazon package reference requires a positive BT38 shipment ID.")
+    return str(value)
+
+
 def confirm_amazon_packlink_shipment(
     *,
     shipment: FBMShipment,
@@ -164,9 +172,8 @@ def confirm_amazon_packlink_shipment(
         client.confirm_shipment(
             str(order.marketplace_order_id),
             marketplaceId=marketplace_id,
-            codCollectionMethod="",
             packageDetail={
-                "packageReferenceId": int(shipment.id),
+                "packageReferenceId": _amazon_package_reference_id(shipment),
                 "carrierCode": carrier_code,
                 "carrierName": carrier_name,
                 "shippingMethod": shipping_method,
@@ -325,9 +332,8 @@ def confirm_external_shipment(
             client.confirm_shipment(
                 str(order.marketplace_order_id),
                 marketplaceId=marketplace_id,
-                codCollectionMethod="",
                 packageDetail={
-                    "packageReferenceId": int(shipment.id),
+                    "packageReferenceId": _amazon_package_reference_id(shipment),
                     "carrierCode": carrier_code,
                     "carrierName": carrier_name,
                     "shippingMethod": shipping_method,
