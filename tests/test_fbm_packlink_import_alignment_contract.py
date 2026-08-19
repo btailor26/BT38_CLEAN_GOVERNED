@@ -1,11 +1,13 @@
 from inspect import getsource
 from types import SimpleNamespace
 
+import governed_packlink_callback_routes as callback_routes
 import services.fbm_packlink_adapter as packlink_module
 from services.fbm_packlink_adapter import PacklinkAdapter
 from services.fbm_packlink_callback import (
     _attach_by_marketplace_reference,
     process_packlink_callback,
+    recover_packlink_shipments_for_day,
 )
 
 
@@ -158,3 +160,16 @@ def test_packlink_paid_label_can_attach_by_marketplace_reference_without_bt38_dr
     assert "_attach_by_marketplace_reference" in callback_source
     assert "shipment_custom_reference" in callback_source
     assert "persist_external_label" in callback_source
+
+
+def test_packlink_today_recovery_uses_exact_known_references_and_same_confirmation_path():
+    recovery_source = getsource(recover_packlink_shipments_for_day)
+    route_source = getsource(callback_routes.recover_packlink_today)
+
+    assert "FBMShipment.provider_shipment_id.isnot(None)" in recovery_source
+    assert "FBMShipment.marketplace_confirmed_at.is_(None)" in recovery_source
+    assert "process_packlink_callback" in recovery_source
+    assert '"shipment.label.ready"' in recovery_source
+    assert "RECOVER_TODAY_PACKLINK" in route_source
+    assert "_register_callback" in route_source
+    assert "recover_packlink_shipments_for_day" in route_source
