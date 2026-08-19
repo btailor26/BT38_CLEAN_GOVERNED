@@ -209,7 +209,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(origin.get("postcode")),
             "city": self._clean_text(origin.get("city")),
             "state": self._clean_text(origin.get("region")),
-            "country": str(from_location.get("country") or origin.get("country") or PACKLINK_ACCOUNT_COUNTRY).strip().upper(),
+            "country": from_location["country"],
             "phone": self._clean_text(origin.get("phone")) or "",
             "email": self._clean_text(origin.get("email")),
         }
@@ -222,7 +222,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(destination.get("postcode")),
             "city": self._clean_text(destination.get("city")),
             "state": self._clean_text(destination.get("region")),
-            "country": str(to_location.get("country") or destination.get("country") or PACKLINK_ACCOUNT_COUNTRY).strip().upper(),
+            "country": to_location["country"],
             "phone": self._clean_text(destination.get("phone")) or "",
             "email": self._clean_text(destination.get("email")),
         }
@@ -293,7 +293,7 @@ class PacklinkAdapter:
             "raw": payload,
         }
 
-    def _resolve_warehouse_id(self, origin: dict[str, Any]) -> str:
+    def _resolve_warehouse_id(self, origin: dict[str, Any]) -> Any:
         payload = self._get_json("clients/warehouses")
         warehouses = self._as_list(payload, "warehouses", "data", "items")
         if not warehouses:
@@ -312,16 +312,16 @@ class PacklinkAdapter:
                 warehouse.get("country"), warehouse.get("country_code"), self._nested(warehouse, "address", "country"),
             )
             if postcode and self._normalise_postcode(postcode) == wanted_postcode:
-                warehouse_id = self._first_text(warehouse.get("id"), warehouse.get("uuid"))
-                if warehouse_id:
+                warehouse_id = self._first_value(warehouse.get("id"), warehouse.get("uuid"))
+                if warehouse_id is not None:
                     return warehouse_id
             if country and str(country).upper() == wanted_country:
-                country_fallback = self._first_text(warehouse.get("id"), warehouse.get("uuid")) or country_fallback
-        if country_fallback:
+                country_fallback = self._first_value(warehouse.get("id"), warehouse.get("uuid")) or country_fallback
+        if country_fallback is not None:
             return country_fallback
         raise PacklinkConfigurationError("Packlink warehouse could not be matched to the sender country/postcode.")
 
-    def _resolve_postal_location(self, address: dict[str, Any]) -> dict[str, str]:
+    def _resolve_postal_location(self, address: dict[str, Any]) -> dict[str, Any]:
         country = str(address.get("country") or "GB").strip().upper()
         postcode = self._clean_postcode(address.get("postcode"))
         if not postcode:
@@ -346,9 +346,13 @@ class PacklinkAdapter:
         if not zone:
             raise PacklinkConfigurationError(f"Packlink postal zone could not be matched exactly for country {country}.")
 
-        zone_id = self._first_text(zone.get("id"), zone.get("postal_zone_id"), zone.get("postalZoneId"))
+        zone_id = self._first_value(zone.get("id"), zone.get("postal_zone_id"), zone.get("postalZoneId"))
         zone_name = self._first_text(zone.get("name"), zone.get("label"), zone.get("country_name"), self._nested(zone, "country", "name"), country)
-        if not zone_id:
+        resolved_country = self._first_text(
+            zone.get("iso_code"), zone.get("isoCode"), zone.get("country_code"),
+            self._nested(zone, "country", "iso_code"), self._nested(zone, "country", "code"), country,
+        )
+        if zone_id is None:
             raise PacklinkConfigurationError(f"Packlink postal zone ID is missing for {country}.")
 
         locations_payload = self._get_json(
@@ -373,15 +377,15 @@ class PacklinkAdapter:
         if not exact:
             raise PacklinkConfigurationError(f"Packlink could not match postcode {postcode} exactly for {country}.")
 
-        zip_code_id = self._first_text(exact.get("id"), exact.get("zip_code_id"), exact.get("postal_code_id"))
-        resolved_zone_id = self._first_text(exact.get("postal_zone_id"), exact.get("postalZoneId"), zone_id)
-        if not zip_code_id:
+        zip_code_id = self._first_value(exact.get("id"), exact.get("zip_code_id"), exact.get("postal_code_id"))
+        resolved_zone_id = self._first_value(exact.get("postal_zone_id"), exact.get("postalZoneId"), zone_id)
+        if zip_code_id is None:
             raise PacklinkConfigurationError(f"Packlink postcode ID is missing for {postcode}.")
         return {
-            "country": country,
-            "postal_zone_id": str(resolved_zone_id),
+            "country": str(resolved_country or country).strip().upper(),
+            "postal_zone_id": resolved_zone_id,
             "postal_zone_name": str(zone_name),
-            "zip_code_id": str(zip_code_id),
+            "zip_code_id": zip_code_id,
         }
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
@@ -485,6 +489,22 @@ class PacklinkAdapter:
     @staticmethod
     def _normalise_postcode(value: Any) -> str:
         return "".join(str(value or "").upper().split())
+
+    @staticmethod
+    def _first_value(*values: Any) -> Any:
+        """Return the first non-empty value without coercing Packlink IDs to text.
+
+        Packlink's frontend compares postal-zone IDs using their native JSON type.
+        Converting an integer zone ID such as 826 to the string "826" can render
+        the country label while leaving the underlying country selection invalid.
+        """
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+        return None
 
     @staticmethod
     def _first_text(*values: Any) -> str | None:
