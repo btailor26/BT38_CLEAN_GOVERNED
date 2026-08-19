@@ -209,7 +209,7 @@
                 <option value="ready_to_ship">Ready to Ship</option>
                 <option value="print_labels">Print Labels</option>
                 <option value="check_shipments">Check Shipments</option>
-                <option value="delete_test">Delete test records</option>
+                <option value="delete">Delete</option>
             </select>
         `;
         document.body.appendChild(bar);
@@ -247,7 +247,7 @@
 
         actionSelect.addEventListener('change', async function () {
             const action = actionSelect.value;
-            if (action !== 'delete_test') {
+            if (action !== 'delete') {
                 // Other bulk actions remain display-only until their shipping workflows are explicitly wired.
                 actionSelect.value = '';
                 return;
@@ -258,21 +258,21 @@
                 actionSelect.value = '';
                 return;
             }
-            if (!window.confirm(`Delete ${ids.length} selected BT38 test record${ids.length === 1 ? '' : 's'}? Real marketplace orders are protected and cannot be deleted here.`)) {
+            if (!window.confirm(`Delete ${ids.length} selected FBM record${ids.length === 1 ? '' : 's'} from BT38? This does not cancel the order on the marketplace or cancel/refund any carrier label.`)) {
                 actionSelect.value = '';
                 return;
             }
 
             actionSelect.disabled = true;
             try {
-                const response = await fetch('/governed/fbm/test-orders/delete', {
+                const response = await fetch('/governed/fbm/orders/delete', {
                     method: 'POST',
                     credentials: 'same-origin',
                     cache: 'no-store',
                     headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         order_ids: ids,
-                        confirm_delete: 'DELETE_SELECTED_TEST_ORDERS'
+                        confirm_delete: 'DELETE_SELECTED_FBM_RECORDS'
                     })
                 });
                 const payload = await response.json().catch(function () { return {}; });
