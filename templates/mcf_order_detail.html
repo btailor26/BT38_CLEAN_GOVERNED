@@ -56,10 +56,11 @@
       </div>
       <div class="card-body">
         <div class="alert alert-info">
-          Amazon acceptance will immediately trigger eBay dispatch. Carrier and tracking will be added to the same eBay order when Amazon issues them.
+          Amazon MCF is submitted immediately. After Amazon accepts it, eBay remains undispatched for the one-hour cancellation window. Carrier and tracking are added to the same eBay order when Amazon issues them.
         </div>
         <form method="post" action="{{ url_for('governed_mcf.send_order_to_mcf', order_id=anchor.id) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="auto_release" value="1">
           <div class="row g-3">
             <div class="col-md-6"><label class="form-label">Recipient name</label><input class="form-control" name="name" value="{{ mcf.destination_name if mcf and mcf.destination_name else (anchor.ship_to_name or '') }}" required></div>
             <div class="col-md-3"><label class="form-label">Email</label><input class="form-control" type="email" name="email" value="{{ anchor.ship_to_email or '' }}"></div>
@@ -81,7 +82,7 @@
             <div class="col-12">
               <button class="btn btn-primary" type="submit"
                       {% if not eligible %}disabled{% endif %}
-                      onclick="return confirm('{% if mcf and mcf.status == 'failed' %}Retry this failed Amazon MCF order using the same fulfilment ID?{% else %}Send this order to Amazon MCF and mark eBay dispatched after Amazon accepts it?{% endif %}')">
+                      onclick="return confirm('{% if mcf and mcf.status == 'failed' %}Retry this failed Amazon MCF order? Amazon will receive it immediately and eBay will retain the one-hour cancellation window after acceptance.{% else %}Send this order to Amazon MCF now? eBay will remain undispatched for one hour after Amazon accepts it.{% endif %}')">
                 <i data-feather="send" class="me-1"></i>
                 {% if mcf and mcf.status == 'failed' %}
                   Retry Amazon MCF
