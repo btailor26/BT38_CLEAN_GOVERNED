@@ -532,18 +532,85 @@ def packlink_create_draft(order_id: int):
     selected = _find_rate(quote, rate_id)
     if selected is None:
         return jsonify({"success": False, "message": "Selected Packlink service is not in the stored quote."}), 409
-    purchase_key = f"packlink_draft:{order.store_id}:{order.marketplace_order_id}"
-    existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
-    if existing is not None:
-        return jsonify({"success": True, "already_created": True, "shipment_id": existing.id, "provider_reference": existing.provider_shipment_id, "payment_status": existing.purchase_status, "message": "A Packlink shipment draft already exists for this order. No duplicate draft was created."})
-    shipment = FBMShipment(store_id=order.store_id, marketplace_order_id=order.marketplace_order_id, provider="packlink", provider_service_id=str(selected.get("service_id") or selected.get("id") or "") or None, carrier=str(selected.get("carrier_name") or selected.get("carrier") or "").strip() or None, service=str(selected.get("service_name") or selected.get("service") or "").strip() or None, purchase_key=purchase_key, selected_rate_id=rate_id, purchase_status="draft_creating", status="awaiting_provider_payment")
-    db.session.add(shipment)
+
+    # Tracking is the only completion boundary. Before tracking exists, a stale
+    # or deleted Packlink draft must never stop the order being sent again.
+    completed = (
+        FBMShipment.query
+        .filter_by(
+            store_id=order.store_id,
+            marketplace_order_id=order.marketplace_order_id,
+            provider="packlink",
+        )
+        .filter(FBMShipment.tracking_number.isnot(None))
+        .filter(FBMShipment.tracking_number != "")
+        .order_by(FBMShipment.id.desc())
+        .first()
+    )
+    purpose = str(body.get("shipment_purpose") or "").strip().lower()
+    if completed is not None:
+        if purpose not in {"return", "replacement"}:
+            return jsonify({
+                "success": False,
+                "requires_shipment_purpose": True,
+                "completed_shipment_id": completed.id,
+                "tracking_number": completed.tracking_number,
+                "options": ["return", "replacement"],
+                "message": "Tracking already exists for this order. Confirm whether the new Packlink label is for a RETURN or a REPLACEMENT.",
+            }), 409
+        required_confirmation = f"CONFIRM_{purpose.upper()}"
+        if body.get("confirm_additional_shipment") != required_confirmation:
+            return jsonify({
+                "success": False,
+                "requires_shipment_purpose": True,
+                "shipment_purpose": purpose,
+                "message": f"Explicit {required_confirmation} confirmation is required for another label on this completed order.",
+            }), 400
+        purchase_key = (
+            f"packlink_{purpose}:{order.store_id}:{order.marketplace_order_id}:"
+            f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+        )
+        shipment = FBMShipment(
+            store_id=order.store_id,
+            marketplace_order_id=order.marketplace_order_id,
+            provider="packlink",
+            provider_service_id=str(selected.get("service_id") or selected.get("id") or "") or None,
+            carrier=str(selected.get("carrier_name") or selected.get("carrier") or "").strip() or None,
+            service=str(selected.get("service_name") or selected.get("service") or "").strip() or None,
+            purchase_key=purchase_key,
+            selected_rate_id=rate_id,
+            purchase_status=f"{purpose}_draft_creating",
+            status="awaiting_provider_payment",
+        )
+        db.session.add(shipment)
+    else:
+        purchase_key = f"packlink_draft:{order.store_id}:{order.marketplace_order_id}"
+        shipment = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
+        if shipment is None:
+            shipment = FBMShipment(
+                store_id=order.store_id,
+                marketplace_order_id=order.marketplace_order_id,
+                provider="packlink",
+                purchase_key=purchase_key,
+            )
+            db.session.add(shipment)
+        # Re-use the DB slot for the original shipment until tracking exists.
+        # This intentionally removes the old "draft already exists" block.
+        shipment.provider_shipment_id = None
+        shipment.provider_service_id = str(selected.get("service_id") or selected.get("id") or "") or None
+        shipment.carrier = str(selected.get("carrier_name") or selected.get("carrier") or "").strip() or None
+        shipment.service = str(selected.get("service_name") or selected.get("service") or "").strip() or None
+        shipment.selected_rate_id = rate_id
+        shipment.purchase_status = "draft_creating"
+        shipment.purchase_error = None
+        shipment.status = "awaiting_provider_payment"
+
     try:
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
-        return jsonify({"success": False, "message": "A Packlink draft already exists or is being created.", "shipment_id": existing.id if existing else None}), 409
+        return jsonify({"success": False, "message": "Packlink shipment state changed while the draft was being prepared. Get fresh rates and try again."}), 409
+
     try:
         draft = PacklinkAdapter().create_shipment_draft(order=order, parcel=quote.parcel or {}, rate=selected)
     except Exception as exc:
@@ -551,14 +618,30 @@ def packlink_create_draft(order_id: int):
         shipment.purchase_error = str(exc)
         shipment.status = "draft_verification_required"
         db.session.commit()
-        return jsonify({"success": False, "message": "Packlink did not return a confirmed draft reference. BT38 blocked automatic retry until this attempt is checked.", "detail": str(exc), "shipment_id": shipment.id}), 502
+        return jsonify({
+            "success": False,
+            "message": "Packlink did not return a confirmed draft reference. No tracking exists, so this order remains eligible for another explicit draft attempt.",
+            "detail": str(exc),
+            "shipment_id": shipment.id,
+            "retry_allowed": True,
+        }), 502
     shipment.provider_shipment_id = draft["reference"]
-    shipment.purchase_status = "pending_provider_payment"
+    shipment.purchase_status = (
+        f"{purpose}_pending_provider_payment" if completed is not None else "pending_provider_payment"
+    )
     shipment.purchase_error = None
     shipment.status = "awaiting_provider_payment"
     quote.used_at = datetime.utcnow()
     db.session.commit()
-    return jsonify({"success": True, "shipment_id": shipment.id, "provider_reference": shipment.provider_shipment_id, "payment_status": "pending_provider_payment", "label_ready": False, "message": "Packlink draft created. Packlink payment is still required before the carrier label becomes available."})
+    return jsonify({
+        "success": True,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "payment_status": shipment.purchase_status,
+        "label_ready": False,
+        "shipment_purpose": purpose or "original",
+        "message": "Packlink draft created. The order remains open until tracking is provided.",
+    })
 
 
 @governed_fbm_bp.get("/fbm/shipments/<int:shipment_id>/packlink/status")
