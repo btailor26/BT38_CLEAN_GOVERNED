@@ -26,4 +26,5 @@ FBM is warehouse-authoritative.
 Reverse sync is disabled by default.
 Use existing logging: SystemEvent, ConfigChangeLog, SystemConfig, SystemLog.
 Every change must follow: audit, backup, replace full block, verify, syntax check, git diff, no deploy, approval.
-Current approved scope: Settings Control Center, Command Engine, and the existing governed eBay webhook route's GET destination-verification challenge only. This approval does not extend to POST execution, marketplace push, sync, import, scheduler, or broader webhook runtime changes.
+
+Current approved branch scope for `fix/full-system-release-alignment` includes the governed event-driven Amazon/eBay order and webhook execution already under test, Warehouse/Product Linking authority alignment, MCF/FBA read-only handling, FBM/Packlink shipping, exact marketplace destination hydration, marketplace dispatch confirmation, shipment/bell audit visibility, tracking journey display from provider/platform data, and standalone manual shipping. This approval is for audit, contract testing, and explicitly approved test deployment of an exact GitHub commit only; it does not authorize merge or an unreviewed production source change.
