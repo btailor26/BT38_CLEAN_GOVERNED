@@ -36,19 +36,28 @@ jobs:
             main.py \
             app.py \
             models.py \
+            fbm_models.py \
             governed_routes.py \
             governed_group_routes.py \
             governed_group_propagation_routes.py \
             governed_mcf_routes.py \
             governed_runtime_visibility_routes.py \
             governed_fbm_routes.py \
+            governed_fbm_manual_routes.py \
             governed_packlink_callback_routes.py \
+            services/fbm_provider_contract.py \
+            services/fbm_order_mapper.py \
+            services/fbm_marketplace_destination.py \
             services/fbm_amazon_order_profile.py \
+            services/fbm_amazon_shipping_adapter.py \
             services/fbm_amazon_vtr.py \
             services/fbm_packlink_adapter.py \
             services/fbm_packlink_callback.py \
+            services/fbm_packlink_event_processor.py \
             services/fbm_post_purchase.py \
             services/fbm_marketplace_confirmation.py \
+            services/fbm_shipping_state.py \
+            services/governed_exact_ebay_order_hydration.py \
             services/governed_runtime_engine.py \
             services/governed_webhook_execution.py \
             services/governed_webhook_alignment.py \
@@ -83,4 +92,8 @@ jobs:
             tests/test_amazon_eventbridge_listing_subscription_contract.py \
             tests/test_listing_structure_sync_contract.py \
             tests/test_github_fly_only_deployment_contract.py \
-            tests/test_fbm_packlink_contract.py
+            tests/test_fbm_packlink_contract.py \
+            tests/test_fbm_packlink_import_alignment_contract.py \
+            tests/test_fbm_amazon_tracking_contract.py \
+            tests/test_fbm_amazon_confirmation_payload.py \
+            tests/test_fbm_manual_shipping_order_contract.py
