@@ -30,6 +30,25 @@ def test_processed_sale_without_mcf_resumes_existing_handoff_without_stock_mutat
     assert 'handoff = _attempt_immediate_mcf_handoff(line)' in source
 
 
+def test_mcf_list_exposes_manual_repair_for_processed_ready_orders():
+    template = _read("templates/mcf_orders.html")
+    assert "Repair handoff" in template
+    assert "row.state == 'ready' and not row.mcf and row.anchor.processed_at" in template
+    assert "governed_mcf.send_order_to_mcf" in template
+    assert 'name="auto_release"' in template
+    assert 'value="1"' in template
+    assert "Stock will not be applied again" in template
+
+
+def test_live_runtime_remains_strict_event_only_without_startup_db_recovery_scan():
+    gunicorn = _read("gunicorn.conf.py")
+    event_runtime = _read("services/governed_event_runtime.py")
+    assert "start_event_only_runtime" in gunicorn
+    assert "no startup recovery or automatic hydration" in gunicorn
+    assert "no startup MarketplaceOrder/FBA/MCF recovery scans" in event_runtime
+    assert "_recover_mcf_auto_release_events(" not in event_runtime
+
+
 def test_automatic_mcf_submission_arms_one_hour_dispatch_after_amazon_acceptance():
     source = _read("governed_mcf_routes.py")
     assert "accepted_at = mcf.amazon_status_updated_at or datetime.utcnow()" in source
@@ -48,19 +67,16 @@ def test_tracking_remains_later_enrichment_not_dispatch_gate():
     assert "Amazon tracking was added to the existing eBay dispatch." in source
 
 
-def test_runtime_recovers_mcf_independently_of_retired_durable_job_path():
+def test_runtime_engine_retains_explicit_recovery_helper_without_making_it_live_policy():
     source = _read("services/governed_runtime_engine.py")
-    durable_pos = source.index("if DURABLE_RUNTIME_JOB_PATH_ENABLED and runtime_database_enabled:")
-    recovery_pos = source.index("# MCF startup recovery is part of the active governed lifecycle")
-    assert recovery_pos > durable_pos
-    recovery_block = source[recovery_pos:]
-    assert "if runtime_database_enabled:" in recovery_block
-    assert "_recover_mcf_auto_release_events(" in recovery_block
+    assert "def _recover_mcf_auto_release_events" in source
     assert 'phase = "dispatch"' in source
     assert 'phase = "submit"' in source
+    event_runtime = _read("services/governed_event_runtime.py")
+    assert "_recover_mcf_auto_release_events(" not in event_runtime
 
 
-def test_overdue_startup_recovery_dispatches_only_after_successful_amazon_submit():
+def test_overdue_explicit_recovery_dispatches_only_after_successful_amazon_submit():
     source = _read("services/governed_runtime_engine.py")
     submit_pos = source.index("result = run_governed_mcf_submission(")
     overdue_pos = source.index("overdue_recovery_dispatch =")
