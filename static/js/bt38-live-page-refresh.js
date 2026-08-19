@@ -109,7 +109,7 @@
       <div class="collapse" id="bt38FbmConnectionsCollapse">
         <div class="pb-2">
           <button class="btn btn-dark text-start w-100 ps-5 py-2 bt38-shipping-connection" type="button" data-provider="royal_mail">
-            <i data-feather="mail" class="me-2"></i>Royal Mail Click & Drop
+            <i data-feather="mail" class="me-2"></i>Royal Mail
           </button>
           <button class="btn btn-dark text-start w-100 ps-5 py-2 bt38-shipping-connection" type="button" data-provider="packlink">
             <i data-feather="truck" class="me-2"></i>Packlink PRO
@@ -145,17 +145,24 @@
         const body = document.getElementById('bt38ShippingConnectionBody');
 
         if (provider === 'royal_mail') {
-          title.textContent = 'Royal Mail Click & Drop';
-          subtitle.textContent = 'Connect your Royal Mail shipping account';
+          title.textContent = 'Royal Mail';
+          subtitle.textContent = 'Connect your own Royal Mail business account';
           body.innerHTML = `
-            <div class="alert alert-light border">
-              <strong>Connection required.</strong>
-              <div class="small text-muted mt-1">Use the Click & Drop API authentication key from your Royal Mail account.</div>
+            <div class="alert alert-info border">
+              <strong>Royal Mail API access pending approval.</strong>
+              <div class="small mt-1">BT38 is prepared for a merchant-owned Royal Mail connection. Each BT38 customer will connect their own Royal Mail account; BT38 will not share one postage account across customers.</div>
             </div>
-            <label class="form-label">Click & Drop API key</label>
-            <input class="form-control" type="password" autocomplete="off" placeholder="Enter API key" disabled>
-            <div class="form-text">Royal Mail account connection will be wired to BT38's governed provider store next.</div>
-            <button class="btn btn-primary mt-3" type="button" disabled>Connect Royal Mail</button>`;
+            <div class="mb-3">
+              <label class="form-label">Connection type</label>
+              <input class="form-control" value="Royal Mail API" disabled>
+              <div class="form-text">The approved Royal Mail API product and credential fields will be enabled here when portal access is activated.</div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Account status</label>
+              <div><span class="badge bg-warning text-dark">API approval pending</span></div>
+            </div>
+            <button class="btn btn-primary" type="button" disabled>Connect Royal Mail account</button>
+            <div class="small text-muted mt-3">Future flow: merchant connects account → BT38 validates credentials → services/labels/tracking use that merchant's Royal Mail account.</div>`;
         } else {
           title.textContent = 'Packlink PRO';
           subtitle.textContent = 'Connect or check your Packlink shipping account';
