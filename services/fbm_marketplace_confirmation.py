@@ -7,8 +7,11 @@ carrier/service mapping to be verified once.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
+
+from sqlalchemy import text
 
 from extensions import db
 from fbm_models import FBMCarrierServiceMapping, FBMShipment
@@ -116,6 +119,67 @@ def _amazon_package_reference_id(shipment: FBMShipment) -> str:
     return str(value)
 
 
+def _record_dispatch_bell_event(
+    *,
+    order: MarketplaceOrder,
+    shipment: FBMShipment,
+    marketplace: str,
+    carrier: str,
+    service: str,
+    tracking: str,
+    now: datetime,
+) -> bool:
+    """Write one bell/system event after the marketplace accepted dispatch."""
+    marketplace_name = (marketplace or "marketplace").strip().title()
+    carrier = _mapping_text(carrier)
+    service = _mapping_text(service)
+    tracking = "".join(str(tracking or "").strip().split())
+    description = f"{marketplace_name} order {order.marketplace_order_id} dispatched"
+    if carrier:
+        description += f" via {carrier}"
+    if service:
+        description += f" · {service}"
+
+    details = {
+        "source": "fbm_marketplace_confirmation",
+        "marketplace": (marketplace or "").strip().lower(),
+        "marketplace_order_id": str(order.marketplace_order_id),
+        "shipment_id": int(shipment.id),
+        "provider": str(shipment.provider or ""),
+        "provider_shipment_id": str(shipment.provider_shipment_id or ""),
+        "carrier": carrier,
+        "service": service,
+        "tracking_number": tracking,
+        "confirmation_status": "confirmed",
+    }
+
+    try:
+        db.session.execute(
+            text(
+                """
+                INSERT INTO system_events
+                    (timestamp, actor, actor_id, category, entity_id, entity_type, description, details_json)
+                VALUES
+                    (:timestamp, :actor, NULL, :category, :entity_id, :entity_type, :description, CAST(:details_json AS json))
+                """
+            ),
+            {
+                "timestamp": now,
+                "actor": "marketplace_confirmation",
+                "category": "marketplace_dispatch",
+                "entity_id": int(order.id),
+                "entity_type": "marketplace_order",
+                "description": description,
+                "details_json": json.dumps(details),
+            },
+        )
+        db.session.commit()
+        return True
+    except Exception:
+        db.session.rollback()
+        return False
+
+
 def confirm_amazon_packlink_shipment(
     *,
     shipment: FBMShipment,
@@ -200,6 +264,15 @@ def confirm_amazon_packlink_shipment(
         now=now,
     )
     db.session.commit()
+    bell_recorded = _record_dispatch_bell_event(
+        order=order,
+        shipment=shipment,
+        marketplace="amazon",
+        carrier=carrier_name,
+        service=shipping_method,
+        tracking=tracking,
+        now=now,
+    )
     return {
         "success": True,
         "already_confirmed": False,
@@ -211,6 +284,7 @@ def confirm_amazon_packlink_shipment(
         "tracking_number": tracking,
         "mapping_id": mapping.id,
         "vtr_safe_external": True,
+        "bell_recorded": bell_recorded,
     }
 
 
@@ -316,6 +390,19 @@ def confirm_external_shipment(
     if platform == "amazon" and str(shipment.provider or "").strip().casefold() == "packlink":
         return confirm_amazon_packlink_shipment(shipment=shipment, mapping=mapping)
 
+    carrier_name_for_event = str(
+        mapping.marketplace_carrier_name
+        or mapping.marketplace_carrier_code
+        or shipment.carrier
+        or ""
+    ).strip()
+    service_name_for_event = str(
+        mapping.marketplace_service_name
+        or mapping.marketplace_service_code
+        or shipment.service
+        or ""
+    ).strip()
+
     try:
         if platform == "amazon":
             client, marketplace_id = _amazon_client(order)
@@ -328,6 +415,8 @@ def confirm_external_shipment(
                 or shipment.service
                 or carrier_name
             ).strip()
+            carrier_name_for_event = carrier_name
+            service_name_for_event = shipping_method
 
             client.confirm_shipment(
                 str(order.marketplace_order_id),
@@ -379,6 +468,15 @@ def confirm_external_shipment(
         now=now,
     )
     db.session.commit()
+    bell_recorded = _record_dispatch_bell_event(
+        order=order,
+        shipment=shipment,
+        marketplace=platform,
+        carrier=carrier_name_for_event,
+        service=service_name_for_event,
+        tracking=tracking,
+        now=now,
+    )
     return {
         "success": True,
         "already_confirmed": False,
@@ -387,4 +485,5 @@ def confirm_external_shipment(
         "carrier_code": mapping.marketplace_carrier_code,
         "service_code": mapping.marketplace_service_code,
         "tracking_number": tracking,
+        "bell_recorded": bell_recorded,
     }
