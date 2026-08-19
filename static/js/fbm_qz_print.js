@@ -9,6 +9,7 @@
     const PACKLINK_PRO_URL = 'https://pro.packlink.com/';
     const AMAZON_UNSHIPPED_REPORT_URL = 'https://sellercentral.amazon.co.uk/order-reports-and-feeds/reports/fbmUnshippedOrders#';
     const BT38_AMAZON_REPORT_UPLOAD_URL = '/fbm/amazon-unshipped-report';
+    const AMAZON_BUY_SHIPPING_PREFERENCES_URL = 'https://sellercentral.amazon.co.uk/sbr/buyShippingPreferences';
 
     function requireQz() {
         if (!global.qz) throw new Error('QZ Tray browser library is not loaded.');
@@ -110,15 +111,11 @@
         scope.querySelectorAll('.packlink-status').forEach(button => statuses.push(button));
 
         drafts.forEach(button => {
-            if (button.textContent !== 'Prepare Packlink') {
-                button.textContent = 'Prepare Packlink';
-            }
+            if (button.textContent !== 'Prepare Packlink') button.textContent = 'Prepare Packlink';
         });
 
         statuses.forEach(button => {
-            if (button.textContent !== 'Check label') {
-                button.textContent = 'Check label';
-            }
+            if (button.textContent !== 'Check label') button.textContent = 'Check label';
             const box = button.closest('.rate-results');
             if (!box || box.querySelector('.packlink-pay-link')) return;
             const pay = document.createElement('a');
@@ -129,6 +126,83 @@
             pay.textContent = 'Pay in Packlink';
             button.parentNode.insertBefore(pay, button);
         });
+    }
+
+    function amazonParcelSummary(rateBox) {
+        const card = rateBox.closest('.card[data-order-id]');
+        if (!card) return {weight:'Not entered', dimensions:'Not entered', store:'BT 38'};
+        const kg = Number(card.querySelector('.parcel-weight-kg')?.value || 0);
+        const grams = Number(card.querySelector('.parcel-weight-g')?.value || 0);
+        const length = card.querySelector('.parcel-field[data-field="length_cm"]')?.value || '';
+        const width = card.querySelector('.parcel-field[data-field="width_cm"]')?.value || '';
+        const height = card.querySelector('.parcel-field[data-field="height_cm"]')?.value || '';
+        const totalGrams = Math.round((kg * 1000) + grams);
+        const weight = totalGrams > 0 ? `${Math.floor(totalGrams / 1000)} kg ${totalGrams % 1000} g` : 'Not entered';
+        const dimensions = length && width && height ? `${length} cm × ${width} cm × ${height} cm` : 'Not entered';
+        const header = card.querySelector('.card-header .small.text-muted');
+        const store = String(header?.textContent || 'BT 38').trim() || 'BT 38';
+        return {weight, dimensions, store};
+    }
+
+    function todayLabel() {
+        try {
+            return new Intl.DateTimeFormat('en-GB', {weekday:'short', day:'numeric', month:'short'}).format(new Date());
+        } catch (_) {
+            return new Date().toLocaleDateString('en-GB');
+        }
+    }
+
+    function alignAmazonBuyShippingPanel(rateBox) {
+        if (!rateBox || rateBox.dataset.amazonPanel !== '1') return;
+        if (rateBox.querySelector('.amazon-buy-shipping-shell')) return;
+
+        const parcel = amazonParcelSummary(rateBox);
+        const serviceContent = document.createElement('div');
+        serviceContent.className = 'amazon-service-content';
+        while (rateBox.firstChild) serviceContent.appendChild(rateBox.firstChild);
+
+        const shell = document.createElement('div');
+        shell.className = 'amazon-buy-shipping-shell border rounded p-3';
+        shell.innerHTML = `
+            <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+                <div>
+                    <div class="fw-bold">Amazon Buy Shipping</div>
+                    <div class="small text-muted">Add delivery information to see Amazon-controlled options for purchasing a label. Accurate parcel weight and dimensions are required.</div>
+                </div>
+                <a class="btn btn-sm btn-outline-secondary" href="${AMAZON_BUY_SHIPPING_PREFERENCES_URL}" target="_blank" rel="noopener">Buy Shipping preferences</a>
+            </div>
+            <div class="row g-2 mb-3 small">
+                <div class="col-md-4"><span class="text-muted">Dispatch from:</span> <strong>${parcel.store.replace(/[&<>"']/g, '')}</strong></div>
+                <div class="col-md-4"><span class="text-muted">Dispatch date:</span> <strong>${todayLabel()}</strong></div>
+                <div class="col-md-4"><span class="text-muted">Label:</span> <strong>Amazon-supported format · QZ printing</strong></div>
+            </div>
+            <div class="border-top pt-3 mb-3">
+                <div class="fw-semibold">Shipping service requirements</div>
+                <div class="small text-muted">Amazon controls eligible carrier/service. If a service requires additional seller inputs, Amazon must return those requirements before label purchase.</div>
+            </div>
+            <div class="row g-3 mb-3">
+                <div class="col-md-6"><div class="text-muted small">Packaging</div><strong>${parcel.dimensions}</strong><div class="small text-muted">Change the packed parcel dimensions above if required.</div></div>
+                <div class="col-md-6"><div class="text-muted small">Weight</div><strong>${parcel.weight}</strong><div class="small text-muted">Weight is sent to Amazon exactly as entered above.</div></div>
+            </div>
+            <div class="border-top pt-3">
+                <div class="fw-semibold mb-2">Select a shipping service</div>
+            </div>`;
+        shell.appendChild(serviceContent);
+
+        const footer = document.createElement('div');
+        footer.className = 'border-top pt-3 mt-3 small';
+        const printer = savedPrinter() || 'Saved/default printer';
+        footer.innerHTML = `<div><span class="text-muted">Confirmation:</span> Amazon service requirements apply.</div><div><span class="text-muted">One-Click Printer:</span> <strong>${printer.replace(/[&<>"']/g, '')}</strong></div>`;
+        shell.appendChild(footer);
+        rateBox.appendChild(shell);
+    }
+
+    function markAmazonBuyShippingClick(event) {
+        const button = event.target && event.target.closest ? event.target.closest('.provider-action[data-provider="amazon_buy_shipping"]') : null;
+        if (!button) return;
+        const id = button.dataset.orderId;
+        const rateBox = document.querySelector(`.rate-results[data-order-id="${id}"]`);
+        if (rateBox) rateBox.dataset.amazonPanel = '1';
     }
 
     function ensureAmazonReportShortcuts() {
@@ -167,6 +241,7 @@
         if (!rateBox) return;
         ensureDownloadFallback(rateBox);
         alignPacklinkPaymentHandoff(rateBox);
+        alignAmazonBuyShippingPanel(rateBox);
     }
 
     if (global.MutationObserver && global.document) {
@@ -202,10 +277,9 @@
             ensureDownloadFallback(document);
             alignPacklinkPaymentHandoff(document);
             ensureAmazonReportShortcuts();
+            document.addEventListener('click', markAmazonBuyShippingClick, true);
             const modal = document.getElementById('fbmShippingModal');
-            if (modal) {
-                modal.addEventListener('shown.bs.modal', ensureAmazonReportShortcuts);
-            }
+            if (modal) modal.addEventListener('shown.bs.modal', ensureAmazonReportShortcuts);
             const ordersRoot = document.getElementById('fbmShippingOrders');
             if (ordersRoot) {
                 observer.observe(ordersRoot, {
