@@ -23,6 +23,21 @@ def _complete_destination():
     }
 
 
+def _mock_draft_location_dependencies(monkeypatch, adapter):
+    """Keep unit tests offline while exercising the full draft payload contract."""
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_postal_location",
+        lambda address: {
+            "postal_zone_id": "GB",
+            "postal_zone_name": "United Kingdom",
+            "zip_code_id": "pc_gb_test",
+        },
+    )
+    monkeypatch.setattr(adapter, "_resolve_warehouse_id", lambda origin: "warehouse-test")
+    monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state": "READY_TO_PURCHASE"})
+
+
 def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     called = []
@@ -66,6 +81,7 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
     )
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _mock_draft_location_dependencies(monkeypatch, adapter)
 
     posted = {}
 
@@ -91,9 +107,13 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
     assert posted["body"]["service_id"] == 20149
     assert posted["body"]["shipment_custom_reference"] == "AMAZON-123"
     assert posted["body"]["from"]["company"] == "B & T OUTLET LTD"
+    assert posted["body"]["additional_data"]["selectedWarehouseId"] == "warehouse-test"
+    assert posted["body"]["additional_data"]["zip_code_id_from"] == "pc_gb_test"
+    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_gb_test"
     assert posted["body"]["content"] == "OxyLife Bleach 27G"
     assert result["reference"] == "GB000123ABC"
     assert result["label_ready"] is False
+    assert result["state"] == "READY_TO_PURCHASE"
 
 
 def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
@@ -117,6 +137,7 @@ def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
     )
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _mock_draft_location_dependencies(monkeypatch, adapter)
 
     posted = {}
     monkeypatch.setattr(
