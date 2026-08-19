@@ -4,10 +4,8 @@ from types import SimpleNamespace
 import governed_packlink_callback_routes as callback_routes
 import services.fbm_packlink_adapter as packlink_module
 from services.fbm_packlink_adapter import PacklinkAdapter
-from services.fbm_packlink_callback import (
-    _attach_by_marketplace_reference,
-    process_packlink_callback,
-)
+from services.fbm_packlink_callback import _attach_by_marketplace_reference
+from services.fbm_packlink_event_processor import process_packlink_event
 
 
 def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
@@ -71,12 +69,10 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     body = posted["body"]
     assert posted["endpoint"] == "shipments"
     assert result["reference"] == "GB000999ABC"
-
     assert body["shipment_custom_reference"] == "AMAZON-999"
     assert body["content"] == "Fevicryl Fabric Glue"
     assert body["contentvalue"] == 20.0
     assert body["contentValue_currency"] == "GBP"
-
     assert body["from"]["name"] == "Bhavin"
     assert body["from"]["surname"] == "Tailor"
     assert body["from"]["company"] == "B & T OUTLET LTD"
@@ -84,16 +80,13 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     assert body["from"]["zip_code"] == "LE1 3WU"
     assert body["from"]["city"] == "Leicester"
     assert body["from"]["state"] == "Leicestershire"
-
     assert body["to"]["street1"] == "95 MAXEY ROAD"
     assert body["to"]["zip_code"] == "RM9 5HU"
     assert body["to"]["city"] == "DAGENHAM"
     assert body["to"]["country"] == "GB"
     assert body["to"]["phone"] == "+447900000000"
     assert body["to"]["email"] == "buyer@marketplace.amazon.co.uk"
-
     assert body["packages"] == [{"width": 10, "height": 10, "length": 10, "weight": 1.0}]
-
     assert body["additional_data"]["content"] == body["content"]
     assert body["additional_data"]["contentvalue"] == body["contentvalue"]
     assert body["additional_data"]["from"] == body["from"]
@@ -110,7 +103,6 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
         line_total=9.00,
         warehouse_stock=SimpleNamespace(product_name="Test Product"),
     )
-
     monkeypatch.setattr(
         packlink_module,
         "ship_from",
@@ -131,43 +123,53 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
         },
     )
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-
     posted = {}
     monkeypatch.setattr(
         adapter,
         "_post_json",
         lambda endpoint, body: posted.update({"body": body}) or {"shipment_reference": "GB001000ABC"},
     )
-
     adapter.create_shipment_draft(
         order=order,
         parcel={"weight_kg": 1, "width_cm": 10, "length_cm": 10, "height_cm": 10},
         rate={"service_id": 21367},
     )
-
     assert posted["body"]["content"] == "Test Product"
     assert posted["body"]["contentvalue"] == 9.0
 
 
 def test_packlink_paid_label_can_attach_by_marketplace_reference_without_bt38_draft():
     attach_source = getsource(_attach_by_marketplace_reference)
-    callback_source = getsource(process_packlink_callback)
-
+    event_source = getsource(process_packlink_event)
     assert "marketplace_order_id=custom_reference" in attach_source
     assert "packlink_external:" in attach_source
     assert "provider_shipment_id=reference" in attach_source
-    assert "_attach_by_marketplace_reference" in callback_source
-    assert "shipment_custom_reference" in callback_source
-    assert "persist_external_label" in callback_source
+    assert "_find_exact_shipment" in event_source
+    assert "persist_external_label" in event_source
 
 
-def test_packlink_today_recovery_is_one_exact_shipment_and_does_not_reregister_callback():
-    route_source = getsource(callback_routes.recover_packlink_today)
+def test_packlink_runtime_sleeps_until_exact_provider_event():
+    route_source = getsource(callback_routes.packlink_callback)
+    event_source = getsource(process_packlink_event)
+    recovery_source = getsource(callback_routes.recover_packlink_today)
 
-    assert "RECOVER_TODAY_PACKLINK" in route_source
-    assert "shipment_id" in route_source
-    assert 'filter_by(id=shipment_id, provider="packlink")' in route_source
-    assert "process_packlink_callback" in route_source
-    assert '"shipment.label.ready"' in route_source
-    assert "_register_callback" not in route_source
+    assert "process_packlink_event(payload)" in route_source
     assert "recover_packlink_shipments_for_day" not in route_source
+    assert "recover_packlink_shipments_for_day" not in recovery_source
+    assert "_register_callback" not in recovery_source
+
+    # Label API is touched only after an exact shipment.label.ready event.
+    label_branch = event_source.split('if event_name == "shipment.label.ready":', 1)[1]
+    before_label_branch = event_source.split('if event_name == "shipment.label.ready":', 1)[0]
+    assert "get_labels(reference)" in label_branch
+    assert "get_labels(reference)" not in before_label_branch
+
+    # Tracking updates never re-fetch a paid label.
+    tracking_branch = event_source.split('if event_name == "shipment.tracking.update":', 1)[1]
+    assert "get_tracking_status" in tracking_branch
+    assert "get_labels" not in tracking_branch
+
+    # No scheduler, batch scan, or broad day query exists in the live event processor.
+    assert "recover_packlink_shipments_for_day" not in event_source
+    assert ".all()" not in event_source
+    assert "created_at >=" not in event_source
