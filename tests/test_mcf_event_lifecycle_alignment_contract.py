@@ -40,6 +40,14 @@ def test_mcf_list_exposes_manual_repair_for_processed_ready_orders():
     assert "Stock will not be applied again" in template
 
 
+def test_manual_mcf_send_uses_same_one_hour_ebay_dispatch_window():
+    template = _read("templates/mcf_order_detail.html")
+    assert 'name="auto_release" value="1"' in template
+    assert "Amazon MCF is submitted immediately" in template
+    assert "one-hour cancellation window" in template
+    assert "eBay will remain undispatched for one hour" in template
+
+
 def test_live_runtime_remains_strict_event_only_without_startup_db_recovery_scan():
     gunicorn = _read("gunicorn.conf.py")
     event_runtime = _read("services/governed_event_runtime.py")
