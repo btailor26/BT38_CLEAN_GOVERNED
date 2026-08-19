@@ -1,9 +1,9 @@
 """FBM shipment state owned by BT38.
 
 These tables do not replace MarketplaceOrder. MarketplaceOrder remains the order
-source of truth; these records only describe fulfilment execution for an order.
-No marketplace, carrier, inventory, webhook, or MCF behaviour is triggered by
-these models.
+source of truth for marketplace sales. Standalone manual shipping orders are
+kept in their own table and never create marketplace sales, mutate inventory,
+or trigger marketplace, webhook, or MCF behaviour.
 """
 from __future__ import annotations
 
@@ -178,3 +178,75 @@ class FBMShipmentMappingReview(db.Model):
 
     shipment = db.relationship("FBMShipment", backref=db.backref("mapping_review", uselist=False, cascade="all, delete-orphan"))
     mapping = db.relationship("FBMCarrierServiceMapping", backref=db.backref("shipment_reviews", lazy=True))
+
+
+class FBMManualOrder(db.Model):
+    """Standalone shipping job created by the user, independent of marketplaces.
+
+    This model deliberately has no Store or MarketplaceOrder foreign key. It is
+    a postage/address record only and must never mutate warehouse stock or be
+    treated as a marketplace sale.
+    """
+
+    __tablename__ = "fbm_manual_orders"
+
+    id = db.Column(db.Integer, primary_key=True)
+    reference = db.Column(db.String(100), nullable=True, unique=True, index=True)
+
+    ship_to_name = db.Column(db.String(200), nullable=False)
+    ship_to_address = db.Column(db.Text, nullable=False)
+    ship_to_address2 = db.Column(db.Text, nullable=True)
+    ship_to_city = db.Column(db.String(150), nullable=False)
+    ship_to_region = db.Column(db.String(150), nullable=True)
+    ship_to_postcode = db.Column(db.String(30), nullable=False)
+    ship_to_country = db.Column(db.String(2), nullable=False, default="GB")
+    ship_to_email = db.Column(db.String(255), nullable=True)
+    ship_to_phone = db.Column(db.String(80), nullable=False)
+
+    item_title = db.Column(db.String(300), nullable=False, default="Goods")
+    sku = db.Column(db.String(150), nullable=True)
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    declared_value = db.Column(db.Float, nullable=True)
+
+    weight_kg = db.Column(db.Float, nullable=False)
+    length_cm = db.Column(db.Float, nullable=False)
+    width_cm = db.Column(db.Float, nullable=False)
+    height_cm = db.Column(db.Float, nullable=False)
+
+    provider = db.Column(db.String(50), nullable=False, default="packlink", index=True)
+    rates = db.Column(db.JSON, nullable=False, default=list)
+    rate_expires_at = db.Column(db.DateTime, nullable=True)
+    selected_rate_id = db.Column(db.String(300), nullable=True)
+    provider_service_id = db.Column(db.String(200), nullable=True)
+    carrier = db.Column(db.String(150), nullable=True)
+    service = db.Column(db.String(300), nullable=True)
+    provider_shipment_id = db.Column(db.String(200), nullable=True, unique=True, index=True)
+    provider_status = db.Column(db.String(100), nullable=True)
+    tracking_number = db.Column(db.String(200), nullable=True, index=True)
+    checkout_url = db.Column(db.Text, nullable=True)
+    label_url = db.Column(db.Text, nullable=True)
+
+    status = db.Column(db.String(50), nullable=False, default="draft", index=True)
+    last_error = db.Column(db.Text, nullable=True)
+    created_by = db.Column(db.String(150), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    @property
+    def marketplace_order_id(self) -> str:
+        """Compatibility reference for provider adapters; this is not a marketplace ID."""
+        return self.reference or f"MANUAL-{self.id or 'NEW'}"
+
+    @property
+    def title(self) -> str:
+        return self.item_title or "Goods"
+
+    @property
+    def unit_price(self) -> float | None:
+        if self.declared_value is None:
+            return None
+        try:
+            quantity = max(1, int(self.quantity or 1))
+            return float(self.declared_value) / quantity
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
