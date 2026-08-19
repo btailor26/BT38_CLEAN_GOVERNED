@@ -22,6 +22,14 @@ def test_exact_sale_hands_off_to_existing_mcf_path_immediately():
     assert "should_attempt_mcf = bool(is_sale(line) and not _is_return(line))" in source
 
 
+def test_processed_sale_without_mcf_resumes_existing_handoff_without_stock_mutation():
+    source = _read("services/governed_order_stock_mutation.py")
+    assert 'reason": "already_processed_mcf_handoff_resumed"' in source
+    assert '"stock_mutated": False' in source
+    assert 'mcf_order_id <= 0' in source
+    assert 'handoff = _attempt_immediate_mcf_handoff(line)' in source
+
+
 def test_automatic_mcf_submission_arms_one_hour_dispatch_after_amazon_acceptance():
     source = _read("governed_mcf_routes.py")
     assert "accepted_at = mcf.amazon_status_updated_at or datetime.utcnow()" in source
