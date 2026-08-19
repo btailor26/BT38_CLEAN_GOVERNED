@@ -114,7 +114,13 @@ class PacklinkAdapter:
         returned_token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
         if not returned_token:
             return PacklinkConnectionResult(False, True, 200, message="Packlink did not confirm the configured API key.")
-        return PacklinkConnectionResult(True, True, 200, account_country=PACKLINK_ACCOUNT_COUNTRY, message="Packlink PRO authentication succeeded.")
+        return PacklinkConnectionResult(
+            True,
+            True,
+            200,
+            account_country=PACKLINK_ACCOUNT_COUNTRY,
+            message="Packlink PRO authentication succeeded.",
+        )
 
     def register_callback(self, callback_url: str) -> bool:
         callback_url = str(callback_url or "").strip()
@@ -131,10 +137,18 @@ class PacklinkAdapter:
 
     def get_rates(self, *, order: Any, parcel: dict) -> list[dict]:
         destination = ship_to(order)
-        missing_destination = [field for field in ("name", "address1", "city", "postcode", "country", "phone") if not destination.get(field)]
+        missing_destination = [
+            field for field in ("name", "address1", "city", "postcode", "country", "phone")
+            if not destination.get(field)
+        ]
         if missing_destination:
-            raise PacklinkConfigurationError("Missing Packlink destination fields: " + ", ".join(missing_destination))
-        required = ("from_country", "from_zip", "to_country", "to_zip", "width_cm", "height_cm", "length_cm", "weight_kg")
+            raise PacklinkConfigurationError(
+                "Missing Packlink destination fields: " + ", ".join(missing_destination)
+            )
+        required = (
+            "from_country", "from_zip", "to_country", "to_zip",
+            "width_cm", "height_cm", "length_cm", "weight_kg",
+        )
         missing = [name for name in required if parcel.get(name) in (None, "")]
         if missing:
             raise PacklinkConfigurationError("Missing Packlink rate fields: " + ", ".join(missing))
@@ -154,6 +168,12 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
+        """Create a Packlink PRO draft using the same address facts as the proven CSV import.
+
+        Do not pre-populate Packlink frontend-only postal-zone, postcode-ID, parcel-ID
+        or warehouse-selection fields. Packlink must receive the explicit country,
+        postcode, city and region values for sender and receiver directly.
+        """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
@@ -170,17 +190,14 @@ class PacklinkAdapter:
             if not parcel.get(field):
                 raise PacklinkConfigurationError(f"Parcel {field} is missing.")
 
-        from_location = self._resolve_postal_location(origin)
-        to_location = self._resolve_postal_location(destination)
-        warehouse_id = self._resolve_warehouse_id(origin)
-
-        customer_name, customer_surname = self._split_name(destination.get("name"), fallback_surname="Customer")
+        customer_name, customer_surname = self._split_name(
+            destination.get("name"), fallback_surname="Customer"
+        )
         sender_company = str(origin.get("company") or "B & T OUTLET LTD").strip() or "B & T OUTLET LTD"
         sender_name, sender_surname = self._company_contact_name(sender_company)
-        destination_street1 = self._clean_text(destination.get("address1"))
-        destination_street2 = self._clean_text(destination.get("address2"))
 
-        content_parts, content_value = [], 0.0
+        content_parts: list[str] = []
+        content_value = 0.0
         for line in order_lines(order):
             qty = max(1, int(getattr(line, "quantity", 1) or 1))
             sku = str(getattr(line, "sku", "Item") or "Item").strip() or "Item"
@@ -194,7 +211,9 @@ class PacklinkAdapter:
                     content_value += unit_price * qty
         if content_value <= 0:
             try:
-                content_value = float(os.environ.get("PACKLINK_DEFAULT_CONTENT_VALUE", PACKLINK_DEFAULT_CONTENT_VALUE))
+                content_value = float(
+                    os.environ.get("PACKLINK_DEFAULT_CONTENT_VALUE", PACKLINK_DEFAULT_CONTENT_VALUE)
+                )
             except (TypeError, ValueError):
                 content_value = PACKLINK_DEFAULT_CONTENT_VALUE
         if content_value <= 0:
@@ -209,7 +228,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(origin.get("postcode")),
             "city": self._clean_text(origin.get("city")),
             "state": self._clean_text(origin.get("region")),
-            "country": from_location["country"],
+            "country": self._clean_country(origin.get("country")),
             "phone": self._clean_text(origin.get("phone")) or "",
             "email": self._clean_text(origin.get("email")),
         }
@@ -217,19 +236,19 @@ class PacklinkAdapter:
             "name": customer_name,
             "surname": customer_surname,
             "company": self._clean_text(destination.get("company")),
-            "street1": destination_street1,
-            "street2": destination_street2,
+            "street1": self._clean_text(destination.get("address1")),
+            "street2": self._clean_text(destination.get("address2")),
             "zip_code": self._clean_postcode(destination.get("postcode")),
             "city": self._clean_text(destination.get("city")),
             "state": self._clean_text(destination.get("region")),
-            "country": to_location["country"],
+            "country": self._clean_country(destination.get("country")),
             "phone": self._clean_text(destination.get("phone")) or "",
             "email": self._clean_text(destination.get("email")),
         }
+
         content = ", ".join(dict.fromkeys(part for part in content_parts if part))[:60] or "Goods"
         content_value = round(content_value, 2)
         reference = str(getattr(order, "marketplace_order_id", ""))[:50]
-        parcel_id = "bt38-parcel-1"
         carrier = self._clean_text(rate.get("carrier") or rate.get("carrier_name")) or ""
         service = self._clean_text(rate.get("service") or rate.get("service_name")) or ""
 
@@ -243,16 +262,6 @@ class PacklinkAdapter:
             "print_in_store_selected": False,
             "proof_of_delivery": False,
             "priority": False,
-            "additional_data": {
-                "selectedWarehouseId": warehouse_id,
-                "postal_zone_id_from": from_location["postal_zone_id"],
-                "postal_zone_name_from": from_location["postal_zone_name"],
-                "zip_code_id_from": from_location["zip_code_id"],
-                "postal_zone_id_to": to_location["postal_zone_id"],
-                "postal_zone_name_to": to_location["postal_zone_name"],
-                "zip_code_id_to": to_location["zip_code_id"],
-                "parcelIds": [parcel_id],
-            },
             "content": content,
             "contentvalue": content_value,
             "currency": "GBP",
@@ -261,8 +270,6 @@ class PacklinkAdapter:
             "from": from_address,
             "to": to_address,
             "packages": [{
-                "id": parcel_id,
-                "name": "BT38 Parcel",
                 "width": int(round(float(parcel["width_cm"]))),
                 "height": int(round(float(parcel["height_cm"]))),
                 "length": int(round(float(parcel["length_cm"]))),
@@ -272,10 +279,13 @@ class PacklinkAdapter:
             "shipment_custom_reference": reference,
             "source": PACKLINK_PLATFORM,
         }
+
         payload = self._post_json("shipments", body)
         provider_reference = ""
         if isinstance(payload, dict):
-            provider_reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
+            provider_reference = str(
+                payload.get("shipment_reference") or payload.get("reference") or ""
+            ).strip()
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
 
@@ -283,7 +293,8 @@ class PacklinkAdapter:
         state = str(created.get("state") or created.get("status") or "").strip().upper()
         if state != "READY_TO_PURCHASE":
             raise PacklinkRequestError(
-                f"Packlink created an incomplete draft: shipment stayed in {state or 'UNKNOWN'} instead of READY_TO_PURCHASE; country/postcode mapping was not accepted."
+                f"Packlink created an incomplete draft: shipment stayed in {state or 'UNKNOWN'} "
+                "instead of READY_TO_PURCHASE; sender/receiver address mapping was not accepted."
             )
         return {
             "reference": provider_reference,
@@ -291,101 +302,6 @@ class PacklinkAdapter:
             "label_ready": False,
             "state": state,
             "raw": payload,
-        }
-
-    def _resolve_warehouse_id(self, origin: dict[str, Any]) -> Any:
-        payload = self._get_json("clients/warehouses")
-        warehouses = self._as_list(payload, "warehouses", "data", "items")
-        if not warehouses:
-            raise PacklinkConfigurationError("Packlink has no warehouse available for the sender address.")
-        wanted_postcode = self._normalise_postcode(origin.get("postcode"))
-        wanted_country = str(origin.get("country") or "").strip().upper()
-        country_fallback = None
-        for warehouse in warehouses:
-            if not isinstance(warehouse, dict):
-                continue
-            postcode = self._first_text(
-                warehouse.get("postal_code"), warehouse.get("postcode"), warehouse.get("zip_code"),
-                self._nested(warehouse, "address", "postal_code"), self._nested(warehouse, "address", "zip_code"),
-            )
-            country = self._first_text(
-                warehouse.get("country"), warehouse.get("country_code"), self._nested(warehouse, "address", "country"),
-            )
-            if postcode and self._normalise_postcode(postcode) == wanted_postcode:
-                warehouse_id = self._first_value(warehouse.get("id"), warehouse.get("uuid"))
-                if warehouse_id is not None:
-                    return warehouse_id
-            if country and str(country).upper() == wanted_country:
-                country_fallback = self._first_value(warehouse.get("id"), warehouse.get("uuid")) or country_fallback
-        if country_fallback is not None:
-            return country_fallback
-        raise PacklinkConfigurationError("Packlink warehouse could not be matched to the sender country/postcode.")
-
-    def _resolve_postal_location(self, address: dict[str, Any]) -> dict[str, Any]:
-        country = str(address.get("country") or "GB").strip().upper()
-        postcode = self._clean_postcode(address.get("postcode"))
-        if not postcode:
-            raise PacklinkConfigurationError("Packlink postcode is missing.")
-
-        zones_payload = self._get_json(
-            "locations/postalzones/destinations",
-            query={"platform": PACKLINK_PLATFORM, "platform_country": PACKLINK_ACCOUNT_COUNTRY, "language": "en"},
-        )
-        zones = self._as_list(zones_payload, "postal_zones", "data", "items")
-        zone = None
-        for item in zones:
-            if not isinstance(item, dict):
-                continue
-            iso = self._first_text(
-                item.get("iso_code"), item.get("isoCode"), item.get("country_code"), item.get("country"),
-                self._nested(item, "country", "iso_code"), self._nested(item, "country", "code"),
-            )
-            if iso and str(iso).upper() == country:
-                zone = item
-                break
-        if not zone:
-            raise PacklinkConfigurationError(f"Packlink postal zone could not be matched exactly for country {country}.")
-
-        zone_id = self._first_value(zone.get("id"), zone.get("postal_zone_id"), zone.get("postalZoneId"))
-        zone_name = self._first_text(zone.get("name"), zone.get("label"), zone.get("country_name"), self._nested(zone, "country", "name"), country)
-        resolved_country = self._first_text(
-            zone.get("iso_code"), zone.get("isoCode"), zone.get("country_code"),
-            self._nested(zone, "country", "iso_code"), self._nested(zone, "country", "code"), country,
-        )
-        if zone_id is None:
-            raise PacklinkConfigurationError(f"Packlink postal zone ID is missing for {country}.")
-
-        locations_payload = self._get_json(
-            "locations/postalcodes",
-            query={
-                "platform": PACKLINK_PLATFORM,
-                "platform_country": PACKLINK_ACCOUNT_COUNTRY,
-                "postalzone": zone_id,
-                "q": postcode,
-            },
-        )
-        locations = self._as_list(locations_payload, "postalcodes", "locations", "data", "items")
-        wanted = self._normalise_postcode(postcode)
-        exact = None
-        for item in locations:
-            if not isinstance(item, dict):
-                continue
-            item_postcode = self._first_text(item.get("zipcode"), item.get("zip_code"), item.get("postcode"), item.get("postal_code"))
-            if item_postcode and self._normalise_postcode(item_postcode) == wanted:
-                exact = item
-                break
-        if not exact:
-            raise PacklinkConfigurationError(f"Packlink could not match postcode {postcode} exactly for {country}.")
-
-        zip_code_id = self._first_value(exact.get("id"), exact.get("zip_code_id"), exact.get("postal_code_id"))
-        resolved_zone_id = self._first_value(exact.get("postal_zone_id"), exact.get("postalZoneId"), zone_id)
-        if zip_code_id is None:
-            raise PacklinkConfigurationError(f"Packlink postcode ID is missing for {postcode}.")
-        return {
-            "country": str(resolved_country or country).strip().upper(),
-            "postal_zone_id": resolved_zone_id,
-            "postal_zone_name": str(zone_name),
-            "zip_code_id": zip_code_id,
         }
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
@@ -424,7 +340,9 @@ class PacklinkAdapter:
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
     def purchase_label(self, **_: Any) -> dict:
-        raise NotImplementedError("Packlink integration creates shipment drafts but does not expose a documented BT38-safe payment call.")
+        raise NotImplementedError(
+            "Packlink integration creates shipment drafts but does not expose a documented BT38-safe payment call."
+        )
 
     def open_case(self, **_: Any) -> dict:
         raise NotImplementedError("Packlink case opening is not enabled yet.")
@@ -450,8 +368,7 @@ class PacklinkAdapter:
     @staticmethod
     def _company_contact_name(value: Any) -> tuple[str, str]:
         text = " ".join(str(value or "B & T OUTLET LTD").strip().split())
-        upper = text.upper()
-        if upper.startswith("B & T OUTLET"):
+        if text.upper().startswith("B & T OUTLET"):
             return "B & T", "Outlet"
         parts = text.split(" ")
         if len(parts) == 1:
@@ -465,7 +382,10 @@ class PacklinkAdapter:
             if value:
                 return value
         warehouse = getattr(line, "warehouse_stock", None)
-        value = " ".join(str(getattr(warehouse, "product_name", "") or "").strip().split()) if warehouse is not None else ""
+        value = (
+            " ".join(str(getattr(warehouse, "product_name", "") or "").strip().split())
+            if warehouse is not None else ""
+        )
         return value or fallback
 
     @staticmethod
@@ -487,61 +407,23 @@ class PacklinkAdapter:
         return text.upper() if text else None
 
     @staticmethod
-    def _normalise_postcode(value: Any) -> str:
-        return "".join(str(value or "").upper().split())
-
-    @staticmethod
-    def _first_value(*values: Any) -> Any:
-        """Return the first non-empty value without coercing Packlink IDs to text.
-
-        Packlink's frontend compares postal-zone IDs using their native JSON type.
-        Converting an integer zone ID such as 826 to the string "826" can render
-        the country label while leaving the underlying country selection invalid.
-        """
-        for value in values:
-            if value is None:
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
-            return value
-        return None
-
-    @staticmethod
-    def _first_text(*values: Any) -> str | None:
-        for value in values:
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                return text
-        return None
-
-    @staticmethod
-    def _nested(mapping: Any, *path: str) -> Any:
-        current = mapping
-        for key in path:
-            if not isinstance(current, dict):
-                return None
-            current = current.get(key)
-        return current
-
-    @staticmethod
-    def _as_list(payload: Any, *keys: str) -> list[Any]:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in keys:
-                value = payload.get(key)
-                if isinstance(value, list):
-                    return value
-        return []
+    def _clean_country(value: Any) -> str:
+        return str(value or PACKLINK_ACCOUNT_COUNTRY).strip().upper() or PACKLINK_ACCOUNT_COUNTRY
 
     @staticmethod
     def _normalise_rate(rate: dict[str, Any]) -> dict[str, Any]:
         carrier = rate.get("carrier")
-        carrier_name = (carrier.get("name") or carrier.get("label")) if isinstance(carrier, dict) else (carrier or rate.get("carrier_name"))
+        carrier_name = (
+            carrier.get("name") or carrier.get("label")
+            if isinstance(carrier, dict)
+            else carrier or rate.get("carrier_name")
+        )
         service = rate.get("service")
-        service_name = (service.get("name") or service.get("label")) if isinstance(service, dict) else (service or rate.get("name") or rate.get("service_name"))
+        service_name = (
+            service.get("name") or service.get("label")
+            if isinstance(service, dict)
+            else service or rate.get("name") or rate.get("service_name")
+        )
         price = rate.get("price")
         if isinstance(price, dict):
             normal_price = {
@@ -552,8 +434,15 @@ class PacklinkAdapter:
                 "total_price": price.get("total_price"),
             }
         else:
-            fallback_price = price if price is not None else (rate.get("total_price") if rate.get("total_price") is not None else rate.get("base_price"))
-            normal_price = {"value": fallback_price, "unit": rate.get("currency") or "GBP"} if fallback_price is not None else {}
+            fallback_price = (
+                price if price is not None
+                else rate.get("total_price") if rate.get("total_price") is not None
+                else rate.get("base_price")
+            )
+            normal_price = (
+                {"value": fallback_price, "unit": rate.get("currency") or "GBP"}
+                if fallback_price is not None else {}
+            )
         service_id = rate.get("service_id") or rate.get("id") or rate.get("serviceId")
         return {
             "id": service_id,
@@ -563,6 +452,11 @@ class PacklinkAdapter:
             "service": service_name,
             "service_name": service_name,
             "price": normal_price,
-            "delivery": rate.get("delivery") or rate.get("delivery_time") or rate.get("estimated_delivery") or rate.get("transit_time"),
+            "delivery": (
+                rate.get("delivery")
+                or rate.get("delivery_time")
+                or rate.get("estimated_delivery")
+                or rate.get("transit_time")
+            ),
             "raw": rate,
         }
