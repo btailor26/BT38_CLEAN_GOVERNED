@@ -209,7 +209,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(origin.get("postcode")),
             "city": self._clean_text(origin.get("city")),
             "state": self._clean_text(origin.get("region")),
-            "country": from_location["country"],
+            "country": str(from_location.get("country") or origin.get("country") or PACKLINK_ACCOUNT_COUNTRY).strip().upper(),
             "phone": self._clean_text(origin.get("phone")) or "",
             "email": self._clean_text(origin.get("email")),
         }
@@ -222,7 +222,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(destination.get("postcode")),
             "city": self._clean_text(destination.get("city")),
             "state": self._clean_text(destination.get("region")),
-            "country": to_location["country"],
+            "country": str(to_location.get("country") or destination.get("country") or PACKLINK_ACCOUNT_COUNTRY).strip().upper(),
             "phone": self._clean_text(destination.get("phone")) or "",
             "email": self._clean_text(destination.get("email")),
         }
@@ -283,7 +283,7 @@ class PacklinkAdapter:
         state = str(created.get("state") or created.get("status") or "").strip().upper()
         if state != "READY_TO_PURCHASE":
             raise PacklinkRequestError(
-                f"Packlink kept the shipment in {state or 'UNKNOWN'} instead of READY_TO_PURCHASE; country/postcode mapping was not accepted."
+                f"Packlink created an incomplete draft: shipment stayed in {state or 'UNKNOWN'} instead of READY_TO_PURCHASE; country/postcode mapping was not accepted."
             )
         return {
             "reference": provider_reference,
