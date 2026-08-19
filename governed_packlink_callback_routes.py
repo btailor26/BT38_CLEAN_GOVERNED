@@ -1,6 +1,6 @@
 """Governed public callback intake for Packlink PRO shipment events.
 
-Registration is explicit and one-time; nothing calls Packlink on app startup.
+Registration is explicit and one-time; nothing polls Packlink in the background.
 The public callback is authenticated with an opaque BT38 secret embedded in the
 registered HTTPS callback URL because Packlink's callback registration contract
 stores a URL rather than a BT38 login session.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import Blueprint, jsonify, request, url_for
@@ -22,6 +23,7 @@ from services.fbm_packlink_adapter import (
 from services.fbm_packlink_callback import (
     PacklinkCallbackError,
     process_packlink_callback,
+    recover_packlink_shipments_for_day,
 )
 
 
@@ -67,29 +69,61 @@ def _registered_callback_url() -> str:
     ))
 
 
+def _register_callback(adapter: PacklinkAdapter) -> str:
+    callback_url = _registered_callback_url()
+    registered = adapter.register_callback(callback_url)
+    if not registered:
+        raise PacklinkRequestError("Packlink did not confirm callback registration.")
+    return callback_url
+
+
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/callback/register")
 @login_required
 def register_packlink_callback():
     """Explicitly register BT38's callback URL with Packlink once."""
     try:
-        callback_url = _registered_callback_url()
-        registered = PacklinkAdapter().register_callback(callback_url)
+        _register_callback(PacklinkAdapter())
     except PacklinkConfigurationError as exc:
         return jsonify({"success": False, "message": str(exc)}), 503
     except PacklinkRequestError as exc:
         return jsonify({"success": False, "message": str(exc)}), exc.status_code or 502
-
-    if not registered:
-        return jsonify({
-            "success": False,
-            "message": "Packlink did not confirm callback registration.",
-        }), 502
 
     return jsonify({
         "success": True,
         "registered": True,
         "callback_path": "/governed/fbm/packlink/callback",
         "message": "Packlink callback registered. No background polling was enabled.",
+    })
+
+
+@governed_packlink_callback_bp.post("/governed/fbm/packlink/recover-today")
+@login_required
+def recover_packlink_today():
+    """Register the live callback and recover today's exact known Packlink shipments."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm_recovery") != "RECOVER_TODAY_PACKLINK":
+        return jsonify({
+            "success": False,
+            "message": "Explicit RECOVER_TODAY_PACKLINK confirmation is required.",
+        }), 400
+
+    adapter = PacklinkAdapter()
+    try:
+        _register_callback(adapter)
+        recovery = recover_packlink_shipments_for_day(
+            datetime.utcnow().date(),
+            adapter=adapter,
+        )
+    except PacklinkConfigurationError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 503
+    except PacklinkRequestError as exc:
+        return jsonify({"success": False, "message": str(exc)}), exc.status_code or 502
+
+    return jsonify({
+        "success": True,
+        "callback_registered": True,
+        "recovery": recovery,
+        "message": "Packlink callback is registered and today's known shipments were checked once.",
     })
 
 
@@ -115,8 +149,6 @@ def packlink_callback():
     except PacklinkConfigurationError as exc:
         return jsonify({"success": False, "message": str(exc)}), 503
     except PacklinkRequestError as exc:
-        # Packlink can retry a transient callback when BT38 cannot hydrate the
-        # exact provider shipment yet. Nothing broad is polled or scheduled.
         return jsonify({"success": False, "message": str(exc)}), 503
     except Exception as exc:
         return jsonify({"success": False, "message": str(exc)}), 500
