@@ -10,7 +10,7 @@ create a Packlink draft first.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from extensions import db
@@ -178,13 +178,7 @@ def _attach_by_marketplace_reference(
     reference: str,
     custom_reference: str | None,
 ) -> tuple[FBMShipment | None, MarketplaceOrder | None, str | None]:
-    """Attach an externally-created Packlink shipment using marketplace Reference.
-
-    Packlink import uses the marketplace order number as Reference. If the paid
-    Packlink shipment is not already known by provider reference, use that exact
-    order number to find the BT38 order and either reuse its existing Packlink
-    execution row or create one. No broad shipment polling is introduced.
-    """
+    """Attach an externally-created Packlink shipment using marketplace Reference."""
     if not custom_reference:
         return None, None, "marketplace_reference_missing"
 
@@ -392,3 +386,76 @@ def process_packlink_callback(
         response.update(result)
         response["shipment_status"] = shipment.status
     return response
+
+
+def recover_packlink_shipments_for_day(
+    target_day: date,
+    *,
+    adapter: PacklinkAdapter | None = None,
+) -> dict[str, Any]:
+    """One-shot recovery for exact Packlink shipments already known to BT38.
+
+    This is deliberately not a polling loop. It hydrates only Packlink shipment
+    references created on the requested day and still not confirmed to their
+    marketplace. Paid labels flow through the exact same callback/post-purchase
+    confirmation path as a live Packlink callback.
+    """
+    start = datetime.combine(target_day, time.min)
+    end = start + timedelta(days=1)
+    shipments = (
+        FBMShipment.query
+        .filter(
+            FBMShipment.provider == "packlink",
+            FBMShipment.provider_shipment_id.isnot(None),
+            FBMShipment.created_at >= start,
+            FBMShipment.created_at < end,
+            FBMShipment.marketplace_confirmed_at.is_(None),
+        )
+        .order_by(FBMShipment.id.asc())
+        .all()
+    )
+
+    adapter = adapter or PacklinkAdapter()
+    results: list[dict[str, Any]] = []
+    for shipment in shipments:
+        try:
+            result = process_packlink_callback(
+                {
+                    "event": "shipment.label.ready",
+                    "data": {
+                        "shipment_reference": shipment.provider_shipment_id,
+                        "shipment_custom_reference": shipment.marketplace_order_id,
+                    },
+                },
+                adapter=adapter,
+            )
+            results.append({
+                "shipment_id": shipment.id,
+                "marketplace_order_id": shipment.marketplace_order_id,
+                "provider_reference": shipment.provider_shipment_id,
+                **result,
+            })
+        except PacklinkRequestError as exc:
+            results.append({
+                "success": False,
+                "shipment_id": shipment.id,
+                "marketplace_order_id": shipment.marketplace_order_id,
+                "provider_reference": shipment.provider_shipment_id,
+                "message": str(exc),
+                "status_code": exc.status_code,
+            })
+        except Exception as exc:
+            results.append({
+                "success": False,
+                "shipment_id": shipment.id,
+                "marketplace_order_id": shipment.marketplace_order_id,
+                "provider_reference": shipment.provider_shipment_id,
+                "message": str(exc),
+            })
+
+    return {
+        "success": True,
+        "target_day": target_day.isoformat(),
+        "checked": len(shipments),
+        "results": results,
+    }
