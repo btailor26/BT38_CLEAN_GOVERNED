@@ -29,7 +29,8 @@ def _mock_draft_location_dependencies(monkeypatch, adapter):
         adapter,
         "_resolve_postal_location",
         lambda address: {
-            "postal_zone_id": "GB",
+            "country": "GB",
+            "postal_zone_id": 826,
             "postal_zone_name": "United Kingdom",
             "zip_code_id": "pc_gb_test",
         },
