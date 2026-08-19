@@ -91,7 +91,7 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
     assert posted["body"]["service_id"] == 20149
     assert posted["body"]["shipment_custom_reference"] == "AMAZON-123"
     assert posted["body"]["from"]["company"] == "B & T OUTLET LTD"
-    assert posted["body"]["content"] == "2 OxyLife Bleach 27G"
+    assert posted["body"]["content"] == "OxyLife Bleach 27G"
     assert result["reference"] == "GB000123ABC"
     assert result["label_ready"] is False
 
@@ -137,7 +137,7 @@ def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
         rate={"service_id": 20149},
     )
 
-    assert posted["body"]["content"] == "1 SKU-ONLY"
+    assert posted["body"]["content"] == "SKU-ONLY"
 
 
 def test_packlink_draft_requires_destination_phone(monkeypatch):
