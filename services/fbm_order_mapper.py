@@ -16,13 +16,15 @@ from models import MarketplaceOrder, ProductPackMapping, WarehouseStock
 
 
 DEFAULT_SHIP_FROM = {
-    "name": "B & T Outlet",
-    "company": "B & T Outlet",
-    "address1": "Unit 10 Foundry Lane",
+    "name": "Bhavin Tailor",
+    "company": "B & T OUTLET LTD",
+    "address1": "Unit 10, St Mark's Works Foundry Lane",
+    "address2": "",
     "city": "Leicester",
+    "region": "Leicestershire",
     "postcode": "LE1 3WU",
     "country": "GB",
-    "email": "bandtoutlet@gmail.com",
+    "email": "weeklydeals2014@outlook.com",
     "phone": "07903883892",
 }
 
@@ -65,7 +67,9 @@ def ship_from() -> dict[str, str]:
         "name": (os.getenv("FBM_SHIP_FROM_NAME") or DEFAULT_SHIP_FROM["name"]).strip(),
         "company": (os.getenv("FBM_SHIP_FROM_COMPANY") or DEFAULT_SHIP_FROM["company"]).strip(),
         "address1": (os.getenv("FBM_SHIP_FROM_ADDRESS1") or DEFAULT_SHIP_FROM["address1"]).strip(),
+        "address2": (os.getenv("FBM_SHIP_FROM_ADDRESS2") or DEFAULT_SHIP_FROM["address2"]).strip(),
         "city": (os.getenv("FBM_SHIP_FROM_CITY") or DEFAULT_SHIP_FROM["city"]).strip(),
+        "region": (os.getenv("FBM_SHIP_FROM_REGION") or DEFAULT_SHIP_FROM["region"]).strip(),
         "postcode": (os.getenv("FBM_SHIP_FROM_POSTCODE") or DEFAULT_SHIP_FROM["postcode"]).strip(),
         "country": (os.getenv("FBM_SHIP_FROM_COUNTRY") or DEFAULT_SHIP_FROM["country"]).strip().upper(),
         "email": (os.getenv("FBM_SHIP_FROM_EMAIL") or DEFAULT_SHIP_FROM["email"]).strip(),
@@ -77,7 +81,9 @@ def ship_to(order: Any) -> dict[str, str | None]:
     return {
         "name": _text(getattr(order, "ship_to_name", None)),
         "address1": _text(getattr(order, "ship_to_address", None)),
+        "address2": None,
         "city": _text(getattr(order, "ship_to_city", None)),
+        "region": None,
         "postcode": _text(getattr(order, "ship_to_postcode", None)),
         "country": (_text(getattr(order, "ship_to_country", None)) or "GB").upper(),
         "email": _text(getattr(order, "ship_to_email", None)),
