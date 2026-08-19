@@ -177,6 +177,72 @@
         if (window.feather) window.feather.replace();
     }
 
+    function installBulkActionBar() {
+        const checkboxes = Array.from(document.querySelectorAll('.fbm-order-checkbox'));
+        if (!checkboxes.length || document.getElementById('fbmBulkActionBar')) return;
+
+        const style = document.createElement('style');
+        style.id = 'fbmBulkActionBarStyle';
+        style.textContent = `
+            .fbm-bulk-action-bar{
+                position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;
+                display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;
+                border:1px solid #d1d5db;border-radius:10px;box-shadow:0 8px 22px rgba(0,0,0,.22);
+            }
+            .fbm-bulk-action-bar[hidden]{display:none!important}
+            .fbm-bulk-selected-pill{background:#0ea5e9;color:#fff;border-radius:999px;padding:6px 14px;font-weight:700;font-size:12px;white-space:nowrap}
+            .fbm-bulk-cancel{border:1px solid #d1d5db;background:#fff;color:#111827;border-radius:6px;padding:8px 18px;font-weight:600}
+            .fbm-bulk-select{min-width:180px;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:8px 34px 8px 12px;font-weight:600;color:#111827}
+            @media(max-width:640px){.fbm-bulk-action-bar{width:calc(100% - 24px);justify-content:space-between}.fbm-bulk-cancel{padding:8px 12px}.fbm-bulk-select{min-width:0;flex:1}}
+        `;
+        document.head.appendChild(style);
+
+        const bar = document.createElement('div');
+        bar.id = 'fbmBulkActionBar';
+        bar.className = 'fbm-bulk-action-bar';
+        bar.hidden = true;
+        bar.innerHTML = `
+            <div class="fbm-bulk-selected-pill"><span id="fbmBulkSelectedCount">0</span> order(s) selected</div>
+            <button type="button" class="fbm-bulk-cancel" id="fbmBulkCancel">Cancel</button>
+            <select class="fbm-bulk-select" id="fbmBulkActionSelect" aria-label="Bulk action">
+                <option value="">Select action</option>
+                <option value="ready_to_ship">Ready to Ship</option>
+                <option value="print_labels">Print Labels</option>
+                <option value="check_shipments">Check Shipments</option>
+            </select>
+        `;
+        document.body.appendChild(bar);
+
+        const count = document.getElementById('fbmBulkSelectedCount');
+        const selectAll = document.getElementById('selectAllOrders');
+        const updateBar = function () {
+            const selected = checkboxes.filter(function (box) { return box.checked; }).length;
+            if (count) count.textContent = String(selected);
+            bar.hidden = selected === 0;
+        };
+
+        checkboxes.forEach(function (box) {
+            box.addEventListener('change', updateBar);
+        });
+        if (selectAll) selectAll.addEventListener('change', function () { setTimeout(updateBar, 0); });
+
+        document.getElementById('fbmBulkCancel').addEventListener('click', function () {
+            checkboxes.forEach(function (box) {
+                if (!box.checked) return;
+                box.checked = false;
+                box.dispatchEvent(new Event('change', {bubbles: true}));
+            });
+            if (selectAll) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+            }
+            updateBar();
+        });
+
+        // UI shell only. Bulk actions are deliberately not wired to shipping or marketplace writes yet.
+        updateBar();
+    }
+
     document.addEventListener('click', function (event) {
         const button = event.target.closest('.fbm-tracking-journey');
         if (!button) return;
@@ -186,4 +252,5 @@
     });
 
     installManualShippingButton();
+    installBulkActionBar();
 })();
