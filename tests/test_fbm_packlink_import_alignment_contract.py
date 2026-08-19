@@ -23,7 +23,7 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
         packlink_module,
         "ship_from",
         lambda: {
-            "name": "Bhavin Tailor",
+            "name": "B & T OUTLET LTD",
             "company": "B & T OUTLET LTD",
             "address1": "Unit 10, St Mark's Works Foundry Lane",
             "address2": "",
@@ -73,14 +73,15 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     assert body["content"] == "Fevicryl Fabric Glue"
     assert body["contentvalue"] == 20.0
     assert body["contentValue_currency"] == "GBP"
-    assert body["from"]["name"] == "Bhavin"
-    assert body["from"]["surname"] == "Tailor"
+    assert body["from"]["name"] == "B & T OUTLET"
+    assert body["from"]["surname"] == "LTD"
     assert body["from"]["company"] == "B & T OUTLET LTD"
     assert body["from"]["street1"] == "Unit 10, St Mark's Works Foundry Lane"
     assert body["from"]["zip_code"] == "LE1 3WU"
     assert body["from"]["city"] == "Leicester"
     assert body["from"]["state"] == "Leicestershire"
-    assert body["to"]["street1"] == "95 MAXEY ROAD"
+    assert body["to"]["street1"] == "95"
+    assert body["to"]["street2"] == "MAXEY ROAD"
     assert body["to"]["zip_code"] == "RM9 5HU"
     assert body["to"]["city"] == "DAGENHAM"
     assert body["to"]["country"] == "GB"
@@ -107,7 +108,7 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
         packlink_module,
         "ship_from",
         lambda: {
-            "name": "Bhavin Tailor", "company": "B & T OUTLET LTD",
+            "name": "B & T OUTLET LTD", "company": "B & T OUTLET LTD",
             "address1": "Sender", "address2": None, "city": "Leicester",
             "region": "Leicestershire", "postcode": "LE1 3WU", "country": "GB",
             "email": "sender@example.test", "phone": "07900000000",
