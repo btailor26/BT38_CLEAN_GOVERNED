@@ -3,6 +3,10 @@
 No polling loop lives here. Packlink wakes BT38 with a shipment event; BT38 then
 hydrates that exact Packlink shipment and feeds any paid label/tracking through
 the existing post-purchase mapping and marketplace-confirmation path.
+
+Packlink's shipment custom reference is the marketplace order reference. That
+allows a paid Packlink shipment to flow back into BT38 even when BT38 did not
+create a Packlink draft first.
 """
 from __future__ import annotations
 
@@ -94,12 +98,7 @@ def extract_packlink_tracking(
     tracking_history: list[dict[str, Any]] | None = None,
     fallback: Any = None,
 ) -> str | None:
-    """Resolve one Packlink tracking number consistently for every BT38 path.
-
-    Provider shipment payload is authoritative when it already exposes a tracking
-    number. Packlink tracking history is the next source, followed by an existing
-    persisted BT38 value so callback replays never erase a known tracking number.
-    """
+    """Resolve one Packlink tracking number consistently for every BT38 path."""
     direct = _tracking_code(provider_payload)
     if direct:
         return direct
@@ -158,7 +157,6 @@ def _provider_identity(
 
 
 def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime) -> None:
-    """Apply the strongest provider lifecycle state after label persistence."""
     if event_name == "shipment.carrier.success":
         shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
         if shipment.delivered_at is None and shipment.first_movement_at is None:
@@ -173,6 +171,62 @@ def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime
         shipment.first_movement_at = shipment.first_movement_at or now
         shipment.delivered_at = shipment.delivered_at or now
         shipment.status = "delivered"
+
+
+def _attach_by_marketplace_reference(
+    *,
+    reference: str,
+    custom_reference: str | None,
+) -> tuple[FBMShipment | None, MarketplaceOrder | None, str | None]:
+    """Attach an externally-created Packlink shipment using marketplace Reference.
+
+    Packlink import uses the marketplace order number as Reference. If the paid
+    Packlink shipment is not already known by provider reference, use that exact
+    order number to find the BT38 order and either reuse its existing Packlink
+    execution row or create one. No broad shipment polling is introduced.
+    """
+    if not custom_reference:
+        return None, None, "marketplace_reference_missing"
+
+    orders = (
+        MarketplaceOrder.query
+        .filter_by(marketplace_order_id=custom_reference)
+        .order_by(MarketplaceOrder.id.asc())
+        .all()
+    )
+    if not orders:
+        return None, None, "marketplace_order_not_found"
+    if len(orders) != 1:
+        return None, None, "marketplace_reference_ambiguous"
+
+    order = orders[0]
+    shipment = (
+        FBMShipment.query
+        .filter_by(
+            store_id=order.store_id,
+            marketplace_order_id=order.marketplace_order_id,
+            provider="packlink",
+        )
+        .order_by(FBMShipment.id.desc())
+        .first()
+    )
+    if shipment is None:
+        shipment = FBMShipment(
+            store_id=order.store_id,
+            marketplace_order_id=order.marketplace_order_id,
+            provider="packlink",
+            provider_shipment_id=reference,
+            purchase_key=f"packlink_external:{order.store_id}:{order.marketplace_order_id}",
+            purchase_status="provider_event_received",
+            status="awaiting_label",
+        )
+        db.session.add(shipment)
+    else:
+        shipment.provider_shipment_id = reference
+        if shipment.purchase_status not in {"purchased"}:
+            shipment.purchase_status = "provider_event_received"
+    db.session.commit()
+    return shipment, order, None
 
 
 def process_packlink_callback(
@@ -196,6 +250,9 @@ def process_packlink_callback(
         data.get("shipment_custom_reference")
         or data.get("shipmentCustomReference")
         or payload.get("shipment_custom_reference")
+        or payload.get("shipmentCustomReference")
+        or data.get("reference")
+        or payload.get("reference")
         or ""
     ).strip() or None
 
@@ -217,15 +274,21 @@ def process_packlink_callback(
         .order_by(FBMShipment.id.desc())
         .first()
     )
+    order = None
     if shipment is None:
-        return {
-            "success": True,
-            "ignored": True,
-            "event": event_name,
-            "provider_reference": reference,
-            "custom_reference": custom_reference,
-            "reason": "shipment_not_known_to_bt38",
-        }
+        shipment, order, attach_error = _attach_by_marketplace_reference(
+            reference=reference,
+            custom_reference=custom_reference,
+        )
+        if shipment is None:
+            return {
+                "success": True,
+                "ignored": True,
+                "event": event_name,
+                "provider_reference": reference,
+                "custom_reference": custom_reference,
+                "reason": attach_error or "shipment_not_known_to_bt38",
+            }
 
     now = datetime.utcnow()
     shipment.last_provider_checked_at = now
@@ -271,9 +334,6 @@ def process_packlink_callback(
 
     label_url = _first_label_url(labels)
     if event_name == "shipment.label.ready" and not label_url:
-        # Packlink can emit the event just before the label URL is readable on
-        # the labels endpoint. Return a retryable provider error through the
-        # callback route instead of acknowledging and losing the wake-up event.
         raise PacklinkRequestError(
             "Packlink reported label ready but the label URL is not readable yet.",
             status_code=503,
@@ -281,10 +341,11 @@ def process_packlink_callback(
 
     result: dict[str, Any] | None = None
     if label_url:
-        order = MarketplaceOrder.query.filter_by(
-            store_id=shipment.store_id,
-            marketplace_order_id=shipment.marketplace_order_id,
-        ).order_by(MarketplaceOrder.id.asc()).first()
+        if order is None:
+            order = MarketplaceOrder.query.filter_by(
+                store_id=shipment.store_id,
+                marketplace_order_id=shipment.marketplace_order_id,
+            ).order_by(MarketplaceOrder.id.asc()).first()
         if order is None:
             shipment.status = "order_missing"
             db.session.commit()
@@ -321,6 +382,7 @@ def process_packlink_callback(
         "event": event_name,
         "shipment_id": shipment.id,
         "provider_reference": reference,
+        "custom_reference": custom_reference,
         "label_ready": bool(label_url),
         "tracking_number": tracking,
         "provider_status": provider_state,
