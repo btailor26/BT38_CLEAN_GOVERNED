@@ -84,6 +84,32 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     return profile
 
 
+def get_amazon_delivery_promise(order: Any) -> dict[str, Any]:
+    """Read Amazon's current customer delivery promise for one existing order.
+
+    This is an on-demand marketplace read used by the tracking journey UI. It
+    does not create a BT38 journey, poll in the background, or infer dates from
+    Packlink. The returned promise is exactly the delivery window Amazon owns.
+    """
+    store = getattr(order, "store", None)
+    if store is None:
+        raise AmazonOrderProfileError("Amazon store is missing from this DB order.")
+    creds = getattr(store, "amazon_credentials", None)
+    if not creds or not getattr(creds, "is_valid", lambda: False)():
+        raise AmazonOrderProfileError("Amazon credentials are not configured for this store.")
+
+    payload, _ = _fetch_order(store, str(order.marketplace_order_id))
+    earliest = _parse_iso(payload.get("EarliestDeliveryDate"))
+    latest = _parse_iso(payload.get("LatestDeliveryDate"))
+    return {
+        "source": "amazon",
+        "earliest_delivery_at": earliest.isoformat() if earliest else None,
+        "latest_delivery_at": latest.isoformat() if latest else None,
+        "order_status": _text(payload.get("OrderStatus")),
+        "shipment_service_level": _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel")),
+    }
+
+
 def _hydrate_marketplace_order(order: Any, payload: dict[str, Any], address_payload: dict[str, Any] | None = None) -> None:
     """Persist current Amazon delivery/shipping facts onto the existing order.
 
