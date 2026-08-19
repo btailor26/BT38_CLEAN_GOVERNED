@@ -43,13 +43,19 @@ def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
 def test_packlink_draft_reads_shipment_reference(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-123")
-    line = SimpleNamespace(quantity=2, sku="SKU-1", unit_price=4.50)
+    line = SimpleNamespace(
+        quantity=2,
+        sku="SKU-1",
+        title="OxyLife Bleach 27G",
+        unit_price=4.50,
+    )
 
     monkeypatch.setattr(
         packlink_module,
         "ship_from",
         lambda: {
             "name": "B & T Outlet",
+            "company": "B & T OUTLET LTD",
             "address1": "1 Test Street",
             "city": "Leicester",
             "postcode": "LE1 1AA",
@@ -84,8 +90,54 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
     assert posted["endpoint"] == "shipments"
     assert posted["body"]["service_id"] == 20149
     assert posted["body"]["shipment_custom_reference"] == "AMAZON-123"
+    assert posted["body"]["from"]["company"] == "B & T OUTLET LTD"
+    assert posted["body"]["content"] == "2 OxyLife Bleach 27G"
     assert result["reference"] == "GB000123ABC"
     assert result["label_ready"] is False
+
+
+def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-124")
+    line = SimpleNamespace(quantity=1, sku="SKU-ONLY", unit_price=2.00)
+
+    monkeypatch.setattr(
+        packlink_module,
+        "ship_from",
+        lambda: {
+            "name": "B & T Outlet",
+            "company": "B & T OUTLET LTD",
+            "address1": "1 Test Street",
+            "city": "Leicester",
+            "postcode": "LE1 1AA",
+            "country": "GB",
+            "email": "sender@example.test",
+            "phone": "01160000000",
+        },
+    )
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
+    monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+
+    posted = {}
+    monkeypatch.setattr(
+        adapter,
+        "_post_json",
+        lambda endpoint, body: posted.update({"endpoint": endpoint, "body": body})
+        or {"shipment_reference": "GB000124ABC"},
+    )
+
+    adapter.create_shipment_draft(
+        order=order,
+        parcel={
+            "weight_kg": 1.0,
+            "width_cm": 10,
+            "height_cm": 10,
+            "length_cm": 10,
+        },
+        rate={"service_id": 20149},
+    )
+
+    assert posted["body"]["content"] == "1 SKU-ONLY"
 
 
 def test_packlink_draft_requires_destination_phone(monkeypatch):
