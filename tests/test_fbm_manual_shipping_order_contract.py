@@ -34,3 +34,33 @@ def test_manual_shipping_routes_are_registered_under_governed_fbm_tree():
     source = (ROOT / "governed_packlink_callback_routes.py").read_text(encoding="utf-8")
     assert "from governed_fbm_manual_routes import governed_fbm_manual_bp" in source
     assert "register_blueprint(governed_fbm_manual_bp)" in source
+
+
+def test_manual_shipping_preserves_full_destination_and_reuses_saved_order():
+    mapper = (ROOT / "services" / "fbm_order_mapper.py").read_text(encoding="utf-8")
+    template = (ROOT / "templates" / "fbm_manual_shipping.html").read_text(encoding="utf-8")
+    tabs = (ROOT / "templates" / "_inventory_area_tabs.html").read_text(encoding="utf-8")
+
+    assert '"address2": _text(getattr(order, "ship_to_address2", None))' in mapper
+    assert '"region": _text(getattr(order, "ship_to_region", None))' in mapper
+
+    # Once saved, Save & get rates must continue the same manual DB order instead
+    # of POSTing /fbm/manual again and creating a duplicate shipping record.
+    save_block = template.split("async function saveOrder", 1)[1].split("async function prepareDraft", 1)[0]
+    assert "if(!manualOrderId)" in save_block
+    assert "`/fbm/manual/${manualOrderId}/packlink/rates`" in save_block
+    assert "saveButton.disabled=true" in template
+
+    assert 'href="/fbm"' in tabs
+    assert 'href="/fbm/manual"' in tabs
+
+
+def test_release_gates_cover_manual_shipping_runtime_and_contract():
+    deploy = (ROOT / ".github" / "workflows" / "deploy-fly.yml").read_text(encoding="utf-8")
+    readiness = (ROOT / ".github" / "workflows" / "deployment-readiness.yml").read_text(encoding="utf-8")
+
+    for workflow in (deploy, readiness):
+        assert "governed_fbm_manual_routes.py" in workflow
+        assert "services/fbm_marketplace_destination.py" in workflow
+        assert "services/governed_exact_ebay_order_hydration.py" in workflow
+        assert "tests/test_fbm_manual_shipping_order_contract.py" in workflow
