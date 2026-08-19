@@ -178,15 +178,21 @@ class PacklinkAdapter:
         content_parts, content_value = [], 0.0
         for line in order_lines(order):
             qty = max(1, int(getattr(line, "quantity", 1) or 1))
-            sku = str(getattr(line, "sku", "Item") or "Item")
-            content_parts.append(f"{qty} {sku}")
+            sku = str(getattr(line, "sku", "Item") or "Item").strip() or "Item"
+            description = self._line_description(line, fallback=sku)
+            content_parts.append(f"{qty} {description}")
             content_value += max(0.0, float(getattr(line, "unit_price", 0) or 0)) * qty
         body = {
             "from": {
-                "name": sender_name, "surname": sender_surname,
-                "street1": origin.get("address1"), "zip_code": origin.get("postcode"),
-                "city": origin.get("city"), "country": origin.get("country") or "GB",
-                "phone": origin.get("phone") or "", "email": origin.get("email") or None,
+                "name": sender_name,
+                "surname": sender_surname,
+                "company": str(origin.get("company") or "").strip() or None,
+                "street1": origin.get("address1"),
+                "zip_code": origin.get("postcode"),
+                "city": origin.get("city"),
+                "country": origin.get("country") or "GB",
+                "phone": origin.get("phone") or "",
+                "email": origin.get("email") or None,
             },
             "to": {
                 "name": customer_name, "surname": customer_surname,
@@ -275,6 +281,15 @@ class PacklinkAdapter:
         if len(parts) == 1:
             return parts[0], fallback_surname
         return " ".join(parts[:-1]), parts[-1]
+
+    @staticmethod
+    def _line_description(line: Any, *, fallback: str) -> str:
+        """Prefer an existing marketplace product description; never invent one."""
+        for attr in ("title", "product_title", "item_title", "name"):
+            value = " ".join(str(getattr(line, attr, "") or "").strip().split())
+            if value:
+                return value
+        return fallback
 
     @staticmethod
     def _normalise_rate(rate: dict[str, Any]) -> dict[str, Any]:
