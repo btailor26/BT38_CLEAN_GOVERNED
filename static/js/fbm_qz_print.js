@@ -128,6 +128,51 @@
         });
     }
 
+    function alignAmazonManualMappingControls(root) {
+        const scope = root && root.querySelectorAll ? root : document;
+        const editors = [];
+        if (root && root.matches && root.matches('.mapping-editor')) editors.push(root);
+        scope.querySelectorAll('.mapping-editor').forEach(editor => editors.push(editor));
+
+        editors.forEach(editor => {
+            if (!editor || editor.dataset.amazonSellerAligned === '1') return;
+            const text = String(editor.textContent || '').toLowerCase();
+            if (!text.includes('evri') && !text.includes('hermes')) return;
+
+            const carrierInput = editor.querySelector('.mapping-carrier-code');
+            const serviceInput = editor.querySelector('.mapping-service-code');
+            if (!carrierInput || !serviceInput) return;
+
+            const carrierSelect = document.createElement('select');
+            carrierSelect.className = carrierInput.className;
+            carrierSelect.innerHTML = '<option value="Hermes" selected>Hermes</option>';
+            carrierInput.replaceWith(carrierSelect);
+
+            const serviceSelect = document.createElement('select');
+            serviceSelect.className = serviceInput.className;
+            serviceSelect.innerHTML = [
+                '<option value="">Select delivery service</option>',
+                '<option value="Next Day">Next Day</option>',
+                '<option value="Standard Courier collection">Standard Courier collection</option>',
+                '<option value="Standard drop off">Standard drop off</option>',
+                '<option value="Standard Two Day drop off">Standard Two Day drop off</option>'
+            ].join('');
+            serviceInput.replaceWith(serviceSelect);
+
+            const carrierLabel = document.createElement('div');
+            carrierLabel.className = 'small text-muted mt-2 mb-1';
+            carrierLabel.textContent = 'Carrier';
+            carrierSelect.parentNode.insertBefore(carrierLabel, carrierSelect);
+
+            const serviceLabel = document.createElement('div');
+            serviceLabel.className = 'small text-muted mt-2 mb-1';
+            serviceLabel.textContent = 'Delivery Service';
+            serviceSelect.parentNode.insertBefore(serviceLabel, serviceSelect);
+
+            editor.dataset.amazonSellerAligned = '1';
+        });
+    }
+
     function amazonParcelSummary(rateBox) {
         const card = rateBox.closest('.card[data-order-id]');
         if (!card) return {weight:'Not entered', dimensions:'Not entered', store:'BT 38'};
@@ -235,6 +280,7 @@
 
     function processMutationTarget(target) {
         if (!target || target.nodeType !== 1) return;
+        alignAmazonManualMappingControls(target);
         const rateBox = target.matches && target.matches('.rate-results')
             ? target
             : (target.closest ? target.closest('.rate-results') : null);
@@ -276,6 +322,7 @@
         const start = () => {
             ensureDownloadFallback(document);
             alignPacklinkPaymentHandoff(document);
+            alignAmazonManualMappingControls(document);
             ensureAmazonReportShortcuts();
             document.addEventListener('click', markAmazonBuyShippingClick, true);
             const modal = document.getElementById('fbmShippingModal');
