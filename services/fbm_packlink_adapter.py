@@ -172,7 +172,11 @@ class PacklinkAdapter:
                 raise PacklinkConfigurationError(f"Parcel {field} is missing.")
 
         customer_name, customer_surname = self._split_name(destination.get("name"), fallback_surname="Customer")
-        sender_name, sender_surname = self._split_name(origin.get("name") or "B & T Outlet", fallback_surname="Outlet")
+        sender_company = str(origin.get("company") or "B & T OUTLET LTD").strip() or "B & T OUTLET LTD"
+        sender_name, sender_surname = self._split_company_name(sender_company)
+        destination_street1, destination_street2 = self._split_packlink_address(
+            destination.get("address1"), destination.get("address2")
+        )
         content_parts, content_value = [], 0.0
         for line in order_lines(order):
             qty = max(1, int(getattr(line, "quantity", 1) or 1))
@@ -198,7 +202,7 @@ class PacklinkAdapter:
         from_address = {
             "name": sender_name,
             "surname": sender_surname,
-            "company": str(origin.get("company") or "").strip() or None,
+            "company": sender_company,
             "street1": origin.get("address1"),
             "street2": origin.get("address2") or None,
             "zip_code": origin.get("postcode"),
@@ -212,8 +216,8 @@ class PacklinkAdapter:
             "name": customer_name,
             "surname": customer_surname,
             "company": None,
-            "street1": destination.get("address1"),
-            "street2": destination.get("address2") or None,
+            "street1": destination_street1,
+            "street2": destination_street2,
             "zip_code": destination.get("postcode"),
             "city": destination.get("city"),
             "state": destination.get("region") or None,
@@ -317,6 +321,33 @@ class PacklinkAdapter:
         if len(parts) == 1:
             return parts[0], fallback_surname
         return " ".join(parts[:-1]), parts[-1]
+
+    @staticmethod
+    def _split_company_name(value: Any) -> tuple[str, str]:
+        text = " ".join(str(value or "B & T OUTLET LTD").strip().split()) or "B & T OUTLET LTD"
+        parts = text.split(" ")
+        if len(parts) == 1:
+            return parts[0], parts[0]
+        return " ".join(parts[:-1]), parts[-1]
+
+    @staticmethod
+    def _split_packlink_address(address1: Any, address2: Any = None) -> tuple[str | None, str | None]:
+        """Preserve Packlink's two-line import shape without inventing address data.
+
+        If the marketplace already supplies address line 2, keep both lines as-is.
+        Otherwise, for a normal UK house-number-first address such as
+        '41 PLUMTREE PARK BIRCOTES', place the house number in line 1 and the
+        remaining street/locality text in line 2. Unit/business addresses and
+        non-numeric prefixes remain untouched.
+        """
+        line1 = " ".join(str(address1 or "").strip().split()) or None
+        line2 = " ".join(str(address2 or "").strip().split()) or None
+        if not line1 or line2:
+            return line1, line2
+        first, sep, rest = line1.partition(" ")
+        if sep and first.isdigit() and rest.strip():
+            return first, rest.strip()
+        return line1, None
 
     @staticmethod
     def _line_description(line: Any, *, fallback: str) -> str:
