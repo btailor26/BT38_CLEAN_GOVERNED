@@ -15,7 +15,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import Blueprint, jsonify, request, url_for
 from flask_login import login_required
 
-from fbm_models import FBMShipment
+from extensions import db
+from fbm_models import FBMOrderProfile, FBMRateQuote, FBMShipment
+from models import MarketplaceOrder
 from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkConfigurationError, PacklinkRequestError
 from services.fbm_packlink_callback import PacklinkCallbackError
 from services.fbm_packlink_event_processor import process_packlink_event
@@ -66,6 +68,100 @@ def register_packlink_callback():
     except PacklinkRequestError as exc:
         return jsonify({"success": False, "message": str(exc)}), exc.status_code or 502
     return jsonify({"success": True, "registered": True, "callback_path": "/governed/fbm/packlink/callback", "message": "Packlink callback registered. Runtime remains asleep until Packlink sends an event."})
+
+
+@governed_packlink_callback_bp.post("/governed/fbm/test-orders/delete")
+@login_required
+def delete_fbm_test_orders():
+    """Delete only explicitly marked synthetic FBM test records.
+
+    Real marketplace orders are deliberately impossible to delete through this
+    route. A selected order must use the BT38-TEST- reference prefix or the
+    whole request is rejected before any database mutation occurs.
+    """
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm_delete") != "DELETE_SELECTED_TEST_ORDERS":
+        return jsonify({"success": False, "message": "Explicit DELETE_SELECTED_TEST_ORDERS confirmation is required."}), 400
+
+    raw_ids = body.get("order_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"success": False, "message": "order_ids must be a list."}), 400
+
+    order_ids: list[int] = []
+    for value in raw_ids[:100]:
+        try:
+            order_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if order_id > 0 and order_id not in order_ids:
+            order_ids.append(order_id)
+    if not order_ids:
+        return jsonify({"success": False, "message": "Select at least one test order."}), 400
+
+    selected = MarketplaceOrder.query.filter(MarketplaceOrder.id.in_(order_ids)).all()
+    by_id = {row.id: row for row in selected}
+    missing = [order_id for order_id in order_ids if order_id not in by_id]
+    if missing:
+        return jsonify({"success": False, "message": "One or more selected orders no longer exist.", "missing_order_ids": missing}), 409
+
+    protected = []
+    for row in selected:
+        reference = str(row.marketplace_order_id or "").strip()
+        if not reference.upper().startswith("BT38-TEST-"):
+            protected.append({"id": row.id, "marketplace_order_id": reference})
+    if protected:
+        return jsonify({
+            "success": False,
+            "message": "Delete blocked. This control can delete BT38 synthetic test records only; real marketplace orders are protected.",
+            "protected_orders": protected,
+        }), 403
+
+    identities = sorted({(row.store_id, str(row.marketplace_order_id)) for row in selected})
+    deleted_marketplace_rows = 0
+    deleted_shipments = 0
+    deleted_quotes = 0
+    deleted_profiles = 0
+
+    try:
+        for store_id, marketplace_order_id in identities:
+            shipments = FBMShipment.query.filter_by(store_id=store_id, marketplace_order_id=marketplace_order_id).all()
+            for shipment in shipments:
+                db.session.delete(shipment)
+                deleted_shipments += 1
+
+            deleted_quotes += FBMRateQuote.query.filter_by(
+                store_id=store_id,
+                marketplace_order_id=marketplace_order_id,
+            ).delete(synchronize_session=False)
+            deleted_profiles += FBMOrderProfile.query.filter_by(
+                store_id=store_id,
+                marketplace_order_id=marketplace_order_id,
+            ).delete(synchronize_session=False)
+
+            rows = MarketplaceOrder.query.filter_by(
+                store_id=store_id,
+                marketplace_order_id=marketplace_order_id,
+            ).all()
+            for row in rows:
+                if not str(row.marketplace_order_id or "").strip().upper().startswith("BT38-TEST-"):
+                    raise RuntimeError("Protected marketplace row entered test-order delete scope.")
+                db.session.delete(row)
+                deleted_marketplace_rows += 1
+
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({"success": False, "message": "Test-order delete was rolled back.", "detail": str(exc)}), 409
+
+    return jsonify({
+        "success": True,
+        "deleted_order_ids": order_ids,
+        "deleted_marketplace_rows": deleted_marketplace_rows,
+        "deleted_shipments": deleted_shipments,
+        "deleted_quotes": deleted_quotes,
+        "deleted_profiles": deleted_profiles,
+        "message": f"Deleted {len(identities)} BT38 test order reference{'s' if len(identities) != 1 else ''} and associated FBM test state.",
+    })
 
 
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/recover-today")
