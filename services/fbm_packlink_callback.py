@@ -178,7 +178,13 @@ def _attach_by_marketplace_reference(
     reference: str,
     custom_reference: str | None,
 ) -> tuple[FBMShipment | None, MarketplaceOrder | None, str | None]:
-    """Attach an externally-created Packlink shipment using marketplace Reference."""
+    """Attach an externally-created Packlink shipment using marketplace Reference.
+
+    Tracking is the completion boundary. Before tracking exists, a newer Packlink
+    shipment for the same order may replace the stale/deleted draft reference.
+    After tracking exists, a different Packlink shipment using the same order
+    number is held until the user classifies it as a return or replacement.
+    """
     if not custom_reference:
         return None, None, "marketplace_reference_missing"
 
@@ -216,6 +222,14 @@ def _attach_by_marketplace_reference(
         )
         db.session.add(shipment)
     else:
+        existing_reference = str(shipment.provider_shipment_id or "").strip()
+        completed_tracking = str(shipment.tracking_number or "").strip()
+        if completed_tracking and existing_reference and existing_reference != reference:
+            return (
+                None,
+                order,
+                "additional_shipment_requires_return_or_replacement_confirmation",
+            )
         shipment.provider_shipment_id = reference
         if shipment.purchase_status not in {"purchased"}:
             shipment.purchase_status = "provider_event_received"
