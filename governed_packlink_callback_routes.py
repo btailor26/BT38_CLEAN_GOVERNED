@@ -185,3 +185,11 @@ def packlink_callback():
         return jsonify({"success": False, "message": str(exc)}), 500
 
     return jsonify(result), 200
+
+
+# Keep standalone manual shipping inside the governed FBM registration tree.
+# It has no marketplace/stock side effects and is registered before the parent
+# blueprint is attached to the Flask app.
+from governed_fbm_manual_routes import governed_fbm_manual_bp
+
+governed_packlink_callback_bp.register_blueprint(governed_fbm_manual_bp)
