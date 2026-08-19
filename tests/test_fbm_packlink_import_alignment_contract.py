@@ -1,7 +1,12 @@
+from inspect import getsource
 from types import SimpleNamespace
 
 import services.fbm_packlink_adapter as packlink_module
 from services.fbm_packlink_adapter import PacklinkAdapter
+from services.fbm_packlink_callback import (
+    _attach_by_marketplace_reference,
+    process_packlink_callback,
+)
 
 
 def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
@@ -141,3 +146,15 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
 
     assert posted["body"]["content"] == "Test Product"
     assert posted["body"]["contentvalue"] == 9.0
+
+
+def test_packlink_paid_label_can_attach_by_marketplace_reference_without_bt38_draft():
+    attach_source = getsource(_attach_by_marketplace_reference)
+    callback_source = getsource(process_packlink_callback)
+
+    assert "marketplace_order_id=custom_reference" in attach_source
+    assert "packlink_external:" in attach_source
+    assert "provider_shipment_id=reference" in attach_source
+    assert "_attach_by_marketplace_reference" in callback_source
+    assert "shipment_custom_reference" in callback_source
+    assert "persist_external_label" in callback_source
