@@ -17,6 +17,23 @@ from services.fbm_marketplace_confirmation import confirm_external_shipment
 
 
 STRONGER_PROVIDER_STATES = {"accepted", "in_transit", "delivered"}
+_AMAZON_TRACKING_SEPARATORS = "-‐‑‒–—―"
+
+
+def _amazon_tracking_number(value: Any) -> str | None:
+    """Return the courier tracking value in Amazon's compact form.
+
+    Packlink/carriers can display tracking with spaces or dash variants for
+    readability. Amazon should receive the courier tracking itself without
+    those presentation separators.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    compact = "".join(raw.split())
+    for separator in _AMAZON_TRACKING_SEPARATORS:
+        compact = compact.replace(separator, "")
+    return compact or None
 
 
 def persist_external_label(
@@ -42,7 +59,12 @@ def persist_external_label(
     shipment.provider_service_id = str(provider_service_id or "").strip() or shipment.provider_service_id
     shipment.carrier = str(carrier or "").strip() or shipment.carrier
     shipment.service = str(service or "").strip() or shipment.service
-    shipment.tracking_number = str(tracking_number or "").strip() or shipment.tracking_number
+
+    incoming_tracking = str(tracking_number or "").strip() or shipment.tracking_number
+    if str(marketplace or "").strip().casefold() == "amazon":
+        shipment.tracking_number = _amazon_tracking_number(incoming_tracking) or shipment.tracking_number
+    else:
+        shipment.tracking_number = incoming_tracking
 
     shipment.label_format = str(label.get("format") or "").strip().upper() or shipment.label_format
     shipment.label_document_type = str(label.get("type") or "LABEL").strip() or shipment.label_document_type or "LABEL"
