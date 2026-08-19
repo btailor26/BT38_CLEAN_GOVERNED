@@ -7,6 +7,8 @@
 
     const STORAGE_KEY = 'bt38_fbm_qz_printer';
     const PACKLINK_PRO_URL = 'https://pro.packlink.com/';
+    const AMAZON_UNSHIPPED_REPORT_URL = 'https://sellercentral.amazon.co.uk/order-reports-and-feeds/reports/endofdayforms#';
+    const BT38_AMAZON_REPORT_UPLOAD_URL = '/fbm/amazon-unshipped-report';
 
     function requireQz() {
         if (!global.qz) throw new Error('QZ Tray browser library is not loaded.');
@@ -129,6 +131,34 @@
         });
     }
 
+    function ensureAmazonReportShortcuts() {
+        const modal = document.getElementById('fbmShippingModal');
+        if (!modal) return;
+        const footer = modal.querySelector('.modal-footer');
+        if (!footer || footer.querySelector('.amazon-report-shortcuts')) return;
+
+        const shortcuts = document.createElement('div');
+        shortcuts.className = 'amazon-report-shortcuts d-flex flex-wrap gap-2 me-auto';
+
+        const amazonReport = document.createElement('a');
+        amazonReport.href = AMAZON_UNSHIPPED_REPORT_URL;
+        amazonReport.target = '_blank';
+        amazonReport.rel = 'noopener';
+        amazonReport.className = 'btn btn-sm btn-outline-warning';
+        amazonReport.textContent = 'Amazon Unshipped Report';
+
+        const uploadReport = document.createElement('a');
+        uploadReport.href = BT38_AMAZON_REPORT_UPLOAD_URL;
+        uploadReport.target = '_blank';
+        uploadReport.rel = 'noopener';
+        uploadReport.className = 'btn btn-sm btn-outline-primary';
+        uploadReport.textContent = 'Upload Amazon Report';
+
+        shortcuts.appendChild(amazonReport);
+        shortcuts.appendChild(uploadReport);
+        footer.insertBefore(shortcuts, footer.firstChild);
+    }
+
     function processMutationTarget(target) {
         if (!target || target.nodeType !== 1) return;
         const rateBox = target.matches && target.matches('.rate-results')
@@ -171,6 +201,11 @@
         const start = () => {
             ensureDownloadFallback(document);
             alignPacklinkPaymentHandoff(document);
+            ensureAmazonReportShortcuts();
+            const modal = document.getElementById('fbmShippingModal');
+            if (modal) {
+                modal.addEventListener('shown.bs.modal', ensureAmazonReportShortcuts);
+            }
             const ordersRoot = document.getElementById('fbmShippingOrders');
             if (ordersRoot) {
                 observer.observe(ordersRoot, {
