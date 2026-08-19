@@ -1,9 +1,10 @@
-"""Governed free UK postcode lookup for manual shipping.
+"""Governed free UK property-address lookup for manual shipping.
 
-BT38 uses Postcodes.io for postcode validation and locality metadata. No API key
-is required. Lookup runs only when the user explicitly searches a postcode; no
-polling or background work is introduced. Postcodes.io does not provide PAF
-property-level addresses, so house number/street remains user-entered.
+BT38 asks Homedata's postcode endpoint only when the user explicitly searches a
+postcode. The endpoint returns property addresses for that postcode, allowing
+BT38 to offer a select list and populate the destination without guessing.
+No polling or background work is introduced and no API key is required for this
+postcode lookup endpoint.
 """
 from __future__ import annotations
 
@@ -25,41 +26,68 @@ def _provider_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _clean(value) -> str:
+    return str(value or "").strip()
+
+
 @governed_fbm_address_lookup_bp.get("/fbm/manual/address-lookup")
 @login_required
 def manual_address_lookup():
-    postcode = " ".join(str(request.args.get("postcode") or "").upper().split())
-    if not postcode or len(postcode) < 5 or len(postcode) > 8:
+    postcode = "".join(str(request.args.get("postcode") or "").upper().split())
+    if not postcode or len(postcode) < 5 or len(postcode) > 7:
         return jsonify({"success": False, "message": "Enter a valid UK postcode."}), 400
 
-    url = f"https://api.postcodes.io/postcodes/{quote(postcode, safe='')}"
+    url = f"https://api.homedata.co.uk/address/postcode/{quote(postcode, safe='')}/"
     try:
         payload = _provider_json(url)
     except HTTPError as exc:
         if exc.code == 404:
-            return jsonify({"success": False, "message": "UK postcode was not found."}), 404
-        return jsonify({"success": False, "message": f"Postcode lookup failed (HTTP {exc.code})."}), 502
+            return jsonify({"success": True, "postcode": postcode, "addresses": [], "message": "No addresses found for this postcode."})
+        return jsonify({"success": False, "message": f"Address lookup failed (HTTP {exc.code})."}), 502
     except (URLError, TimeoutError, ValueError):
-        return jsonify({"success": False, "message": "Postcode lookup provider is unavailable."}), 502
+        return jsonify({"success": False, "message": "Address lookup provider is unavailable."}), 502
 
-    result = payload.get("result") if isinstance(payload, dict) else None
-    if not isinstance(result, dict):
-        return jsonify({"success": False, "message": "Postcode lookup returned an invalid response."}), 502
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "message": "Address lookup returned an invalid response."}), 502
 
-    city = str(result.get("post_town") or result.get("admin_district") or result.get("parish") or "").strip()
-    region = str(result.get("admin_county") or result.get("region") or result.get("admin_district") or "").strip()
-    canonical_postcode = str(result.get("postcode") or postcode).upper().strip()
+    canonical_postcode = _clean(payload.get("postcode")) or postcode
+    addresses = []
+    for index, item in enumerate(payload.get("addresses") or []):
+        if not isinstance(item, dict):
+            continue
+        label = _clean(item.get("address"))
+        building = _clean(item.get("building_name") or item.get("building_number"))
+        street = _clean(item.get("street"))
+        town = _clean(item.get("town"))
+        county = _clean(item.get("county"))
+        line1 = " ".join(part for part in (building, street) if part).strip()
+        if not line1 and label:
+            parts = [part.strip() for part in label.split(",") if part.strip()]
+            line1 = parts[0] if parts else label
+        if not town and label:
+            parts = [part.strip() for part in label.split(",") if part.strip()]
+            if len(parts) > 1:
+                town = parts[-1]
+        if not label:
+            label = ", ".join(part for part in (line1, town, canonical_postcode) if part)
+        addresses.append({
+            "id": str(index),
+            "label": label,
+            "address": {
+                "ship_to_address": line1,
+                "ship_to_address2": "",
+                "ship_to_city": town,
+                "ship_to_region": county,
+                "ship_to_postcode": canonical_postcode,
+                "ship_to_country": "GB",
+            },
+        })
 
     return jsonify({
         "success": True,
         "postcode": canonical_postcode,
-        "address": {
-            "ship_to_city": city,
-            "ship_to_region": region,
-            "ship_to_postcode": canonical_postcode,
-            "ship_to_country": "GB",
-        },
-        "message": "Postcode verified. City/region filled where available; enter the house number and street manually.",
-        "property_lookup": False,
-        "provider": "postcodes.io",
+        "addresses": addresses,
+        "message": f"{len(addresses)} address{'es' if len(addresses) != 1 else ''} found.",
+        "property_lookup": True,
+        "provider": "homedata",
     })
