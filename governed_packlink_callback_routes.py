@@ -21,10 +21,8 @@ from services.fbm_packlink_adapter import (
     PacklinkConfigurationError,
     PacklinkRequestError,
 )
-from services.fbm_packlink_callback import (
-    PacklinkCallbackError,
-    process_packlink_callback,
-)
+from services.fbm_packlink_callback import PacklinkCallbackError
+from services.fbm_packlink_event_processor import process_packlink_event
 
 
 governed_packlink_callback_bp = Blueprint(
@@ -60,13 +58,7 @@ def _registered_callback_url() -> str:
 
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["token"] = secret
-    return urlunsplit((
-        parts.scheme,
-        parts.netloc,
-        parts.path,
-        urlencode(query),
-        parts.fragment,
-    ))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _register_callback(adapter: PacklinkAdapter) -> str:
@@ -80,7 +72,7 @@ def _register_callback(adapter: PacklinkAdapter) -> str:
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/callback/register")
 @login_required
 def register_packlink_callback():
-    """Explicitly register BT38's callback URL with Packlink once."""
+    """Register BT38's Packlink callback once; no scheduler or polling is enabled."""
     try:
         _register_callback(PacklinkAdapter())
     except PacklinkConfigurationError as exc:
@@ -92,18 +84,17 @@ def register_packlink_callback():
         "success": True,
         "registered": True,
         "callback_path": "/governed/fbm/packlink/callback",
-        "message": "Packlink callback registered. No background polling was enabled.",
+        "message": "Packlink callback registered. Runtime remains asleep until Packlink sends an event.",
     })
 
 
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/recover-today")
 @login_required
 def recover_packlink_today():
-    """Recover one exact Packlink shipment created today.
+    """One-time manual recovery for one exact shipment only.
 
-    Recovery is intentionally one shipment per request so a slow provider call
-    cannot hold every shipment in one long-running batch request. Callback
-    registration is a separate one-time action and is not repeated here.
+    This route is not part of normal runtime. It never scans all Packlink rows and
+    never registers a callback. It exists only to recover a known missed event.
     """
     body = request.get_json(silent=True) or {}
     if body.get("confirm_recovery") != "RECOVER_TODAY_PACKLINK":
@@ -123,13 +114,11 @@ def recover_packlink_today():
     shipment = FBMShipment.query.filter_by(id=shipment_id, provider="packlink").first()
     if shipment is None or not shipment.provider_shipment_id:
         return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
-
     if shipment.created_at.date() != datetime.utcnow().date():
         return jsonify({
             "success": False,
             "message": "This recovery route is limited to Packlink shipments created today.",
         }), 409
-
     if shipment.marketplace_confirmed_at is not None:
         return jsonify({
             "success": True,
@@ -141,7 +130,7 @@ def recover_packlink_today():
         })
 
     try:
-        result = process_packlink_callback(
+        result = process_packlink_event(
             {
                 "event": "shipment.label.ready",
                 "data": {
@@ -168,18 +157,15 @@ def recover_packlink_today():
         "marketplace_order_id": shipment.marketplace_order_id,
         "provider_reference": shipment.provider_shipment_id,
         "recovery": result,
-        "message": "Exact Packlink shipment checked once and passed through the normal marketplace confirmation path when a paid label was available.",
+        "message": "Exact Packlink shipment checked once through the event-driven confirmation path.",
     })
 
 
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/callback")
 def packlink_callback():
-    """Receive one authenticated Packlink event and process that shipment only."""
+    """Wake BT38 for one authenticated Packlink event and one shipment only."""
     if not _callback_secret():
-        return jsonify({
-            "success": False,
-            "message": "Packlink callback intake is not configured.",
-        }), 503
+        return jsonify({"success": False, "message": "Packlink callback intake is not configured."}), 503
     if not _authenticated_callback():
         return jsonify({"success": False, "message": "Unauthorized Packlink callback."}), 401
 
@@ -188,7 +174,7 @@ def packlink_callback():
         return jsonify({"success": False, "message": "Packlink callback JSON is required."}), 400
 
     try:
-        result = process_packlink_callback(payload)
+        result = process_packlink_event(payload)
     except PacklinkCallbackError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
     except PacklinkConfigurationError as exc:
