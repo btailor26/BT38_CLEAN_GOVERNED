@@ -172,6 +172,7 @@ jobs:
             tests/test_amazon_subscription_visibility_contract.py \
             tests/test_amazon_mcf_notification_alignment_contract.py \
             tests/test_fbm_packlink_contract.py \
+            tests/test_fbm_packlink_import_alignment_contract.py \
             tests/test_fbm_amazon_tracking_contract.py
 
   deploy:
