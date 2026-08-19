@@ -132,6 +132,19 @@
               {% endif %}
             </td>
             <td class="text-end">
+              {% if row.state == 'ready' and not row.mcf and row.anchor.processed_at %}
+                <button class="btn btn-sm btn-warning me-2"
+                        type="submit"
+                        name="auto_release"
+                        value="1"
+                        formmethod="post"
+                        formaction="{{ url_for('governed_mcf.send_order_to_mcf', order_id=row.anchor.id) }}"
+                        onclick="return confirm('Repair this MCF handoff now? Stock will not be applied again; the existing governed Amazon MCF path will be used.')"
+                        title="Resume the existing governed MCF handoff for this already-processed order">
+                  <i data-feather="tool" class="me-1"></i>Repair handoff
+                </button>
+              {% endif %}
+
               {% if row.mcf and row.mcf.status != 'failed' %}
                 <button class="btn btn-sm btn-outline-secondary me-2"
                         type="submit"
