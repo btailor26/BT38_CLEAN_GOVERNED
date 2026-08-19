@@ -194,6 +194,7 @@
     document.querySelectorAll('.mcf-order-select')
   );
   let mcfRefreshRunning = false;
+  let mcfRefreshPendingWhileHidden = false;
 
   const pageName = 'mcfOrders';
   const defaults = {
@@ -297,7 +298,14 @@
   }
 
   async function refreshMcfTable() {
-    if (mcfRefreshRunning) return;
+    if (document.visibilityState === 'hidden') {
+      mcfRefreshPendingWhileHidden = true;
+      return;
+    }
+    if (mcfRefreshRunning) {
+      mcfRefreshPendingWhileHidden = true;
+      return;
+    }
     mcfRefreshRunning = true;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 5000);
@@ -327,6 +335,10 @@
     } finally {
       window.clearTimeout(timeout);
       mcfRefreshRunning = false;
+      if (mcfRefreshPendingWhileHidden && document.visibilityState === 'visible') {
+        mcfRefreshPendingWhileHidden = false;
+        queueMicrotask(() => { void refreshMcfTable(); });
+      }
     }
   }
 
@@ -353,6 +365,24 @@
   // second EventSource from this page; that would consume another Gunicorn
   // request thread and can make unrelated pages appear to hang.
   window.addEventListener('bt38-marketplace-event', () => {
+    if (document.visibilityState === 'hidden') {
+      mcfRefreshPendingWhileHidden = true;
+      return;
+    }
+    void refreshMcfTable();
+  });
+
+  // A browser/laptop can sleep through the live SSE signal. On wake, perform
+  // one DB-only committed-state read so the page catches up with the bell.
+  // This is event/wake driven: no timer, no polling, no marketplace call.
+  window.addEventListener('pageshow', () => {
+    void refreshMcfTable();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!mcfRefreshPendingWhileHidden) return;
+    mcfRefreshPendingWhileHidden = false;
     void refreshMcfTable();
   });
 
