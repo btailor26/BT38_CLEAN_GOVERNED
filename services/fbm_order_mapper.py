@@ -85,16 +85,18 @@ def ship_to(order: Any) -> dict[str, str | None]:
 
     Amazon and eBay currently have exact-order readers. Any future marketplace
     follows this same contract by adding its exact reader to the central
-    hydration service; BT38 never substitutes or invents an address.
+    hydration service; BT38 never substitutes or invents an address. Standalone
+    manual shipping orders already own their entered destination facts and use
+    this same provider-neutral handoff without marketplace hydration.
     """
-    if order is not None and not destination_complete(order):
+    if order is not None and hasattr(order, "store_id") and not destination_complete(order):
         hydrate_marketplace_destination(order)
     return {
         "name": _text(getattr(order, "ship_to_name", None)),
         "address1": _text(getattr(order, "ship_to_address", None)),
-        "address2": None,
+        "address2": _text(getattr(order, "ship_to_address2", None)),
         "city": _text(getattr(order, "ship_to_city", None)),
-        "region": None,
+        "region": _text(getattr(order, "ship_to_region", None)),
         "postcode": _text(getattr(order, "ship_to_postcode", None)),
         "country": (_text(getattr(order, "ship_to_country", None)) or "GB").upper(),
         "email": _text(getattr(order, "ship_to_email", None)),
