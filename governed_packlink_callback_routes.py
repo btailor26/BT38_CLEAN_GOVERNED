@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import Blueprint, jsonify, request, url_for
 from flask_login import login_required
 
+from fbm_models import FBMShipment
 from services.fbm_packlink_adapter import (
     PacklinkAdapter,
     PacklinkConfigurationError,
@@ -23,7 +24,6 @@ from services.fbm_packlink_adapter import (
 from services.fbm_packlink_callback import (
     PacklinkCallbackError,
     process_packlink_callback,
-    recover_packlink_shipments_for_day,
 )
 
 
@@ -99,7 +99,12 @@ def register_packlink_callback():
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/recover-today")
 @login_required
 def recover_packlink_today():
-    """Register the live callback and recover today's exact known Packlink shipments."""
+    """Recover one exact Packlink shipment created today.
+
+    Recovery is intentionally one shipment per request so a slow provider call
+    cannot hold every shipment in one long-running batch request. Callback
+    registration is a separate one-time action and is not repeated here.
+    """
     body = request.get_json(silent=True) or {}
     if body.get("confirm_recovery") != "RECOVER_TODAY_PACKLINK":
         return jsonify({
@@ -107,23 +112,63 @@ def recover_packlink_today():
             "message": "Explicit RECOVER_TODAY_PACKLINK confirmation is required.",
         }), 400
 
-    adapter = PacklinkAdapter()
     try:
-        _register_callback(adapter)
-        recovery = recover_packlink_shipments_for_day(
-            datetime.utcnow().date(),
-            adapter=adapter,
+        shipment_id = int(body.get("shipment_id"))
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "message": "shipment_id is required. Recover one exact Packlink shipment at a time.",
+        }), 400
+
+    shipment = FBMShipment.query.filter_by(id=shipment_id, provider="packlink").first()
+    if shipment is None or not shipment.provider_shipment_id:
+        return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
+
+    if shipment.created_at.date() != datetime.utcnow().date():
+        return jsonify({
+            "success": False,
+            "message": "This recovery route is limited to Packlink shipments created today.",
+        }), 409
+
+    if shipment.marketplace_confirmed_at is not None:
+        return jsonify({
+            "success": True,
+            "already_confirmed": True,
+            "shipment_id": shipment.id,
+            "marketplace_order_id": shipment.marketplace_order_id,
+            "provider_reference": shipment.provider_shipment_id,
+            "message": "Marketplace shipment was already confirmed. No duplicate confirmation was sent.",
+        })
+
+    try:
+        result = process_packlink_callback(
+            {
+                "event": "shipment.label.ready",
+                "data": {
+                    "shipment_reference": shipment.provider_shipment_id,
+                    "shipment_custom_reference": shipment.marketplace_order_id,
+                },
+            },
+            adapter=PacklinkAdapter(),
         )
     except PacklinkConfigurationError as exc:
         return jsonify({"success": False, "message": str(exc)}), 503
     except PacklinkRequestError as exc:
-        return jsonify({"success": False, "message": str(exc)}), exc.status_code or 502
+        return jsonify({
+            "success": False,
+            "shipment_id": shipment.id,
+            "marketplace_order_id": shipment.marketplace_order_id,
+            "provider_reference": shipment.provider_shipment_id,
+            "message": str(exc),
+        }), exc.status_code or 502
 
     return jsonify({
         "success": True,
-        "callback_registered": True,
-        "recovery": recovery,
-        "message": "Packlink callback is registered and today's known shipments were checked once.",
+        "shipment_id": shipment.id,
+        "marketplace_order_id": shipment.marketplace_order_id,
+        "provider_reference": shipment.provider_shipment_id,
+        "recovery": result,
+        "message": "Exact Packlink shipment checked once and passed through the normal marketplace confirmation path when a paid label was available.",
     })
 
 
