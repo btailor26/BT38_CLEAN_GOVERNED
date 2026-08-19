@@ -164,6 +164,19 @@
         }
     }
 
+    function installManualShippingButton() {
+        const readyButton = document.getElementById('readyToShipSelected');
+        if (!readyButton || document.getElementById('manualShippingButton')) return;
+
+        const manualButton = document.createElement('a');
+        manualButton.id = 'manualShippingButton';
+        manualButton.href = '/fbm/manual';
+        manualButton.className = 'btn btn-sm btn-outline-primary';
+        manualButton.innerHTML = '<i data-feather="plus-circle" class="me-1"></i>Manual Shipping';
+        readyButton.parentNode.insertBefore(manualButton, readyButton);
+        if (window.feather) window.feather.replace();
+    }
+
     document.addEventListener('click', function (event) {
         const button = event.target.closest('.fbm-tracking-journey');
         if (!button) return;
@@ -171,4 +184,6 @@
         event.stopPropagation();
         openJourney(button);
     });
+
+    installManualShippingButton();
 })();
