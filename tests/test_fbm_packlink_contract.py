@@ -8,7 +8,7 @@ from services.fbm_packlink_adapter import (
     PacklinkAdapter,
     PacklinkRequestError,
 )
-from services.fbm_packlink_callback import _tracking_code
+from services.fbm_packlink_callback import _tracking_code, extract_packlink_tracking
 
 
 def _complete_destination():
@@ -277,6 +277,31 @@ def test_packlink_shipment_normalises_carrier_and_service_objects(monkeypatch):
 
 def test_packlink_callback_reads_tracking_codes_array():
     assert _tracking_code({"tracking_codes": ["TRACK-123"]}) == "TRACK-123"
+
+
+def test_packlink_tracking_contract_prefers_provider_payload():
+    tracking = extract_packlink_tracking(
+        {"shipment": {"trackingNumber": "DIRECT-123"}},
+        [{"tracking_number": "HISTORY-456"}],
+        "SAVED-789",
+    )
+    assert tracking == "DIRECT-123"
+
+
+def test_packlink_tracking_contract_uses_latest_history_when_payload_has_none():
+    tracking = extract_packlink_tracking(
+        {"status": "purchased"},
+        [
+            {"tracking_code": "EARLY-123"},
+            {"tracking_info": {"tracking": "LATEST-456"}},
+        ],
+        "SAVED-789",
+    )
+    assert tracking == "LATEST-456"
+
+
+def test_packlink_tracking_contract_preserves_saved_tracking_as_last_fallback():
+    assert extract_packlink_tracking({}, [], "SAVED-789") == "SAVED-789"
 
 
 def test_amazon_packlink_rates_are_not_filtered_before_purchase(monkeypatch):
