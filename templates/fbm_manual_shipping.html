@@ -101,6 +101,7 @@
     const refBox=document.getElementById('savedReference');
     const summary=document.getElementById('savedSummary');
     const ratesBox=document.getElementById('manualRates');
+    const saveButton=document.getElementById('saveManual');
     let manualOrderId=null;
 
     function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -122,7 +123,10 @@
         return value==null?'Price unavailable':`£${Number(value).toFixed(2)}`;
     }
     function renderSaved(order){
-        manualOrderId=order.id; card.classList.remove('d-none'); refBox.textContent=order.reference||`MANUAL-${order.id}`;
+        manualOrderId=order.id;
+        saveButton.disabled=true;
+        saveButton.textContent='Saved';
+        card.classList.remove('d-none'); refBox.textContent=order.reference||`MANUAL-${order.id}`;
         const p=order.parcel||{};
         summary.innerHTML=`<strong>${esc(order.ship_to_name)}</strong> · ${esc(order.ship_to_postcode)} · ${esc(p.weight_kg)} kg · ${esc(p.length_cm)} × ${esc(p.width_cm)} × ${esc(p.height_cm)} cm`;
     }
@@ -136,20 +140,27 @@
     }
     async function saveOrder(getRates){
         if(!form.reportValidity()) return;
-        const button=getRates?document.getElementById('saveAndRates'):document.getElementById('saveManual');
+        const button=getRates?document.getElementById('saveAndRates'):saveButton;
         button.disabled=true;
         try{
-            const created=await requestJson('/fbm/manual',{method:'POST',body:JSON.stringify(payload())});
-            renderSaved(created.manual_order);
-            show(created.message,'success');
+            if(!manualOrderId){
+                const created=await requestJson('/fbm/manual',{method:'POST',body:JSON.stringify(payload())});
+                renderSaved(created.manual_order);
+                show(created.message,'success');
+            }
             if(getRates){
                 const rates=await requestJson(`/fbm/manual/${manualOrderId}/packlink/rates`,{method:'POST',body:JSON.stringify(payload())});
                 renderRates(rates.rates||[]);
                 show('Manual shipping order saved and Packlink rates loaded.','success');
-            } else ratesBox.innerHTML='<div class="text-muted">Order saved. Use “Save & get Packlink rates” for a new parcel if you want carrier prices.</div>';
+            } else {
+                ratesBox.innerHTML='<div class="text-muted">Order saved. Use “Save & get Packlink rates” to continue this same saved parcel.</div>';
+            }
         }catch(e){
             const missing=e.payload?.missing; show(`${e.message}${missing?.length?' Missing: '+missing.join(', '):''}`,'danger');
-        }finally{button.disabled=false;}
+        }finally{
+            if(getRates) button.disabled=false;
+            else if(!manualOrderId) button.disabled=false;
+        }
     }
     async function prepareDraft(){
         const selected=document.querySelector('.manual-rate:checked');
@@ -177,7 +188,7 @@
         }catch(e){show(e.message,'danger');}
         finally{if(button)button.disabled=false;}
     }
-    document.getElementById('saveManual').addEventListener('click',()=>saveOrder(false));
+    saveButton.addEventListener('click',()=>saveOrder(false));
     document.getElementById('saveAndRates').addEventListener('click',()=>saveOrder(true));
 })();
 </script>
