@@ -89,6 +89,27 @@ def _latest_tracking(history: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def extract_packlink_tracking(
+    provider_payload: Any,
+    tracking_history: list[dict[str, Any]] | None = None,
+    fallback: Any = None,
+) -> str | None:
+    """Resolve one Packlink tracking number consistently for every BT38 path.
+
+    Provider shipment payload is authoritative when it already exposes a tracking
+    number. Packlink tracking history is the next source, followed by an existing
+    persisted BT38 value so callback replays never erase a known tracking number.
+    """
+    direct = _tracking_code(provider_payload)
+    if direct:
+        return direct
+    history_value = _latest_tracking(tracking_history or [])
+    if history_value:
+        return history_value
+    fallback_text = str(fallback or "").strip()
+    return fallback_text or None
+
+
 def _first_label_url(labels: list[Any]) -> str | None:
     for label in labels or []:
         if isinstance(label, str) and label.strip():
@@ -233,10 +254,10 @@ def process_packlink_callback(
     shipment.last_provider_status = provider_state
     shipment.last_provider_checked_at = now
     carrier, service, service_id = _provider_identity(provider_payload, shipment)
-    tracking = (
-        _tracking_code(provider_payload)
-        or _latest_tracking(tracking_history)
-        or shipment.tracking_number
+    tracking = extract_packlink_tracking(
+        provider_payload,
+        tracking_history,
+        shipment.tracking_number,
     )
 
     if carrier:
