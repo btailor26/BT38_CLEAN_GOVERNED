@@ -7,7 +7,7 @@
 
     const STORAGE_KEY = 'bt38_fbm_qz_printer';
     const PACKLINK_PRO_URL = 'https://pro.packlink.com/';
-    const AMAZON_UNSHIPPED_REPORT_URL = 'https://sellercentral.amazon.co.uk/order-reports-and-feeds/reports/endofdayforms#';
+    const AMAZON_UNSHIPPED_REPORT_URL = 'https://sellercentral.amazon.co.uk/order-reports-and-feeds/reports/fbmUnshippedOrders#';
     const BT38_AMAZON_REPORT_UPLOAD_URL = '/fbm/amazon-unshipped-report';
 
     function requireQz() {
