@@ -83,7 +83,7 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     assert body["content"] == "Fevicryl Fabric Glue"
     assert body["contentvalue"] == 20.0
     assert body["currency"] == "GBP"
-    assert body["source"] == "PRO"
+    assert body["source"] == "source_inbound"
     assert body["carrier"] == "Yodel UK"
     assert body["service"] == "InPost Shops"
 
@@ -114,9 +114,21 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
         "length": 10,
         "weight": 1.0,
     }]
-    assert "additional_data" not in body
     assert "id" not in body["packages"][0]
     assert "name" not in body["packages"][0]
+
+    additional = body["additional_data"]
+    assert additional["from"] == body["from"]
+    assert additional["to"] == body["to"]
+    assert additional["content"] == body["content"]
+    assert additional["contentvalue"] == body["contentvalue"]
+    assert additional["shipment_custom_reference"] == body["shipment_custom_reference"]
+    assert additional["contentValue_currency"] == "GBP"
+    assert "selectedWarehouseId" not in additional
+    assert "postal_zone_id_from" not in additional
+    assert "postal_zone_id_to" not in additional
+    assert "zip_code_id_from" not in additional
+    assert "zip_code_id_to" not in additional
     assert provider_gets == []
 
 
@@ -136,9 +148,10 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     assert posted["body"]["to"]["zip_code"] == "DN11 8QR"
     assert posted["body"]["to"]["city"] == "DONCASTER"
     assert posted["body"]["to"]["country"] == "GB"
+    assert posted["body"]["additional_data"]["to"] == posted["body"]["to"]
 
 
-def test_packlink_rejects_incomplete_remote_draft(monkeypatch):
+def test_packlink_rejects_incomplete_remote_draft_with_provider_readback(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-INCOMPLETE")
     line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
@@ -146,11 +159,15 @@ def test_packlink_rejects_incomplete_remote_draft(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Customer One","address1":"1 Road","address2":None,"city":"London","region":None,"postcode":"SW1A 1AA","country":"GB","email":"buyer@example.test","phone":"07900000001"})
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: {"reference":"GB-INCOMPLETE"})
-    monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state":"AWAITING_COMPLETION"})
+    monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state":"AWAITING_COMPLETION","from":{"country":"GB","zip_code":"","city":"Leicester","state":"Leicestershire"},"to":{"country":"","zip_code":"SW1A 1AA","city":"London","state":None}})
     try:
         adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
     except PacklinkRequestError as exc:
-        assert "incomplete draft" in str(exc).lower()
+        message = str(exc)
+        assert "GB-INCOMPLETE" in message
+        assert "AWAITING_COMPLETION" in message
+        assert "sender=GB/-/Leicester/Leicestershire" in message
+        assert "receiver=-/SW1A 1AA/London/-" in message
     else:
         raise AssertionError("Incomplete Packlink draft must not be reported as ready")
 
@@ -168,6 +185,7 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
     adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
     assert posted["body"]["content"] == "Test Product"
     assert posted["body"]["contentvalue"] == 9.0
+    assert posted["body"]["additional_data"]["contentvalue"] == 9.0
 
 
 def test_packlink_paid_label_can_attach_by_marketplace_reference_without_bt38_draft():
