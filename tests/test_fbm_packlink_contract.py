@@ -28,7 +28,7 @@ def _sender():
         "city": "Leicester",
         "region": "Leicestershire",
         "postcode": "LE1 1AA",
-        "country": "GB",
+        "country": "United Kingdom",
         "email": "sender@example.test",
         "phone": "01160000000",
     }
@@ -36,6 +36,17 @@ def _sender():
 
 def _ready(monkeypatch, adapter):
     monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state": "READY_TO_PURCHASE"})
+
+
+def _locations(monkeypatch, adapter):
+    def fake_get(endpoint, *, query=None):
+        if endpoint == "locations/postalzones/destinations":
+            return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
+        if endpoint == "locations/postalcodes":
+            postcode = str((query or {}).get("q") or "").upper()
+            return [{"id": "pc_" + postcode.replace(" ", "").lower(), "zipcode": postcode}]
+        raise AssertionError(f"Unexpected Packlink GET: {endpoint}")
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
 
 
 def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
@@ -55,6 +66,7 @@ def test_packlink_draft_reads_shipment_reference_and_mirrors_addresses(monkeypat
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _locations(monkeypatch, adapter)
     _ready(monkeypatch, adapter)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"endpoint": endpoint, "body": body}) or {"shipment_reference": "GB000123ABC"})
@@ -80,8 +92,12 @@ def test_packlink_draft_reads_shipment_reference_and_mirrors_addresses(monkeypat
     assert body["additional_data"]["to"] == body["to"]
     assert body["additional_data"]["shipment_custom_reference"] == "AMAZON-123"
     assert "selectedWarehouseId" not in body["additional_data"]
-    assert "postal_zone_id_from" not in body["additional_data"]
-    assert "zip_code_id_from" not in body["additional_data"]
+    assert body["additional_data"]["postal_zone_id_from"] == 826
+    assert body["additional_data"]["postal_zone_name_from"] == "United Kingdom"
+    assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
+    assert body["additional_data"]["postal_zone_id_to"] == 826
+    assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
+    assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
     assert body["content"] == "OxyLife Bleach 27G"
     assert result["reference"] == "GB000123ABC"
@@ -95,6 +111,7 @@ def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _locations(monkeypatch, adapter)
     _ready(monkeypatch, adapter)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"shipment_reference": "GB000124ABC"})
