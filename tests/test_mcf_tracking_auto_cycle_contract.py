@@ -9,23 +9,23 @@ TRACKING = (ROOT / "services/governed_mcf_tracking.py").read_text(encoding="utf-
 EBAY = (ROOT / "services/governed_ebay_dispatch.py").read_text(encoding="utf-8")
 
 
-def test_tracking_auto_refresh_reuses_exact_governed_event_loop():
-    assert '"event_type": "mcf_tracking_refresh"' in ALIGNMENT
-    assert "_TRACKING_RETRY_SECONDS = 15 * 60" in ALIGNMENT
-    assert "notify_governed_runtime_work(" in ALIGNMENT
-    assert "new_worker_started\": False" in ALIGNMENT
-    assert "new_scheduler_started\": False" in ALIGNMENT
+def test_tracking_completion_is_event_only_without_timed_refresh_cycle():
+    assert "notify_governed_runtime_work(" not in ALIGNMENT
+    assert "_TRACKING_RETRY_SECONDS" not in ALIGNMENT
+    assert '"event_type": "mcf_tracking_refresh"' not in ALIGNMENT
+    assert "periodic retry" in ALIGNMENT
+    assert "startup scan" in ALIGNMENT
 
 
-def test_processing_mcf_keeps_polling_for_later_split_packages():
-    assert "retry = not terminal" in ALIGNMENT
-    assert "amazon_status not in _TERMINAL_AMAZON" in ALIGNMENT
-    assert "_queue_tracking_refresh(" in ALIGNMENT
-    assert "mcf_tracking_current_set_already_forwarded" in ALIGNMENT
+def test_exact_amazon_signal_completes_unforwarded_tracking_immediately():
+    assert "def aligned_signal(payload: dict):" in ALIGNMENT
+    assert "current_signal(payload)" in ALIGNMENT
+    assert "has_unforwarded_tracking(mcf_id)" in ALIGNMENT
+    assert "_forward_current_tracking_set(" in ALIGNMENT
 
 
 def test_all_amazon_package_tracking_is_forwarded_to_ebay_together():
-    assert "tracking_details=tracking_details" in ALIGNMENT
+    assert "tracking_details=details" in ALIGNMENT
     assert "mark_tracking_forwarded(mcf.id)" in ALIGNMENT
     assert "for shipment in (payload or {}).get(\"fulfillmentShipments\") or []" in TRACKING
     assert "for package in package_rows" in TRACKING
@@ -33,14 +33,15 @@ def test_all_amazon_package_tracking_is_forwarded_to_ebay_together():
     assert "for detail in normalized" in EBAY
 
 
-def test_restart_recovery_does_not_treat_one_scalar_tracking_value_as_complete():
-    assert "has_unforwarded_tracking(mcf.id)" in ALIGNMENT
-    assert "_tracking_enrichment_complete(lines, mcf)" in ALIGNMENT
-    assert "Processing MCF orders remain live" in ALIGNMENT
-    assert "tracking_refreshes_queued" in ALIGNMENT
+def test_committed_tracking_wakes_existing_orders_mcf_ui():
+    assert "publish_governed_ui_event" in ALIGNMENT
+    assert 'source="amazon_mcf_tracking"' in ALIGNMENT
+    assert '"event_type": "mcf_tracking_updated"' in ALIGNMENT
 
 
-def test_dispatched_order_does_not_restart_cancellation_window_on_tracking_refresh():
-    assert "shipped_at proves that cancellation window has already ended" in ALIGNMENT
-    assert "source_marketplace_dispatch_pending" in ALIGNMENT
-    assert "tracking_received_inside_one_hour_cancellation_window" in ALIGNMENT
+def test_orders_mcf_ui_projects_complete_tracking_set_without_changing_scalar_db_field():
+    assert "_install_multi_tracking_ui_projection" in ALIGNMENT
+    assert "MCFOrder.__getattribute__" in ALIGNMENT
+    assert "MarketplaceOrder.__getattribute__" in ALIGNMENT
+    assert '" · ".join(numbers)' in ALIGNMENT
+    assert "read-only Orders / MCF pages" in ALIGNMENT
