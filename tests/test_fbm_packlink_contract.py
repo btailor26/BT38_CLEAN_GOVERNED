@@ -23,19 +23,7 @@ def _complete_destination():
     }
 
 
-def _mock_draft_location_dependencies(monkeypatch, adapter):
-    """Keep unit tests offline while exercising the full draft payload contract."""
-    monkeypatch.setattr(
-        adapter,
-        "_resolve_postal_location",
-        lambda address: {
-            "country": "GB",
-            "postal_zone_id": 826,
-            "postal_zone_name": "United Kingdom",
-            "zip_code_id": "pc_gb_test",
-        },
-    )
-    monkeypatch.setattr(adapter, "_resolve_warehouse_id", lambda origin: "warehouse-test")
+def _mock_draft_dependencies(monkeypatch, adapter):
     monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state": "READY_TO_PURCHASE"})
 
 
@@ -74,6 +62,7 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
             "company": "B & T OUTLET LTD",
             "address1": "1 Test Street",
             "city": "Leicester",
+            "region": "Leicestershire",
             "postcode": "LE1 1AA",
             "country": "GB",
             "email": "sender@example.test",
@@ -82,7 +71,7 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
     )
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    _mock_draft_location_dependencies(monkeypatch, adapter)
+    _mock_draft_dependencies(monkeypatch, adapter)
 
     posted = {}
 
@@ -104,14 +93,20 @@ def test_packlink_draft_reads_shipment_reference(monkeypatch):
         rate={"service_id": 20149},
     )
 
+    body = posted["body"]
     assert posted["endpoint"] == "shipments"
-    assert posted["body"]["service_id"] == 20149
-    assert posted["body"]["shipment_custom_reference"] == "AMAZON-123"
-    assert posted["body"]["from"]["company"] == "B & T OUTLET LTD"
-    assert posted["body"]["additional_data"]["selectedWarehouseId"] == "warehouse-test"
-    assert posted["body"]["additional_data"]["zip_code_id_from"] == "pc_gb_test"
-    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_gb_test"
-    assert posted["body"]["content"] == "OxyLife Bleach 27G"
+    assert body["service_id"] == 20149
+    assert body["shipment_custom_reference"] == "AMAZON-123"
+    assert body["from"]["company"] == "B & T OUTLET LTD"
+    assert body["from"]["country"] == "GB"
+    assert body["from"]["zip_code"] == "LE1 1AA"
+    assert body["from"]["city"] == "Leicester"
+    assert body["to"]["country"] == "GB"
+    assert body["to"]["zip_code"] == "SW1A 1AA"
+    assert body["to"]["city"] == "London"
+    assert "additional_data" not in body
+    assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
+    assert body["content"] == "OxyLife Bleach 27G"
     assert result["reference"] == "GB000123ABC"
     assert result["label_ready"] is False
     assert result["state"] == "READY_TO_PURCHASE"
@@ -138,7 +133,7 @@ def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
     )
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _complete_destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    _mock_draft_location_dependencies(monkeypatch, adapter)
+    _mock_draft_dependencies(monkeypatch, adapter)
 
     posted = {}
     monkeypatch.setattr(
