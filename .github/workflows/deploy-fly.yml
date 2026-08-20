@@ -7,15 +7,26 @@ name: Governed Fly Deployment
 # - Pushes, merges, tests, and audits never deploy automatically.
 # - This workflow does not merge branches.
 #
+# ACTIVE GOVERNED TESTING BRANCH CONTRACT (PR #528):
+# - Until PR #528 is explicitly approved for merge, every BT38 repair/update that
+#   is intended for live testing MUST be committed to:
+#       fix/full-system-release-alignment
+# - That branch is the single governed testing source for bt38-prod.
+# - main MUST remain untouched by this testing cycle.
+# - Never deploy a repair from a side branch, local working tree, detached SHA,
+#   or main while this contract is active.
+# - Every deploy must use the CURRENT HEAD SHA of fix/full-system-release-alignment.
+# - A successful test does not merge PR #528. Merge requires separate explicit
+#   approval outside this workflow.
+#
 # HOW THE DEPLOY COMMAND IS CREATED AND USED:
-# 1. Resolve the exact draft branch to test, for example:
-#      fix/full-system-release-alignment
+# 1. Commit/save the repair to fix/full-system-release-alignment (PR #528).
 # 2. Resolve that branch's current GitHub HEAD SHA. The SHA supplied as
 #    expected_commit MUST exactly match the selected workflow ref's github.sha.
 # 3. Dispatch this existing GitHub Actions workflow from GitHub UI or GitHub CLI.
 #    The operator PC command only asks GitHub to start workflow_dispatch; it does
 #    not build BT38, supply application files, or deploy directly to Fly.
-# 4. Example Git Bash / GitHub CLI dispatch for the current governed branch:
+# 4. Example Git Bash / GitHub CLI dispatch for the governed testing branch:
 #
 #      GH_EXE="$(find /c/Users/btail/AppData/Local/BT38-GitHubCLI -type f -iname gh.exe 2>/dev/null | head -1)"
 #
@@ -30,9 +41,9 @@ name: Governed Fly Deployment
 #        --exit-status
 #
 # 5. GitHub then performs the real deployment chain:
-#      exact branch/SHA -> source-deploy-guard -> audit -> exact GitHub checkout
+#      PR #528 branch HEAD -> source-deploy-guard -> audit -> exact GitHub checkout
 #      -> Fly remote builder -> bt38-prod -> post-deploy reconciliations.
-# 6. A draft PR may be deployed for testing. workflow_dispatch does NOT merge it.
+# 6. workflow_dispatch does NOT merge PR #528.
 # 7. Never hard-code an old SHA into a future deploy command. Re-read the branch
 #    HEAD first and use that exact SHA as expected_commit.
 
@@ -59,20 +70,32 @@ jobs:
   source-deploy-guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Require exact GitHub source approval
+      - name: Require exact PR 528 GitHub source approval
         shell: bash
         run: |
+          REQUIRED_TEST_BRANCH="fix/full-system-release-alignment"
+
           if [ "${{ inputs.confirm_production_deploy }}" != "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD" ]; then
             echo "BLOCKED: explicit GitHub-to-Fly production approval is missing."
             exit 1
           fi
 
+          if [ "${{ github.ref_name }}" != "$REQUIRED_TEST_BRANCH" ]; then
+            echo "BLOCKED: PR #528 governed testing must deploy only from $REQUIRED_TEST_BRANCH."
+            echo "selected_ref=${{ github.ref_name }}"
+            echo "required_ref=$REQUIRED_TEST_BRANCH"
+            echo "main and side branches are not valid testing deployment sources."
+            exit 1
+          fi
+
           if [ "${{ inputs.expected_commit }}" != "${{ github.sha }}" ]; then
-            echo "BLOCKED: selected workflow commit does not equal the approved commit."
+            echo "BLOCKED: selected PR #528 branch commit does not equal the approved commit."
             echo "selected=${{ github.sha }}"
             echo "approved=${{ inputs.expected_commit }}"
             exit 1
           fi
+
+          echo "PR_528_TEST_SOURCE_OK branch=${{ github.ref_name }} commit=${{ github.sha }}"
 
   audit:
     needs: source-deploy-guard
@@ -161,6 +184,8 @@ jobs:
             services/governed_amazon_subscription_visibility.py \
             services/governed_amazon_mcf_notification_alignment.py \
             services/governed_mcf_confirmation.py \
+            services/governed_mcf_tracking.py \
+            services/governed_mcf_tracking_startup_alignment.py \
             services/governed_marketplace_order_import.py \
             services/governed_order_stock_mutation.py \
             services/governed_warehouse_sync.py
@@ -196,6 +221,7 @@ jobs:
 
       - name: Deploy exact GitHub commit with Fly remote builder
         run: |
+          test "${{ github.ref_name }}" = "fix/full-system-release-alignment"
           test "$(git rev-parse HEAD)" = "${{ inputs.expected_commit }}"
           flyctl deploy \
             --app bt38-prod \
