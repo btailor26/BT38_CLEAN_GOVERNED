@@ -98,20 +98,23 @@ def test_warehouse_sync_does_not_force_second_page_request():
     assert "marketplace listing/inventory hydration" not in sync_tail
 
 
-def test_mcf_tracking_auto_cycle_keeps_processing_orders_alive_and_forwards_all_packages():
+def test_mcf_tracking_is_strict_event_driven_and_forwards_all_packages():
     alignment = _read("services/governed_mcf_tracking_startup_alignment.py")
     tracking = _read("services/governed_mcf_tracking.py")
     ebay = _read("services/governed_ebay_dispatch.py")
 
-    assert '_TRACKING_RETRY_SECONDS = 15 * 60' in alignment
-    assert '"event_type": "mcf_tracking_refresh"' in alignment
-    assert 'retry = not terminal' in alignment
-    assert 'amazon_status not in _TERMINAL_AMAZON' in alignment
-    assert 'tracking_details=tracking_details' in alignment
-    assert 'mark_tracking_forwarded(mcf.id)' in alignment
-    assert 'has_unforwarded_tracking(mcf.id)' in alignment
-    assert 'tracking_received_inside_one_hour_cancellation_window' in alignment
+    assert "There is no interval, periodic retry, startup scan, 24-hour refresh" in alignment
+    assert "notify_governed_runtime_work(" not in alignment
+    assert "_TRACKING_RETRY_SECONDS" not in alignment
+    assert "mcf_tracking_refresh" not in alignment
+    assert "tracking_details=details" in alignment
+    assert "mark_tracking_forwarded(mcf.id)" in alignment
+    assert "has_unforwarded_tracking" in alignment
+    assert "publish_governed_ui_event" in alignment
+    assert 'source="amazon_mcf_tracking"' in alignment
+    assert "_install_multi_tracking_ui_projection" in alignment
+    assert '" · ".join(numbers)' in alignment
     assert 'for shipment in (payload or {}).get("fulfillmentShipments") or []' in tracking
-    assert 'for package in package_rows' in tracking
-    assert '<ShipmentTrackingDetails>' in ebay
-    assert 'for detail in normalized' in ebay
+    assert "for package in package_rows" in tracking
+    assert "<ShipmentTrackingDetails>" in ebay
+    assert "for detail in normalized" in ebay
