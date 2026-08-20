@@ -12,6 +12,26 @@ def _ready(monkeypatch, adapter):
     monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state": "READY_TO_PURCHASE"})
 
 
+def _mock_uk_locations(monkeypatch, adapter):
+    calls = []
+
+    def fake_get(endpoint, *, query=None):
+        calls.append((endpoint, query))
+        if endpoint == "locations/postalzones/destinations":
+            return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
+        if endpoint == "locations/postalcodes":
+            postcode = str((query or {}).get("q") or "").upper()
+            return [{
+                "id": "pc_" + postcode.replace(" ", "").lower(),
+                "zipcode": postcode,
+                "postal_zone_id": 826,
+            }]
+        raise AssertionError(f"Unexpected Packlink GET: {endpoint}")
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+    return calls
+
+
 def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-999")
@@ -34,7 +54,7 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
             "city": "Leicester",
             "region": "Leicestershire",
             "postcode": "LE1 3WU",
-            "country": "GB",
+            "country": "United Kingdom",
             "email": "weeklydeals2014@outlook.com",
             "phone": "07903883892",
         },
@@ -49,17 +69,14 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
             "city": "DAGENHAM",
             "region": None,
             "postcode": "RM9 5HU",
-            "country": "GB",
+            "country": "United Kingdom",
             "email": "buyer@marketplace.amazon.co.uk",
             "phone": "+447900000000",
         },
     )
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    location_calls = _mock_uk_locations(monkeypatch, adapter)
     _ready(monkeypatch, adapter)
-
-    provider_gets = []
-    original_get = adapter._get_json
-    monkeypatch.setattr(adapter, "_get_json", lambda endpoint, **kwargs: provider_gets.append((endpoint, kwargs)) or original_get(endpoint, **kwargs))
 
     posted = {}
     monkeypatch.setattr(
@@ -125,11 +142,19 @@ def test_packlink_future_draft_matches_required_import_layout(monkeypatch):
     assert additional["shipment_custom_reference"] == body["shipment_custom_reference"]
     assert additional["contentValue_currency"] == "GBP"
     assert "selectedWarehouseId" not in additional
-    assert "postal_zone_id_from" not in additional
-    assert "postal_zone_id_to" not in additional
-    assert "zip_code_id_from" not in additional
-    assert "zip_code_id_to" not in additional
-    assert provider_gets == []
+    assert additional["postal_zone_id_from"] == 826
+    assert additional["postal_zone_name_from"] == "United Kingdom"
+    assert additional["zip_code_id_from"] == "pc_le13wu"
+    assert additional["postal_zone_id_to"] == 826
+    assert additional["postal_zone_name_to"] == "United Kingdom"
+    assert additional["zip_code_id_to"] == "pc_rm95hu"
+
+    zone_calls = [query for endpoint, query in location_calls if endpoint == "locations/postalzones/destinations"]
+    postcode_calls = [query for endpoint, query in location_calls if endpoint == "locations/postalcodes"]
+    assert len(zone_calls) == 2
+    assert all(query == {"platform": "PRO", "platform_country": "GB"} for query in zone_calls)
+    assert {query["q"] for query in postcode_calls} == {"LE1 3WU", "RM9 5HU"}
+    assert all(query["postalzone"] == 826 for query in postcode_calls)
 
 
 def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
@@ -139,6 +164,7 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_from", lambda: {"company":"B & T OUTLET LTD","address1":"Unit 10 Foundry Lane","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Ellen Rhodes","address1":"41","address2":"PLUMTREE PARK BIRCOTES","city":"DONCASTER","region":None,"postcode":"DN11 8QR","country":"GB","email":"buyer@example.test","phone":"07795058605"})
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _mock_uk_locations(monkeypatch, adapter)
     _ready(monkeypatch, adapter)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body":body}) or {"reference":"GB-ADDRESS2"})
@@ -149,6 +175,8 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     assert posted["body"]["to"]["city"] == "DONCASTER"
     assert posted["body"]["to"]["country"] == "GB"
     assert posted["body"]["additional_data"]["to"] == posted["body"]["to"]
+    assert posted["body"]["additional_data"]["postal_zone_name_to"] == "United Kingdom"
+    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_dn118qr"
 
 
 def test_packlink_rejects_incomplete_remote_draft_with_provider_readback(monkeypatch):
@@ -158,6 +186,7 @@ def test_packlink_rejects_incomplete_remote_draft_with_provider_readback(monkeyp
     monkeypatch.setattr(packlink_module, "ship_from", lambda: {"company":"B & T OUTLET LTD","address1":"Sender","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Customer One","address1":"1 Road","address2":None,"city":"London","region":None,"postcode":"SW1A 1AA","country":"GB","email":"buyer@example.test","phone":"07900000001"})
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _mock_uk_locations(monkeypatch, adapter)
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: {"reference":"GB-INCOMPLETE"})
     monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state":"AWAITING_COMPLETION","from":{"country":"GB","zip_code":"","city":"Leicester","state":"Leicestershire"},"to":{"country":"","zip_code":"SW1A 1AA","city":"London","state":None}})
     try:
@@ -168,6 +197,8 @@ def test_packlink_rejects_incomplete_remote_draft_with_provider_readback(monkeyp
         assert "AWAITING_COMPLETION" in message
         assert "sender=GB/-/Leicester/Leicestershire" in message
         assert "receiver=-/SW1A 1AA/London/-" in message
+        assert "sender_selection=United Kingdom/pc_le13wu" in message
+        assert "receiver_selection=United Kingdom/pc_sw1a1aa" in message
     else:
         raise AssertionError("Incomplete Packlink draft must not be reported as ready")
 
@@ -179,6 +210,7 @@ def test_packlink_uses_real_order_value_when_available(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_from", lambda: {"company":"B & T OUTLET LTD","address1":"Sender","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Customer One","address1":"1 Road","address2":None,"city":"London","region":None,"postcode":"SW1A 1AA","country":"GB","email":"buyer@example.test","phone":"07900000001"})
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    _mock_uk_locations(monkeypatch, adapter)
     _ready(monkeypatch, adapter)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body":body}) or {"shipment_reference":"GB001000ABC"})
