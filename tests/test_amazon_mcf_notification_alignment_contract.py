@@ -96,3 +96,22 @@ def test_warehouse_sync_does_not_force_second_page_request():
     assert "/governed/warehouse/sync" in sync_tail
     assert "window.location.reload()" not in sync_tail
     assert "marketplace listing/inventory hydration" not in sync_tail
+
+
+def test_mcf_tracking_auto_cycle_keeps_processing_orders_alive_and_forwards_all_packages():
+    alignment = _read("services/governed_mcf_tracking_startup_alignment.py")
+    tracking = _read("services/governed_mcf_tracking.py")
+    ebay = _read("services/governed_ebay_dispatch.py")
+
+    assert '_TRACKING_RETRY_SECONDS = 15 * 60' in alignment
+    assert '"event_type": "mcf_tracking_refresh"' in alignment
+    assert 'retry = not terminal' in alignment
+    assert 'amazon_status not in _TERMINAL_AMAZON' in alignment
+    assert 'tracking_details=tracking_details' in alignment
+    assert 'mark_tracking_forwarded(mcf.id)' in alignment
+    assert 'has_unforwarded_tracking(mcf.id)' in alignment
+    assert 'tracking_received_inside_one_hour_cancellation_window' in alignment
+    assert 'for shipment in (payload or {}).get("fulfillmentShipments") or []' in tracking
+    assert 'for package in package_rows' in tracking
+    assert '<ShipmentTrackingDetails>' in ebay
+    assert 'for detail in normalized' in ebay
