@@ -34,21 +34,6 @@ def _sender():
     }
 
 
-def _ready(monkeypatch, adapter):
-    monkeypatch.setattr(adapter, "get_shipment", lambda reference: {"state": "READY_TO_PURCHASE"})
-
-
-def _locations(monkeypatch, adapter):
-    def fake_get(endpoint, *, query=None):
-        if endpoint == "locations/postalzones/destinations":
-            return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
-        if endpoint == "locations/postalcodes":
-            postcode = str((query or {}).get("q") or "").upper()
-            return [{"id": "pc_" + postcode.replace(" ", "").lower(), "zipcode": postcode}]
-        raise AssertionError(f"Unexpected Packlink GET: {endpoint}")
-    monkeypatch.setattr(adapter, "_get_json", fake_get)
-
-
 def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     called = []
@@ -59,28 +44,45 @@ def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
     assert called == [("users/api/keys", None)]
 
 
-def test_packlink_draft_reads_shipment_reference_and_mirrors_addresses(monkeypatch):
+def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-123")
     line = SimpleNamespace(quantity=2, sku="SKU-1", title="OxyLife Bleach 27G", unit_price=4.50)
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    _locations(monkeypatch, adapter)
-    _ready(monkeypatch, adapter)
+
+    provider_gets = []
+    def fake_get(endpoint, *, query=None):
+        provider_gets.append((endpoint, query))
+        if endpoint == "clients":
+            return {"id": 7, "client_id": 9, "country": "GB"}
+        raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+
     posted = {}
-    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"endpoint": endpoint, "body": body}) or {"shipment_reference": "GB000123ABC"})
+    monkeypatch.setattr(
+        adapter,
+        "_post_json",
+        lambda endpoint, body: posted.update({"endpoint": endpoint, "body": body}) or {"shipment_reference": "UN2026PRO0009999999"},
+    )
 
     result = adapter.create_shipment_draft(
         order=order,
         parcel={"weight_kg": 1.25, "width_cm": 20, "height_cm": 10, "length_cm": 30},
-        rate={"service_id": 20149},
+        rate={"service_id": 20149, "carrier_name": "Evri", "service_name": "ParcelShop Parcel"},
     )
+
     body = posted["body"]
+    assert provider_gets == [("clients", None)]
     assert posted["endpoint"] == "shipments"
+    assert body["user_id"] == 7
+    assert body["client_id"] == 9
+    assert body["platform"] == "PRO"
+    assert body["platform_country"] == "GB"
+    assert body["source"] == "bt38"
     assert body["service_id"] == 20149
     assert body["shipment_custom_reference"] == "AMAZON-123"
-    assert body["source"] == "source_inbound"
     assert body["from"]["company"] == "B & T OUTLET LTD"
     assert body["from"]["country"] == "GB"
     assert body["from"]["zip_code"] == "LE1 1AA"
@@ -88,36 +90,29 @@ def test_packlink_draft_reads_shipment_reference_and_mirrors_addresses(monkeypat
     assert body["to"]["country"] == "GB"
     assert body["to"]["zip_code"] == "SW1A 1AA"
     assert body["to"]["city"] == "London"
-    assert body["additional_data"]["from"] == body["from"]
-    assert body["additional_data"]["to"] == body["to"]
-    assert body["additional_data"]["shipment_custom_reference"] == "AMAZON-123"
-    assert "selectedWarehouseId" not in body["additional_data"]
-    assert body["additional_data"]["postal_zone_id_from"] == 826
-    assert body["additional_data"]["postal_zone_name_from"] == "United Kingdom"
-    assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
-    assert body["additional_data"]["postal_zone_id_to"] == 826
-    assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
-    assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
-    assert body["content"] == "OxyLife Bleach 27G"
-    assert result["reference"] == "GB000123ABC"
-    assert result["state"] == "READY_TO_PURCHASE"
+    assert body["content"] == "2 SKU-1"
+    assert result["reference"] == "UN2026PRO0009999999"
 
 
-def test_packlink_draft_content_falls_back_to_sku(monkeypatch):
+def test_packlink_draft_accepts_reference_field(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-124")
     line = SimpleNamespace(quantity=1, sku="SKU-ONLY", unit_price=2.00)
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    _locations(monkeypatch, adapter)
-    _ready(monkeypatch, adapter)
+    monkeypatch.setattr(adapter, "_get_json", lambda endpoint, **_: {"id": 7, "client_id": 9, "country": "GB"} if endpoint == "clients" else (_ for _ in ()).throw(AssertionError(endpoint)))
     posted = {}
-    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"shipment_reference": "GB000124ABC"})
-    adapter.create_shipment_draft(order=order, parcel={"weight_kg": 1, "width_cm": 10, "height_cm": 10, "length_cm": 10}, rate={"service_id": 20149})
-    assert posted["body"]["content"] == "SKU-ONLY"
-    assert posted["body"]["additional_data"]["content"] == "SKU-ONLY"
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference": "UN2026PRO0009999998"})
+
+    result = adapter.create_shipment_draft(
+        order=order,
+        parcel={"weight_kg": 1, "width_cm": 10, "height_cm": 10, "length_cm": 10},
+        rate={"service_id": 20149},
+    )
+    assert posted["body"]["content"] == "1 SKU-ONLY"
+    assert result["reference"] == "UN2026PRO0009999998"
 
 
 def test_packlink_draft_requires_destination_phone(monkeypatch):
