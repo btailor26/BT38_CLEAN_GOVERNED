@@ -22,6 +22,7 @@ PACKLINK_TIMEOUT_SECONDS = 12
 PACKLINK_DEFAULT_CONTENT_VALUE = 20.0
 PACKLINK_ACCOUNT_COUNTRY = "GB"
 PACKLINK_PLATFORM = "PRO"
+PACKLINK_DRAFT_SOURCE = "bt38"
 
 
 class PacklinkConfigurationError(RuntimeError):
@@ -255,7 +256,7 @@ class PacklinkAdapter:
             "client_id": (account or {}).get("client_id") if isinstance(account, dict) else None,
             "platform": PACKLINK_PLATFORM,
             "platform_country": platform_country,
-            "source": "bt38",
+            "source": PACKLINK_DRAFT_SOURCE,
             "from": from_address,
             "to": to_address,
             "service": rate.get("service_name") or rate.get("service") or "",
