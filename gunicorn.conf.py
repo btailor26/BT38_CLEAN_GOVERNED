@@ -6,12 +6,14 @@ single runtime owner must share one process. Threaded concurrency keeps normal
 page/API requests concurrent without creating a second process-local event
 queue that the runtime cannot see.
 
-Strict event-driven startup policy:
-- app import must not start the historical runtime loop because that loop still
-  contains startup recovery scans;
-- after the worker/app is initialized, install the event-only loop and start the
-  existing governed runtime owner;
-- no webhook/event means no Neon recovery work or marketplace hydration.
+Low-DB startup policy:
+- app import must not start the historical broad runtime loop;
+- after the worker/app is initialized, install the low-DB event loop and start
+  the existing governed runtime owner;
+- webhook/SQS events remain the immediate path;
+- the only timed safety net is the bounded eBay missed-listing check: once at
+  worker start and then at most every eight hours, newest Item IDs only, with
+  existing MarketplaceListing Item IDs skipped before any import write.
 """
 
 # One process is required while the governed event queue remains in memory.
@@ -43,9 +45,9 @@ errorlog = '-'
 # Bind address (may be overridden by command line --bind).
 bind = '0.0.0.0:5000'
 
-# Prevent app.py from starting the legacy loop while the application module is
-# importing. The worker-init hook below starts the same governed runtime only
-# after its event-only loop policy has been installed.
+# Prevent app.py from starting the historical broad loop while the application
+# module is importing. The worker-init hook below starts the same governed
+# runtime owner only after the low-DB loop policy has been installed.
 raw_env = [
     'ENABLE_GOVERNED_RUNTIME_ENGINE=false',
     'ENABLE_GOVERNED_8H_HYDRATION=false',
@@ -59,6 +61,6 @@ def post_worker_init(worker):
 
     started = start_event_only_runtime(app)
     app.logger.info(
-        'BT38 strict event-only governed runtime started=%s; no startup recovery or automatic hydration',
+        'BT38 low-DB governed runtime started=%s; broad hydration disabled; bounded eBay missed-listing recovery enabled',
         started,
     )
