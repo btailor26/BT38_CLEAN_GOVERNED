@@ -248,7 +248,6 @@
         actionSelect.addEventListener('change', async function () {
             const action = actionSelect.value;
             if (action !== 'delete') {
-                // Other bulk actions remain display-only until their shipping workflows are explicitly wired.
                 actionSelect.value = '';
                 return;
             }
@@ -288,6 +287,35 @@
         updateBar();
     }
 
+    function installPacklinkHandoff() {
+        const root = document.getElementById('fbmShippingOrders');
+        if (!root || root.dataset.packlinkHandoffInstalled === '1') return;
+        root.dataset.packlinkHandoffInstalled = '1';
+
+        const handoffUrl = 'https://pro.packlink.com/private/shipments/draft';
+        const addHandoff = function () {
+            root.querySelectorAll('.rate-results').forEach(function (box) {
+                if (box.querySelector('.packlink-pro-handoff')) return;
+                const text = String(box.textContent || '');
+                if (!text.includes('Packlink shipment prepared.') || !text.includes('Reference:')) return;
+
+                const link = document.createElement('a');
+                link.className = 'btn btn-sm btn-primary ms-2 packlink-pro-handoff';
+                link.href = handoffUrl;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.innerHTML = '<span class="badge bg-light text-primary me-1">Packlink PRO</span> Continue to payment';
+
+                const statusButton = box.querySelector('.packlink-status');
+                if (statusButton) statusButton.insertAdjacentElement('beforebegin', link);
+                else box.appendChild(link);
+            });
+        };
+
+        new MutationObserver(addHandoff).observe(root, {childList: true, subtree: true});
+        addHandoff();
+    }
+
     document.addEventListener('click', function (event) {
         const button = event.target.closest('.fbm-tracking-journey');
         if (!button) return;
@@ -298,4 +326,5 @@
 
     installManualShippingButton();
     installBulkActionBar();
+    installPacklinkHandoff();
 })();
