@@ -91,7 +91,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["client_id"] == 9
     assert body["platform"] == "PRO"
     assert body["platform_country"] == "GB"
-    assert body["source"] == "bt38"
+    assert body["source"] == packlink_module.PACKLINK_DRAFT_SOURCE
     assert body["service_id"] == 20149
     assert body["shipment_custom_reference"] == "AMAZON-123"
     assert body["from"]["company"] == "B & T OUTLET LTD"
