@@ -154,8 +154,6 @@ class PacklinkAdapter:
         if missing:
             raise PacklinkConfigurationError("Missing Packlink rate fields: " + ", ".join(missing))
 
-        # Persist the exact marketplace delivery facts in the existing short-lived
-        # quote row. The shipment handoff must use this same server-side snapshot.
         parcel["_packlink_handoff_destination"] = dict(destination)
 
         query = [
@@ -176,9 +174,8 @@ class PacklinkAdapter:
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
         """Send the stored quote snapshot directly to Packlink.
 
-        The rates endpoint has already accepted the origin, destination and parcel.
-        Do not insert a second postal-zone/postcode gate before shipment creation.
-        Packlink's shipment endpoint remains authoritative for validation.
+        Location IDs are added when Packlink resolves them, but they are enrichment
+        only. A failed location lookup must never block the shipment POST.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
@@ -201,12 +198,8 @@ class PacklinkAdapter:
             else str(origin.get("country") or "GB").upper()
         )
 
-        customer_name, customer_surname = self._split_name(
-            destination.get("name"), fallback_surname="Customer"
-        )
-        sender_name, sender_surname = self._split_name(
-            origin.get("name") or "B & T Outlet", fallback_surname="Outlet"
-        )
+        customer_name, customer_surname = self._split_name(destination.get("name"), fallback_surname="Customer")
+        sender_name, sender_surname = self._split_name(origin.get("name") or "B & T Outlet", fallback_surname="Outlet")
 
         lines = order_lines(order)
         content_parts: list[str] = []
@@ -251,6 +244,32 @@ class PacklinkAdapter:
         content = ", ".join(content_parts)[:60] or "Goods"
         content_value = round(content_value, 2)
 
+        additional_data = {
+            "order_id": custom_reference,
+            "from": from_address,
+            "to": to_address,
+            "content": content,
+            "contentvalue": content_value,
+            "shipment_custom_reference": custom_reference,
+            "contentValue_currency": "GBP",
+            "items": [
+                {
+                    "title": str(getattr(line, "sku", "Item") or "Item"),
+                    "quantity": max(1, int(getattr(line, "quantity", 1) or 1)),
+                    "price": (
+                        (self._positive_amount(getattr(line, "unit_price", None)) or 0.0)
+                        * max(1, int(getattr(line, "quantity", 1) or 1))
+                    ),
+                }
+                for line in lines
+            ],
+        }
+
+        # Packlink's web editor needs its own country/postcode selection IDs.
+        # Resolve them best-effort and enrich the shipment, but never fail the
+        # handoff if these auxiliary endpoints are unavailable or reject a lookup.
+        additional_data.update(self._best_effort_location_ids(from_address, to_address))
+
         body = {
             "user_id": (account or {}).get("id") if isinstance(account, dict) else None,
             "client_id": (account or {}).get("client_id") if isinstance(account, dict) else None,
@@ -275,34 +294,13 @@ class PacklinkAdapter:
             "priority": False,
             "contentValue_currency": "GBP",
             "has_customs": False,
-            "additional_data": {
-                "order_id": custom_reference,
-                "from": from_address,
-                "to": to_address,
-                "content": content,
-                "contentvalue": content_value,
-                "shipment_custom_reference": custom_reference,
-                "contentValue_currency": "GBP",
-                "items": [
-                    {
-                        "title": str(getattr(line, "sku", "Item") or "Item"),
-                        "quantity": max(1, int(getattr(line, "quantity", 1) or 1)),
-                        "price": (
-                            (self._positive_amount(getattr(line, "unit_price", None)) or 0.0)
-                            * max(1, int(getattr(line, "quantity", 1) or 1))
-                        ),
-                    }
-                    for line in lines
-                ],
-            },
+            "additional_data": additional_data,
         }
 
         payload = self._post_json("shipments", body)
         provider_reference = ""
         if isinstance(payload, dict):
-            provider_reference = str(
-                payload.get("shipment_reference") or payload.get("reference") or ""
-            ).strip()
+            provider_reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
 
@@ -312,6 +310,55 @@ class PacklinkAdapter:
             "label_ready": False,
             "raw": payload,
         }
+
+    def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for suffix, address in (("from", from_address), ("to", to_address)):
+            try:
+                country = self._clean_country(address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+                zones = self._get_json(
+                    "locations/postalzones/destinations",
+                    query={"platform": PACKLINK_PLATFORM, "platform_country": country},
+                )
+                if not isinstance(zones, list):
+                    continue
+                zone = next(
+                    (
+                        item for item in zones
+                        if isinstance(item, dict)
+                        and self._clean_country(item.get("iso_code") or item.get("country") or "") == country
+                    ),
+                    zones[0] if zones and isinstance(zones[0], dict) else None,
+                )
+                if not isinstance(zone, dict) or zone.get("id") in (None, ""):
+                    continue
+                zone_id = zone.get("id")
+                postcode = self._clean_postcode(address.get("zip_code"))
+                if not postcode:
+                    continue
+                postcodes = self._get_json(
+                    "locations/postalcodes",
+                    query={"q": postcode, "postalzone": zone_id},
+                )
+                if not isinstance(postcodes, list):
+                    continue
+                postcode_row = next(
+                    (
+                        item for item in postcodes
+                        if isinstance(item, dict)
+                        and self._clean_postcode(item.get("zipcode") or item.get("zip_code")) == postcode
+                    ),
+                    postcodes[0] if postcodes and isinstance(postcodes[0], dict) else None,
+                )
+                if not isinstance(postcode_row, dict) or postcode_row.get("id") in (None, ""):
+                    continue
+                result[f"postal_zone_id_{suffix}"] = zone_id
+                if zone.get("name"):
+                    result[f"postal_zone_name_{suffix}"] = zone.get("name")
+                result[f"zip_code_id_{suffix}"] = postcode_row.get("id")
+            except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
+                continue
+        return result
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
@@ -427,7 +474,6 @@ class PacklinkAdapter:
 
     @staticmethod
     def _address_diagnostic(address: dict[str, Any]) -> str:
-        """Safe provider read-back for debugging address hydration (no PII fields)."""
         if not address:
             return "missing"
         return "/".join(
