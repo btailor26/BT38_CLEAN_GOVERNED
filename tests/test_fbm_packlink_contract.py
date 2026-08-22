@@ -83,9 +83,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     )
 
     body = posted["body"]
-    assert provider_gets[0] == ("clients", None)
-    assert [call[0] for call in provider_gets].count("locations/postalzones/destinations") == 2
-    assert [call[0] for call in provider_gets].count("locations/postalcodes") == 2
+    assert provider_gets == [("clients", None)]
     assert posted["endpoint"] == "shipments"
     assert body["user_id"] == 7
     assert body["client_id"] == 9
@@ -103,10 +101,12 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["to"]["city"] == "London"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
     assert body["content"] == "2 SKU-1"
-    assert body["additional_data"]["postal_zone_id_from"] == 826
-    assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
-    assert body["additional_data"]["postal_zone_id_to"] == 826
-    assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
+    assert body["additional_data"]["from"] == body["from"]
+    assert body["additional_data"]["to"] == body["to"]
+    assert "postal_zone_id_from" not in body["additional_data"]
+    assert "zip_code_id_from" not in body["additional_data"]
+    assert "postal_zone_id_to" not in body["additional_data"]
+    assert "zip_code_id_to" not in body["additional_data"]
     assert result["reference"] == "UN2026PRO0009999999"
 
 
@@ -127,8 +127,7 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
         rate={"service_id": 20149},
     )
     assert posted["body"]["content"] == "1 SKU-ONLY"
-    assert posted["body"]["additional_data"]["postal_zone_id_to"] == 826
-    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
+    assert posted["body"]["to"]["postcode"] if "postcode" in posted["body"]["to"] else posted["body"]["to"]["zip_code"] == "SW1A 1AA"
     assert result["reference"] == "UN2026PRO0009999998"
 
 
