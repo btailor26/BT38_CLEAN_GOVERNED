@@ -34,6 +34,17 @@ def _sender():
     }
 
 
+def _packlink_handoff_get(endpoint, *, query=None):
+    if endpoint == "clients":
+        return {"id": 7, "client_id": 9, "country": "GB"}
+    if endpoint == "locations/postalzones/destinations":
+        return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
+    if endpoint == "locations/postalcodes":
+        postcode = str((query or {}).get("q") or "").upper()
+        return [{"id": "pc_" + postcode.replace(" ", "").lower(), "zipcode": postcode, "postal_zone_id": 826}]
+    raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
+
+
 def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     called = []
@@ -55,9 +66,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     provider_gets = []
     def fake_get(endpoint, *, query=None):
         provider_gets.append((endpoint, query))
-        if endpoint == "clients":
-            return {"id": 7, "client_id": 9, "country": "GB"}
-        raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
+        return _packlink_handoff_get(endpoint, query=query)
     monkeypatch.setattr(adapter, "_get_json", fake_get)
 
     posted = {}
@@ -74,7 +83,9 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     )
 
     body = posted["body"]
-    assert provider_gets == [("clients", None)]
+    assert provider_gets[0] == ("clients", None)
+    assert [call[0] for call in provider_gets].count("locations/postalzones/destinations") == 2
+    assert [call[0] for call in provider_gets].count("locations/postalcodes") == 2
     assert posted["endpoint"] == "shipments"
     assert body["user_id"] == 7
     assert body["client_id"] == 9
@@ -92,6 +103,10 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["to"]["city"] == "London"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
     assert body["content"] == "2 SKU-1"
+    assert body["additional_data"]["postal_zone_id_from"] == 826
+    assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
+    assert body["additional_data"]["postal_zone_id_to"] == 826
+    assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999999"
 
 
@@ -102,7 +117,7 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    monkeypatch.setattr(adapter, "_get_json", lambda endpoint, **_: {"id": 7, "client_id": 9, "country": "GB"} if endpoint == "clients" else (_ for _ in ()).throw(AssertionError(endpoint)))
+    monkeypatch.setattr(adapter, "_get_json", _packlink_handoff_get)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference": "UN2026PRO0009999998"})
 
@@ -112,6 +127,8 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
         rate={"service_id": 20149},
     )
     assert posted["body"]["content"] == "1 SKU-ONLY"
+    assert posted["body"]["additional_data"]["postal_zone_id_to"] == 826
+    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999998"
 
 
