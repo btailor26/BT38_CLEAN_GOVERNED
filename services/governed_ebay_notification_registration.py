@@ -11,10 +11,11 @@ from urllib.parse import urlparse
 
 import requests
 
+from services.governed_ebay_oauth_scopes import LISTING_READ_SCOPE
+
 NOTIFICATION_BASE_URL = "https://api.ebay.com/commerce/notification/v1"
 ORDER_TOPIC_ID = "ORDER_CONFIRMATION"
 LISTING_TOPIC_ID = "LISTING"
-LISTING_READ_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.listing.read"
 REQUIRED_TOPIC_IDS = (
     ORDER_TOPIC_ID,
     LISTING_TOPIC_ID,
@@ -344,7 +345,7 @@ def ensure_ebay_order_notification_registration(
     store: Any,
     access_token: str,
 ) -> dict[str, Any]:
-    """Idempotently ensure BT38's production eBay order webhook registration."""
+    """Idempotently ensure BT38's production eBay order and listing webhooks."""
 
     from app import db
 
@@ -408,7 +409,10 @@ def ensure_ebay_order_notification_registration(
             "status": "AUTHORIZATION_REQUIRED",
             "ok": False,
             "skipped": True,
-            "error": creds.get("ebay_notification_listing_subscription_error"),
+            "error": (
+                creds.get("ebay_notification_listing_subscription_error")
+                or "eBay LISTING notifications require sell.listing.read; reconnect eBay to grant the governed listing-read scope."
+            ),
         }
     else:
         try:
@@ -453,7 +457,8 @@ def ensure_ebay_order_notification_registration(
         for item in subscriptions
     )
     now = datetime.utcnow().isoformat()
-    registration_status = "SUCCESS" if listing_subscription["ok"] else "PARTIAL"
+    registration_ok = bool(order_subscription["ok"] and listing_subscription["ok"])
+    registration_status = "SUCCESS" if registration_ok else "PARTIAL"
 
     creds.update({
         "ebay_notification_registration_status": registration_status,
@@ -479,7 +484,7 @@ def ensure_ebay_order_notification_registration(
     db.session.commit()
 
     return {
-        "ok": True,
+        "ok": registration_ok,
         "destination_id": destination_id,
         "destination_created": destination_created,
         "subscription_id": subscription_id,
