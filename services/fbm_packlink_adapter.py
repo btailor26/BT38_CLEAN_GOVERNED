@@ -22,7 +22,6 @@ PACKLINK_TIMEOUT_SECONDS = 12
 PACKLINK_DEFAULT_CONTENT_VALUE = 20.0
 PACKLINK_ACCOUNT_COUNTRY = "GB"
 PACKLINK_PLATFORM = "PRO"
-PACKLINK_DRAFT_SOURCE = "source_inbound"
 
 
 class PacklinkConfigurationError(RuntimeError):
@@ -154,9 +153,8 @@ class PacklinkAdapter:
         if missing:
             raise PacklinkConfigurationError("Missing Packlink rate fields: " + ", ".join(missing))
 
-        # Keep the exact marketplace delivery facts in the existing short-lived
-        # server-side quote session. The later draft handoff must use this same
-        # snapshot instead of re-reading/reconstructing the address in the browser.
+        # Persist the exact marketplace delivery facts in the existing short-lived
+        # quote row. The shipment handoff must use this same server-side snapshot.
         parcel["_packlink_handoff_destination"] = dict(destination)
 
         query = [
@@ -175,11 +173,11 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Create a Packlink shipment with its PRO location selections fully hydrated.
+        """Send the stored quote snapshot directly to Packlink.
 
-        The destination is taken from the short-lived quote session captured when
-        Packlink rates were requested. This guarantees the exact address that was
-        quoted is the address handed to Packlink, without relying on browser state.
+        The rates endpoint has already accepted the origin, destination and parcel.
+        Do not insert a second postal-zone/postcode gate before shipment creation.
+        Packlink's shipment endpoint remains authoritative for validation.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
@@ -201,8 +199,6 @@ class PacklinkAdapter:
             if isinstance(account, dict)
             else str(origin.get("country") or "GB").upper()
         )
-        origin_location = self._resolve_postal_location(origin)
-        destination_location = self._resolve_postal_location(destination)
 
         customer_name, customer_surname = self._split_name(
             destination.get("name"), fallback_surname="Customer"
@@ -233,7 +229,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(origin.get("postcode")),
             "city": origin.get("city"),
             "state": origin.get("region") or None,
-            "country": origin_location["country"],
+            "country": self._clean_country(origin.get("country") or "GB"),
             "phone": origin.get("phone") or "",
             "email": origin.get("email") or "",
         }
@@ -246,7 +242,7 @@ class PacklinkAdapter:
             "zip_code": self._clean_postcode(destination.get("postcode")),
             "city": destination.get("city"),
             "state": destination.get("region") or None,
-            "country": destination_location["country"],
+            "country": self._clean_country(destination.get("country") or "GB"),
             "phone": destination.get("phone") or "",
             "email": destination.get("email") or "",
         }
@@ -259,7 +255,7 @@ class PacklinkAdapter:
             "client_id": (account or {}).get("client_id") if isinstance(account, dict) else None,
             "platform": PACKLINK_PLATFORM,
             "platform_country": platform_country,
-            "source": PACKLINK_DRAFT_SOURCE,
+            "source": "bt38",
             "from": from_address,
             "to": to_address,
             "service": rate.get("service_name") or rate.get("service") or "",
@@ -286,12 +282,6 @@ class PacklinkAdapter:
                 "contentvalue": content_value,
                 "shipment_custom_reference": custom_reference,
                 "contentValue_currency": "GBP",
-                "postal_zone_id_from": origin_location["postal_zone_id"],
-                "postal_zone_name_from": origin_location["postal_zone_name"],
-                "zip_code_id_from": origin_location["zip_code_id"],
-                "postal_zone_id_to": destination_location["postal_zone_id"],
-                "postal_zone_name_to": destination_location["postal_zone_name"],
-                "zip_code_id_to": destination_location["zip_code_id"],
                 "items": [
                     {
                         "title": str(getattr(line, "sku", "Item") or "Item"),
@@ -321,101 +311,6 @@ class PacklinkAdapter:
             "label_ready": False,
             "raw": payload,
         }
-
-    def _resolve_postal_location(self, address: dict[str, Any]) -> dict[str, Any]:
-        country = self._clean_country(address.get("country"))
-        postcode = self._clean_postcode(address.get("postcode"))
-        if not postcode:
-            raise PacklinkConfigurationError("Packlink postcode is missing.")
-
-        zones_payload = self._get_json(
-            "locations/postalzones/destinations",
-            query={"platform": PACKLINK_PLATFORM, "platform_country": PACKLINK_ACCOUNT_COUNTRY},
-        )
-        zones = self._payload_items(zones_payload)
-        wanted_names = {"UNITED KINGDOM", "UK", "GREAT BRITAIN"} if country == "GB" else set()
-        zone = next(
-            (
-                item for item in zones
-                if isinstance(item, dict)
-                and (
-                    self._clean_country(item.get("iso_code") or item.get("country") or item.get("country_code")) == country
-                    or str(item.get("name") or item.get("label") or "").strip().upper() in wanted_names
-                )
-            ),
-            None,
-        )
-        if zone is None:
-            raise PacklinkConfigurationError(
-                f"Packlink has no postal zone for {country}; City/Postcode cannot be selected."
-            )
-        zone_id = zone.get("id")
-        if zone_id is None:
-            zone_id = zone.get("postal_zone_id")
-        if zone_id is None:
-            zone_id = zone.get("uuid")
-        if zone_id is None:
-            raise PacklinkConfigurationError("Packlink postal zone has no identifier.")
-        zone_name = str(zone.get("name") or zone.get("label") or "").strip()
-        if country == "GB":
-            zone_name = "United Kingdom"
-        elif not zone_name:
-            zone_name = country
-
-        postcodes_payload = self._get_json(
-            "locations/postalcodes",
-            query={"q": postcode, "postalzone": zone_id},
-        )
-        postcode_items = self._payload_items(postcodes_payload)
-        wanted_postcode = self._normalise_postcode(postcode)
-        postcode_item = next(
-            (
-                item for item in postcode_items
-                if isinstance(item, dict)
-                and self._normalise_postcode(
-                    item.get("zipcode") or item.get("zip_code") or item.get("postcode") or item.get("postal_code")
-                ) == wanted_postcode
-            ),
-            None,
-        )
-        if postcode_item is None and postcode_items:
-            postcode_item = next((item for item in postcode_items if isinstance(item, dict)), None)
-        if postcode_item is None:
-            raise PacklinkConfigurationError(
-                f"Packlink could not resolve City/Postcode {postcode} in {zone_name}."
-            )
-        postcode_id = postcode_item.get("id")
-        if postcode_id is None:
-            postcode_id = postcode_item.get("zip_code_id")
-        if postcode_id is None:
-            postcode_id = postcode_item.get("postal_code_id")
-        if postcode_id is None:
-            postcode_id = postcode_item.get("uuid")
-        if postcode_id is None:
-            raise PacklinkConfigurationError(
-                f"Packlink resolved {postcode} but returned no City/Postcode identifier."
-            )
-        return {
-            "country": country,
-            "postal_zone_id": zone_id,
-            "postal_zone_name": zone_name,
-            "zip_code_id": postcode_id,
-        }
-
-    @staticmethod
-    def _payload_items(payload: Any) -> list[Any]:
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in ("items", "data", "results", "postal_zones", "postcodes"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    return value
-        return []
-
-    @staticmethod
-    def _normalise_postcode(value: Any) -> str:
-        return "".join(str(value or "").upper().split())
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
