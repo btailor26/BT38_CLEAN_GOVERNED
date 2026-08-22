@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import governed_packlink_callback_routes as callback_routes
 import services.fbm_packlink_adapter as packlink_module
-from services.fbm_packlink_adapter import PacklinkAdapter
+from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkRequestError
 from services.fbm_packlink_callback import _attach_by_marketplace_reference
 from services.fbm_packlink_event_processor import process_packlink_event
 
@@ -15,13 +15,22 @@ def _mock_packlink_handoff(monkeypatch, adapter):
         calls.append((endpoint, query))
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint == "locations/postalzones/destinations":
+            return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
+        if endpoint == "locations/postalcodes":
+            postcode = str((query or {}).get("q") or "").upper()
+            return [{
+                "id": "pc_" + postcode.replace(" ", "").lower(),
+                "zipcode": postcode,
+                "postal_zone_id": 826,
+            }]
         raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
     return calls
 
 
-def test_packlink_future_draft_posts_full_marketplace_address_directly(monkeypatch):
+def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-999")
     line = SimpleNamespace(
@@ -86,7 +95,9 @@ def test_packlink_future_draft_posts_full_marketplace_address_directly(monkeypat
     assert result["payment_status"] == "pending_packlink_payment"
     assert result["label_ready"] is False
 
-    assert get_calls == [("clients", None)]
+    assert get_calls[0] == ("clients", None)
+    assert [endpoint for endpoint, _ in get_calls].count("locations/postalzones/destinations") == 2
+    assert [endpoint for endpoint, _ in get_calls].count("locations/postalcodes") == 2
     assert body["user_id"] == 77
     assert body["client_id"] == 88
     assert body["platform"] == "PRO"
@@ -121,10 +132,12 @@ def test_packlink_future_draft_posts_full_marketplace_address_directly(monkeypat
     additional = body["additional_data"]
     assert additional["from"] == body["from"]
     assert additional["to"] == body["to"]
-    assert "postal_zone_id_from" not in additional
-    assert "zip_code_id_from" not in additional
-    assert "postal_zone_id_to" not in additional
-    assert "zip_code_id_to" not in additional
+    assert additional["postal_zone_id_from"] == 826
+    assert additional["postal_zone_name_from"] == "United Kingdom"
+    assert additional["zip_code_id_from"] == "pc_le13wu"
+    assert additional["postal_zone_id_to"] == 826
+    assert additional["postal_zone_name_to"] == "United Kingdom"
+    assert additional["zip_code_id_to"] == "pc_rm95hu"
 
 
 def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
@@ -134,18 +147,39 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     monkeypatch.setattr(packlink_module, "ship_from", lambda: {"name":"B & T Outlet","company":"B & T OUTLET LTD","address1":"Unit 10 Foundry Lane","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Ellen Rhodes","address1":"41","address2":"PLUMTREE PARK BIRCOTES","city":"DONCASTER","region":None,"postcode":"DN11 8QR","country":"GB","email":"buyer@example.test","phone":"07795058605"})
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
-    get_calls = _mock_packlink_handoff(monkeypatch, adapter)
+    _mock_packlink_handoff(monkeypatch, adapter)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference":"GB-ADDRESS2"})
     result = adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
     assert result["reference"] == "GB-ADDRESS2"
-    assert get_calls == [("clients", None)]
     assert posted["body"]["to"]["street1"] == "41"
     assert posted["body"]["to"]["street2"] == "PLUMTREE PARK BIRCOTES"
     assert posted["body"]["to"]["zip_code"] == "DN11 8QR"
     assert posted["body"]["to"]["city"] == "DONCASTER"
     assert posted["body"]["to"]["country"] == "GB"
     assert posted["body"]["additional_data"]["to"] == posted["body"]["to"]
+    assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_dn118qr"
+
+
+def test_packlink_location_enrichment_is_not_a_handoff_gate(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-FALLBACK")
+    line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
+    monkeypatch.setattr(packlink_module, "ship_from", lambda: {"name":"B & T Outlet","company":"B & T OUTLET LTD","address1":"Sender","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Customer One","address1":"1 Road","address2":None,"city":"London","region":None,"postcode":"SW1A 1AA","country":"GB","email":"buyer@example.test","phone":"07900000001"})
+    monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+
+    def fake_get(endpoint, *, query=None):
+        if endpoint == "clients":
+            return {"id": 77, "client_id": 88, "country": "GB"}
+        raise PacklinkRequestError("location service unavailable", status_code=503)
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+    posted = {}
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference":"GB-FALLBACK"})
+    result = adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
+    assert result["reference"] == "GB-FALLBACK"
+    assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
 
 
 def test_packlink_accepts_provider_reference_without_remote_shipment_readback(monkeypatch):
