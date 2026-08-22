@@ -169,12 +169,12 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Create the Packlink draft through the previously proven direct handoff.
+        """Create a Packlink shipment with its PRO location selections fully hydrated.
 
-        Do not make postal-zone/postcode preflight calls before the shipment POST:
-        those later lookups can fail before any shipment is sent to Packlink. The
-        proven path sends the marketplace delivery facts directly and persists the
-        provider reference returned by Packlink. Payment remains Packlink-side.
+        Packlink PRO does not treat visible country/postcode strings as selected form
+        values. Resolve the marketplace country/postcode to Packlink's own postal-zone
+        and postcode identifiers, then send those identifiers in additional_data so
+        the handoff opens ready for payment instead of as an incomplete draft.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
@@ -195,6 +195,9 @@ class PacklinkAdapter:
             if isinstance(account, dict)
             else str(origin.get("country") or "GB").upper()
         )
+        origin_location = self._resolve_postal_location(origin)
+        destination_location = self._resolve_postal_location(destination)
+
         customer_name, customer_surname = self._split_name(
             destination.get("name"), fallback_surname="Customer"
         )
@@ -215,36 +218,44 @@ class PacklinkAdapter:
         if content_value <= 0:
             content_value = PACKLINK_DEFAULT_CONTENT_VALUE
 
+        from_address = {
+            "name": sender_name,
+            "surname": sender_surname,
+            "company": origin.get("company") or "B & T Outlet",
+            "street1": origin.get("address1"),
+            "street2": origin.get("address2") or "",
+            "zip_code": self._clean_postcode(origin.get("postcode")),
+            "city": origin.get("city"),
+            "state": origin.get("region") or None,
+            "country": origin_location["country"],
+            "phone": origin.get("phone") or "",
+            "email": origin.get("email") or "",
+        }
+        to_address = {
+            "name": customer_name,
+            "surname": customer_surname,
+            "company": destination.get("company") or "",
+            "street1": destination.get("address1"),
+            "street2": destination.get("address2") or "",
+            "zip_code": self._clean_postcode(destination.get("postcode")),
+            "city": destination.get("city"),
+            "state": destination.get("region") or None,
+            "country": destination_location["country"],
+            "phone": destination.get("phone") or "",
+            "email": destination.get("email") or "",
+        }
+        custom_reference = str(getattr(order, "marketplace_order_id", ""))[:50]
+        content = ", ".join(content_parts)[:60] or "Goods"
+        content_value = round(content_value, 2)
+
         body = {
             "user_id": (account or {}).get("id") if isinstance(account, dict) else None,
             "client_id": (account or {}).get("client_id") if isinstance(account, dict) else None,
             "platform": PACKLINK_PLATFORM,
             "platform_country": platform_country,
-            "source": "bt38",
-            "from": {
-                "name": sender_name,
-                "surname": sender_surname,
-                "company": origin.get("company") or "B & T Outlet",
-                "street1": origin.get("address1"),
-                "street2": origin.get("address2") or "",
-                "zip_code": origin.get("postcode"),
-                "city": origin.get("city"),
-                "country": self._clean_country(origin.get("country") or "GB"),
-                "phone": origin.get("phone") or "",
-                "email": origin.get("email") or "",
-            },
-            "to": {
-                "name": customer_name,
-                "surname": customer_surname,
-                "company": destination.get("company") or "",
-                "street1": destination.get("address1"),
-                "street2": destination.get("address2") or "",
-                "zip_code": destination.get("postcode"),
-                "city": destination.get("city"),
-                "country": self._clean_country(destination.get("country") or "GB"),
-                "phone": destination.get("phone") or "",
-                "email": destination.get("email") or "",
-            },
+            "source": PACKLINK_DRAFT_SOURCE,
+            "from": from_address,
+            "to": to_address,
             "service": rate.get("service_name") or rate.get("service") or "",
             "carrier": rate.get("carrier_name") or rate.get("carrier") or "",
             "service_id": int(service_id) if service_id.isdigit() else service_id,
@@ -254,15 +265,27 @@ class PacklinkAdapter:
                 "length": int(round(float(parcel["length_cm"]))),
                 "weight": round(float(parcel["weight_kg"]), 2),
             }],
-            "content": ", ".join(content_parts)[:60] or "Goods",
-            "contentvalue": round(content_value, 2),
+            "content": content,
+            "contentvalue": content_value,
             "content_second_hand": False,
-            "shipment_custom_reference": str(getattr(order, "marketplace_order_id", ""))[:50],
+            "shipment_custom_reference": custom_reference,
             "priority": False,
             "contentValue_currency": "GBP",
             "has_customs": False,
             "additional_data": {
-                "order_id": str(getattr(order, "marketplace_order_id", "")),
+                "order_id": custom_reference,
+                "from": from_address,
+                "to": to_address,
+                "content": content,
+                "contentvalue": content_value,
+                "shipment_custom_reference": custom_reference,
+                "contentValue_currency": "GBP",
+                "postal_zone_id_from": origin_location["postal_zone_id"],
+                "postal_zone_name_from": origin_location["postal_zone_name"],
+                "zip_code_id_from": origin_location["zip_code_id"],
+                "postal_zone_id_to": destination_location["postal_zone_id"],
+                "postal_zone_name_to": destination_location["postal_zone_name"],
+                "zip_code_id_to": destination_location["zip_code_id"],
                 "items": [
                     {
                         "title": str(getattr(line, "sku", "Item") or "Item"),
