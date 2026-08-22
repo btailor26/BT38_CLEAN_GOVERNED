@@ -153,6 +153,12 @@ class PacklinkAdapter:
         missing = [name for name in required if parcel.get(name) in (None, "")]
         if missing:
             raise PacklinkConfigurationError("Missing Packlink rate fields: " + ", ".join(missing))
+
+        # Keep the exact marketplace delivery facts in the existing short-lived
+        # server-side quote session. The later draft handoff must use this same
+        # snapshot instead of re-reading/reconstructing the address in the browser.
+        parcel["_packlink_handoff_destination"] = dict(destination)
+
         query = [
             ("from[country]", str(parcel["from_country"])),
             ("from[zip]", str(parcel["from_zip"])),
@@ -171,17 +177,17 @@ class PacklinkAdapter:
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
         """Create a Packlink shipment with its PRO location selections fully hydrated.
 
-        Packlink PRO does not treat visible country/postcode strings as selected form
-        values. Resolve the marketplace country/postcode to Packlink's own postal-zone
-        and postcode identifiers, then send those identifiers in additional_data so
-        the handoff opens ready for payment instead of as an incomplete draft.
+        The destination is taken from the short-lived quote session captured when
+        Packlink rates were requested. This guarantees the exact address that was
+        quoted is the address handed to Packlink, without relying on browser state.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
 
         origin = ship_from()
-        destination = ship_to(order)
+        stored_destination = parcel.get("_packlink_handoff_destination")
+        destination = dict(stored_destination) if isinstance(stored_destination, dict) else ship_to(order)
         for field in ("name", "address1", "city", "postcode", "country", "phone"):
             if not destination.get(field):
                 raise PacklinkConfigurationError(f"Destination {field} is missing from the BT38 order.")
