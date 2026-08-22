@@ -204,28 +204,73 @@
     const btn = document.getElementById('governedWarehouseSyncBtn');
     if (!btn) return;
 
-    btn.addEventListener('click', async function () {
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+
+    btn.parentNode.insertBefore(wrapper, btn);
+    wrapper.appendChild(btn);
+    btn.textContent = 'Sync ▾';
+
+    const menu = document.createElement('div');
+    menu.id = 'governedWarehouseSyncMenu';
+    menu.hidden = true;
+    menu.style.position = 'absolute';
+    menu.style.right = '0';
+    menu.style.top = 'calc(100% + 6px)';
+    menu.style.minWidth = '180px';
+    menu.style.padding = '6px';
+    menu.style.background = '#fff';
+    menu.style.border = '1px solid rgba(0,0,0,.14)';
+    menu.style.borderRadius = '8px';
+    menu.style.boxShadow = '0 8px 24px rgba(0,0,0,.14)';
+    menu.style.zIndex = '1000';
+
+    function addChoice(label, mode, help) {
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.dataset.syncMode = mode;
+      choice.style.display = 'block';
+      choice.style.width = '100%';
+      choice.style.textAlign = 'left';
+      choice.style.padding = '9px 10px';
+      choice.style.border = '0';
+      choice.style.borderRadius = '6px';
+      choice.style.background = 'transparent';
+      choice.style.cursor = 'pointer';
+      choice.innerHTML = `<strong>${label}</strong><br><small>${help}</small>`;
+      choice.addEventListener('mouseenter', () => { choice.style.background = 'rgba(0,0,0,.05)'; });
+      choice.addEventListener('mouseleave', () => { choice.style.background = 'transparent'; });
+      menu.appendChild(choice);
+    }
+
+    addChoice('Sync Orders', 'orders', 'Recover recent or missing orders');
+    addChoice('Sync Listings', 'listings', 'Recover only missing eBay listings');
+    wrapper.appendChild(menu);
+
+    async function runWarehouseSync(mode) {
       if (btn.disabled) return;
 
       const originalText = btn.textContent;
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
+      const actor = mode === 'listings' ? 'warehouse-sync-listings' : 'warehouse-sync-orders';
+
       btn.disabled = true;
-      btn.textContent = 'Syncing...';
+      btn.textContent = mode === 'listings' ? 'Syncing listings...' : 'Syncing orders...';
+      menu.hidden = true;
 
       try {
         const result = await postJson(
           '/governed/warehouse/sync',
           {
-            shortcut_source: 'warehouse-sync-button'
+            shortcut_source: actor
           },
-          'warehouse-sync-button',
+          actor,
           {signal: controller.signal}
         );
 
-        // Warehouse Sync is a narrow recent/pending-order recovery shortcut.
-        // It must not force a second full page request after the recovery call.
-        alert(result.message || 'Warehouse sync complete');
+        alert(result.message || (mode === 'listings' ? 'Listing recovery complete' : 'Order recovery complete'));
       } catch (err) {
         if (err && err.name === 'AbortError') {
           alert('Warehouse sync is taking longer than expected. The page has been released; do not press Sync again immediately.');
@@ -238,6 +283,25 @@
         btn.disabled = false;
         btn.textContent = originalText;
       }
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      menu.hidden = !menu.hidden;
+    });
+
+    menu.addEventListener('click', function (e) {
+      const choice = e.target && e.target.closest ? e.target.closest('[data-sync-mode]') : null;
+      if (!choice) return;
+      e.preventDefault();
+      e.stopPropagation();
+      runWarehouseSync(choice.dataset.syncMode);
+    });
+
+    document.addEventListener('click', function (e) {
+      if (!wrapper.contains(e.target)) menu.hidden = true;
     });
   });
 
