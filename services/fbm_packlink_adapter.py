@@ -169,12 +169,12 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Create a Packlink draft from marketplace facts and Packlink's selected postcode IDs.
+        """Create the Packlink draft through the previously proven direct handoff.
 
-        Country remains the ISO code expected by Packlink (GB). For the editable
-        Packlink PRO draft, BT38 additionally resolves the Packlink postal-zone and
-        postcode IDs so the United Kingdom + City/Postcode selectors are genuinely
-        selected rather than merely displaying address text.
+        Do not make postal-zone/postcode preflight calls before the shipment POST:
+        those later lookups can fail before any shipment is sent to Packlink. The
+        proven path sends the marketplace delivery facts directly and persists the
+        provider reference returned by Packlink. Payment remains Packlink-side.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
@@ -182,127 +182,99 @@ class PacklinkAdapter:
 
         origin = ship_from()
         destination = ship_to(order)
-        for side, address in (("Sender", origin), ("Destination", destination)):
-            for field in ("address1", "city", "postcode", "country", "phone"):
-                if not address.get(field):
-                    raise PacklinkConfigurationError(f"{side} {field} is missing from BT38.")
-        if not destination.get("name"):
-            raise PacklinkConfigurationError("Destination name is missing from the BT38 order.")
+        for field in ("name", "address1", "city", "postcode", "country", "phone"):
+            if not destination.get(field):
+                raise PacklinkConfigurationError(f"Destination {field} is missing from the BT38 order.")
         for field in ("weight_kg", "width_cm", "height_cm", "length_cm"):
             if not parcel.get(field):
                 raise PacklinkConfigurationError(f"Parcel {field} is missing.")
 
-        from_location = self._resolve_postal_location(origin)
-        to_location = self._resolve_postal_location(destination)
-
+        account = self._get_json("clients")
+        platform_country = (
+            str((account or {}).get("country") or origin.get("country") or "GB").upper()
+            if isinstance(account, dict)
+            else str(origin.get("country") or "GB").upper()
+        )
         customer_name, customer_surname = self._split_name(
             destination.get("name"), fallback_surname="Customer"
         )
-        sender_company = str(origin.get("company") or "B & T OUTLET LTD").strip() or "B & T OUTLET LTD"
-        sender_name, sender_surname = self._company_contact_name(sender_company)
+        sender_name, sender_surname = self._split_name(
+            origin.get("name") or "B & T Outlet", fallback_surname="Outlet"
+        )
 
+        lines = order_lines(order)
         content_parts: list[str] = []
         content_value = 0.0
-        for line in order_lines(order):
+        for line in lines:
             qty = max(1, int(getattr(line, "quantity", 1) or 1))
             sku = str(getattr(line, "sku", "Item") or "Item").strip() or "Item"
-            content_parts.append(self._line_description(line, fallback=sku))
-            line_total = self._positive_amount(getattr(line, "line_total", None))
-            if line_total is not None:
-                content_value += line_total
-            else:
-                unit_price = self._positive_amount(getattr(line, "unit_price", None))
-                if unit_price is not None:
-                    content_value += unit_price * qty
-        if content_value <= 0:
-            try:
-                content_value = float(
-                    os.environ.get("PACKLINK_DEFAULT_CONTENT_VALUE", PACKLINK_DEFAULT_CONTENT_VALUE)
-                )
-            except (TypeError, ValueError):
-                content_value = PACKLINK_DEFAULT_CONTENT_VALUE
+            content_parts.append(f"{qty} {sku}")
+            unit_price = self._positive_amount(getattr(line, "unit_price", None))
+            if unit_price is not None:
+                content_value += unit_price * qty
         if content_value <= 0:
             content_value = PACKLINK_DEFAULT_CONTENT_VALUE
 
-        from_address = {
-            "name": sender_name,
-            "surname": sender_surname,
-            "company": sender_company,
-            "street1": self._clean_text(origin.get("address1")),
-            "street2": self._clean_text(origin.get("address2")),
-            "zip_code": self._clean_postcode(origin.get("postcode")),
-            "city": self._clean_text(origin.get("city")),
-            "state": self._clean_text(origin.get("region")),
-            "country": self._clean_country(origin.get("country")),
-            "phone": self._clean_text(origin.get("phone")) or "",
-            "email": self._clean_text(origin.get("email")),
-        }
-        to_address = {
-            "name": customer_name,
-            "surname": customer_surname,
-            "company": self._clean_text(destination.get("company")),
-            "street1": self._clean_text(destination.get("address1")),
-            "street2": self._clean_text(destination.get("address2")),
-            "zip_code": self._clean_postcode(destination.get("postcode")),
-            "city": self._clean_text(destination.get("city")),
-            "state": self._clean_text(destination.get("region")),
-            "country": self._clean_country(destination.get("country")),
-            "phone": self._clean_text(destination.get("phone")) or "",
-            "email": self._clean_text(destination.get("email")),
-        }
-
-        content = ", ".join(dict.fromkeys(part for part in content_parts if part))[:60] or "Goods"
-        content_value = round(content_value, 2)
-        reference = str(getattr(order, "marketplace_order_id", ""))[:50]
-        carrier = self._clean_text(rate.get("carrier") or rate.get("carrier_name")) or ""
-        service = self._clean_text(rate.get("service") or rate.get("service_name")) or ""
-
-        additional_data = {
-            "collection_date": None,
-            "collection_time": None,
-            "dropoff_point_id": None,
-            "content": content,
-            "contentvalue": content_value,
-            "content_second_hand": False,
-            "shipment_custom_reference": reference,
-            "priority": False,
-            "contentValue_currency": "GBP",
-            "from": dict(from_address),
-            "to": dict(to_address),
-            "postal_zone_id_from": from_location["postal_zone_id"],
-            "postal_zone_name_from": from_location["postal_zone_name"],
-            "zip_code_id_from": from_location["zip_code_id"],
-            "postal_zone_id_to": to_location["postal_zone_id"],
-            "postal_zone_name_to": to_location["postal_zone_name"],
-            "zip_code_id_to": to_location["zip_code_id"],
-        }
         body = {
-            "carrier": carrier,
-            "service": service,
+            "user_id": (account or {}).get("id") if isinstance(account, dict) else None,
+            "client_id": (account or {}).get("client_id") if isinstance(account, dict) else None,
+            "platform": PACKLINK_PLATFORM,
+            "platform_country": platform_country,
+            "source": "bt38",
+            "from": {
+                "name": sender_name,
+                "surname": sender_surname,
+                "company": origin.get("company") or "B & T Outlet",
+                "street1": origin.get("address1"),
+                "street2": origin.get("address2") or "",
+                "zip_code": origin.get("postcode"),
+                "city": origin.get("city"),
+                "country": self._clean_country(origin.get("country") or "GB"),
+                "phone": origin.get("phone") or "",
+                "email": origin.get("email") or "",
+            },
+            "to": {
+                "name": customer_name,
+                "surname": customer_surname,
+                "company": destination.get("company") or "",
+                "street1": destination.get("address1"),
+                "street2": destination.get("address2") or "",
+                "zip_code": destination.get("postcode"),
+                "city": destination.get("city"),
+                "country": self._clean_country(destination.get("country") or "GB"),
+                "phone": destination.get("phone") or "",
+                "email": destination.get("email") or "",
+            },
+            "service": rate.get("service_name") or rate.get("service") or "",
+            "carrier": rate.get("carrier_name") or rate.get("carrier") or "",
             "service_id": int(service_id) if service_id.isdigit() else service_id,
-            "adult_signature": False,
-            "additional_handling": False,
-            "insurance": {"amount": 0, "insurance_selected": False},
-            "print_in_store_selected": False,
-            "proof_of_delivery": False,
-            "priority": False,
-            "content": content,
-            "contentvalue": content_value,
-            "currency": "GBP",
-            "contentValue_currency": "GBP",
-            "content_second_hand": False,
-            "from": from_address,
-            "to": to_address,
-            "additional_data": additional_data,
             "packages": [{
                 "width": int(round(float(parcel["width_cm"]))),
                 "height": int(round(float(parcel["height_cm"]))),
                 "length": int(round(float(parcel["length_cm"]))),
                 "weight": round(float(parcel["weight_kg"]), 2),
             }],
-            "has_customs": from_address["country"] != to_address["country"],
-            "shipment_custom_reference": reference,
-            "source": PACKLINK_DRAFT_SOURCE,
+            "content": ", ".join(content_parts)[:60] or "Goods",
+            "contentvalue": round(content_value, 2),
+            "content_second_hand": False,
+            "shipment_custom_reference": str(getattr(order, "marketplace_order_id", ""))[:50],
+            "priority": False,
+            "contentValue_currency": "GBP",
+            "has_customs": False,
+            "additional_data": {
+                "order_id": str(getattr(order, "marketplace_order_id", "")),
+                "items": [
+                    {
+                        "title": str(getattr(line, "sku", "Item") or "Item"),
+                        "quantity": max(1, int(getattr(line, "quantity", 1) or 1)),
+                        "price": (
+                            (self._positive_amount(getattr(line, "unit_price", None)) or 0.0)
+                            * max(1, int(getattr(line, "quantity", 1) or 1))
+                        ),
+                    }
+                    for line in lines
+                ],
+            },
         }
 
         payload = self._post_json("shipments", body)
@@ -314,24 +286,10 @@ class PacklinkAdapter:
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
 
-        created = self.get_shipment(provider_reference)
-        state = str(created.get("state") or created.get("status") or "").strip().upper()
-        if state != "READY_TO_PURCHASE":
-            remote_from = created.get("from") if isinstance(created.get("from"), dict) else {}
-            remote_to = created.get("to") if isinstance(created.get("to"), dict) else {}
-            raise PacklinkRequestError(
-                "Packlink created incomplete draft "
-                f"{provider_reference}: state={state or 'UNKNOWN'}; "
-                f"sender={self._address_diagnostic(remote_from)}; "
-                f"receiver={self._address_diagnostic(remote_to)}; "
-                f"sender_selection={from_location['postal_zone_name']}/{from_location['zip_code_id']}; "
-                f"receiver_selection={to_location['postal_zone_name']}/{to_location['zip_code_id']}"
-            )
         return {
             "reference": provider_reference,
             "payment_status": "pending_packlink_payment",
             "label_ready": False,
-            "state": state,
             "raw": payload,
         }
 
