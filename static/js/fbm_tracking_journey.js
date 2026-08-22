@@ -39,8 +39,16 @@
     }
 
     function parseDate(value) {
-        if (!value) return null;
-        const parsed = new Date(value);
+        if (value === undefined || value === null || value === '') return null;
+        let normalized = value;
+        const text = String(value).trim();
+        if (/^-?\d+(?:\.\d+)?$/.test(text)) {
+            const numeric = Number(text);
+            if (Number.isFinite(numeric)) {
+                normalized = Math.abs(numeric) < 1000000000000 ? numeric * 1000 : numeric;
+            }
+        }
+        const parsed = new Date(normalized);
         return Number.isNaN(parsed.getTime()) ? null : parsed;
     }
 
