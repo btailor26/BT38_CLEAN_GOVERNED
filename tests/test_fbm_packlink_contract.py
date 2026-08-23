@@ -109,8 +109,8 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["to"]["city"] == "London"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
     assert body["content"] == "2 SKU-1"
-    assert body["additional_data"]["from"] == body["from"]
-    assert body["additional_data"]["to"] == body["to"]
+    assert "from" not in body["additional_data"]
+    assert "to" not in body["additional_data"]
     assert body["additional_data"]["postal_zone_id_from"] == 826
     assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
     assert body["additional_data"]["postal_zone_id_to"] == 826
