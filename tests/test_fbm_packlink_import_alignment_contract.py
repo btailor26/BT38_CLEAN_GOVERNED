@@ -1,5 +1,6 @@
 from inspect import getsource
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import governed_packlink_callback_routes as callback_routes
 import services.fbm_packlink_adapter as packlink_module
@@ -15,15 +16,16 @@ def _mock_packlink_handoff(monkeypatch, adapter):
         calls.append((endpoint, query))
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
-        if endpoint == "locations/postalzones/destinations":
-            return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
-        if endpoint == "locations/postalcodes":
-            postcode = str((query or {}).get("q") or "").upper()
-            return [{
+        if endpoint.startswith("locations/postalcodes/"):
+            _prefix, country, postcode_part = endpoint.rsplit("/", 2)
+            postcode = unquote(postcode_part).upper()
+            return {
                 "id": "pc_" + postcode.replace(" ", "").lower(),
                 "zipcode": postcode,
                 "postal_zone_id": 826,
-            }]
+                "postal_zone_name": "United Kingdom",
+                "country_code": country.upper(),
+            }
         raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
@@ -96,8 +98,8 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     assert result["label_ready"] is False
 
     assert get_calls[0] == ("clients", None)
-    assert [endpoint for endpoint, _ in get_calls].count("locations/postalzones/destinations") == 2
-    assert [endpoint for endpoint, _ in get_calls].count("locations/postalcodes") == 2
+    postcode_calls = [endpoint for endpoint, _ in get_calls if endpoint.startswith("locations/postalcodes/")]
+    assert postcode_calls == ["locations/postalcodes/GB/LE1%203WU", "locations/postalcodes/GB/RM9%205HU"]
     assert body["user_id"] == 77
     assert body["client_id"] == 88
     assert body["platform"] == "PRO"
