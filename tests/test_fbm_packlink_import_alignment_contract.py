@@ -142,6 +142,42 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     assert additional["zip_code_id_to"] == "pc_rm95hu"
 
 
+def test_packlink_nested_selector_objects_never_leak_into_visible_address(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-NESTED")
+    line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
+    monkeypatch.setattr(packlink_module, "ship_from", lambda: {"name":"B & T Outlet","company":"B & T OUTLET LTD","address1":"Sender","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Tony Longmire","address1":"5 MOOR ROAD, COLLINGHAM","address2":None,"city":"NEWARK","region":None,"postcode":"NG23 7SZ","country":"GB","email":"buyer@example.test","phone":"07900000001"})
+    monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+
+    def fake_get(endpoint, *, query=None):
+        if endpoint == "clients":
+            return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint.startswith("locations/postalcodes/"):
+            postcode = unquote(endpoint.rsplit("/", 1)[1]).upper()
+            city = "LEICESTER" if postcode == "LE1 3WU" else "NEWARK"
+            return {
+                "zipcode": postcode,
+                "city": {"id": "gpc_20102523", "name": city},
+                "country": {"id": 826, "iso_code": "GB", "name": "United Kingdom"},
+            }
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+    posted = {}
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference":"GB-NESTED"})
+
+    adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
+    body = posted["body"]
+    assert body["to"]["zip_code"] == "NG23 7SZ"
+    assert body["to"]["city"] == "NEWARK"
+    assert body["to"]["country"] == "GB"
+    assert "{" not in body["to"]["city"]
+    assert body["additional_data"]["zip_code_id_to"] == "gpc_20102523"
+    assert body["additional_data"]["postal_zone_id_to"] == 826
+    assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
+
+
 def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-ADDRESS2")
