@@ -58,6 +58,29 @@ def _register_callback(adapter: PacklinkAdapter) -> str:
     return callback_url
 
 
+def _selector_diagnostic(value):
+    """Return only non-PII Packlink selector/location facts."""
+    if not isinstance(value, dict):
+        return value if isinstance(value, (str, int, float, bool)) or value is None else str(type(value).__name__)
+    allowed = {
+        "id", "name", "label", "code", "value", "isoCode", "iso_code",
+        "countryCode", "country_code", "zip_code", "zipCode", "zipcode",
+        "postcode", "city", "locality", "town", "municipality",
+        "postal_zone_id", "postalZoneId", "postal_zone_name", "postalZoneName",
+        "postal_zone_id_to", "postal_zone_name_to", "zip_code_id_to",
+        "postal_zone_id_from", "zip_code_id_from",
+    }
+    result = {}
+    for key, item in value.items():
+        if key not in allowed:
+            continue
+        if isinstance(item, dict):
+            result[key] = _selector_diagnostic(item)
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            result[key] = item
+    return result
+
+
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/callback/register")
 @login_required
 def register_packlink_callback():
@@ -68,6 +91,55 @@ def register_packlink_callback():
     except PacklinkRequestError as exc:
         return jsonify({"success": False, "message": str(exc)}), exc.status_code or 502
     return jsonify({"success": True, "registered": True, "callback_path": "/governed/fbm/packlink/callback", "message": "Packlink callback registered. Runtime remains asleep until Packlink sends an event."})
+
+
+@governed_packlink_callback_bp.get("/governed/fbm/packlink/diagnostic/<int:shipment_id>")
+@login_required
+def packlink_shipment_diagnostic(shipment_id: int):
+    """Read one exact Packlink shipment back without exposing buyer PII.
+
+    This is diagnostic-only. It performs one explicit provider GET for the selected
+    BT38 shipment and never mutates the shipment, marketplace order or callback state.
+    """
+    shipment = FBMShipment.query.filter_by(id=shipment_id, provider="packlink").first()
+    if shipment is None or not shipment.provider_shipment_id:
+        return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
+
+    try:
+        remote = PacklinkAdapter().get_shipment(shipment.provider_shipment_id)
+    except PacklinkConfigurationError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 503
+    except PacklinkRequestError as exc:
+        return jsonify({
+            "success": False,
+            "shipment_id": shipment.id,
+            "provider_reference": shipment.provider_shipment_id,
+            "message": str(exc),
+        }), exc.status_code or 502
+
+    remote_to = remote.get("to") if isinstance(remote.get("to"), dict) else {}
+    additional = remote.get("additional_data") if isinstance(remote.get("additional_data"), dict) else {}
+    nested_additional = additional.get("additional_data") if isinstance(additional.get("additional_data"), dict) else {}
+
+    return jsonify({
+        "success": True,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "remote_top_level_keys": sorted(str(key) for key in remote.keys()),
+        "remote_to": _selector_diagnostic(remote_to),
+        "remote_additional_data": _selector_diagnostic(additional),
+        "remote_nested_additional_data": _selector_diagnostic(nested_additional),
+        "country_present": bool(remote_to.get("country")),
+        "country_value": _selector_diagnostic(remote_to.get("country")),
+        "postcode_value": _selector_diagnostic(
+            remote_to.get("zip_code") or remote_to.get("zipCode") or remote_to.get("zipcode") or remote_to.get("postcode")
+        ),
+        "city_value": _selector_diagnostic(remote_to.get("city")),
+        "postal_zone_id_to": additional.get("postal_zone_id_to"),
+        "postal_zone_name_to": additional.get("postal_zone_name_to"),
+        "zip_code_id_to": additional.get("zip_code_id_to"),
+        "message": "Read one exact Packlink shipment. No shipment or marketplace data was changed.",
+    })
 
 
 @governed_packlink_callback_bp.post("/governed/fbm/orders/delete")
