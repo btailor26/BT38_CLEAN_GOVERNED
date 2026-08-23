@@ -135,7 +135,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     assert additional["from"] == body["from"]
     assert additional["to"] == body["to"]
     assert additional["postal_zone_id_from"] == 826
-    assert additional["postal_zone_name_from"] == "United Kingdom"
+    assert "postal_zone_name_from" not in additional
     assert additional["zip_code_id_from"] == "pc_le13wu"
     assert additional["postal_zone_id_to"] == 826
     assert additional["postal_zone_name_to"] == "United Kingdom"
