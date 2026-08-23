@@ -256,29 +256,24 @@ class PacklinkAdapter:
             for line in lines
         ]
 
-        additional_data = {
-            "order_id": custom_reference,
-            "from": from_address,
-            "to": to_address,
-            "content": content,
-            "contentvalue": content_value,
-            "shipment_custom_reference": custom_reference,
-            "contentValue_currency": "GBP",
-            "items": items,
-        }
-
         location_data = self._best_effort_location_ids(from_address, to_address)
 
-        # Keep the proven flat metadata for backward compatibility, but also mirror
-        # Packlink's imported-draft selector metadata into its nested additional_data
-        # object. The top-level `to` address powers Recipient; the nested selector
-        # metadata powers Recipient details in Packlink PRO.
-        additional_data.update(location_data)
-        additional_data["additional_data"] = {
+        # Packlink's shipment model keeps recipient/sender addresses only at the
+        # top level. `additional_data` is selector/order metadata; duplicating the
+        # address there makes Packlink PRO render a second, mismatched Recipient
+        # details state. Keep one authoritative recipient and canonical flat IDs.
+        additional_data = {
+            "postal_zone_id_from": location_data.get("postal_zone_id_from"),
+            "postal_zone_id_to": location_data.get("postal_zone_id_to"),
+            "shipping_service_name": rate.get("service_name") or rate.get("service") or None,
+            "zip_code_id_from": location_data.get("zip_code_id_from"),
+            "zip_code_id_to": location_data.get("zip_code_id_to"),
+            "selectedWarehouseId": None,
+            "parcel_Ids": [],
+            "postal_zone_name_to": location_data.get("postal_zone_name_to"),
             "order_id": custom_reference,
             "seller_user_id": None,
             "items": items,
-            **location_data,
         }
 
         body = {
