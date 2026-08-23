@@ -244,6 +244,17 @@ class PacklinkAdapter:
         custom_reference = str(getattr(order, "marketplace_order_id", ""))[:50]
         content = ", ".join(content_parts)[:60] or "Goods"
         content_value = round(content_value, 2)
+        items = [
+            {
+                "title": str(getattr(line, "sku", "Item") or "Item"),
+                "quantity": max(1, int(getattr(line, "quantity", 1) or 1)),
+                "price": (
+                    (self._positive_amount(getattr(line, "unit_price", None)) or 0.0)
+                    * max(1, int(getattr(line, "quantity", 1) or 1))
+                ),
+            }
+            for line in lines
+        ]
 
         additional_data = {
             "order_id": custom_reference,
@@ -253,20 +264,22 @@ class PacklinkAdapter:
             "contentvalue": content_value,
             "shipment_custom_reference": custom_reference,
             "contentValue_currency": "GBP",
-            "items": [
-                {
-                    "title": str(getattr(line, "sku", "Item") or "Item"),
-                    "quantity": max(1, int(getattr(line, "quantity", 1) or 1)),
-                    "price": (
-                        (self._positive_amount(getattr(line, "unit_price", None)) or 0.0)
-                        * max(1, int(getattr(line, "quantity", 1) or 1))
-                    ),
-                }
-                for line in lines
-            ],
+            "items": items,
         }
 
-        additional_data.update(self._best_effort_location_ids(from_address, to_address))
+        location_data = self._best_effort_location_ids(from_address, to_address)
+
+        # Keep the proven flat metadata for backward compatibility, but also mirror
+        # Packlink's imported-draft selector metadata into its nested additional_data
+        # object. The top-level `to` address powers Recipient; the nested selector
+        # metadata powers Recipient details in Packlink PRO.
+        additional_data.update(location_data)
+        additional_data["additional_data"] = {
+            "order_id": custom_reference,
+            "seller_user_id": None,
+            "items": items,
+            **location_data,
+        }
 
         body = {
             "user_id": (account or {}).get("id") if isinstance(account, dict) else None,
