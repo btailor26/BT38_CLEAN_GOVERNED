@@ -111,9 +111,9 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["content"] == "2 SKU-1"
     assert "from" not in body["additional_data"]
     assert "to" not in body["additional_data"]
-    assert body["additional_data"]["postal_zone_id_from"] == 826
+    assert body["additional_data"]["postal_zone_id_from"] == "826"
     assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
-    assert body["additional_data"]["postal_zone_id_to"] == 826
+    assert body["additional_data"]["postal_zone_id_to"] == "826"
     assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999999"
 
@@ -161,7 +161,7 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
     )
     assert posted["body"]["content"] == "1 SKU-ONLY"
     assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
-    assert posted["body"]["additional_data"]["postal_zone_id_to"] == 826
+    assert posted["body"]["additional_data"]["postal_zone_id_to"] == "826"
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999998"
 
