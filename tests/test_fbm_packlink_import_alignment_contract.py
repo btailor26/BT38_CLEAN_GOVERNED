@@ -132,8 +132,8 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
         "weight": 1.0,
     }]
     additional = body["additional_data"]
-    assert additional["from"] == body["from"]
-    assert additional["to"] == body["to"]
+    assert "from" not in additional
+    assert "to" not in additional
     assert additional["postal_zone_id_from"] == 826
     assert "postal_zone_name_from" not in additional
     assert additional["zip_code_id_from"] == "pc_le13wu"
@@ -195,7 +195,7 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     assert posted["body"]["to"]["zip_code"] == "DN11 8QR"
     assert posted["body"]["to"]["city"] == "DONCASTER"
     assert posted["body"]["to"]["country"] == "GB"
-    assert posted["body"]["additional_data"]["to"] == posted["body"]["to"]
+    assert "to" not in posted["body"]["additional_data"]
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_dn118qr"
 
 
