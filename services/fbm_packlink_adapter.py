@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from services.fbm_order_mapper import order_lines, ship_from, ship_to
@@ -174,8 +174,9 @@ class PacklinkAdapter:
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
         """Send the stored quote snapshot directly to Packlink.
 
-        Location IDs are added when Packlink resolves them, but they are enrichment
-        only. A failed location lookup must never block the shipment POST.
+        Packlink location selections are resolved from its canonical country/postcode
+        lookup. They enrich the draft but never become a gate that can suppress the
+        working direct shipment POST.
         """
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
@@ -265,9 +266,6 @@ class PacklinkAdapter:
             ],
         }
 
-        # Packlink's web editor needs its own country/postcode selection IDs.
-        # Resolve them best-effort and enrich the shipment, but never fail the
-        # handoff if these auxiliary endpoints are unavailable or reject a lookup.
         additional_data.update(self._best_effort_location_ids(from_address, to_address))
 
         body = {
@@ -312,53 +310,83 @@ class PacklinkAdapter:
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
+        """Resolve Packlink's actual searchable location record without blocking handoff."""
         result: dict[str, Any] = {}
         for suffix, address in (("from", from_address), ("to", to_address)):
             try:
                 country = self._clean_country(address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
-                zones = self._get_json(
-                    "locations/postalzones/destinations",
-                    query={"platform": PACKLINK_PLATFORM, "platform_country": country},
-                )
-                if not isinstance(zones, list):
-                    continue
-                zone = next(
-                    (
-                        item for item in zones
-                        if isinstance(item, dict)
-                        and self._clean_country(item.get("iso_code") or item.get("country") or "") == country
-                    ),
-                    zones[0] if zones and isinstance(zones[0], dict) else None,
-                )
-                if not isinstance(zone, dict) or zone.get("id") in (None, ""):
-                    continue
-                zone_id = zone.get("id")
                 postcode = self._clean_postcode(address.get("zip_code"))
                 if not postcode:
                     continue
-                postcodes = self._get_json(
-                    "locations/postalcodes",
-                    query={"q": postcode, "postalzone": zone_id},
-                )
-                if not isinstance(postcodes, list):
+
+                endpoint = f"locations/postalcodes/{quote(country, safe='')}/{quote(postcode, safe='')}"
+                payload = self._get_json(endpoint)
+                row = self._canonical_postcode_row(payload)
+                if not isinstance(row, dict):
                     continue
-                postcode_row = next(
-                    (
-                        item for item in postcodes
-                        if isinstance(item, dict)
-                        and self._clean_postcode(item.get("zipcode") or item.get("zip_code")) == postcode
-                    ),
-                    postcodes[0] if postcodes and isinstance(postcodes[0], dict) else None,
+
+                canonical_country = self._clean_country(
+                    row.get("country_code") or row.get("country") or row.get("iso_code") or country
                 )
-                if not isinstance(postcode_row, dict) or postcode_row.get("id") in (None, ""):
-                    continue
-                result[f"postal_zone_id_{suffix}"] = zone_id
-                if zone.get("name"):
-                    result[f"postal_zone_name_{suffix}"] = zone.get("name")
-                result[f"zip_code_id_{suffix}"] = postcode_row.get("id")
+                canonical_postcode = self._clean_postcode(
+                    row.get("zipcode") or row.get("zip_code") or row.get("postcode") or postcode
+                )
+                canonical_city = self._clean_text(
+                    row.get("city") or row.get("locality") or row.get("town") or row.get("municipality")
+                )
+                if canonical_country:
+                    address["country"] = canonical_country
+                if canonical_postcode:
+                    address["zip_code"] = canonical_postcode
+                if canonical_city:
+                    address["city"] = canonical_city
+
+                postcode_id = (
+                    row.get("id")
+                    or row.get("zip_code_id")
+                    or row.get("postcode_id")
+                    or row.get("uuid")
+                )
+                postal_zone = row.get("postal_zone") if isinstance(row.get("postal_zone"), dict) else {}
+                zone_id = (
+                    row.get("postal_zone_id")
+                    or row.get("postalzone_id")
+                    or row.get("postalZoneId")
+                    or postal_zone.get("id")
+                )
+                zone_name = (
+                    row.get("postal_zone_name")
+                    or row.get("postalzone_name")
+                    or row.get("postalZoneName")
+                    or postal_zone.get("name")
+                    or ("United Kingdom" if canonical_country == "GB" else None)
+                )
+
+                if zone_id not in (None, ""):
+                    result[f"postal_zone_id_{suffix}"] = zone_id
+                if zone_name:
+                    result[f"postal_zone_name_{suffix}"] = zone_name
+                if postcode_id not in (None, ""):
+                    result[f"zip_code_id_{suffix}"] = postcode_id
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
                 continue
         return result
+
+    @staticmethod
+    def _canonical_postcode_row(payload: Any) -> dict[str, Any] | None:
+        if isinstance(payload, list):
+            return next((item for item in payload if isinstance(item, dict)), None)
+        if not isinstance(payload, dict):
+            return None
+        for key in ("data", "result", "postcode", "location"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                return nested
+        for key in ("items", "results", "postcodes", "locations"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return next((item for item in nested if isinstance(item, dict)), None)
+        return payload
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
