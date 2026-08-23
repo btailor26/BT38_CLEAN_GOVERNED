@@ -134,10 +134,10 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     additional = body["additional_data"]
     assert "from" not in additional
     assert "to" not in additional
-    assert additional["postal_zone_id_from"] == 826
+    assert additional["postal_zone_id_from"] == "826"
     assert "postal_zone_name_from" not in additional
     assert additional["zip_code_id_from"] == "pc_le13wu"
-    assert additional["postal_zone_id_to"] == 826
+    assert additional["postal_zone_id_to"] == "826"
     assert additional["postal_zone_name_to"] == "United Kingdom"
     assert additional["zip_code_id_to"] == "pc_rm95hu"
 
@@ -174,7 +174,7 @@ def test_packlink_nested_selector_objects_never_leak_into_visible_address(monkey
     assert body["to"]["country"] == "GB"
     assert "{" not in body["to"]["city"]
     assert body["additional_data"]["zip_code_id_to"] == "gpc_20102523"
-    assert body["additional_data"]["postal_zone_id_to"] == 826
+    assert body["additional_data"]["postal_zone_id_to"] == "826"
     assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
 
 
