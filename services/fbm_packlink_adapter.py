@@ -258,18 +258,20 @@ class PacklinkAdapter:
 
         location_data = self._best_effort_location_ids(from_address, to_address)
 
-        # Packlink's own Draft.AdditionalData DTO defines the location selector
-        # identifiers as strings. Preserve the ISO country on the address while
-        # sending selector IDs using the exact type expected by the Recipient UI.
+        # Sender can retain its Packlink/account-side zone selector. Recipient
+        # country authority is the ISO value on `to`. Keep the proven postcode
+        # selector, but do not inject an inferred recipient postal-zone id/name:
+        # doing so can leave Packlink PRO displaying the country label while its
+        # Recipient dropdown still has no valid selected value.
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
-            "postal_zone_id_to": self._selector_id(location_data.get("postal_zone_id_to")),
+            "postal_zone_id_to": None,
             "shipping_service_name": rate.get("service_name") or rate.get("service") or None,
             "zip_code_id_from": self._selector_id(location_data.get("zip_code_id_from")),
             "zip_code_id_to": self._selector_id(location_data.get("zip_code_id_to")),
             "selectedWarehouseId": None,
             "parcel_Ids": [],
-            "postal_zone_name_to": location_data.get("postal_zone_name_to"),
+            "postal_zone_name_to": None,
             "order_id": custom_reference,
             "seller_user_id": None,
             "items": items,
