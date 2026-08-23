@@ -258,16 +258,15 @@ class PacklinkAdapter:
 
         location_data = self._best_effort_location_ids(from_address, to_address)
 
-        # Packlink's shipment model keeps recipient/sender addresses only at the
-        # top level. `additional_data` is selector/order metadata; duplicating the
-        # address there makes Packlink PRO render a second, mismatched Recipient
-        # details state. Keep one authoritative recipient and canonical flat IDs.
+        # Packlink's own Draft.AdditionalData DTO defines the location selector
+        # identifiers as strings. Preserve the ISO country on the address while
+        # sending selector IDs using the exact type expected by the Recipient UI.
         additional_data = {
-            "postal_zone_id_from": location_data.get("postal_zone_id_from"),
-            "postal_zone_id_to": location_data.get("postal_zone_id_to"),
+            "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
+            "postal_zone_id_to": self._selector_id(location_data.get("postal_zone_id_to")),
             "shipping_service_name": rate.get("service_name") or rate.get("service") or None,
-            "zip_code_id_from": location_data.get("zip_code_id_from"),
-            "zip_code_id_to": location_data.get("zip_code_id_to"),
+            "zip_code_id_from": self._selector_id(location_data.get("zip_code_id_from")),
+            "zip_code_id_to": self._selector_id(location_data.get("zip_code_id_to")),
             "selectedWarehouseId": None,
             "parcel_Ids": [],
             "postal_zone_name_to": location_data.get("postal_zone_name_to"),
@@ -361,10 +360,16 @@ class PacklinkAdapter:
                         zones[0] if len(zones) == 1 and isinstance(zones[0], dict) else None,
                     )
                     if isinstance(zone, dict):
-                        zone_id = self._first_scalar(zone.get("id"), zone.get("postalZoneId"), zone.get("postal_zone_id"))
+                        zone_id = self._first_scalar(
+                            zone.get("id"),
+                            zone.get("postalZoneId"),
+                            zone.get("postal_zone_id"),
+                            zone.get("postalzone_id"),
+                        )
                         zone_name = self._first_scalar(zone.get("name"), zone.get("label"))
-                        if zone_id not in (None, ""):
-                            result[f"postal_zone_id_{suffix}"] = zone_id
+                        selector_zone_id = self._selector_id(zone_id)
+                        if selector_zone_id:
+                            result[f"postal_zone_id_{suffix}"] = selector_zone_id
                         if zone_name and suffix == "to":
                             result["postal_zone_name_to"] = zone_name
                 except Exception:
@@ -459,12 +464,15 @@ class PacklinkAdapter:
                     country_obj.get("label"),
                 )
 
-                if f"postal_zone_id_{suffix}" not in result and fallback_zone_id not in (None, ""):
-                    result[f"postal_zone_id_{suffix}"] = fallback_zone_id
+                if f"postal_zone_id_{suffix}" not in result:
+                    selector_zone_id = self._selector_id(fallback_zone_id)
+                    if selector_zone_id:
+                        result[f"postal_zone_id_{suffix}"] = selector_zone_id
                 if suffix == "to" and "postal_zone_name_to" not in result and fallback_zone_name:
                     result["postal_zone_name_to"] = fallback_zone_name
-                if postcode_id not in (None, ""):
-                    result[f"zip_code_id_{suffix}"] = postcode_id
+                selector_postcode_id = self._selector_id(postcode_id)
+                if selector_postcode_id:
+                    result[f"zip_code_id_{suffix}"] = selector_postcode_id
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
                 continue
 
@@ -499,6 +507,14 @@ class PacklinkAdapter:
                 if text != "":
                     return text
         return None
+
+    @staticmethod
+    def _selector_id(value: Any) -> str | None:
+        """Packlink draft location-selector IDs are strings, not numbers."""
+        if value is None or value == "" or isinstance(value, (dict, list, tuple, set)):
+            return None
+        text = str(value).strip()
+        return text or None
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
