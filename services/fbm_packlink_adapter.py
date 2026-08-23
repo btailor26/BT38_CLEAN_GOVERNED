@@ -310,7 +310,7 @@ class PacklinkAdapter:
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
-        """Resolve Packlink's actual searchable location record without blocking handoff."""
+        """Resolve Packlink selector values without ever stringifying selector objects."""
         result: dict[str, Any] = {}
         for suffix, address in (("from", from_address), ("to", to_address)):
             try:
@@ -325,15 +325,48 @@ class PacklinkAdapter:
                 if not isinstance(row, dict):
                     continue
 
-                canonical_country = self._clean_country(
-                    row.get("country_code") or row.get("country") or row.get("iso_code") or country
+                country_obj = row.get("country") if isinstance(row.get("country"), dict) else {}
+                city_obj = row.get("city") if isinstance(row.get("city"), dict) else {}
+                postcode_obj = row.get("postcode") if isinstance(row.get("postcode"), dict) else {}
+                postal_zone = row.get("postal_zone") if isinstance(row.get("postal_zone"), dict) else {}
+
+                canonical_country_raw = self._first_scalar(
+                    row.get("country_code"),
+                    row.get("iso_code"),
+                    country_obj.get("country_code"),
+                    country_obj.get("iso_code"),
+                    country_obj.get("code"),
+                    country_obj.get("value"),
+                    country,
                 )
-                canonical_postcode = self._clean_postcode(
-                    row.get("zipcode") or row.get("zip_code") or row.get("postcode") or postcode
+                canonical_country = self._clean_country(canonical_country_raw or country)
+
+                canonical_postcode_raw = self._first_scalar(
+                    row.get("zipcode"),
+                    row.get("zip_code"),
+                    row.get("postcode") if not isinstance(row.get("postcode"), (dict, list)) else None,
+                    postcode_obj.get("zipcode"),
+                    postcode_obj.get("zip_code"),
+                    postcode_obj.get("postcode"),
+                    postcode_obj.get("value"),
+                    postcode,
                 )
-                canonical_city = self._clean_text(
-                    row.get("city") or row.get("locality") or row.get("town") or row.get("municipality")
+                canonical_postcode = self._clean_postcode(canonical_postcode_raw or postcode)
+
+                canonical_city = self._first_scalar(
+                    row.get("city") if not isinstance(row.get("city"), (dict, list)) else None,
+                    row.get("locality") if not isinstance(row.get("locality"), (dict, list)) else None,
+                    row.get("town") if not isinstance(row.get("town"), (dict, list)) else None,
+                    row.get("municipality") if not isinstance(row.get("municipality"), (dict, list)) else None,
+                    city_obj.get("name"),
+                    city_obj.get("label"),
+                    city_obj.get("city"),
+                    city_obj.get("locality"),
+                    city_obj.get("town"),
+                    city_obj.get("municipality"),
+                    city_obj.get("value"),
                 )
+
                 if canonical_country:
                     address["country"] = canonical_country
                 if canonical_postcode:
@@ -341,25 +374,30 @@ class PacklinkAdapter:
                 if canonical_city:
                     address["city"] = canonical_city
 
-                postcode_id = (
-                    row.get("id")
-                    or row.get("zip_code_id")
-                    or row.get("postcode_id")
-                    or row.get("uuid")
+                postcode_id = self._first_scalar(
+                    row.get("id"),
+                    row.get("zip_code_id"),
+                    row.get("postcode_id"),
+                    row.get("uuid"),
+                    postcode_obj.get("id"),
+                    city_obj.get("id"),
                 )
-                postal_zone = row.get("postal_zone") if isinstance(row.get("postal_zone"), dict) else {}
-                zone_id = (
-                    row.get("postal_zone_id")
-                    or row.get("postalzone_id")
-                    or row.get("postalZoneId")
-                    or postal_zone.get("id")
+                zone_id = self._first_scalar(
+                    row.get("postal_zone_id"),
+                    row.get("postalzone_id"),
+                    row.get("postalZoneId"),
+                    postal_zone.get("id"),
+                    country_obj.get("postal_zone_id"),
+                    country_obj.get("id"),
                 )
-                zone_name = (
-                    row.get("postal_zone_name")
-                    or row.get("postalzone_name")
-                    or row.get("postalZoneName")
-                    or postal_zone.get("name")
-                    or ("United Kingdom" if canonical_country == "GB" else None)
+                zone_name = self._first_scalar(
+                    row.get("postal_zone_name"),
+                    row.get("postalzone_name"),
+                    row.get("postalZoneName"),
+                    postal_zone.get("name"),
+                    postal_zone.get("label"),
+                    country_obj.get("name"),
+                    country_obj.get("label"),
                 )
 
                 if zone_id not in (None, ""):
@@ -387,6 +425,20 @@ class PacklinkAdapter:
             if isinstance(nested, list):
                 return next((item for item in nested if isinstance(item, dict)), None)
         return payload
+
+    @staticmethod
+    def _first_scalar(*values: Any) -> str | int | float | None:
+        """Return the first Packlink selector scalar; never stringify dict/list values."""
+        for value in values:
+            if value is None or value == "":
+                continue
+            if isinstance(value, (dict, list, tuple, set)):
+                continue
+            if isinstance(value, (str, int, float)):
+                text = value.strip() if isinstance(value, str) else value
+                if text != "":
+                    return text
+        return None
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
@@ -482,6 +534,8 @@ class PacklinkAdapter:
 
     @staticmethod
     def _clean_text(value: Any) -> str | None:
+        if isinstance(value, (dict, list, tuple, set)):
+            return None
         text = " ".join(str(value or "").strip().split())
         return text or None
 
@@ -492,6 +546,8 @@ class PacklinkAdapter:
 
     @staticmethod
     def _clean_country(value: Any) -> str:
+        if isinstance(value, (dict, list, tuple, set)):
+            value = PACKLINK_ACCOUNT_COUNTRY
         text = str(value or PACKLINK_ACCOUNT_COUNTRY).strip().upper()
         aliases = {
             "UNITED KINGDOM": "GB",
