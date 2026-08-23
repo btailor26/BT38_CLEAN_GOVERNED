@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 
@@ -37,11 +38,16 @@ def _sender():
 def _packlink_handoff_get(endpoint, *, query=None):
     if endpoint == "clients":
         return {"id": 7, "client_id": 9, "country": "GB"}
-    if endpoint == "locations/postalzones/destinations":
-        return [{"id": 826, "iso_code": "GB", "name": "United Kingdom"}]
-    if endpoint == "locations/postalcodes":
-        postcode = str((query or {}).get("q") or "").upper()
-        return [{"id": "pc_" + postcode.replace(" ", "").lower(), "zipcode": postcode, "postal_zone_id": 826}]
+    if endpoint.startswith("locations/postalcodes/"):
+        _prefix, country, postcode_part = endpoint.rsplit("/", 2)
+        postcode = unquote(postcode_part).upper()
+        return {
+            "id": "pc_" + postcode.replace(" ", "").lower(),
+            "zipcode": postcode,
+            "postal_zone_id": 826,
+            "postal_zone_name": "United Kingdom",
+            "country_code": country.upper(),
+        }
     raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
 
 
@@ -84,8 +90,8 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
 
     body = posted["body"]
     assert provider_gets[0] == ("clients", None)
-    assert [call[0] for call in provider_gets].count("locations/postalzones/destinations") == 2
-    assert [call[0] for call in provider_gets].count("locations/postalcodes") == 2
+    postcode_calls = [call[0] for call in provider_gets if call[0].startswith("locations/postalcodes/")]
+    assert postcode_calls == ["locations/postalcodes/GB/LE1%201AA", "locations/postalcodes/GB/SW1A%201AA"]
     assert posted["endpoint"] == "shipments"
     assert body["user_id"] == 7
     assert body["client_id"] == 9
