@@ -310,7 +310,7 @@ class PacklinkAdapter:
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
-        """Resolve Packlink's country and postcode selector values independently."""
+        """Resolve Packlink location selectors and reuse sender country for domestic shipments."""
         result: dict[str, Any] = {}
         for suffix, address in (("from", from_address), ("to", to_address)):
             try:
@@ -319,11 +319,6 @@ class PacklinkAdapter:
                 if not postcode:
                     continue
 
-                # Packlink's Country field is a postal-zone selector. Resolve that
-                # selector directly from the same endpoint used by Packlink's own
-                # ecommerce integration. The response uses camelCase (isoCode),
-                # not only snake_case. Keep this best-effort so it can never block
-                # the working shipment POST.
                 try:
                     zones_payload = self._get_json(
                         "locations/postalzones/destinations",
@@ -350,10 +345,12 @@ class PacklinkAdapter:
                                     item.get("iso_code"),
                                     item.get("countryCode"),
                                     item.get("country_code"),
+                                    item.get("code"),
+                                    item.get("value"),
                                 ) or ""
                             ) == country
                         ),
-                        None,
+                        zones[0] if len(zones) == 1 and isinstance(zones[0], dict) else None,
                     )
                     if isinstance(zone, dict):
                         zone_id = self._first_scalar(zone.get("id"), zone.get("postalZoneId"), zone.get("postal_zone_id"))
@@ -462,6 +459,16 @@ class PacklinkAdapter:
                     result[f"zip_code_id_{suffix}"] = postcode_id
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
                 continue
+
+        from_country = self._clean_country(from_address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+        to_country = self._clean_country(to_address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+        if from_country == to_country:
+            sender_zone_id = result.get("postal_zone_id_from")
+            if sender_zone_id not in (None, ""):
+                result["postal_zone_id_to"] = sender_zone_id
+                if not result.get("postal_zone_name_to"):
+                    result["postal_zone_name_to"] = "United Kingdom" if to_country == "GB" else to_country
+
         return result
 
     @staticmethod
