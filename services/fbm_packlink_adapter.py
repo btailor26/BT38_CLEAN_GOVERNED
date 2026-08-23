@@ -318,7 +318,7 @@ class PacklinkAdapter:
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
-        """Resolve Packlink location selectors and reuse sender country for domestic shipments."""
+        """Resolve Packlink location selectors independently for sender and recipient."""
         result: dict[str, Any] = {}
         for suffix, address in (("from", from_address), ("to", to_address)):
             try:
@@ -467,15 +467,6 @@ class PacklinkAdapter:
                     result[f"zip_code_id_{suffix}"] = postcode_id
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
                 continue
-
-        from_country = self._clean_country(from_address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
-        to_country = self._clean_country(to_address.get("country") or PACKLINK_ACCOUNT_COUNTRY)
-        if from_country == to_country:
-            sender_zone_id = result.get("postal_zone_id_from")
-            if sender_zone_id not in (None, ""):
-                result["postal_zone_id_to"] = sender_zone_id
-                if not result.get("postal_zone_name_to"):
-                    result["postal_zone_name_to"] = "United Kingdom" if to_country == "GB" else to_country
 
         return result
 
