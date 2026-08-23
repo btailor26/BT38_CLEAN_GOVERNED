@@ -310,7 +310,7 @@ class PacklinkAdapter:
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
-        """Resolve Packlink selector values without ever stringifying selector objects."""
+        """Resolve Packlink's country and postcode selector values independently."""
         result: dict[str, Any] = {}
         for suffix, address in (("from", from_address), ("to", to_address)):
             try:
@@ -318,6 +318,52 @@ class PacklinkAdapter:
                 postcode = self._clean_postcode(address.get("zip_code"))
                 if not postcode:
                     continue
+
+                # Packlink's Country field is a postal-zone selector. Resolve that
+                # selector directly from the same endpoint used by Packlink's own
+                # ecommerce integration. The response uses camelCase (isoCode),
+                # not only snake_case. Keep this best-effort so it can never block
+                # the working shipment POST.
+                try:
+                    zones_payload = self._get_json(
+                        "locations/postalzones/destinations",
+                        query={
+                            "platform": PACKLINK_PLATFORM,
+                            "platform_country": country,
+                            "language": "en",
+                        },
+                    )
+                    zones = zones_payload if isinstance(zones_payload, list) else []
+                    if isinstance(zones_payload, dict):
+                        for key in ("items", "results", "destinations", "postalzones", "postal_zones"):
+                            candidate = zones_payload.get(key)
+                            if isinstance(candidate, list):
+                                zones = candidate
+                                break
+                    zone = next(
+                        (
+                            item for item in zones
+                            if isinstance(item, dict)
+                            and self._clean_country(
+                                self._first_scalar(
+                                    item.get("isoCode"),
+                                    item.get("iso_code"),
+                                    item.get("countryCode"),
+                                    item.get("country_code"),
+                                ) or ""
+                            ) == country
+                        ),
+                        None,
+                    )
+                    if isinstance(zone, dict):
+                        zone_id = self._first_scalar(zone.get("id"), zone.get("postalZoneId"), zone.get("postal_zone_id"))
+                        zone_name = self._first_scalar(zone.get("name"), zone.get("label"))
+                        if zone_id not in (None, ""):
+                            result[f"postal_zone_id_{suffix}"] = zone_id
+                        if zone_name and suffix == "to":
+                            result["postal_zone_name_to"] = zone_name
+                except Exception:
+                    pass
 
                 endpoint = f"locations/postalcodes/{quote(country, safe='')}/{quote(postcode, safe='')}"
                 payload = self._get_json(endpoint)
@@ -332,9 +378,13 @@ class PacklinkAdapter:
 
                 canonical_country_raw = self._first_scalar(
                     row.get("country_code"),
+                    row.get("countryCode"),
                     row.get("iso_code"),
+                    row.get("isoCode"),
                     country_obj.get("country_code"),
+                    country_obj.get("countryCode"),
                     country_obj.get("iso_code"),
+                    country_obj.get("isoCode"),
                     country_obj.get("code"),
                     country_obj.get("value"),
                     country,
@@ -344,9 +394,11 @@ class PacklinkAdapter:
                 canonical_postcode_raw = self._first_scalar(
                     row.get("zipcode"),
                     row.get("zip_code"),
+                    row.get("zipCode"),
                     row.get("postcode") if not isinstance(row.get("postcode"), (dict, list)) else None,
                     postcode_obj.get("zipcode"),
                     postcode_obj.get("zip_code"),
+                    postcode_obj.get("zipCode"),
                     postcode_obj.get("postcode"),
                     postcode_obj.get("value"),
                     postcode,
@@ -377,33 +429,35 @@ class PacklinkAdapter:
                 postcode_id = self._first_scalar(
                     row.get("id"),
                     row.get("zip_code_id"),
+                    row.get("zipCodeId"),
                     row.get("postcode_id"),
                     row.get("uuid"),
                     postcode_obj.get("id"),
                     city_obj.get("id"),
                 )
-                zone_id = self._first_scalar(
+                fallback_zone_id = self._first_scalar(
                     row.get("postal_zone_id"),
-                    row.get("postalzone_id"),
                     row.get("postalZoneId"),
+                    row.get("postalzone_id"),
                     postal_zone.get("id"),
                     country_obj.get("postal_zone_id"),
+                    country_obj.get("postalZoneId"),
                     country_obj.get("id"),
                 )
-                zone_name = self._first_scalar(
+                fallback_zone_name = self._first_scalar(
                     row.get("postal_zone_name"),
-                    row.get("postalzone_name"),
                     row.get("postalZoneName"),
+                    row.get("postalzone_name"),
                     postal_zone.get("name"),
                     postal_zone.get("label"),
                     country_obj.get("name"),
                     country_obj.get("label"),
                 )
 
-                if zone_id not in (None, ""):
-                    result[f"postal_zone_id_{suffix}"] = zone_id
-                if zone_name:
-                    result[f"postal_zone_name_{suffix}"] = zone_name
+                if f"postal_zone_id_{suffix}" not in result and fallback_zone_id not in (None, ""):
+                    result[f"postal_zone_id_{suffix}"] = fallback_zone_id
+                if suffix == "to" and "postal_zone_name_to" not in result and fallback_zone_name:
+                    result["postal_zone_name_to"] = fallback_zone_name
                 if postcode_id not in (None, ""):
                     result[f"zip_code_id_{suffix}"] = postcode_id
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
