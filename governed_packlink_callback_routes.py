@@ -81,6 +81,18 @@ def _selector_diagnostic(value):
     return result
 
 
+def _shipment_reference(row: dict) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(
+        row.get("shipment_reference")
+        or row.get("packlink_reference")
+        or row.get("reference")
+        or row.get("id")
+        or ""
+    ).strip()
+
+
 @governed_packlink_callback_bp.post("/governed/fbm/packlink/callback/register")
 @login_required
 def register_packlink_callback():
@@ -96,26 +108,75 @@ def register_packlink_callback():
 @governed_packlink_callback_bp.get("/governed/fbm/packlink/diagnostic/<int:shipment_id>")
 @login_required
 def packlink_shipment_diagnostic(shipment_id: int):
-    """Read one exact Packlink shipment back without exposing buyer PII.
+    """Read one exact Packlink shipment/draft without exposing buyer PII.
 
-    This is diagnostic-only. It performs one explicit provider GET for the selected
-    BT38 shipment and never mutates the shipment, marketplace order or callback state.
+    Packlink can return a pre-payment UN... draft in the DRAFT inbox while the
+    shipment-detail endpoint still rejects that reference. Try the exact detail
+    endpoint first, then one explicit DRAFT-inbox read. Nothing is mutated.
     """
     shipment = FBMShipment.query.filter_by(id=shipment_id, provider="packlink").first()
     if shipment is None or not shipment.provider_shipment_id:
         return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
 
+    adapter = PacklinkAdapter()
+    reference = shipment.provider_shipment_id
+    remote = None
+    read_source = "shipment_detail"
+    detail_status = None
+    detail_error = None
+
     try:
-        remote = PacklinkAdapter().get_shipment(shipment.provider_shipment_id)
+        remote = adapter.get_shipment(reference)
     except PacklinkConfigurationError as exc:
         return jsonify({"success": False, "message": str(exc)}), 503
     except PacklinkRequestError as exc:
+        detail_status = exc.status_code
+        detail_error = str(exc)
+        read_source = "draft_inbox"
+        try:
+            inbox_payload = adapter._get_json("shipments", query={"inbox": "DRAFT"})
+        except PacklinkConfigurationError as inbox_exc:
+            return jsonify({"success": False, "message": str(inbox_exc)}), 503
+        except PacklinkRequestError as inbox_exc:
+            return jsonify({
+                "success": False,
+                "shipment_id": shipment.id,
+                "provider_reference": reference,
+                "detail_status_code": detail_status,
+                "detail_message": detail_error,
+                "draft_inbox_status_code": inbox_exc.status_code,
+                "draft_inbox_message": str(inbox_exc),
+                "message": "Packlink rejected both the shipment-detail read and the DRAFT inbox read.",
+            }), inbox_exc.status_code or detail_status or 502
+
+        rows = []
+        if isinstance(inbox_payload, list):
+            rows = [row for row in inbox_payload if isinstance(row, dict)]
+        elif isinstance(inbox_payload, dict):
+            for key in ("shipments", "items", "results", "data"):
+                candidate = inbox_payload.get(key)
+                if isinstance(candidate, list):
+                    rows = [row for row in candidate if isinstance(row, dict)]
+                    break
+        remote = next((row for row in rows if _shipment_reference(row) == reference), None)
+        if remote is None:
+            return jsonify({
+                "success": False,
+                "shipment_id": shipment.id,
+                "provider_reference": reference,
+                "detail_status_code": detail_status,
+                "detail_message": detail_error,
+                "draft_inbox_count": len(rows),
+                "message": "Packlink rejected the detail read and the exact reference was not present in the DRAFT inbox.",
+            }), detail_status or 502
+
+    if not isinstance(remote, dict):
         return jsonify({
             "success": False,
             "shipment_id": shipment.id,
-            "provider_reference": shipment.provider_shipment_id,
-            "message": str(exc),
-        }), exc.status_code or 502
+            "provider_reference": reference,
+            "message": "Packlink returned no readable shipment object.",
+        }), 502
 
     remote_to = remote.get("to") if isinstance(remote.get("to"), dict) else {}
     additional = remote.get("additional_data") if isinstance(remote.get("additional_data"), dict) else {}
@@ -124,7 +185,10 @@ def packlink_shipment_diagnostic(shipment_id: int):
     return jsonify({
         "success": True,
         "shipment_id": shipment.id,
-        "provider_reference": shipment.provider_shipment_id,
+        "provider_reference": reference,
+        "read_source": read_source,
+        "detail_status_code": detail_status,
+        "detail_message": detail_error,
         "remote_top_level_keys": sorted(str(key) for key in remote.keys()),
         "remote_to": _selector_diagnostic(remote_to),
         "remote_additional_data": _selector_diagnostic(additional),
@@ -138,7 +202,7 @@ def packlink_shipment_diagnostic(shipment_id: int):
         "postal_zone_id_to": additional.get("postal_zone_id_to"),
         "postal_zone_name_to": additional.get("postal_zone_name_to"),
         "zip_code_id_to": additional.get("zip_code_id_to"),
-        "message": "Read one exact Packlink shipment. No shipment or marketplace data was changed.",
+        "message": "Read one exact Packlink shipment/draft. No shipment or marketplace data was changed.",
     })
 
 
