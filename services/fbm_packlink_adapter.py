@@ -172,12 +172,7 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Send the stored quote snapshot directly to Packlink.
-
-        Packlink location selections are resolved from its canonical country/postcode
-        lookup. They enrich the draft but never become a gate that can suppress the
-        working direct shipment POST.
-        """
+        """Create a Packlink draft and verify the exact provider draft once before success."""
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
@@ -258,11 +253,6 @@ class PacklinkAdapter:
 
         location_data = self._best_effort_location_ids(from_address, to_address)
 
-        # Sender can retain its Packlink/account-side zone selector. Recipient
-        # country authority is the ISO value on `to`. Keep the proven postcode
-        # selector, but do not inject an inferred recipient postal-zone id/name:
-        # doing so can leave Packlink PRO displaying the country label while its
-        # Recipient dropdown still has no valid selected value.
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
             "postal_zone_id_to": None,
@@ -311,11 +301,20 @@ class PacklinkAdapter:
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
 
+        provider_snapshot = self.get_shipment(provider_reference)
+        missing_fields = self._draft_required_fields_missing(provider_snapshot)
+        if missing_fields:
+            raise PacklinkRequestError(
+                "Packlink handoff incomplete; provider draft is missing required fields: "
+                + ", ".join(missing_fields)
+            )
+
         return {
             "reference": provider_reference,
             "payment_status": "pending_packlink_payment",
             "label_ready": False,
             "raw": payload,
+            "verified": True,
         }
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
@@ -389,31 +388,17 @@ class PacklinkAdapter:
                 postal_zone = row.get("postal_zone") if isinstance(row.get("postal_zone"), dict) else {}
 
                 canonical_country_raw = self._first_scalar(
-                    row.get("country_code"),
-                    row.get("countryCode"),
-                    row.get("iso_code"),
-                    row.get("isoCode"),
-                    country_obj.get("country_code"),
-                    country_obj.get("countryCode"),
-                    country_obj.get("iso_code"),
-                    country_obj.get("isoCode"),
-                    country_obj.get("code"),
-                    country_obj.get("value"),
-                    country,
+                    row.get("country_code"), row.get("countryCode"), row.get("iso_code"), row.get("isoCode"),
+                    country_obj.get("country_code"), country_obj.get("countryCode"), country_obj.get("iso_code"),
+                    country_obj.get("isoCode"), country_obj.get("code"), country_obj.get("value"), country,
                 )
                 canonical_country = self._clean_country(canonical_country_raw or country)
 
                 canonical_postcode_raw = self._first_scalar(
-                    row.get("zipcode"),
-                    row.get("zip_code"),
-                    row.get("zipCode"),
+                    row.get("zipcode"), row.get("zip_code"), row.get("zipCode"),
                     row.get("postcode") if not isinstance(row.get("postcode"), (dict, list)) else None,
-                    postcode_obj.get("zipcode"),
-                    postcode_obj.get("zip_code"),
-                    postcode_obj.get("zipCode"),
-                    postcode_obj.get("postcode"),
-                    postcode_obj.get("value"),
-                    postcode,
+                    postcode_obj.get("zipcode"), postcode_obj.get("zip_code"), postcode_obj.get("zipCode"),
+                    postcode_obj.get("postcode"), postcode_obj.get("value"), postcode,
                 )
                 canonical_postcode = self._clean_postcode(canonical_postcode_raw or postcode)
 
@@ -422,13 +407,8 @@ class PacklinkAdapter:
                     row.get("locality") if not isinstance(row.get("locality"), (dict, list)) else None,
                     row.get("town") if not isinstance(row.get("town"), (dict, list)) else None,
                     row.get("municipality") if not isinstance(row.get("municipality"), (dict, list)) else None,
-                    city_obj.get("name"),
-                    city_obj.get("label"),
-                    city_obj.get("city"),
-                    city_obj.get("locality"),
-                    city_obj.get("town"),
-                    city_obj.get("municipality"),
-                    city_obj.get("value"),
+                    city_obj.get("name"), city_obj.get("label"), city_obj.get("city"), city_obj.get("locality"),
+                    city_obj.get("town"), city_obj.get("municipality"), city_obj.get("value"),
                 )
 
                 if canonical_country:
@@ -439,31 +419,17 @@ class PacklinkAdapter:
                     address["city"] = canonical_city
 
                 postcode_id = self._first_scalar(
-                    row.get("id"),
-                    row.get("zip_code_id"),
-                    row.get("zipCodeId"),
-                    row.get("postcode_id"),
-                    row.get("uuid"),
-                    postcode_obj.get("id"),
-                    city_obj.get("id"),
+                    row.get("id"), row.get("zip_code_id"), row.get("zipCodeId"), row.get("postcode_id"),
+                    row.get("uuid"), postcode_obj.get("id"), city_obj.get("id"),
                 )
                 fallback_zone_id = self._first_scalar(
-                    row.get("postal_zone_id"),
-                    row.get("postalZoneId"),
-                    row.get("postalzone_id"),
-                    postal_zone.get("id"),
-                    country_obj.get("postal_zone_id"),
-                    country_obj.get("postalZoneId"),
+                    row.get("postal_zone_id"), row.get("postalZoneId"), row.get("postalzone_id"),
+                    postal_zone.get("id"), country_obj.get("postal_zone_id"), country_obj.get("postalZoneId"),
                     country_obj.get("id"),
                 )
                 fallback_zone_name = self._first_scalar(
-                    row.get("postal_zone_name"),
-                    row.get("postalZoneName"),
-                    row.get("postalzone_name"),
-                    postal_zone.get("name"),
-                    postal_zone.get("label"),
-                    country_obj.get("name"),
-                    country_obj.get("label"),
+                    row.get("postal_zone_name"), row.get("postalZoneName"), row.get("postalzone_name"),
+                    postal_zone.get("name"), postal_zone.get("label"), country_obj.get("name"), country_obj.get("label"),
                 )
 
                 if f"postal_zone_id_{suffix}" not in result:
@@ -512,11 +478,68 @@ class PacklinkAdapter:
 
     @staticmethod
     def _selector_id(value: Any) -> str | None:
-        """Packlink draft location-selector IDs are strings, not numbers."""
         if value is None or value == "" or isinstance(value, (dict, list, tuple, set)):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _draft_required_fields_missing(cls, payload: dict[str, Any]) -> list[str]:
+        if not isinstance(payload, dict):
+            return ["sender details", "recipient details"]
+        from_address = cls._shipment_address(payload, "from")
+        to_address = cls._shipment_address(payload, "to")
+        missing: list[str] = []
+        required = {
+            "name": ("name", "first_name", "firstname"),
+            "surname": ("surname", "last_name", "lastname"),
+            "email": ("email",),
+            "phone": ("phone", "mobile", "mobile_phone", "telephone"),
+            "address": ("street1", "address1", "address", "street"),
+            "country": ("country", "country_code", "countryCode"),
+            "city": ("city", "locality", "town"),
+            "postcode": ("zip_code", "zipcode", "zip", "postcode", "postal_code"),
+        }
+        for label, address in (("Sender", from_address), ("Recipient", to_address)):
+            for field, aliases in required.items():
+                if not cls._address_has_value(address, aliases):
+                    missing.append(f"{label} {field}")
+        return missing
+
+    @staticmethod
+    def _shipment_address(payload: dict[str, Any], side: str) -> dict[str, Any]:
+        aliases = (
+            ("from", "from_address", "sender", "origin")
+            if side == "from"
+            else ("to", "to_address", "recipient", "destination")
+        )
+        for key in aliases:
+            value = payload.get(key)
+            if isinstance(value, dict):
+                return value
+        shipment = payload.get("shipment")
+        if isinstance(shipment, dict):
+            for key in aliases:
+                value = shipment.get(key)
+                if isinstance(value, dict):
+                    return value
+        return {}
+
+    @staticmethod
+    def _address_has_value(address: dict[str, Any], aliases: tuple[str, ...]) -> bool:
+        if not isinstance(address, dict):
+            return False
+        for key in aliases:
+            value = address.get(key)
+            if isinstance(value, dict):
+                for nested_key in ("code", "iso_code", "isoCode", "value", "name", "label"):
+                    nested = value.get(nested_key)
+                    if nested is not None and str(nested).strip():
+                        return True
+                continue
+            if value is not None and str(value).strip():
+                return True
+        return False
 
     def get_shipment(self, reference: str) -> dict[str, Any]:
         payload = self._get_json(f"shipments/{reference}")
