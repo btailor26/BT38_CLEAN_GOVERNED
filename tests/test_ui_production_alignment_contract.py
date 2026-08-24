@@ -6,6 +6,7 @@ PRODUCT_LINKING_SESSION = Path("static/js/product-linking-session.js")
 PRODUCT_LINKING = Path("templates/product_linking.html")
 WAREHOUSE = Path("templates/warehouse.html")
 WAREHOUSE_ROUTE = Path("governed_routes.py")
+STORES = Path("templates/stores.html")
 
 
 def _source(path):
@@ -146,3 +147,34 @@ def test_templates_keep_required_controller_scripts():
     assert "bt38-global-state.js" in product_linking
     assert "bt38-page-controller.js" in product_linking
     assert "bt38-page-controller.js" in warehouse
+
+
+def test_ebay_commercial_oauth_uses_one_store_aware_authorization_code_flow():
+    routes = _source(WAREHOUSE_ROUTE)
+    authorize = routes.split("def governed_ebay_oauth_authorize():", 1)[1]
+    authorize = authorize.split("def governed_ebay_oauth_callback():", 1)[0]
+    callback = routes.split("def governed_ebay_oauth_callback():", 1)[1]
+    callback = callback.split("def governed_ebay_oauth_refresh_token():", 1)[0]
+
+    assert "governed_ebay_oauth_scopes()" in authorize
+    assert '"response_type": "code"' in authorize
+    assert '"redirect_uri": runame' in authorize
+    assert 'session["governed_ebay_oauth_store_id"] = store.id' in authorize
+    assert "auth.ebay.com/oauth2/authorize" in authorize
+    assert "signin.ebay.com/ws/eBayISAPI.dll" not in authorize
+
+    assert '"grant_type": "authorization_code"' in callback
+    assert 'selected_store_id = session.get("governed_ebay_oauth_store_id")' in callback
+    assert "_resolve_governed_ebay_oauth_store(selected_store_id)" in callback
+    assert '"refresh_token": token.get("refresh_token") or existing.get("refresh_token")' in callback
+    assert '"oauth_requested_scope": scopes' in callback
+    assert "ensure_ebay_order_notification_registration(" in callback
+    assert 'return redirect(f"/stores?ebay_oauth=success&store_id={store.id}")' in callback
+
+
+def test_ebay_store_ui_never_uses_developer_portal_or_legacy_authnauth():
+    stores = _source(STORES)
+
+    assert "developer.ebay.com" not in stores
+    assert "signin.ebay.com/ws/eBayISAPI.dll" not in stores
+    assert "/ebay-oauth/authorize?store_id={{ store.id }}" in stores
