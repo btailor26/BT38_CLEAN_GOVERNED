@@ -273,6 +273,24 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+      - name: Restore Packlink callback registration
+        shell: bash
+        run: |
+          flyctl ssh console \
+            --app bt38-prod \
+            --command "sh -lc \"cd /app && .venv/bin/python -c 'from app import app; from services.fbm_packlink_adapter import PacklinkAdapter; from governed_packlink_callback_routes import _register_callback; ctx=app.test_request_context(base_url=\\\"https://bt38-prod.fly.dev\\\"); ctx.push(); callback_url=_register_callback(PacklinkAdapter()); print(\\\"PACKLINK_CALLBACK_REGISTERED=\\\" + callback_url)'\""
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Recover today's known Packlink purchases once
+        shell: bash
+        run: |
+          flyctl ssh console \
+            --app bt38-prod \
+            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); result=recover_packlink_shipments_for_day(datetime.utcnow().date()); print(json.dumps(result, default=str))'\""
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
       - name: Record Amazon listing subscription reconciliation
         shell: bash
         run: |
