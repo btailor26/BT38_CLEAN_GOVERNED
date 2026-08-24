@@ -63,14 +63,14 @@ def _verified_shipment_snapshot():
 def _packlink_handoff_get(endpoint, *, query=None):
     if endpoint == "clients":
         return {"id": 7, "client_id": 9, "country": "GB"}
+    if endpoint == "locations/postalzones/destinations":
+        return [{"id": "gb-zone", "isoCode": "GB", "name": "United Kingdom", "hasPostalCodes": True}]
     if endpoint.startswith("locations/postalcodes/"):
         _prefix, country, postcode_part = endpoint.rsplit("/", 2)
         postcode = unquote(postcode_part).upper()
         return {
             "id": "pc_" + postcode.replace(" ", "").lower(),
             "zipcode": postcode,
-            "postal_zone_id": 826,
-            "postal_zone_name": "United Kingdom",
             "country_code": country.upper(),
         }
     if endpoint.startswith("shipments/"):
@@ -139,9 +139,10 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["content"] == "2 SKU-1"
     assert "from" not in body["additional_data"]
     assert "to" not in body["additional_data"]
-    assert body["additional_data"]["postal_zone_id_from"] == "826"
+    assert body["additional_data"]["postal_zone_id_from"] == "gb-zone"
     assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
-    assert body["additional_data"]["postal_zone_id_to"] is None
+    assert body["additional_data"]["postal_zone_id_to"] == "gb-zone"
+    assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
     assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999999"
     assert result["verified"] is True
@@ -158,7 +159,7 @@ def test_packlink_incomplete_provider_draft_is_not_a_success(monkeypatch):
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 7, "client_id": 9, "country": "GB"}
-        if endpoint.startswith("locations/postalcodes/"):
+        if endpoint.startswith("locations/"):
             return _packlink_handoff_get(endpoint, query=query)
         if endpoint.startswith("shipments/"):
             snapshot = _verified_shipment_snapshot()
@@ -221,7 +222,8 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
     )
     assert posted["body"]["content"] == "1 SKU-ONLY"
     assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
-    assert posted["body"]["additional_data"]["postal_zone_id_to"] is None
+    assert posted["body"]["additional_data"]["postal_zone_id_to"] == "gb-zone"
+    assert posted["body"]["additional_data"]["postal_zone_name_to"] == "United Kingdom"
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999998"
 
