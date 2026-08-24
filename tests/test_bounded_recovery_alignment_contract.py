@@ -5,6 +5,9 @@ RECOVERY = Path("services/governed_recovery_alignment.py").read_text(
     encoding="utf-8"
 )
 MAIN = Path("main.py").read_text(encoding="utf-8")
+EBAY_LISTING_RECOVERY = Path(
+    "services/governed_ebay_missed_listing_recovery.py"
+).read_text(encoding="utf-8")
 
 
 def test_stranded_webhook_recovery_is_bounded_and_reuses_existing_execution():
@@ -69,6 +72,16 @@ def test_recovery_alignment_creates_no_parallel_runtime():
     assert '"full_scan_started": False' in RECOVERY
     assert '"new_worker_started": False' in RECOVERY
     assert '"new_queue_created": False' in RECOVERY
+
+
+def test_ebay_listing_recovery_detects_changed_variation_structure_without_full_scan():
+    assert "candidate_skus" in EBAY_LISTING_RECOVERY
+    assert "existing_skus" in EBAY_LISTING_RECOVERY
+    assert "changed_ids" in EBAY_LISTING_RECOVERY
+    assert "candidate_skus.get(item_id) != existing_skus.get(item_id, set())" in EBAY_LISTING_RECOVERY
+    assert "recovery_ids = list(dict.fromkeys([*missing_ids, *changed_ids]))" in EBAY_LISTING_RECOVERY
+    assert "counts = _import_item(store, creds, candidates[item_id])" in EBAY_LISTING_RECOVERY
+    assert '"full_catalogue_scan": False' in EBAY_LISTING_RECOVERY
 
 
 def test_deployed_entrypoint_runs_bounded_recovery_once():
