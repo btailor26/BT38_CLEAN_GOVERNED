@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Login - Inventory Management{% endblock %}
+{% block title %}Sign in - BT38 Marketplace Management{% endblock %}
 
 {% block content %}
 <div class="container">
@@ -10,10 +10,14 @@
                 <div class="card-header text-center">
                     <h4 class="mb-0">
                         <i data-feather="lock" class="me-2"></i>
-                        Login
+                        Sign in to BT38
                     </h4>
                 </div>
                 <div class="card-body">
+                    <p class="text-muted text-center mb-4">
+                        Sign in with an approved BT38 early-access account.
+                    </p>
+
                     <form method="POST">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
@@ -26,7 +30,7 @@
                                 <input type="text" class="form-control" id="username" name="username"
                                        placeholder="Enter username or email" required>
                             </div>
-                            <small class="text-muted">Use your username or the email address registered on your account.</small>
+                            <small class="text-muted">Use the username or email address registered on your approved BT38 account.</small>
                         </div>
 
                         <div class="mb-3">
@@ -43,15 +47,21 @@
                         <div class="d-grid">
                             <button type="submit" class="btn btn-primary">
                                 <i data-feather="log-in" class="me-1" style="width: 16px; height: 16px;"></i>
-                                Login
+                                Sign in
                             </button>
                         </div>
                     </form>
 
-                    <div class="mt-3 text-center">
-                        <small class="text-muted">
-                            Enter the username or email address assigned to your BT38 account.
+                    <hr class="my-4">
+
+                    <div class="text-center">
+                        <div class="fw-semibold mb-1">Not approved yet?</div>
+                        <small class="text-muted d-block mb-3">
+                            BT38 is currently free during early access. Apply to try the marketplace management system.
                         </small>
+                        <a href="/apply" class="btn btn-outline-secondary w-100">
+                            Apply to Try BT38
+                        </a>
                     </div>
                 </div>
             </div>
