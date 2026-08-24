@@ -48,7 +48,7 @@
 {% if stores %}
     <div class="row">
         {% for store in stores %}
-        {% set ebay_reauth_required = store.platform and 'ebay' in store.platform|lower and store.api_key and ('AUTHORIZATION_REQUIRED' in store.api_key or 'Insufficient permissions' in store.api_key) %}
+        {% set ebay_reauth_required = store.platform and 'ebay' in store.platform|lower and store.auth_status == 'auth_error' and store.auth_error_code == 'ebay_notification_reauthorization_required' %}
         <div class="col-md-6 col-lg-4 mb-4">
             <div class="card h-100">
                 <div class="card-body">
