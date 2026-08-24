@@ -339,12 +339,46 @@ def _ensure_subscription(
     return subscription_id, True
 
 
+def _set_store_connection_health(
+    store: Any,
+    *,
+    healthy: bool,
+    authorization_required: bool,
+    error: str | None,
+) -> None:
+    """Keep commercial Store connection state aligned with Notification API truth."""
+    if healthy:
+        if hasattr(store, "auth_status"):
+            store.auth_status = "ok"
+        if hasattr(store, "auth_error_code"):
+            store.auth_error_code = None
+        if hasattr(store, "auth_error_message"):
+            store.auth_error_message = None
+        if hasattr(store, "auth_error_at"):
+            store.auth_error_at = None
+        return
+
+    if not authorization_required:
+        return
+
+    if hasattr(store, "auth_status"):
+        store.auth_status = "auth_error"
+    if hasattr(store, "auth_error_code"):
+        store.auth_error_code = "ebay_notification_reauthorization_required"
+    if hasattr(store, "auth_error_message"):
+        store.auth_error_message = (
+            "eBay requires one-time approval for the notification permissions."
+        )
+    if hasattr(store, "auth_error_at"):
+        store.auth_error_at = datetime.utcnow()
+
+
 def ensure_ebay_order_notification_registration(
     *,
     store: Any,
     access_token: str,
 ) -> dict[str, Any]:
-    """Idempotently ensure BT38's production eBay order webhook registration."""
+    """Idempotently ensure BT38's required production eBay webhook registration."""
 
     from app import db
 
@@ -431,6 +465,10 @@ def ensure_ebay_order_notification_registration(
             authorization_required = (
                 "195011" in listing_error
                 or "not authorized for this topic" in listing_error.lower()
+                or (
+                    "HTTP 403" in listing_error
+                    and "insufficient permissions" in listing_error.lower()
+                )
             )
             listing_status = (
                 "AUTHORIZATION_REQUIRED" if authorization_required else "FAILED"
@@ -453,7 +491,13 @@ def ensure_ebay_order_notification_registration(
         for item in subscriptions
     )
     now = datetime.utcnow().isoformat()
-    registration_status = "SUCCESS" if listing_subscription["ok"] else "PARTIAL"
+    authorization_required = (
+        listing_subscription["status"] == "AUTHORIZATION_REQUIRED"
+    )
+    overall_ok = bool(order_subscription["ok"] and listing_subscription["ok"])
+    registration_status = "SUCCESS" if overall_ok else (
+        "AUTHORIZATION_REQUIRED" if authorization_required else "PARTIAL"
+    )
 
     creds.update({
         "ebay_notification_registration_status": registration_status,
@@ -473,13 +517,27 @@ def ensure_ebay_order_notification_registration(
         "ebay_notification_schema_version": TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
         "ebay_notification_topic_schema_versions": TOPIC_SCHEMA_VERSIONS,
         "ebay_notification_registered_at": now,
+        "ebay_reauthorization_required": authorization_required,
     })
 
+    if overall_ok:
+        creds["ebay_notification_registration_error"] = None
+        creds["ebay_notification_listing_subscription_error"] = None
+        creds["ebay_reauthorization_required"] = False
+        creds["ebay_notification_authorization_cleared_at"] = now
+
     store.api_key = json.dumps(creds)
+    _set_store_connection_health(
+        store,
+        healthy=overall_ok,
+        authorization_required=authorization_required,
+        error=listing_subscription.get("error"),
+    )
     db.session.commit()
 
     return {
-        "ok": True,
+        "ok": overall_ok,
+        "success": overall_ok,
         "destination_id": destination_id,
         "destination_created": destination_created,
         "subscription_id": subscription_id,
@@ -490,4 +548,5 @@ def ensure_ebay_order_notification_registration(
         "schema_version": DEFAULT_SCHEMA_VERSION,
         "listing_subscription": listing_subscription,
         "registration_status": registration_status,
+        "authorization_required": authorization_required,
     }
