@@ -20,12 +20,12 @@
         <a href="#features" class="hover:text-black">Features</a>
         <a href="#amazon" class="hover:text-black">Amazon</a>
         <a href="#control" class="hover:text-black">How it works</a>
-        <a href="#apply" class="hover:text-black">Early Access</a>
+        <a href="#early-access" class="hover:text-black">Early Access</a>
         <a href="#support" class="hover:text-black">Support</a>
       </nav>
       <div class="flex items-center gap-3">
         <a href="#signin" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg">Sign in</a>
-        <a href="#apply" class="px-4 py-2 text-sm font-semibold bg-black text-white rounded-lg">Apply to Try</a>
+        <a href="/apply" class="px-4 py-2 text-sm font-semibold bg-black text-white rounded-lg">Apply to Try</a>
       </div>
     </div>
   </header>
@@ -33,19 +33,13 @@
   <main>
     <section class="px-6 py-20 md:py-28">
       <div class="max-w-6xl mx-auto text-center">
-        <div class="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-600">
-          Amazon • eBay • Inventory • Orders • Fulfilment • Shipping
-        </div>
+        <div class="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-600">Amazon • eBay • Inventory • Orders • Fulfilment • Shipping</div>
         <h1 class="mt-6 text-5xl md:text-7xl font-black tracking-tight leading-tight">Manage your marketplace business from one place.</h1>
-        <p class="mt-6 text-lg md:text-xl text-slate-600 max-w-4xl mx-auto leading-relaxed">
-          BT38 is a multi-channel marketplace management system designed to help online sellers manage inventory, orders, fulfilment and day-to-day marketplace operations from one central platform.
-        </p>
-        <p class="mt-4 text-base md:text-lg text-slate-500 max-w-3xl mx-auto">
-          Connect supported sales channels, maintain central warehouse stock, manage marketplace orders and fulfilment, and keep operational activity visible across your business.
-        </p>
+        <p class="mt-6 text-lg md:text-xl text-slate-600 max-w-4xl mx-auto leading-relaxed">BT38 is a multi-channel marketplace management system designed to help online sellers manage inventory, orders, fulfilment and day-to-day marketplace operations from one central platform.</p>
+        <p class="mt-4 text-base md:text-lg text-slate-500 max-w-3xl mx-auto">Connect supported sales channels, maintain central warehouse stock, manage marketplace orders and fulfilment, and keep operational activity visible across your business.</p>
         <div class="mt-9 flex flex-col sm:flex-row gap-3 justify-center">
           <a href="#features" class="px-6 py-3 rounded-xl bg-black text-white font-semibold">Explore BT38</a>
-          <a href="#signin" class="px-6 py-3 rounded-xl border border-slate-300 font-semibold">Sign in to BT38</a>
+          <a href="/apply" class="px-6 py-3 rounded-xl border border-slate-300 font-semibold">Apply to Try</a>
         </div>
         <div class="mt-14 grid grid-cols-2 md:grid-cols-4 gap-4 text-left">
           <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Inventory</div><div class="mt-1 font-bold text-lg">Central stock control</div></div>
@@ -113,7 +107,7 @@
       </div>
     </section>
 
-    <section id="apply" class="px-6 py-20">
+    <section id="early-access" class="px-6 py-20">
       <div class="max-w-5xl mx-auto text-center">
         <p class="text-sm font-bold uppercase tracking-wider text-slate-500">Early Access</p>
         <h2 class="mt-3 text-4xl font-black">Free to approved users.</h2>
@@ -123,12 +117,17 @@
           <div class="mt-3 text-5xl font-black">Free</div>
           <p class="mt-4 text-slate-600">Approved early-access users can use BT38 without a subscription fee.</p>
           <ul class="mt-7 space-y-3 text-slate-700">
-            <li>✓ Supported marketplace connections</li><li>✓ Central inventory and warehouse management</li><li>✓ Marketplace order management</li><li>✓ Amazon fulfilment workflows</li><li>✓ Product linking and stock control</li><li>✓ Shipping and dispatch workflows</li><li>✓ Operational monitoring</li><li>✓ Multi-user access</li>
+            <li>✓ Supported marketplace connections</li>
+            <li>✓ Central inventory and warehouse management</li>
+            <li>✓ Marketplace order management</li>
+            <li>✓ Amazon fulfilment workflows</li>
+            <li>✓ Product linking and stock control</li>
+            <li>✓ Shipping and dispatch workflows</li>
+            <li>✓ Operational monitoring</li>
+            <li>✓ Multi-user access</li>
           </ul>
-          <div class="mt-7 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
-            Early-access accounts are approved before activation. The application profile will be connected here before public onboarding is opened.
-          </div>
-          <a href="#signin" class="mt-5 block w-full text-center border border-slate-300 font-semibold rounded-xl px-5 py-3">Already approved? Sign in</a>
+          <a href="/apply" class="mt-8 block w-full text-center bg-black text-white font-semibold rounded-xl px-5 py-3">Apply to Try BT38</a>
+          <p class="mt-4 text-center text-sm text-slate-500">Applications are reviewed before a BT38 account is created.</p>
         </div>
       </div>
     </section>
@@ -140,24 +139,16 @@
           <h2 class="mt-3 text-3xl font-black">Sign in to BT38</h2>
           <p class="mt-3 text-slate-300">Use the username or email address registered on your approved BT38 account.</p>
         </div>
-
         <form method="POST" class="mt-8 bg-white text-slate-950 rounded-2xl p-6">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="next" value="{{ next_url }}">
-
-          {% if error %}
-          <div class="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</div>
-          {% endif %}
-
+          {% if error %}<div class="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{{ error }}</div>{% endif %}
           <label for="username" class="block text-sm font-semibold">Username or email</label>
           <input id="username" name="username" type="text" required class="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="Enter username or email">
-
           <label for="password" class="mt-5 block text-sm font-semibold">Password</label>
           <input id="password" name="password" type="password" required class="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="Enter password">
-
           <button type="submit" class="mt-6 w-full rounded-xl bg-black px-5 py-3 font-semibold text-white">Sign in</button>
-
-          <p class="mt-5 text-center text-sm text-slate-500">Not approved yet? <a href="#apply" class="font-semibold text-slate-900 underline">Apply to try BT38</a></p>
+          <p class="mt-5 text-center text-sm text-slate-500">Not approved yet? <a href="/apply" class="font-semibold text-slate-900 underline">Apply to try BT38</a></p>
         </form>
       </div>
     </section>
@@ -174,7 +165,7 @@
   <footer class="border-t border-slate-200 px-6 py-8">
     <div class="max-w-7xl mx-auto flex flex-col md:flex-row gap-4 md:items-center md:justify-between text-sm text-slate-500">
       <div>© 2026 BT38. All rights reserved.</div>
-      <div class="flex gap-5"><a href="#support">Privacy Policy</a><a href="#support">Terms</a><a href="#support">Support</a></div>
+      <div class="flex gap-5"><a href="#support">Privacy</a><a href="#support">Terms</a><a href="#support">Support</a></div>
     </div>
   </footer>
 </body>
