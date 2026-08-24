@@ -157,28 +157,44 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
 def align_ebay_notifications_and_recover_missed_changes(
     *, store_id: int = 23, max_days: int = 7
 ) -> dict[str, Any]:
-    """Reconcile live eBay registration, then run one bounded missed-event scan."""
+    """Reconcile eBay registration and always run one bounded missed-event scan."""
     store = db.session.get(Store, int(store_id))
     if store is None:
         return {"success": False, "reason": "ebay_store_missing", "store_id": store_id}
 
-    access_token = _ebay_access_token(store)
-    registration = ensure_ebay_order_notification_registration(
-        store=store,
-        access_token=access_token,
-    )
-    if not registration.get("ok"):
-        return {
-            "success": False,
-            "reason": "ebay_notification_registration_not_healthy",
-            "registration": registration,
-        }
-
     last_webhook_at = _last_durable_ebay_webhook_at()
     since = _bounded_since(last_webhook_at, max_days=max_days)
-    orders = _catch_up_ebay_orders(store, since=since)
 
-    listing_recovery = None
+    registration: dict[str, Any]
+    try:
+        access_token = _ebay_access_token(store)
+        registration = ensure_ebay_order_notification_registration(
+            store=store,
+            access_token=access_token,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        registration = {
+            "ok": False,
+            "success": False,
+            "reason": "ebay_notification_registration_failed",
+            "error": str(exc),
+        }
+
+    # Recovery must still run when eBay marks the destination down or the
+    # subscription cannot be restored immediately. Restoring future delivery
+    # does not recover commercial events already missed during the outage.
+    try:
+        orders = _catch_up_ebay_orders(store, since=since)
+    except Exception as exc:
+        db.session.rollback()
+        orders = {
+            "success": False,
+            "reason": "ebay_bounded_order_catchup_failed",
+            "error": str(exc),
+            "since": since.isoformat(),
+        }
+
     try:
         from services.governed_ebay_missed_listing_recovery import recover_missed_ebay_listings
         listing_recovery = recover_missed_ebay_listings(store_id=store.id)
@@ -186,8 +202,11 @@ def align_ebay_notifications_and_recover_missed_changes(
         db.session.rollback()
         listing_recovery = {"success": False, "error": str(exc)}
 
+    registration_ok = bool(registration.get("ok") or registration.get("success"))
+    orders_ok = bool(orders.get("success"))
+
     return {
-        "success": bool(orders.get("success")) and bool(registration.get("ok")),
+        "success": registration_ok and orders_ok,
         "store_id": int(store.id),
         "last_durable_webhook_at": (
             last_webhook_at.isoformat() if last_webhook_at is not None else None
@@ -197,6 +216,7 @@ def align_ebay_notifications_and_recover_missed_changes(
         "order_catchup": orders,
         "listing_catchup": listing_recovery,
         "event_driven_primary": True,
+        "recovery_ran_even_if_registration_unhealthy": True,
         "polling_started": False,
         "scheduler_started": False,
     }
