@@ -209,6 +209,10 @@ class PacklinkAdapter:
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
+        recipient_country_code = self._selector_id(location_data.get("country_code_to"))
+        if not recipient_country_code:
+            raise PacklinkConfigurationError("Packlink recipient country selector could not be resolved.")
+        to_address["country_code"] = self._clean_country(recipient_country_code)
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
             "postal_zone_id_to": self._selector_id(location_data.get("postal_zone_id_to")),
@@ -263,6 +267,9 @@ class PacklinkAdapter:
                                 break
                     zone = next((item for item in zones if isinstance(item, dict) and self._clean_country(self._first_scalar(item.get("isoCode"), item.get("iso_code"), item.get("countryCode"), item.get("country_code"), item.get("code"), item.get("value")) or "") == country), zones[0] if len(zones) == 1 and isinstance(zones[0], dict) else None)
                     if isinstance(zone, dict):
+                        resolved_zone_country = self._clean_country(self._first_scalar(zone.get("isoCode"), zone.get("iso_code"), zone.get("countryCode"), zone.get("country_code"), zone.get("code"), zone.get("value")) or country)
+                        if resolved_zone_country:
+                            result[f"country_code_{suffix}"] = resolved_zone_country
                         selector_zone_id = self._selector_id(self._first_scalar(zone.get("id"), zone.get("postalZoneId"), zone.get("postal_zone_id"), zone.get("postalzone_id")))
                         zone_name = self._first_scalar(zone.get("name"), zone.get("label"))
                         if selector_zone_id:
@@ -286,6 +293,7 @@ class PacklinkAdapter:
                 canonical_postcode = self._clean_postcode(canonical_postcode_raw or postcode)
                 canonical_city = self._first_scalar(row.get("city") if not isinstance(row.get("city"), (dict, list)) else None, row.get("locality") if not isinstance(row.get("locality"), (dict, list)) else None, row.get("town") if not isinstance(row.get("town"), (dict, list)) else None, row.get("municipality") if not isinstance(row.get("municipality"), (dict, list)) else None, city_obj.get("name"), city_obj.get("label"), city_obj.get("city"), city_obj.get("locality"), city_obj.get("town"), city_obj.get("municipality"), city_obj.get("value"))
                 if canonical_country:
+                    result[f"country_code_{suffix}"] = canonical_country
                     address["country"] = canonical_country
                 if canonical_postcode:
                     address["zip_code"] = canonical_postcode
