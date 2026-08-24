@@ -108,7 +108,7 @@ jobs:
           PR_STATE="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["state"])')"
           PR_HEAD_REF="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["ref"])')"
           PR_HEAD_SHA="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["sha"])')"
-          PR_MERGED="$(python -c 'import json,os; print(str(json.loads(os.environ["PR_JSON"].replace("'"'"'", "'"'"'"))) if False else json.loads(os.environ["PR_JSON"])["merged"]).lower())')"
+          PR_MERGED="$(python -c 'import json,os; print(str(json.loads(os.environ["PR_JSON"])["merged"]).lower())')"
 
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" != "false" ]; then
             echo "BLOCKED: governed PR #528 must remain open and unmerged for this testing cycle."
