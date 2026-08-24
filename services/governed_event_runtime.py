@@ -39,6 +39,19 @@ def _install_mcf_dispatch_tracking_handoff() -> bool:
         if not result.get("success") or result.get("skipped"):
             return result
 
+        # The source marketplace row has just committed. Wake the existing
+        # signal-only browser channel once so Orders / MCF can reread current
+        # committed state. This is in-memory only: no browser polling, no Neon
+        # polling, no timer and no additional marketplace call.
+        from services.governed_ui_event_signal import publish_governed_ui_event
+
+        publish_governed_ui_event(
+            source="mcf_source_dispatch",
+            scope={
+                "event_type": "mcf_source_dispatched",
+            },
+        )
+
         mcf_order_id = result.get("mcf_order_id")
         if not mcf_order_id:
             return result
