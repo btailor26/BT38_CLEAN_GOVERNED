@@ -11,18 +11,24 @@ name: Governed Fly Deployment
 # - Until PR #528 is explicitly approved for merge, every BT38 repair/update that
 #   is intended for live testing MUST be committed to:
 #       fix/full-system-release-alignment
+# - PR #528 is the ONE governed change number for this testing cycle. Every new
+#   Packlink, MCF, Amazon, eBay, UI, runtime, or deployment repair MUST advance
+#   the same PR #528 head. Do not create or deploy a competing repair lineage.
+# - Commit SHAs will naturally change after each code change; the rule is that
+#   every new SHA must be the CURRENT HEAD of PR #528 and therefore contain the
+#   complete accumulated test-branch history.
 # - That branch is the single governed testing source for bt38-prod.
 # - main MUST remain untouched by this testing cycle.
 # - Never deploy a repair from a side branch, local working tree, detached SHA,
 #   or main while this contract is active.
-# - Every deploy must use the CURRENT HEAD SHA of fix/full-system-release-alignment.
+# - Every deploy must use the CURRENT HEAD SHA of PR #528 / fix/full-system-release-alignment.
 # - A successful test does not merge PR #528. Merge requires separate explicit
 #   approval outside this workflow.
 #
 # HOW THE DEPLOY COMMAND IS CREATED AND USED:
-# 1. Commit/save the repair to fix/full-system-release-alignment (PR #528).
-# 2. Resolve that branch's current GitHub HEAD SHA. The SHA supplied as
-#    expected_commit MUST exactly match the selected workflow ref's github.sha.
+# 1. Commit/save every repair to fix/full-system-release-alignment (PR #528).
+# 2. Resolve PR #528's current GitHub HEAD SHA. The SHA supplied as
+#    expected_commit MUST exactly match both github.sha and the live PR #528 head.
 # 3. Dispatch this existing GitHub Actions workflow from GitHub UI or GitHub CLI.
 #    The operator PC command only asks GitHub to start workflow_dispatch; it does
 #    not build BT38, supply application files, or deploy directly to Fly.
@@ -34,18 +40,18 @@ name: Governed Fly Deployment
 #        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
 #        --ref fix/full-system-release-alignment \
 #        -f confirm_production_deploy=DEPLOY_GITHUB_COMMIT_TO_BT38_PROD \
-#        -f expected_commit=<CURRENT_BRANCH_HEAD_SHA>
+#        -f expected_commit=<CURRENT_PR_528_HEAD_SHA>
 #
 #      "$GH_EXE" run watch \
 #        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
 #        --exit-status
 #
 # 5. GitHub then performs the real deployment chain:
-#      PR #528 branch HEAD -> source-deploy-guard -> audit -> exact GitHub checkout
+#      PR #528 current HEAD -> source-deploy-guard -> audit -> exact GitHub checkout
 #      -> Fly remote builder -> bt38-prod -> post-deploy reconciliations.
 # 6. workflow_dispatch does NOT merge PR #528.
-# 7. Never hard-code an old SHA into a future deploy command. Re-read the branch
-#    HEAD first and use that exact SHA as expected_commit.
+# 7. Never hard-code an old SHA into a future deploy command. Re-read PR #528 HEAD
+#    first and use that exact SHA as expected_commit.
 
 on:
   workflow_dispatch:
@@ -55,7 +61,7 @@ on:
         required: true
         type: string
       expected_commit:
-        description: 'Exact GitHub commit SHA approved for bt38-prod'
+        description: 'Exact CURRENT PR #528 head SHA approved for bt38-prod'
         required: true
         type: string
 
@@ -65,15 +71,19 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   source-deploy-guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Require exact PR 528 GitHub source approval
+      - name: Require exact current PR 528 GitHub source approval
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REQUIRED_TEST_BRANCH="fix/full-system-release-alignment"
+          REQUIRED_PR_NUMBER="528"
 
           if [ "${{ inputs.confirm_production_deploy }}" != "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD" ]; then
             echo "BLOCKED: explicit GitHub-to-Fly production approval is missing."
@@ -88,14 +98,46 @@ jobs:
             exit 1
           fi
 
+          PR_JSON="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/pulls/$REQUIRED_PR_NUMBER")"
+
+          export PR_JSON
+          PR_STATE="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["state"])')"
+          PR_HEAD_REF="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["ref"])')"
+          PR_HEAD_SHA="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["sha"])')"
+          PR_MERGED="$(python -c 'import json,os; print(str(json.loads(os.environ["PR_JSON"].replace("'"'"'", "'"'"'"))) if False else json.loads(os.environ["PR_JSON"])["merged"]).lower())')"
+
+          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" != "false" ]; then
+            echo "BLOCKED: governed PR #528 must remain open and unmerged for this testing cycle."
+            echo "pr_state=$PR_STATE merged=$PR_MERGED"
+            exit 1
+          fi
+
+          if [ "$PR_HEAD_REF" != "$REQUIRED_TEST_BRANCH" ]; then
+            echo "BLOCKED: PR #528 head branch no longer matches the governed testing branch."
+            echo "pr_head_ref=$PR_HEAD_REF required_ref=$REQUIRED_TEST_BRANCH"
+            exit 1
+          fi
+
           if [ "${{ inputs.expected_commit }}" != "${{ github.sha }}" ]; then
-            echo "BLOCKED: selected PR #528 branch commit does not equal the approved commit."
+            echo "BLOCKED: selected workflow commit does not equal the approved commit."
             echo "selected=${{ github.sha }}"
             echo "approved=${{ inputs.expected_commit }}"
             exit 1
           fi
 
-          echo "PR_528_TEST_SOURCE_OK branch=${{ github.ref_name }} commit=${{ github.sha }}"
+          if [ "${{ github.sha }}" != "$PR_HEAD_SHA" ]; then
+            echo "BLOCKED: workflow SHA is not the CURRENT HEAD of PR #528."
+            echo "workflow_sha=${{ github.sha }}"
+            echo "pr_528_head=$PR_HEAD_SHA"
+            echo "All fixes must advance the same PR #528 head before deployment."
+            exit 1
+          fi
+
+          echo "PR_528_SINGLE_LINEAGE_OK branch=$PR_HEAD_REF commit=$PR_HEAD_SHA"
 
   audit:
     needs: source-deploy-guard
