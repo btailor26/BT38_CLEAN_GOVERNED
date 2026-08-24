@@ -105,17 +105,6 @@
                         </button>
                     </div>
                     {% endif %}
-
-                    {# Restore the existing governed eBay OAuth entry point. #}
-                    {% if store.platform and 'ebay' in store.platform|lower %}
-                    <div class="mb-3">
-                        <a href="/governed/ebay-oauth/authorize?store_id={{ store.id }}"
-                           class="btn btn-sm btn-outline-primary w-100">
-                            <i data-feather="key" class="me-1"></i>
-                            Reconnect eBay
-                        </a>
-                    </div>
-                    {% endif %}
                     
                     {% if store.api_endpoint %}
                     <p class="text-muted small mb-2">
