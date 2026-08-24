@@ -273,6 +273,20 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+      - name: Restore Packlink callback secret setting
+        shell: bash
+        run: |
+          CALLBACK_SECRET="$(flyctl ssh console \
+            --app bt38-prod \
+            --command "sh -lc 'cd /app && .venv/bin/python -c \"import hashlib,os; key=str(os.environ.get(\\\"PACKLINK_API_KEY\\\") or \\\"\\\").strip(); assert key, \\\"PACKLINK_API_KEY missing\\\"; print(hashlib.sha256((\\\"bt38-packlink-callback:\\\"+key).encode()).hexdigest())\"'" \
+            | tail -n 1)"
+          test -n "$CALLBACK_SECRET"
+          flyctl secrets set \
+            --app bt38-prod \
+            PACKLINK_CALLBACK_SECRET="$CALLBACK_SECRET"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
       - name: Restore Packlink callback registration
         shell: bash
         run: |
