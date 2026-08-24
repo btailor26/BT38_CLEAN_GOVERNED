@@ -166,7 +166,15 @@ class PacklinkAdapter:
             if not parcel.get(field):
                 raise PacklinkConfigurationError(f"Parcel {field} is missing.")
         account = self._get_json("clients")
-        platform_country = str((account or {}).get("country") or origin.get("country") or "GB").upper() if isinstance(account, dict) else str(origin.get("country") or "GB").upper()
+        platform_country = (
+            self._clean_country(
+                (account or {}).get("country")
+                or origin.get("country")
+                or PACKLINK_ACCOUNT_COUNTRY
+            )
+            if isinstance(account, dict)
+            else self._clean_country(origin.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+        )
         customer_name, customer_surname = self._split_name(destination.get("name"), fallback_surname="Customer")
         sender_name, sender_surname = self._split_name(origin.get("name") or "B & T Outlet", fallback_surname="Outlet")
         lines = order_lines(order)
