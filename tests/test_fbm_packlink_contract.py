@@ -16,7 +16,7 @@ def _destination():
         "city": "London",
         "postcode": "SW1A 1AA",
         "country": "GB",
-        "email": None,
+        "email": "buyer@example.test",
         "phone": "02070000000",
     }
 
@@ -35,6 +35,31 @@ def _sender():
     }
 
 
+def _verified_shipment_snapshot():
+    return {
+        "from": {
+            "name": "B & T",
+            "surname": "Outlet",
+            "email": "sender@example.test",
+            "phone": "01160000000",
+            "street1": "1 Test Street",
+            "country": "GB",
+            "city": "Leicester",
+            "zip_code": "LE1 1AA",
+        },
+        "to": {
+            "name": "Test",
+            "surname": "Customer",
+            "email": "buyer@example.test",
+            "phone": "02070000000",
+            "street1": "2 Test Road",
+            "country": "GB",
+            "city": "London",
+            "zip_code": "SW1A 1AA",
+        },
+    }
+
+
 def _packlink_handoff_get(endpoint, *, query=None):
     if endpoint == "clients":
         return {"id": 7, "client_id": 9, "country": "GB"}
@@ -48,6 +73,8 @@ def _packlink_handoff_get(endpoint, *, query=None):
             "postal_zone_name": "United Kingdom",
             "country_code": country.upper(),
         }
+    if endpoint.startswith("shipments/"):
+        return _verified_shipment_snapshot()
     raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
 
 
@@ -92,6 +119,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert provider_gets[0] == ("clients", None)
     postcode_calls = [call[0] for call in provider_gets if call[0].startswith("locations/postalcodes/")]
     assert postcode_calls == ["locations/postalcodes/GB/LE1%201AA", "locations/postalcodes/GB/SW1A%201AA"]
+    assert provider_gets[-1][0] == "shipments/UN2026PRO0009999999"
     assert posted["endpoint"] == "shipments"
     assert body["user_id"] == 7
     assert body["client_id"] == 9
@@ -114,9 +142,38 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert body["additional_data"]["postal_zone_id_from"] == "826"
     assert body["additional_data"]["zip_code_id_from"] == "pc_le11aa"
     assert body["additional_data"]["postal_zone_id_to"] is None
-    assert body["additional_data"]["postal_zone_name_to"] is None
     assert body["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999999"
+    assert result["verified"] is True
+
+
+def test_packlink_incomplete_provider_draft_is_not_a_success(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-INCOMPLETE")
+    line = SimpleNamespace(quantity=1, sku="SKU-1", unit_price=2.00)
+    monkeypatch.setattr(packlink_module, "ship_from", _sender)
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
+    monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+
+    def fake_get(endpoint, *, query=None):
+        if endpoint == "clients":
+            return {"id": 7, "client_id": 9, "country": "GB"}
+        if endpoint.startswith("locations/postalcodes/"):
+            return _packlink_handoff_get(endpoint, query=query)
+        if endpoint.startswith("shipments/"):
+            snapshot = _verified_shipment_snapshot()
+            snapshot["to"]["country"] = ""
+            return snapshot
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: {"reference": "UN-INCOMPLETE"})
+    with pytest.raises(PacklinkRequestError, match="Recipient country"):
+        adapter.create_shipment_draft(
+            order=order,
+            parcel={"weight_kg":1,"width_cm":10,"height_cm":10,"length_cm":10},
+            rate={"service_id":20149},
+        )
 
 
 def test_packlink_location_lookup_failure_does_not_block_handoff(monkeypatch):
@@ -130,6 +187,8 @@ def test_packlink_location_lookup_failure_does_not_block_handoff(monkeypatch):
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 7, "client_id": 9, "country": "GB"}
+        if endpoint.startswith("shipments/"):
+            return _verified_shipment_snapshot()
         raise PacklinkRequestError("lookup unavailable", status_code=503)
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
@@ -163,7 +222,6 @@ def test_packlink_draft_accepts_reference_field(monkeypatch):
     assert posted["body"]["content"] == "1 SKU-ONLY"
     assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
     assert posted["body"]["additional_data"]["postal_zone_id_to"] is None
-    assert posted["body"]["additional_data"]["postal_zone_name_to"] is None
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_sw1a1aa"
     assert result["reference"] == "UN2026PRO0009999998"
 
