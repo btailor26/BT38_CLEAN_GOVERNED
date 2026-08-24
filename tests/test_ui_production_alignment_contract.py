@@ -61,14 +61,11 @@ def test_product_linking_changes_merge_only_affected_server_state():
     assert "/unlink" in unlink_confirm_block
     assert "user_confirmed: true" in unlink_confirm_block
 
-    # Successful relationship mutations render directly from the committed
-    # server response instead of doing another normal-path DB read.
     assert "applyCommittedRelationshipLocally(" in link_block
     assert "applyCommittedRelationshipLocally(" in unlink_confirm_block
     assert "await applyMutationContract(relationshipEvent, {" not in link_block
     assert "await applyMutationContract(data, {" not in unlink_confirm_block
 
-    # Lost-response protection remains targeted and read-only for Link.
     assert "await refreshAffectedRecord({" in link_block
     assert "Never retry the write automatically" in link_block
 
@@ -178,3 +175,14 @@ def test_ebay_store_ui_never_uses_developer_portal_or_legacy_authnauth():
     assert "developer.ebay.com" not in stores
     assert "signin.ebay.com/ws/eBayISAPI.dll" not in stores
     assert "/ebay-oauth/authorize?store_id={{ store.id }}" in stores
+
+
+def test_ebay_store_ui_uses_persisted_auth_state_not_credentials():
+    stores = _source(STORES)
+
+    assert "store.auth_status == 'auth_error'" in stores
+    assert "store.auth_error_code == 'ebay_notification_reauthorization_required'" in stores
+    assert "'AUTHORIZATION_REQUIRED' in store.api_key" not in stores
+    assert "'Insufficient permissions' in store.api_key" not in stores
+    assert "Permission approval required" in stores
+    assert "Approve eBay" in stores
