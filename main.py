@@ -6,6 +6,7 @@ from app import app
 import services.governed_mcf_compat  # noqa: F401
 import services.governed_ui_event_signal  # noqa: F401
 import services.governed_webhook_rejection_recovery  # noqa: F401
+import services.public_early_access  # noqa: F401
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
