@@ -9,6 +9,31 @@ from services.fbm_packlink_callback import _attach_by_marketplace_reference
 from services.fbm_packlink_event_processor import process_packlink_event
 
 
+def _verified_snapshot():
+    return {
+        "from": {
+            "name": "B & T",
+            "surname": "Outlet",
+            "email": "sender@example.test",
+            "phone": "07900000000",
+            "street1": "Sender",
+            "country": "GB",
+            "city": "Leicester",
+            "zip_code": "LE1 3WU",
+        },
+        "to": {
+            "name": "Customer",
+            "surname": "One",
+            "email": "buyer@example.test",
+            "phone": "07900000001",
+            "street1": "1 Road",
+            "country": "GB",
+            "city": "London",
+            "zip_code": "SW1A 1AA",
+        },
+    }
+
+
 def _mock_packlink_handoff(monkeypatch, adapter):
     calls = []
 
@@ -26,6 +51,8 @@ def _mock_packlink_handoff(monkeypatch, adapter):
                 "postal_zone_name": "United Kingdom",
                 "country_code": country.upper(),
             }
+        if endpoint.startswith("shipments/"):
+            return _verified_snapshot()
         raise AssertionError(f"Unexpected Packlink GET before shipment POST: {endpoint}")
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
@@ -96,10 +123,12 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     assert result["reference"] == "GB000999ABC"
     assert result["payment_status"] == "pending_packlink_payment"
     assert result["label_ready"] is False
+    assert result["verified"] is True
 
     assert get_calls[0] == ("clients", None)
     postcode_calls = [endpoint for endpoint, _ in get_calls if endpoint.startswith("locations/postalcodes/")]
     assert postcode_calls == ["locations/postalcodes/GB/LE1%203WU", "locations/postalcodes/GB/RM9%205HU"]
+    assert get_calls[-1] == ("shipments/GB000999ABC", None)
     assert body["user_id"] == 77
     assert body["client_id"] == 88
     assert body["platform"] == "PRO"
@@ -161,6 +190,8 @@ def test_packlink_nested_selector_objects_never_leak_into_visible_address(monkey
                 "city": {"id": "gpc_20102523", "name": city},
                 "country": {"id": 826, "iso_code": "GB", "name": "United Kingdom"},
             }
+        if endpoint.startswith("shipments/"):
+            return _verified_snapshot()
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
@@ -212,6 +243,8 @@ def test_packlink_location_enrichment_is_not_a_handoff_gate(monkeypatch):
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint.startswith("shipments/"):
+            return _verified_snapshot()
         raise PacklinkRequestError("location service unavailable", status_code=503)
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
@@ -222,7 +255,7 @@ def test_packlink_location_enrichment_is_not_a_handoff_gate(monkeypatch):
     assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
 
 
-def test_packlink_accepts_provider_reference_without_remote_shipment_readback(monkeypatch):
+def test_packlink_provider_reference_requires_exact_remote_shipment_readback(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-DIRECT")
     line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
@@ -231,10 +264,10 @@ def test_packlink_accepts_provider_reference_without_remote_shipment_readback(mo
     monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
     _mock_packlink_handoff(monkeypatch, adapter)
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: {"reference":"GB-DIRECT"})
-    monkeypatch.setattr(adapter, "get_shipment", lambda reference: (_ for _ in ()).throw(AssertionError("draft path must not read back shipment before handoff")))
     result = adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
     assert result["reference"] == "GB-DIRECT"
     assert result["payment_status"] == "pending_packlink_payment"
+    assert result["verified"] is True
 
 
 def test_packlink_uses_real_order_value_when_available(monkeypatch):
