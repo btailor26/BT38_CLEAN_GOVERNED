@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Early Access Applications - BT38{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="d-flex align-items-center justify-content-between mb-4">
+    <div>
+      <h2 class="mb-1">Early Access Applications</h2>
+      <p class="text-muted mb-0">Review public BT38 applications. Approval does not create an account automatically.</p>
+    </div>
+    <a href="{{ url_for('governed.user_management') }}" class="btn btn-outline-secondary">User Management</a>
+  </div>
+
+  <div class="card">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th>
+              <th>Applicant</th>
+              <th>Business</th>
+              <th>Marketplaces</th>
+              <th>Orders</th>
+              <th>Status</th>
+              <th>Submitted</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for app in applications %}
+            <tr>
+              <td>EA-{{ app.id }}</td>
+              <td>
+                <strong>{{ app.full_name or '—' }}</strong><br>
+                <small class="text-muted">{{ app.email or '—' }}</small>
+              </td>
+              <td>{{ app.business_name or '—' }}</td>
+              <td>{{ (app.marketplaces or [])|join(', ') or '—' }}</td>
+              <td>{{ app.monthly_orders or '—' }}</td>
+              <td>
+                {% set status = app.status or 'pending' %}
+                <span class="badge bg-{{ 'success' if status == 'approved' else 'danger' if status == 'rejected' else 'warning text-dark' }}">{{ status|title }}</span>
+              </td>
+              <td>{{ app.created_at.strftime('%d %b %Y %H:%M') if app.created_at else '—' }}</td>
+              <td style="min-width: 230px;">
+                <button class="btn btn-sm btn-outline-secondary mb-1" type="button" data-bs-toggle="collapse" data-bs-target="#details{{ app.id }}">View</button>
+                {% if (app.status or 'pending') != 'approved' %}
+                <form class="d-inline" method="POST" action="/admin/early-access-applications/{{ app.id }}/approved">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-sm btn-success mb-1" type="submit">Approve</button>
+                </form>
+                {% endif %}
+                {% if (app.status or 'pending') != 'rejected' %}
+                <form class="d-inline" method="POST" action="/admin/early-access-applications/{{ app.id }}/rejected">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-sm btn-outline-danger mb-1" type="submit">Reject</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            <tr class="collapse" id="details{{ app.id }}">
+              <td colspan="8" class="bg-light">
+                <div class="p-3">
+                  <strong>What they want to manage</strong>
+                  <p class="mb-0 mt-2" style="white-space: pre-wrap;">{{ app.goals or 'No details provided.' }}</p>
+                </div>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="text-center text-muted py-5">No early-access applications yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
