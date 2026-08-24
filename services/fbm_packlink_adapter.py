@@ -196,6 +196,7 @@ class PacklinkAdapter:
             "phone": destination.get("phone") or "", "email": destination.get("email") or "",
         }
         custom_reference = str(getattr(order, "marketplace_order_id", ""))[:50]
+        draft_attempt_id = f"{custom_reference}:bt38:{os.urandom(6).hex()}"[:50]
         content = ", ".join(content_parts)[:60] or "Goods"
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
@@ -208,7 +209,7 @@ class PacklinkAdapter:
             "zip_code_id_to": self._selector_id(location_data.get("zip_code_id_to")),
             "selectedWarehouseId": None, "parcel_Ids": [],
             "postal_zone_name_to": location_data.get("postal_zone_name_to"),
-            "order_id": custom_reference, "seller_user_id": None, "items": items,
+            "order_id": draft_attempt_id, "seller_user_id": None, "items": items,
         }
         body = {
             "user_id": (account or {}).get("id") if isinstance(account, dict) else None,
