@@ -202,11 +202,12 @@ class PacklinkAdapter:
         location_data = self._best_effort_location_ids(from_address, to_address)
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
-            "postal_zone_id_to": None,
+            "postal_zone_id_to": self._selector_id(location_data.get("postal_zone_id_to")),
             "shipping_service_name": rate.get("service_name") or rate.get("service") or None,
             "zip_code_id_from": self._selector_id(location_data.get("zip_code_id_from")),
             "zip_code_id_to": self._selector_id(location_data.get("zip_code_id_to")),
-            "selectedWarehouseId": None, "parcel_Ids": [], "postal_zone_name_to": None,
+            "selectedWarehouseId": None, "parcel_Ids": [],
+            "postal_zone_name_to": location_data.get("postal_zone_name_to"),
             "order_id": custom_reference, "seller_user_id": None, "items": items,
         }
         body = {
@@ -258,7 +259,7 @@ class PacklinkAdapter:
                         if selector_zone_id:
                             result[f"postal_zone_id_{suffix}"] = selector_zone_id
                         if zone_name and suffix == "to":
-                            result["postal_zone_name_to"] = zone_name
+                            result["postal_zone_name_to"] = str(zone_name)
                 except Exception:
                     pass
                 endpoint = f"locations/postalcodes/{quote(country, safe='')}/{quote(postcode, safe='')}"
@@ -282,14 +283,18 @@ class PacklinkAdapter:
                 if canonical_city:
                     address["city"] = canonical_city
                 postcode_id = self._first_scalar(row.get("id"), row.get("zip_code_id"), row.get("zipCodeId"), row.get("postcode_id"), row.get("uuid"), postcode_obj.get("id"), city_obj.get("id"))
-                fallback_zone_id = self._first_scalar(row.get("postal_zone_id"), row.get("postalZoneId"), row.get("postalzone_id"), postal_zone.get("id"), country_obj.get("postal_zone_id"), country_obj.get("postalZoneId"), country_obj.get("id"))
-                fallback_zone_name = self._first_scalar(row.get("postal_zone_name"), row.get("postalZoneName"), row.get("postalzone_name"), postal_zone.get("name"), postal_zone.get("label"), country_obj.get("name"), country_obj.get("label"))
-                if f"postal_zone_id_{suffix}" not in result:
+                fallback_zone_id = self._first_scalar(row.get("postal_zone_id"), row.get("postalZoneId"), row.get("postalzone_id"), postal_zone.get("id"), country_obj.get("postal_zone_id"), country_obj.get("postalZoneId"))
+                fallback_zone_name = self._first_scalar(row.get("postal_zone_name"), row.get("postalZoneName"), row.get("postalzone_name"), postal_zone.get("name"), postal_zone.get("label"))
+                if suffix == "from" and f"postal_zone_id_{suffix}" not in result:
                     selector_zone_id = self._selector_id(fallback_zone_id)
                     if selector_zone_id:
                         result[f"postal_zone_id_{suffix}"] = selector_zone_id
-                if suffix == "to" and "postal_zone_name_to" not in result and fallback_zone_name:
-                    result["postal_zone_name_to"] = fallback_zone_name
+                if suffix == "to" and f"postal_zone_id_{suffix}" not in result:
+                    selector_zone_id = self._selector_id(fallback_zone_id)
+                    if selector_zone_id:
+                        result[f"postal_zone_id_{suffix}"] = selector_zone_id
+                        if fallback_zone_name:
+                            result["postal_zone_name_to"] = str(fallback_zone_name)
                 selector_postcode_id = self._selector_id(postcode_id)
                 if selector_postcode_id:
                     result[f"zip_code_id_{suffix}"] = selector_postcode_id
