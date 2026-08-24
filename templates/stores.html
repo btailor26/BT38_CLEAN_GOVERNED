@@ -48,6 +48,7 @@
 {% if stores %}
     <div class="row">
         {% for store in stores %}
+        {% set ebay_reauth_required = store.platform and 'ebay' in store.platform|lower and store.api_key and ('AUTHORIZATION_REQUIRED' in store.api_key or 'Insufficient permissions' in store.api_key) %}
         <div class="col-md-6 col-lg-4 mb-4">
             <div class="card h-100">
                 <div class="card-body">
@@ -75,6 +76,9 @@
                             {% endif %}
                         {% elif store.platform and 'ebay' in store.platform|lower %}
                             <span class="badge bg-primary">eBay</span>
+                            {% if ebay_reauth_required %}
+                                <span class="badge bg-warning text-dark ms-1">Permission approval required</span>
+                            {% endif %}
                         {% else %}
                             <span class="badge bg-secondary">{{ store.platform }}</span>
                         {% endif %}
@@ -133,10 +137,10 @@
                             <i data-feather="refresh-cw" class="me-1"></i>
                             Sync Now
                         </button>
-                        <a href="{% if store.platform and 'ebay' in store.platform|lower %}/ebay-oauth/authorize?store_id={{ store.id }}{% else %}#{% endif %}" 
-                           class="btn btn-sm btn-outline-primary">
-                            <i data-feather="edit-2" class="me-1"></i>
-                            Edit
+                        <a href="{% if ebay_reauth_required %}/ebay-oauth/authorize?store_id={{ store.id }}{% else %}#{% endif %}" 
+                           class="btn btn-sm {% if ebay_reauth_required %}btn-warning{% else %}btn-outline-primary{% endif %}">
+                            <i data-feather="{% if ebay_reauth_required %}key{% else %}edit-2{% endif %}" class="me-1"></i>
+                            {% if ebay_reauth_required %}Approve eBay{% else %}Edit{% endif %}
                         </a>
                         <button type="button" 
                                 class="btn btn-sm btn-outline-danger"
