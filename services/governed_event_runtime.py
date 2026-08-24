@@ -26,6 +26,50 @@ import time
 MISSED_EBAY_LISTING_RECOVERY_SECONDS = 8 * 60 * 60
 
 
+def _install_mcf_dispatch_tracking_handoff() -> bool:
+    """Forward already-known Amazon tracking immediately after MCF dispatch."""
+    import governed_mcf_routes as mcf_routes
+
+    current_dispatch = mcf_routes.run_governed_mcf_marketplace_dispatch
+    if getattr(current_dispatch, "_bt38_mcf_tracking_handoff", False):
+        return False
+
+    def aligned_dispatch(*args, **kwargs):
+        result = current_dispatch(*args, **kwargs)
+        if not result.get("success") or result.get("skipped"):
+            return result
+
+        mcf_order_id = result.get("mcf_order_id")
+        if not mcf_order_id:
+            return result
+
+        from services.governed_mcf_tracking import has_unforwarded_tracking
+
+        if not has_unforwarded_tracking(int(mcf_order_id)):
+            return result
+
+        # Tracking may have arrived while the one-hour source-marketplace
+        # dispatch was still pending. Reuse the existing exact enrichment path
+        # immediately once dispatch succeeds; do not poll or schedule a retry.
+        from services.governed_mcf_tracking_startup_alignment import (
+            _forward_current_tracking_set,
+        )
+
+        enrichment = _forward_current_tracking_set(
+            int(mcf_order_id),
+            source="mcf_source_dispatch_tracking_handoff",
+        )
+        result["tracking_enrichment"] = enrichment
+        if enrichment.get("success") and not enrichment.get("skipped"):
+            result["status"] = "mcf_tracking_updated"
+            result["tracking_pending"] = False
+        return result
+
+    aligned_dispatch._bt38_mcf_tracking_handoff = True
+    mcf_routes.run_governed_mcf_marketplace_dispatch = aligned_dispatch
+    return True
+
+
 def _event_only_engine_loop(app):
     import services.governed_runtime_engine as runtime
     from services.governed_ebay_missed_listing_recovery import (
@@ -130,6 +174,10 @@ def start_event_only_runtime(app) -> bool:
 
     if runtime.get_governed_runtime_status().get("engine_started"):
         return False
+
+    # Keep the source-dispatch and tracking phases event-driven while closing
+    # the race where Amazon tracking arrives before the one-hour dispatch.
+    _install_mcf_dispatch_tracking_handoff()
 
     # Replace only the loop policy before invoking the existing owner-lock,
     # status and thread bootstrap. All exact execution helpers remain unchanged.
