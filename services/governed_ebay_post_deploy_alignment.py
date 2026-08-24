@@ -8,6 +8,7 @@ only for this one bounded recovery run, then returns to event-driven operation.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -47,6 +48,47 @@ def _bounded_since(last_webhook_at: datetime | None, max_days: int) -> datetime:
     else:
         value = value.astimezone(timezone.utc)
     return max(floor, value - timedelta(minutes=5))
+
+
+def _persist_notification_auth_state(store: Store, error: str) -> None:
+    """Persist only the known seller-consent-required state for the Stores UI."""
+    text_error = str(error or "")
+    if "HTTP 403" not in text_error or "Insufficient permissions" not in text_error:
+        return
+
+    creds: dict[str, Any] = {}
+    raw = getattr(store, "api_key", None)
+    if isinstance(raw, dict):
+        creds = dict(raw)
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                creds = parsed
+        except Exception:
+            creds = {}
+
+    now = datetime.utcnow().isoformat()
+    creds.update({
+        "ebay_notification_registration_status": "AUTHORIZATION_REQUIRED",
+        "ebay_notification_registration_error": text_error,
+        "ebay_notification_registration_attempted_at": now,
+        "ebay_reauthorization_required": True,
+    })
+    store.api_key = json.dumps(creds)
+
+    if hasattr(store, "auth_status"):
+        store.auth_status = "auth_error"
+    if hasattr(store, "auth_error_code"):
+        store.auth_error_code = "ebay_notification_reauthorization_required"
+    if hasattr(store, "auth_error_message"):
+        store.auth_error_message = (
+            "eBay requires one-time approval for the notification permissions."
+        )
+    if hasattr(store, "auth_error_at"):
+        store.auth_error_at = datetime.utcnow()
+
+    db.session.commit()
 
 
 def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
@@ -129,8 +171,6 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
                 )
                 created += 1
             else:
-                # Existing idempotency identity means the event/order was already
-                # represented. Never process stock a second time.
                 result.pop("_order_row", None)
                 result["processing"] = {
                     "success": True,
@@ -174,16 +214,18 @@ def align_ebay_notifications_and_recover_missed_changes(
         )
     except Exception as exc:
         db.session.rollback()
+        registration_error = str(exc)
         registration = {
             "ok": False,
             "success": False,
             "reason": "ebay_notification_registration_failed",
-            "error": str(exc),
+            "error": registration_error,
         }
+        try:
+            _persist_notification_auth_state(store, registration_error)
+        except Exception:
+            db.session.rollback()
 
-    # Recovery must still run when eBay marks the destination down or the
-    # subscription cannot be restored immediately. Restoring future delivery
-    # does not recover commercial events already missed during the outage.
     try:
         orders = _catch_up_ebay_orders(store, since=since)
     except Exception as exc:
