@@ -19,12 +19,12 @@
                         
                         <div class="mb-3">
                             <label for="username" class="form-label">Username <span class="text-danger">*</span></label>
-                            <input type="text" class="form-control" id="username" name="username" required>
+                            <input type="text" class="form-control" id="username" name="username" value="{{ request.args.get('username', '') }}" required>
                         </div>
                         
                         <div class="mb-3">
                             <label for="email" class="form-label">Email <span class="text-danger">*</span></label>
-                            <input type="email" class="form-control" id="email" name="email" required>
+                            <input type="email" class="form-control" id="email" name="email" value="{{ request.args.get('email', '') }}" required>
                         </div>
                         
                         <div class="mb-3">
