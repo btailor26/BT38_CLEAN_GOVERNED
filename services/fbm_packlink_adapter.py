@@ -209,9 +209,7 @@ class PacklinkAdapter:
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
-        recipient_country_code = self._selector_id(location_data.get("country_code_to"))
-        if not recipient_country_code:
-            raise PacklinkConfigurationError("Packlink recipient country selector could not be resolved.")
+        recipient_country_code = self._selector_id(location_data.get("country_code_to")) or self._clean_country(to_address.get("country") or destination.get("country") or PACKLINK_ACCOUNT_COUNTRY)
         to_address["country_code"] = self._clean_country(recipient_country_code)
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
