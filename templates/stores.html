@@ -133,7 +133,7 @@
                             <i data-feather="refresh-cw" class="me-1"></i>
                             Sync Now
                         </button>
-                        <a href="{{ '#' }}" 
+                        <a href="{% if store.platform and 'ebay' in store.platform|lower %}/ebay-oauth/authorize?store_id={{ store.id }}{% else %}#{% endif %}" 
                            class="btn btn-sm btn-outline-primary">
                             <i data-feather="edit-2" class="me-1"></i>
                             Edit
@@ -358,7 +358,6 @@
         document.getElementById('deleteStoreName').textContent = storeName;
         document.getElementById('deleteForm').action = `/governed/stores/${storeId}/delete-preview`;
         
-        // Build platform badges
         const badgesContainer = document.getElementById('deletePlatformBadges');
         const fbaWarning = document.getElementById('fbaWarningItem');
         
@@ -384,7 +383,6 @@
         const modal = new bootstrap.Modal(document.getElementById('deleteModal'));
         modal.show();
         
-        // Reinitialize feather icons after modal opens
         setTimeout(() => feather.replace(), 100);
     }
     
@@ -412,7 +410,6 @@
         });
     }
     
-    // UNIFIED AMAZON MODEL: One store with fba_import_enabled and fbm_sync_enabled flags
     function quickSetupAmazonUnified() {
         if (confirm('Create Amazon store with BOTH FBA and FBM?\n\n✅ FBA Import: Read-only inventory from Amazon warehouses\n✅ FBM Push: Push stock from your warehouse to Amazon\n\nThis is the recommended setup for most sellers.')) {
             submitAmazonSetupUnified('Amazon Store', true, true);
@@ -470,7 +467,6 @@
         form.submit();
     }
     
-    // Re-initialize feather icons after modal content changes
     document.getElementById('deleteModal').addEventListener('shown.bs.modal', function () {
         feather.replace();
     });
