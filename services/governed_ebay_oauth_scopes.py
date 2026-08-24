@@ -11,6 +11,8 @@ DEFAULT_EBAY_OAUTH_SCOPES = (
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
     "https://api.ebay.com/oauth/api_scope/sell.account",
     "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription",
+    "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.listing.read",
 )
 
 LEGACY_EBAY_OAUTH_SCOPES = DEFAULT_EBAY_OAUTH_SCOPES
