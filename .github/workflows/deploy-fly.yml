@@ -296,12 +296,12 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
-      - name: Recover today's known Packlink purchases once
+      - name: Recover recent known Packlink purchases once
         shell: bash
         run: |
           flyctl ssh console \
             --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); result=recover_packlink_shipments_for_day(datetime.utcnow().date()); print(json.dumps(result, default=str))'\""
+            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime,timedelta; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); today=datetime.utcnow().date(); results=[recover_packlink_shipments_for_day(today-timedelta(days=offset)) for offset in range(7)]; print(json.dumps({\\\"success\\\": True, \\\"days_checked\\\": 7, \\\"results\\\": results}, default=str))'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
