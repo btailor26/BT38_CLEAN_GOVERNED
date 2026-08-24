@@ -59,10 +59,11 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
         raise AmazonOrderProfileError("Amazon credentials are not configured for this store.")
 
     payload, address_payload = _fetch_order(store, str(order.marketplace_order_id))
-    is_prime = _bool(payload.get("IsPrime"))
+    raw_is_prime = _bool(payload.get("IsPrime"))
     is_premium = _bool(payload.get("IsPremiumOrder"))
     fulfillment = _text(payload.get("FulfillmentChannel"))
     service_level = _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel"))
+    is_prime = _prime_from_shipping_facts(raw_is_prime, service_level)
     latest_ship = _parse_iso(payload.get("LatestShipDate"))
 
     _hydrate_marketplace_order(order, payload, address_payload)
@@ -216,6 +217,22 @@ def _response_payload(response: Any) -> Any:
     if isinstance(payload, dict) and isinstance(payload.get("payload"), dict):
         payload = payload["payload"]
     return payload
+
+
+def _prime_from_shipping_facts(raw_is_prime: bool | None, service_level: str | None) -> bool | None:
+    """Lock Prime/SFP only when Amazon's shipping service explicitly says Prime/SFP.
+
+    Amazon order/webhook shipping facts are the routing authority. A generic
+    service such as Standard or NextDay must not be converted into a Prime lock
+    solely because a contradictory IsPrime flag is present. When Amazon does not
+    provide a service level at all, preserve the raw IsPrime value rather than
+    inventing a classification.
+    """
+    service = str(service_level or "").strip().lower()
+    if not service:
+        return raw_is_prime
+    explicit_prime = any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
+    return bool(raw_is_prime is True and explicit_prime)
 
 
 def _bool(value: Any) -> bool | None:
