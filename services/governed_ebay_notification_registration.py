@@ -339,6 +339,18 @@ def _ensure_subscription(
     return subscription_id, True
 
 
+def _authorization_required_error(error: str | None) -> bool:
+    """Return True only for eBay permission/consent failures."""
+    text = str(error or "")
+    lowered = text.lower()
+    return bool(
+        "195011" in text
+        or "not authorized for this topic" in lowered
+        or ("http 403" in lowered and "insufficient permissions" in lowered)
+        or ("http 403" in lowered and "access denied" in lowered)
+    )
+
+
 def _set_store_connection_health(
     store: Any,
     *,
@@ -346,7 +358,7 @@ def _set_store_connection_health(
     authorization_required: bool,
     error: str | None,
 ) -> None:
-    """Keep commercial Store connection state aligned with Notification API truth."""
+    """Keep the eBay Store connection state aligned with Notification API truth."""
     if healthy:
         if hasattr(store, "auth_status"):
             store.auth_status = "ok"
@@ -371,6 +383,43 @@ def _set_store_connection_health(
         )
     if hasattr(store, "auth_error_at"):
         store.auth_error_at = datetime.utcnow()
+
+
+def _persist_authorization_required(
+    *,
+    store: Any,
+    endpoint: str,
+    error: str,
+) -> dict[str, Any]:
+    """Persist a commercial eBay re-authorisation state even before destination lookup succeeds."""
+    from app import db
+
+    creds = _decode_store_credentials(store)
+    now = datetime.utcnow().isoformat()
+    creds.update({
+        "ebay_notification_registration_status": "AUTHORIZATION_REQUIRED",
+        "ebay_notification_registration_error": error,
+        "ebay_notification_endpoint": endpoint,
+        "ebay_notification_registered_at": now,
+        "ebay_reauthorization_required": True,
+    })
+    store.api_key = json.dumps(creds)
+    _set_store_connection_health(
+        store,
+        healthy=False,
+        authorization_required=True,
+        error=error,
+    )
+    db.session.commit()
+    return {
+        "ok": False,
+        "success": False,
+        "error": error,
+        "endpoint": endpoint,
+        "registration_status": "AUTHORIZATION_REQUIRED",
+        "authorization_required": True,
+        "subscriptions": [],
+    }
 
 
 def ensure_ebay_order_notification_registration(
@@ -399,21 +448,35 @@ def ensure_ebay_order_notification_registration(
     _validate_endpoint(endpoint)
     _validate_verification_token(verification_token)
 
-    destination_id, destination_created = _ensure_destination(
-        access_token=access_token,
-        endpoint=endpoint,
-        verification_token=verification_token,
-        destination_name=destination_name,
-    )
+    # Permission failure can happen on the very first Notification API call
+    # (GET /destination), before topic-specific handling runs. Persist that
+    # state here so commercial reconnect UI never depends on parsing api_key.
+    try:
+        destination_id, destination_created = _ensure_destination(
+            access_token=access_token,
+            endpoint=endpoint,
+            verification_token=verification_token,
+            destination_name=destination_name,
+        )
 
-    subscriptions = []
+        subscriptions = []
 
-    order_subscription_id, order_created = _ensure_subscription(
-        access_token=access_token,
-        destination_id=destination_id,
-        topic_id=ORDER_TOPIC_ID,
-        schema_version=TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
-    )
+        order_subscription_id, order_created = _ensure_subscription(
+            access_token=access_token,
+            destination_id=destination_id,
+            topic_id=ORDER_TOPIC_ID,
+            schema_version=TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
+        )
+    except EbayNotificationRegistrationError as exc:
+        registration_error = str(exc)
+        if _authorization_required_error(registration_error):
+            return _persist_authorization_required(
+                store=store,
+                endpoint=endpoint,
+                error=registration_error,
+            )
+        raise
+
     order_subscription = {
         "topic_id": ORDER_TOPIC_ID,
         "schema_version": TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
@@ -462,14 +525,7 @@ def ensure_ebay_order_notification_registration(
             }
         except EbayNotificationRegistrationError as exc:
             listing_error = str(exc)
-            authorization_required = (
-                "195011" in listing_error
-                or "not authorized for this topic" in listing_error.lower()
-                or (
-                    "HTTP 403" in listing_error
-                    and "insufficient permissions" in listing_error.lower()
-                )
-            )
+            authorization_required = _authorization_required_error(listing_error)
             listing_status = (
                 "AUTHORIZATION_REQUIRED" if authorization_required else "FAILED"
             )
