@@ -41,14 +41,14 @@ def _mock_packlink_handoff(monkeypatch, adapter):
         calls.append((endpoint, query))
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint == "locations/postalzones/destinations":
+            return [{"id": "gb-zone", "isoCode": "GB", "name": "United Kingdom", "hasPostalCodes": True}]
         if endpoint.startswith("locations/postalcodes/"):
             _prefix, country, postcode_part = endpoint.rsplit("/", 2)
             postcode = unquote(postcode_part).upper()
             return {
                 "id": "pc_" + postcode.replace(" ", "").lower(),
                 "zipcode": postcode,
-                "postal_zone_id": 826,
-                "postal_zone_name": "United Kingdom",
                 "country_code": country.upper(),
             }
         if endpoint.startswith("shipments/"):
@@ -163,11 +163,11 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     additional = body["additional_data"]
     assert "from" not in additional
     assert "to" not in additional
-    assert additional["postal_zone_id_from"] == "826"
+    assert additional["postal_zone_id_from"] == "gb-zone"
     assert "postal_zone_name_from" not in additional
     assert additional["zip_code_id_from"] == "pc_le13wu"
-    assert additional["postal_zone_id_to"] is None
-    assert additional["postal_zone_name_to"] is None
+    assert additional["postal_zone_id_to"] == "gb-zone"
+    assert additional["postal_zone_name_to"] == "United Kingdom"
     assert additional["zip_code_id_to"] == "pc_rm95hu"
 
 
@@ -182,6 +182,8 @@ def test_packlink_nested_selector_objects_never_leak_into_visible_address(monkey
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint == "locations/postalzones/destinations":
+            return [{"id": "gb-zone", "isoCode": "GB", "name": "United Kingdom", "hasPostalCodes": True}]
         if endpoint.startswith("locations/postalcodes/"):
             postcode = unquote(endpoint.rsplit("/", 1)[1]).upper()
             city = "LEICESTER" if postcode == "LE1 3WU" else "NEWARK"
@@ -205,8 +207,8 @@ def test_packlink_nested_selector_objects_never_leak_into_visible_address(monkey
     assert body["to"]["country"] == "GB"
     assert "{" not in body["to"]["city"]
     assert body["additional_data"]["zip_code_id_to"] == "gpc_20102523"
-    assert body["additional_data"]["postal_zone_id_to"] is None
-    assert body["additional_data"]["postal_zone_name_to"] is None
+    assert body["additional_data"]["postal_zone_id_to"] == "gb-zone"
+    assert body["additional_data"]["postal_zone_name_to"] == "United Kingdom"
 
 
 def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
@@ -227,8 +229,8 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     assert posted["body"]["to"]["city"] == "DONCASTER"
     assert posted["body"]["to"]["country"] == "GB"
     assert "to" not in posted["body"]["additional_data"]
-    assert posted["body"]["additional_data"]["postal_zone_id_to"] is None
-    assert posted["body"]["additional_data"]["postal_zone_name_to"] is None
+    assert posted["body"]["additional_data"]["postal_zone_id_to"] == "gb-zone"
+    assert posted["body"]["additional_data"]["postal_zone_name_to"] == "United Kingdom"
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_dn118qr"
 
 
