@@ -5,7 +5,7 @@ existing governed event queue, Amazon SQS intake, exact-event verification and
 runtime status/lock. The loop remains event-driven, with one narrow safety net
 for eBay listings that were missed because no usable listing webhook arrived:
 
-- no startup MarketplaceOrder/FBA/MCF recovery scans;
+- one bounded startup recovery re-arms unfinished exact MCF release events;
 - no automatic full marketplace hydration;
 - no periodic DB heartbeat or broad reconcile;
 - SQS long-polling is allowed because it does not query Neon;
@@ -35,6 +35,19 @@ def _event_only_engine_loop(app):
     runtime._safe_log(
         "Low-DB event runtime started with bounded eBay missed-listing recovery"
     )
+
+    # Restore the existing restart-safe MCF lifecycle contract. The exact
+    # recovery function is owned by governed_runtime_engine and only re-arms
+    # unfinished MCF release events from persisted MarketplaceOrder state.
+    try:
+        recovery_result = runtime._recover_mcf_auto_release_events(app)
+        runtime._safe_log(
+            "MCF startup recovery complete "
+            f"queued={recovery_result.get('orders_queued', 0)} "
+            f"skipped={recovery_result.get('orders_skipped', 0)}"
+        )
+    except Exception as exc:
+        runtime._safe_error("MCF startup recovery failed", exc)
 
     # Run one bounded check after each worker start so a listing missed while
     # the process was down is recovered promptly. Thereafter the in-memory
