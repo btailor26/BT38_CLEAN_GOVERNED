@@ -1,7 +1,7 @@
 """Public early-access application workflow for BT38.
 
 Scope:
-- public application intake only
+- public landing and application intake only
 - store application evidence in existing SystemLog
 - no marketplace calls
 - no stock/sync/push/import execution
@@ -51,6 +51,20 @@ def _load_details(row: SystemLog) -> dict:
     except Exception:
         data = {}
     return data if isinstance(data, dict) else {}
+
+
+@app.before_request
+def bt38_public_root_landing():
+    """Show the public website directly at / without changing route authority."""
+    if request.method != "GET" or (request.path.rstrip("/") or "/") != "/":
+        return None
+    if current_user.is_authenticated:
+        return None
+    return render_template(
+        "public_landing.html",
+        error="",
+        next_url=url_for("governed.governed_warehouse_page"),
+    )
 
 
 @app.route("/apply", methods=["GET", "POST"])
