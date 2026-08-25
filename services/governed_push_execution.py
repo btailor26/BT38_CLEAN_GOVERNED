@@ -147,13 +147,24 @@ def push_marketplace_listing(
 
     source_value = str(source or "").strip().lower()
     group_id = getattr(listing, "master_product_group_id", None)
-    group_controlled = bool(
-        group_id
-        or getattr(listing.warehouse_stock, "is_group_controlled", False)
-    )
 
-    # Automatic single-listing entry points always expand through the same
-    # group engine and use the exact changed Warehouse row as group authority.
+    # Current Product Linking membership is listing-owned. A stale group id or
+    # Warehouse flag must never turn a standalone SKU into a group push. Bound
+    # the lookup at two rows because only the >=2 membership threshold matters.
+    active_group_members = []
+    if group_id:
+        active_group_members = (
+            db.session.query(MarketplaceListing.id)
+            .filter(MarketplaceListing.is_active == True)  # noqa: E712
+            .filter(MarketplaceListing.master_product_group_id == int(group_id))
+            .filter(MarketplaceListing.warehouse_stock_id.isnot(None))
+            .limit(2)
+            .all()
+        )
+    group_controlled = len(active_group_members) >= 2
+
+    # Automatic single-listing entry points expand only for a real current
+    # Product Linking group with at least two active marketplace members.
     if (
         _is_automatic_push_source(source_value)
         and ":group_member" not in source_value
@@ -374,6 +385,22 @@ def push_group_listings(
             "No active marketplace listings belong to the requested Product Linking group.",
             group_id=group_id,
         )
+
+    # A one-member group is operationally a standalone SKU. Never enter the
+    # group propagation writer for it, regardless of stale relationship flags.
+    if len(listings) < 2:
+        return {
+            "success": True,
+            "ok": True,
+            "governed": True,
+            "changed": False,
+            "no_op": True,
+            "marketplace_write_skipped": True,
+            "group_id": group_id,
+            "active_group_members": len(listings),
+            "affected_listing_ids": [int(listing.id) for listing in listings],
+            "reason": "Product Linking propagation requires at least two active marketplace listings.",
+        }
 
     warehouse_ids = sorted({
         int(listing.warehouse_stock_id)
