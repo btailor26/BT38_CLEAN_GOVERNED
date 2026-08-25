@@ -614,3 +614,87 @@
     installAssistant();
   }
 })();
+
+// Shared commercial wording polish. This changes presentation text only and
+// deliberately leaves System Activity/diagnostic pages untouched.
+(function () {
+  'use strict';
+
+  if (window.bt38FriendlyWordingInstalled) return;
+  window.bt38FriendlyWordingInstalled = true;
+
+  function isDiagnosticPage() {
+    return /^\/admin\/system-activity\/?$/i.test(window.location.pathname || '');
+  }
+
+  const exactPhrases = new Map([
+    ['Marketplace events', 'Your activity'],
+    ['No marketplace events found.', 'You’re all caught up.'],
+    ['View sales dashboard', 'Back to dashboard'],
+    ['Preview only. No marketplace sync was executed.', 'Preview only — nothing was changed.'],
+    ['Store active state updated through governed path.', '👍 Store status updated.'],
+    ['This old action is disabled. Use the governed warehouse, store, listing, or group path.', 'This action has moved. Use the current BT38 action instead.'],
+    ['Store deletion is disabled in governed mode until delete rules are approved.', 'Store deletion is not available yet.'],
+    ['Amazon setup preview only. Live credential setup is not wired through old routes.', 'Amazon setup preview only — nothing has been connected yet.']
+  ]);
+
+  function friendlyText(value) {
+    const original = String(value || '');
+    const trimmed = original.trim();
+    if (!trimmed) return original;
+    if (exactPhrases.has(trimmed)) return original.replace(trimmed, exactPhrases.get(trimmed));
+
+    let next = trimmed
+      .replace(/\bgoverned mode\b/gi, 'BT38')
+      .replace(/\bgoverned path\b/gi, 'BT38')
+      .replace(/\bgoverned route\b/gi, 'current BT38 action')
+      .replace(/\bruntime reconcile\b/gi, 'system check')
+      .replace(/\breconciliation\b/gi, 'check')
+      .replace(/\breconcile\b/gi, 'check')
+      .replace(/\bpropagation\b/gi, 'update')
+      .replace(/\bmarketplace quantity push\b/gi, 'stock update')
+      .replace(/\bmarketplace write\b/gi, 'marketplace update')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    return original.replace(trimmed, next);
+  }
+
+  function alignNode(root) {
+    if (isDiagnosticPage()) return;
+    const host = root instanceof Element ? root : document.body;
+    if (!host) return;
+
+    const selector = '#bt38NotificationPanel small,#bt38NotificationPanel .text-muted,#bt38NotificationPanel a,.alert,.form-text,.small.text-muted,.badge';
+    const elements = [];
+    if (host.matches && host.matches(selector)) elements.push(host);
+    host.querySelectorAll && host.querySelectorAll(selector).forEach(function (node) { elements.push(node); });
+
+    elements.forEach(function (node) {
+      if (node.closest('code,pre,#bt38Assistant,#bt38SideNav,.navbar')) return;
+      if (node.children.length !== 0) return;
+      const before = node.textContent;
+      const after = friendlyText(before);
+      if (after !== before) node.textContent = after;
+    });
+  }
+
+  function installFriendlyWording() {
+    if (isDiagnosticPage()) return;
+    alignNode(document.body);
+    const observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
+          if (node instanceof Element) alignNode(node);
+        });
+      });
+    });
+    observer.observe(document.body, {childList:true, subtree:true});
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installFriendlyWording, {once:true});
+  } else {
+    installFriendlyWording();
+  }
+})();
