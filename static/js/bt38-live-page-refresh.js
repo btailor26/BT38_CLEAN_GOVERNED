@@ -28,9 +28,6 @@
 
     productLinkingRefreshRunning = true;
     try {
-      // Product Linking already owns the exact targeted DB-backed refresh.
-      // Reuse the user's current search identity rather than hydrate the full
-      // working set. One event -> one targeted read; no polling or broad scan.
       await window.bt38RefreshProductLinkingRecord({
         listingSku: search,
         warehouseSku: search
@@ -45,8 +42,6 @@
   }
 
   function pageOwnsCommittedRefresh() {
-    // Orders / MCF already performs one narrow DB-only table refresh from the
-    // same shared event. Do not add a second current-page request there.
     return Boolean(document.getElementById('mcf-orders-body'));
   }
 
@@ -62,10 +57,6 @@
       await refreshProductLinkingSilently();
       return;
     }
-
-    // Pages without a targeted live updater must remain visually stable.
-    // Never reload or rerender the whole page on a marketplace event because
-    // that can interrupt active edits, searches, modals, or quantity changes.
   }
 
   window.addEventListener('bt38-marketplace-event', function (event) {
@@ -223,8 +214,7 @@
 
 // BT38 assistant presentation layer.
 // Dashboard Actions remains the single source of truth. This block performs
-// presentation-only GET reads and never changes marketplace, warehouse, order,
-// linking, shipping, or runtime behaviour.
+// presentation-only reads and reactions; it never changes business actions.
 (function () {
   'use strict';
 
@@ -286,14 +276,35 @@
   }
 
   function safeRandomAnchor() {
+    if (!host) return;
     host.classList.remove(...anchors);
-    const mobile = window.matchMedia('(max-width:700px)').matches;
-    if (mobile) {
+    if (window.matchMedia('(max-width:700px)').matches) {
       host.classList.add('bt38-assistant-centre');
       return;
     }
-    const selected = anchors[Math.floor(Math.random() * anchors.length)];
-    host.classList.add(selected);
+    const shuffled = anchors.slice().sort(function () { return Math.random() - 0.5; });
+    const collisionSelector = 'button,a,input,select,textarea,table,.modal.show,.offcanvas.show,.dropdown-menu.show,[role="dialog"]';
+
+    for (const candidate of shuffled) {
+      host.classList.remove(...anchors);
+      host.classList.add(candidate);
+      const rect = host.getBoundingClientRect();
+      const points = [
+        [rect.left + 8, rect.top + 8],
+        [rect.right - 8, rect.top + 8],
+        [rect.left + rect.width / 2, rect.top + rect.height / 2],
+        [rect.right - 8, rect.bottom - 8]
+      ];
+      const blocked = points.some(function (point) {
+        return document.elementsFromPoint(point[0], point[1]).some(function (el) {
+          return el !== host && !host.contains(el) && Boolean(el.closest(collisionSelector));
+        });
+      });
+      if (!blocked) return;
+    }
+
+    host.classList.remove(...anchors);
+    host.classList.add('bt38-assistant-right');
   }
 
   function randomFrom(values) {
@@ -332,12 +343,14 @@
   function controlInfo(target) {
     const control = target && target.closest ? target.closest('button,a,[role="button"],input[type="submit"]') : null;
     if (!control) return null;
-    return {
-      control,
-      text: String(control.textContent || control.value || '').trim().toLowerCase(),
-      href: String(control.getAttribute('href') || '').toLowerCase(),
-      action: String(control.getAttribute('data-action') || '').toLowerCase()
-    };
+    if (control.closest('#bt38SideNav,.navbar,#bt38NotificationPanel,.breadcrumb,.pagination')) return null;
+
+    const href = String(control.getAttribute('href') || '').toLowerCase();
+    const action = String(control.getAttribute('data-action') || '').toLowerCase();
+    const text = String(control.textContent || control.value || '').trim().toLowerCase();
+
+    if (control.tagName === 'A' && href && !action && !control.hasAttribute('role')) return null;
+    return {control, text, href, action};
   }
 
   function actionKind(target) {
@@ -346,7 +359,14 @@
     const haystack = `${info.text} ${info.href} ${info.action}`;
     if (/(^|\s)push(\s|$)|\/push\b/.test(haystack)) return 'push';
     if (/dispatch|ship|fulfil|fulfill/.test(haystack)) return 'dispatch';
+    if (/unlink|ungroup|remove link/.test(haystack)) return 'unlink';
     if (/link|group/.test(haystack)) return 'link';
+    if (/buy label|purchase label|label/.test(haystack)) return 'label';
+    if (/print/.test(haystack)) return 'print';
+    if (/scan/.test(haystack)) return 'scan';
+    if (/import/.test(haystack)) return 'import';
+    if (/sync|refresh/.test(haystack)) return 'sync';
+    if (/confirm|approve/.test(haystack)) return 'confirm';
     if (/save|update|apply/.test(haystack)) return 'save';
     if (/connect|authori[sz]e|reconnect/.test(haystack)) return 'connect';
     if (/retry|try again/.test(haystack)) return 'retry';
@@ -367,30 +387,30 @@
   }
 
   function workingReaction(kind) {
+    const poseActive = '/static/img/bt38-guide-active.svg';
+    const poseProgress = '/static/img/bt38-guide-progress.svg';
+    const reactions = {
+      dispatch: ['📦 <strong>On it.</strong> Let’s get this order moving.', poseActive, 2200],
+      link: ['🔗 <strong>Good move.</strong> I’m checking that link.', poseProgress, 2200],
+      unlink: ['🧩 <strong>Updating the link.</strong> I’ll keep the stock relationship clear.', poseProgress, 2400],
+      label: ['🏷️ <strong>Getting the label ready.</strong> Nearly there.', poseActive, 2200],
+      print: ['🖨️ <strong>Ready to print.</strong> Keep it moving.', poseProgress, 1900],
+      scan: ['📷 <strong>Scanning.</strong> I’m with you.', poseActive, 1800],
+      import: ['✨ <strong>Bringing that in.</strong> I’ll watch the result.', poseActive, 2200],
+      sync: ['🔄 <strong>Checking for updates.</strong> I’ll keep it tidy.', poseProgress, 2200],
+      confirm: ['👍 <strong>Approved.</strong> Moving this one forward.', poseProgress, 2000],
+      connect: ['🔌 <strong>Connecting.</strong> I’ll tell you how it goes.', poseActive, 2200],
+      retry: ['💪 <strong>Trying again.</strong> Let’s get this one cleared.', poseActive, 2200],
+      save: ['👍 <strong>Saving that.</strong> One step closer.', poseProgress, 1900]
+    };
+
     if (kind === 'push') {
       launchRocket();
-      showTemporary('🚀 <strong>Launching that update.</strong> I’ll keep an eye on it.', '/static/img/bt38-guide-active.svg', 2200);
+      showTemporary('🚀 <strong>Launching that update.</strong> I’ll keep an eye on it.', poseActive, 2200);
       return;
     }
-    if (kind === 'dispatch') {
-      showTemporary('📦 <strong>On it.</strong> Let’s get this order moving.', '/static/img/bt38-guide-active.svg', 2200);
-      return;
-    }
-    if (kind === 'link') {
-      showTemporary('🔗 <strong>Good move.</strong> I’m checking that link.', '/static/img/bt38-guide-progress.svg', 2200);
-      return;
-    }
-    if (kind === 'connect') {
-      showTemporary('🔌 <strong>Connecting.</strong> I’ll tell you how it goes.', '/static/img/bt38-guide-active.svg', 2200);
-      return;
-    }
-    if (kind === 'retry') {
-      showTemporary('💪 <strong>Trying again.</strong> Let’s get this one cleared.', '/static/img/bt38-guide-active.svg', 2200);
-      return;
-    }
-    if (kind === 'save') {
-      showTemporary('👍 <strong>Saving that.</strong> One step closer.', '/static/img/bt38-guide-progress.svg', 1900);
-    }
+    const reaction = reactions[kind];
+    if (reaction) showTemporary(reaction[0], reaction[1], reaction[2]);
   }
 
   function renderCount(count, previousCount, freshPose) {
@@ -458,7 +478,6 @@
       window.sessionStorage.setItem(cacheKey, String(count));
       if (!temporaryMessageTimer) renderCount(count, safePrevious, Boolean(options && options.freshPose));
     } catch (error) {
-      // Assistant is presentation-only. A read failure must never affect a page.
       console.debug('[BT38 assistant] Dashboard action read unavailable', error);
     } finally {
       refreshRunning = false;
@@ -469,29 +488,73 @@
     const text = String(raw || '').trim();
     if (/marketplace quantity push succeeded/i.test(text)) return '👍 Stock updated';
     if (/marketplace quantity push failed/i.test(text)) return '⚠️ Stock update needs attention';
+    if (/marketplace quantity push skipped/i.test(text)) return '👌 Stock already matched';
     if (/product linking updated/i.test(text)) return '🔗 Product link updated';
+    if (/product linking.*removed|unlink/i.test(text)) return '🧩 Product link removed';
     if (/listing.*imported|listing.*recovered|new listing/i.test(text)) return '✨ Listing added';
+    if (/marketplace sale|order.*received|sale received/i.test(text)) return '🛍️ Sale received';
     if (/dispatch.*succeeded|shipment.*confirmed/i.test(text)) return '👍 Order dispatched';
     if (/dispatch.*failed|shipment.*failed/i.test(text)) return '⚠️ Dispatch needs attention';
-    return text;
+    if (/tracking.*updated|tracking.*received/i.test(text)) return '📍 Tracking updated';
+    if (/label.*purchased|label.*created/i.test(text)) return '🏷️ Label ready';
+    if (/connection.*succeeded|connected successfully/i.test(text)) return '🔌 Store connected';
+    if (/connection.*failed|auth.*failed|token.*failed/i.test(text)) return '⚠️ Store connection needs attention';
+    return text.replace(/\bgoverned\b/gi, '').replace(/\bruntime\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  function friendlyMeta(raw) {
+    return String(raw || '')
+      .replace(/^Group\s+(\d+)$/i, 'Product group $1')
+      .replace(/\bgoverned\b/gi, '')
+      .replace(/\bruntime\b/gi, '')
+      .replace(/\breconcile\b/gi, 'check')
+      .replace(/\bpropagation\b/gi, 'update')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   function alignBellLanguage(root) {
     const list = root && root.querySelectorAll ? root : document;
     list.querySelectorAll('#bt38NotificationList .list-group-item').forEach(function (item) {
-      if (item.dataset.bt38AssistantLanguageAligned === '1') return;
       const title = item.querySelector('.mt-1.fw-semibold');
       if (title) title.textContent = friendlyBellTitle(title.textContent);
+      item.querySelectorAll('.small.text-muted.mt-1').forEach(function (meta) {
+        meta.textContent = friendlyMeta(meta.textContent);
+      });
       item.dataset.bt38AssistantLanguageAligned = '1';
     });
   }
 
+  function successMessageFromText(raw) {
+    const text = String(raw || '').replace(/\s+/g, ' ').trim();
+    const pushed = text.match(/(\d+)\s+(?:listing(?:s)?\s+)?pushed/i);
+    const skipped = text.match(/(\d+)\s+(?:listing(?:s)?\s+)?skipped/i);
+    const updated = text.match(/(\d+)\s+(?:listing(?:s)?\s+)?updated/i);
+    const linked = text.match(/(\d+)\s+(?:listing(?:s)?\s+)?linked/i);
+
+    const parts = [];
+    if (pushed) parts.push(`${pushed[1]} pushed`);
+    if (updated) parts.push(`${updated[1]} updated`);
+    if (linked) parts.push(`${linked[1]} linked`);
+    if (skipped) parts.push(`${skipped[1]} already correct`);
+
+    if (parts.length) return `👍 <strong>Well done!</strong> ${parts.join(' · ')}.`;
+    if (/dispatch|shipped|shipment/i.test(text)) return '📦 <strong>Well done!</strong> That order is moving.';
+    if (/label/i.test(text)) return '🏷️ <strong>Nice!</strong> Your label is ready.';
+    if (/link/i.test(text)) return '🔗 <strong>Nice work!</strong> That product link is updated.';
+    if (/connect/i.test(text)) return '🔌 <strong>Connected!</strong> That store is ready.';
+    return '👍 <strong>Nice work.</strong> That update completed.';
+  }
+
   function alertReaction(node) {
     if (!node || !node.classList || !node.classList.contains('alert')) return;
+    if (node.dataset.bt38AssistantReacted === '1') return;
+    node.dataset.bt38AssistantReacted = '1';
     const raw = String(node.textContent || '').replace(/\s+/g, ' ').trim();
     if (!raw) return;
+
     if (node.classList.contains('alert-success')) {
-      showTemporary('👍 <strong>Nice work.</strong> That update completed.', '/static/img/bt38-guide-progress.svg', 2600);
+      showTemporary(successMessageFromText(raw), '/static/img/bt38-guide-progress.svg', 3000);
       void refreshAssistant();
     } else if (node.classList.contains('alert-danger')) {
       showTemporary('⚠️ <strong>I hit a problem.</strong> The details are above — we can sort it.', '/static/img/bt38-guide-active.svg', 3200);
