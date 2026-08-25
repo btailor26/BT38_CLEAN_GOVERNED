@@ -234,11 +234,21 @@
   const cacheKey = 'bt38.assistant.dashboardActionCount';
   const dashboardPath = '/dashboard';
   const anchors = ['bt38-assistant-left', 'bt38-assistant-centre', 'bt38-assistant-right'];
+  const activePoses = [
+    '/static/img/bt38-guide-active.svg',
+    '/static/img/bt38-guide-progress.svg'
+  ];
+  const closePoses = [
+    '/static/img/bt38-guide-progress.svg',
+    '/static/img/bt38-guide-nearly-done.svg'
+  ];
   let host = null;
   let image = null;
   let message = null;
   let currentCount = null;
   let refreshRunning = false;
+  let pagePose = null;
+  let temporaryMessageTimer = null;
 
   function injectAssistantStyles() {
     if (document.getElementById('bt38AssistantStyles')) return;
@@ -286,11 +296,17 @@
     host.classList.add(selected);
   }
 
-  function assetFor(count) {
+  function randomFrom(values) {
+    return values[Math.floor(Math.random() * values.length)];
+  }
+
+  function assetFor(count, forceFresh) {
     if (count === 0) return '/static/img/bt38-guide-complete.svg';
-    if (count === 1) return '/static/img/bt38-guide-nearly-done.svg';
-    if (count <= 3) return '/static/img/bt38-guide-progress.svg';
-    return '/static/img/bt38-guide-active.svg';
+    if (!forceFresh && pagePose) return pagePose;
+    if (count === 1) pagePose = randomFrom(closePoses);
+    else if (count <= 3) pagePose = randomFrom(closePoses.concat(['/static/img/bt38-guide-active.svg']));
+    else pagePose = randomFrom(activePoses);
+    return pagePose;
   }
 
   function normalMessage(count) {
@@ -313,21 +329,77 @@
     window.setTimeout(function () { rocket.remove(); }, 1000);
   }
 
-  function looksLikePushControl(target) {
-    const control = target && target.closest ? target.closest('button,a,[role="button"]') : null;
-    if (!control) return false;
-    const text = String(control.textContent || '').trim().toLowerCase();
-    const href = String(control.getAttribute('href') || '').toLowerCase();
-    const action = String(control.getAttribute('data-action') || '').toLowerCase();
-    return /(^|\s)push(\s|$)/.test(text) || href.includes('/push') || action.includes('push');
+  function controlInfo(target) {
+    const control = target && target.closest ? target.closest('button,a,[role="button"],input[type="submit"]') : null;
+    if (!control) return null;
+    return {
+      control,
+      text: String(control.textContent || control.value || '').trim().toLowerCase(),
+      href: String(control.getAttribute('href') || '').toLowerCase(),
+      action: String(control.getAttribute('data-action') || '').toLowerCase()
+    };
   }
 
-  function renderCount(count, previousCount) {
+  function actionKind(target) {
+    const info = controlInfo(target);
+    if (!info) return '';
+    const haystack = `${info.text} ${info.href} ${info.action}`;
+    if (/(^|\s)push(\s|$)|\/push\b/.test(haystack)) return 'push';
+    if (/dispatch|ship|fulfil|fulfill/.test(haystack)) return 'dispatch';
+    if (/link|group/.test(haystack)) return 'link';
+    if (/save|update|apply/.test(haystack)) return 'save';
+    if (/connect|authori[sz]e|reconnect/.test(haystack)) return 'connect';
+    if (/retry|try again/.test(haystack)) return 'retry';
+    return '';
+  }
+
+  function showTemporary(html, pose, milliseconds) {
+    if (!host || !image || !message) return;
+    if (temporaryMessageTimer) window.clearTimeout(temporaryMessageTimer);
+    if (pose) image.src = pose;
+    message.innerHTML = html;
+    safeRandomAnchor();
+    host.classList.add('bt38-ready');
+    temporaryMessageTimer = window.setTimeout(function () {
+      temporaryMessageTimer = null;
+      if (Number.isFinite(currentCount)) renderCount(currentCount, null, false);
+    }, milliseconds || 2600);
+  }
+
+  function workingReaction(kind) {
+    if (kind === 'push') {
+      launchRocket();
+      showTemporary('🚀 <strong>Launching that update.</strong> I’ll keep an eye on it.', '/static/img/bt38-guide-active.svg', 2200);
+      return;
+    }
+    if (kind === 'dispatch') {
+      showTemporary('📦 <strong>On it.</strong> Let’s get this order moving.', '/static/img/bt38-guide-active.svg', 2200);
+      return;
+    }
+    if (kind === 'link') {
+      showTemporary('🔗 <strong>Good move.</strong> I’m checking that link.', '/static/img/bt38-guide-progress.svg', 2200);
+      return;
+    }
+    if (kind === 'connect') {
+      showTemporary('🔌 <strong>Connecting.</strong> I’ll tell you how it goes.', '/static/img/bt38-guide-active.svg', 2200);
+      return;
+    }
+    if (kind === 'retry') {
+      showTemporary('💪 <strong>Trying again.</strong> Let’s get this one cleared.', '/static/img/bt38-guide-active.svg', 2200);
+      return;
+    }
+    if (kind === 'save') {
+      showTemporary('👍 <strong>Saving that.</strong> One step closer.', '/static/img/bt38-guide-progress.svg', 1900);
+    }
+  }
+
+  function renderCount(count, previousCount, freshPose) {
     if (!host || !image || !message || !Number.isFinite(count)) return;
     const completed = Number.isFinite(previousCount) && previousCount > count
       ? previousCount - count
       : 0;
-    image.src = assetFor(count);
+    if (freshPose) pagePose = null;
+    image.src = assetFor(count, Boolean(freshPose));
     image.alt = count === 0 ? 'BT38 assistant taking a well-earned break' : 'BT38 assistant helping with today’s actions';
     if (completed > 0) {
       message.innerHTML = count === 0
@@ -372,7 +444,7 @@
     return parseDashboardCount(doc);
   }
 
-  async function refreshAssistant() {
+  async function refreshAssistant(options) {
     if (refreshRunning || document.visibilityState === 'hidden') return;
     refreshRunning = true;
     try {
@@ -384,7 +456,7 @@
       const safePrevious = Number.isFinite(previous) ? previous : null;
       currentCount = count;
       window.sessionStorage.setItem(cacheKey, String(count));
-      renderCount(count, safePrevious);
+      if (!temporaryMessageTimer) renderCount(count, safePrevious, Boolean(options && options.freshPose));
     } catch (error) {
       // Assistant is presentation-only. A read failure must never affect a page.
       console.debug('[BT38 assistant] Dashboard action read unavailable', error);
@@ -393,26 +465,81 @@
     }
   }
 
+  function friendlyBellTitle(raw) {
+    const text = String(raw || '').trim();
+    if (/marketplace quantity push succeeded/i.test(text)) return '👍 Stock updated';
+    if (/marketplace quantity push failed/i.test(text)) return '⚠️ Stock update needs attention';
+    if (/product linking updated/i.test(text)) return '🔗 Product link updated';
+    if (/listing.*imported|listing.*recovered|new listing/i.test(text)) return '✨ Listing added';
+    if (/dispatch.*succeeded|shipment.*confirmed/i.test(text)) return '👍 Order dispatched';
+    if (/dispatch.*failed|shipment.*failed/i.test(text)) return '⚠️ Dispatch needs attention';
+    return text;
+  }
+
+  function alignBellLanguage(root) {
+    const list = root && root.querySelectorAll ? root : document;
+    list.querySelectorAll('#bt38NotificationList .list-group-item').forEach(function (item) {
+      if (item.dataset.bt38AssistantLanguageAligned === '1') return;
+      const title = item.querySelector('.mt-1.fw-semibold');
+      if (title) title.textContent = friendlyBellTitle(title.textContent);
+      item.dataset.bt38AssistantLanguageAligned = '1';
+    });
+  }
+
+  function alertReaction(node) {
+    if (!node || !node.classList || !node.classList.contains('alert')) return;
+    const raw = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return;
+    if (node.classList.contains('alert-success')) {
+      showTemporary('👍 <strong>Nice work.</strong> That update completed.', '/static/img/bt38-guide-progress.svg', 2600);
+      void refreshAssistant();
+    } else if (node.classList.contains('alert-danger')) {
+      showTemporary('⚠️ <strong>I hit a problem.</strong> The details are above — we can sort it.', '/static/img/bt38-guide-active.svg', 3200);
+    } else if (node.classList.contains('alert-warning')) {
+      showTemporary('👀 <strong>Almost there.</strong> This one needs a quick check.', '/static/img/bt38-guide-nearly-done.svg', 2800);
+    }
+  }
+
+  function installPresentationObservers() {
+    alignBellLanguage(document);
+    document.querySelectorAll('.alert').forEach(alertReaction);
+
+    const observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
+          if (!(node instanceof Element)) return;
+          if (node.matches('.alert')) alertReaction(node);
+          node.querySelectorAll && node.querySelectorAll('.alert').forEach(alertReaction);
+          alignBellLanguage(node);
+        });
+      });
+    });
+    observer.observe(document.body, {childList:true, subtree:true});
+  }
+
   function installAssistant() {
     installAssistantHost();
     const cached = Number(window.sessionStorage.getItem(cacheKey));
     if (Number.isFinite(cached)) {
       currentCount = cached;
-      renderCount(cached, null);
+      renderCount(cached, null, true);
     }
-    void refreshAssistant();
+    installPresentationObservers();
+    void refreshAssistant({freshPose:true});
   }
 
   document.addEventListener('click', function (event) {
-    if (!looksLikePushControl(event.target)) return;
-    window.setTimeout(launchRocket, 90);
+    const kind = actionKind(event.target);
+    if (!kind) return;
+    window.setTimeout(function () { workingReaction(kind); }, 80);
   }, true);
 
   window.addEventListener('bt38-marketplace-event', function () {
     void refreshAssistant();
   });
   window.addEventListener('pageshow', function () {
-    void refreshAssistant();
+    pagePose = null;
+    void refreshAssistant({freshPose:true});
   });
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') void refreshAssistant();
