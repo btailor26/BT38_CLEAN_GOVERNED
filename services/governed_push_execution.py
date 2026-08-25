@@ -10,6 +10,7 @@ Rules:
 - service owns shared listing push logic
 - routes must not be imported by services
 - existing webhook pushes queue exact affected rows for the 15-minute alignment check
+- marketplace-confirmation webhooks never rewrite an already-aligned quantity
 """
 
 from __future__ import annotations
@@ -204,6 +205,54 @@ def push_marketplace_listing(
     sku = (listing.external_sku or listing.warehouse_stock.sku or "").strip()
     if not sku:
         return _blocked("Marketplace listing has no SKU for governed push.", listing_id=listing_id)
+
+    # A marketplace webhook often confirms a quantity that BT38 just wrote.
+    # That confirmation is hydration/verification only.  Never echo the same
+    # quantity back to the marketplace or a write -> webhook -> write loop forms.
+    if _is_webhook_push_source(source_value):
+        confirmed_quantity = getattr(listing, "last_marketplace_qty", None)
+        try:
+            already_aligned = (
+                confirmed_quantity is not None
+                and int(confirmed_quantity) == int(push_quantity)
+            )
+        except (TypeError, ValueError):
+            already_aligned = False
+
+        if already_aligned:
+            db.session.add(SyncLog(
+                store_id=listing.store_id,
+                status="success",
+                message=(
+                    "event_type=marketplace_push_noop automatic=True "
+                    f"actor={actor} source={source} "
+                    f"store_id={listing.store_id} marketplace={marketplace} "
+                    f"listing_id={listing.id} sku={sku} "
+                    f"warehouse_stock_id={listing.warehouse_stock_id} "
+                    f"group_id={group_id} quantity={push_quantity} "
+                    "reason=marketplace_already_matches_warehouse"
+                )[:500],
+                items_synced=0,
+                created_at=datetime.utcnow(),
+            ))
+            db.session.commit()
+            return {
+                "success": True,
+                "ok": True,
+                "governed": True,
+                "changed": False,
+                "no_op": True,
+                "marketplace_write_skipped": True,
+                "reason": "Marketplace quantity already matches governed Warehouse truth.",
+                "listing_id": listing.id,
+                "warehouse_stock_id": listing.warehouse_stock_id,
+                "master_product_group_id": group_id,
+                "marketplace": marketplace,
+                "push_quantity": push_quantity,
+                "confirmed_marketplace_quantity": int(confirmed_quantity),
+                "warehouse_truth_quantity_used": True,
+                "request_quantity_ignored": True,
+            }
 
     payload = {
         "marketplace": marketplace,
@@ -484,6 +533,9 @@ def push_group_listings(
     def _is_success(item: Dict[str, Any]) -> bool:
         return bool(item.get("ok") or item.get("success"))
 
+    def _is_noop(item: Dict[str, Any]) -> bool:
+        return bool(item.get("no_op") or item.get("marketplace_write_skipped"))
+
     def _is_fba_read_only_skip(item: Dict[str, Any]) -> bool:
         return bool(
             item.get("is_fba")
@@ -491,13 +543,16 @@ def push_group_listings(
         )
 
     success_count = sum(1 for item in results if _is_success(item))
-    skipped_count = sum(
+    no_op_count = sum(1 for item in results if _is_success(item) and _is_noop(item))
+    pushed_count = success_count - no_op_count
+    fba_skipped_count = sum(
         1
         for item in results
         if (not _is_success(item)) and _is_fba_read_only_skip(item)
     )
-    failed_count = len(results) - success_count - skipped_count
-    pushable_count = len(results) - skipped_count
+    skipped_count = fba_skipped_count + no_op_count
+    failed_count = len(results) - success_count - fba_skipped_count
+    pushable_count = len(results) - fba_skipped_count
     group_success = failed_count == 0
     failed_reasons = [
         str(item.get("error") or item.get("reason") or item.get("message"))
@@ -523,8 +578,9 @@ def push_group_listings(
                 "group_id": group_id,
                 "authority_warehouse_stock_id": int(authority_stock.id),
                 "target_quantity": target_quantity,
-                "pushed": success_count,
+                "pushed": pushed_count,
                 "skipped": skipped_count,
+                "no_op": no_op_count,
                 "failed": failed_count,
                 "pushable_count": pushable_count,
                 "source": source,
@@ -544,7 +600,7 @@ def push_group_listings(
         "success": group_success,
         "ok": group_success,
         "governed": True,
-        "changed": True,
+        "changed": pushed_count > 0,
         "group_id": group_id,
         "warehouse_stock_id": int(authority_stock.id),
         "authority_warehouse_stock_id": int(authority_stock.id),
@@ -559,16 +615,18 @@ def push_group_listings(
         "total": len(results),
         "total_listings": len(results),
         "ok_count": success_count,
-        "pushed": success_count,
+        "pushed": pushed_count,
         "skipped": skipped_count,
+        "no_op_count": no_op_count,
         "failed": failed_count,
-        "fba_read_only_skipped": skipped_count,
+        "fba_read_only_skipped": fba_skipped_count,
         "pushable_count": pushable_count,
         "warehouse_truth_quantity_used": True,
         "warehouse_authority_resolution": True,
         "one_shared_group_quantity": True,
         "request_quantity_ignored": True,
         "fba_read_only_does_not_fail_group": True,
+        "marketplace_confirmation_noop_guard": True,
         "results": results,
     }
     if failed_reasons:
