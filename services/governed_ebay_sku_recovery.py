@@ -103,7 +103,7 @@ def _revise_missing_sku(
         timeout=60,
     )
     response.raise_for_status()
-    root = ET.fromstring(response.text)
+    root = ET.fromstring(response.content)
     ack = _text(root, ".//{*}Ack").upper()
     if ack not in {"SUCCESS", "WARNING"}:
         messages = [
@@ -126,7 +126,7 @@ def _get_item(creds: dict[str, Any], item_id: str) -> ET.Element:
         timeout=60,
     )
     response.raise_for_status()
-    root = ET.fromstring(response.text)
+    root = ET.fromstring(response.content)
     item = root.find(".//{*}Item")
     if item is None:
         raise RuntimeError("ebay_missing_sku_verify_item_not_found")
