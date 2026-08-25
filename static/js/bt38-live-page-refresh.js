@@ -254,8 +254,10 @@
       #bt38AssistantRobot{width:72px;height:82px;object-fit:contain;flex:0 0 auto;filter:drop-shadow(0 5px 6px rgba(35,46,72,.16))}
       #bt38AssistantBubble{background:rgba(255,255,255,.97);border:1px solid #e3e7ef;border-radius:12px;padding:9px 12px;box-shadow:0 5px 18px rgba(22,31,52,.10);font-size:12px;line-height:1.35;font-weight:650;color:#243047;max-width:238px}
       #bt38AssistantBubble strong{color:#3159d8}
+      .bt38-assistant-rocket{position:fixed;z-index:1036;font-size:24px;pointer-events:none;animation:bt38RocketLaunch .9s cubic-bezier(.2,.7,.2,1) forwards;filter:drop-shadow(0 3px 3px rgba(31,41,55,.18))}
+      @keyframes bt38RocketLaunch{0%{opacity:0;transform:translate(0,8px) rotate(-18deg) scale(.72)}18%{opacity:1}100%{opacity:0;transform:translate(78px,-118px) rotate(-8deg) scale(1.08)}}
       @media(max-width:700px){body.bt38-assistant-space{padding-bottom:94px!important}#bt38Assistant{bottom:7px;left:8px!important;right:8px!important;transform:none!important;max-width:none;justify-content:center;flex-direction:row!important}#bt38AssistantRobot{width:58px;height:66px}#bt38AssistantBubble{max-width:calc(100vw - 92px);font-size:11px;padding:8px 10px}}
-      @media(prefers-reduced-motion:reduce){#bt38Assistant{transition:none}}
+      @media(prefers-reduced-motion:reduce){#bt38Assistant{transition:none}.bt38-assistant-rocket{animation:none;opacity:1}}
     `;
     document.head.appendChild(style);
   }
@@ -296,6 +298,28 @@
     if (count === 1) return '💪 <strong>Nearly there.</strong> Just 1 action left.';
     if (count <= 3) return `👍 <strong>Great progress.</strong> ${count} actions left.`;
     return `🤖 <strong>${count} actions to sort.</strong> I’ll help you through them.`;
+  }
+
+  function launchRocket() {
+    if (!host || !image || window.matchMedia('(prefers-reduced-motion:reduce)').matches) return;
+    const rect = image.getBoundingClientRect();
+    const rocket = document.createElement('span');
+    rocket.className = 'bt38-assistant-rocket';
+    rocket.textContent = '🚀';
+    rocket.setAttribute('aria-hidden', 'true');
+    rocket.style.left = `${Math.max(8, rect.left + rect.width * .58)}px`;
+    rocket.style.top = `${Math.max(8, rect.top + rect.height * .16)}px`;
+    document.body.appendChild(rocket);
+    window.setTimeout(function () { rocket.remove(); }, 1000);
+  }
+
+  function looksLikePushControl(target) {
+    const control = target && target.closest ? target.closest('button,a,[role="button"]') : null;
+    if (!control) return false;
+    const text = String(control.textContent || '').trim().toLowerCase();
+    const href = String(control.getAttribute('href') || '').toLowerCase();
+    const action = String(control.getAttribute('data-action') || '').toLowerCase();
+    return /(^|\s)push(\s|$)/.test(text) || href.includes('/push') || action.includes('push');
   }
 
   function renderCount(count, previousCount) {
@@ -378,6 +402,11 @@
     }
     void refreshAssistant();
   }
+
+  document.addEventListener('click', function (event) {
+    if (!looksLikePushControl(event.target)) return;
+    window.setTimeout(launchRocket, 90);
+  }, true);
 
   window.addEventListener('bt38-marketplace-event', function () {
     void refreshAssistant();
