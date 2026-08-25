@@ -30,6 +30,141 @@
     updateActionBar();
   }
 
+  function showPushSuccess() {
+    const existing = document.getElementById('bt38PushSuccessOverlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'bt38PushSuccessOverlay';
+    overlay.setAttribute('role', 'presentation');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.zIndex = '100000';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.padding = '18px';
+    overlay.style.background = 'rgba(15, 23, 42, 0.30)';
+
+    const card = document.createElement('div');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-labelledby', 'bt38PushSuccessTitle');
+    card.style.width = 'min(440px, calc(100vw - 36px))';
+    card.style.minHeight = '205px';
+    card.style.boxSizing = 'border-box';
+    card.style.position = 'relative';
+    card.style.display = 'grid';
+    card.style.gridTemplateColumns = '118px 1fr';
+    card.style.alignItems = 'center';
+    card.style.gap = '12px';
+    card.style.padding = '24px 24px 22px';
+    card.style.border = '1px solid rgba(37, 99, 235, 0.14)';
+    card.style.borderRadius = '18px';
+    card.style.background = 'linear-gradient(135deg, #ffffff 0%, #f7fbff 100%)';
+    card.style.boxShadow = '0 22px 60px rgba(15, 23, 42, 0.24)';
+    card.style.overflow = 'hidden';
+
+    const robotWrap = document.createElement('div');
+    robotWrap.style.position = 'relative';
+    robotWrap.style.display = 'flex';
+    robotWrap.style.alignItems = 'center';
+    robotWrap.style.justifyContent = 'center';
+    robotWrap.style.height = '128px';
+
+    const robot = document.createElement('img');
+    robot.src = '/static/img/bt38-guide-complete.svg';
+    robot.alt = '';
+    robot.style.width = '104px';
+    robot.style.height = '104px';
+    robot.style.objectFit = 'contain';
+    robotWrap.appendChild(robot);
+
+    const rocket = document.createElement('span');
+    rocket.setAttribute('aria-hidden', 'true');
+    rocket.textContent = '🚀';
+    rocket.style.position = 'absolute';
+    rocket.style.right = '-2px';
+    rocket.style.top = '2px';
+    rocket.style.fontSize = '34px';
+    rocket.style.transform = 'rotate(-8deg)';
+    rocket.style.filter = 'drop-shadow(0 4px 6px rgba(37, 99, 235, .18))';
+    robotWrap.appendChild(rocket);
+
+    const content = document.createElement('div');
+    content.style.minWidth = '0';
+
+    const check = document.createElement('div');
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '✓';
+    check.style.width = '38px';
+    check.style.height = '38px';
+    check.style.display = 'inline-flex';
+    check.style.alignItems = 'center';
+    check.style.justifyContent = 'center';
+    check.style.marginBottom = '7px';
+    check.style.borderRadius = '50%';
+    check.style.background = '#22c55e';
+    check.style.color = '#fff';
+    check.style.fontSize = '24px';
+    check.style.fontWeight = '800';
+    check.style.boxShadow = '0 8px 18px rgba(34, 197, 94, .24)';
+
+    const title = document.createElement('div');
+    title.id = 'bt38PushSuccessTitle';
+    title.textContent = 'Pushed!';
+    title.style.margin = '0 0 5px';
+    title.style.color = '#0f172a';
+    title.style.fontSize = '27px';
+    title.style.fontWeight = '800';
+    title.style.letterSpacing = '-0.02em';
+
+    const message = document.createElement('div');
+    message.textContent = 'Your updates have been sent successfully.';
+    message.style.marginBottom = '18px';
+    message.style.color = '#475569';
+    message.style.fontSize = '15px';
+    message.style.lineHeight = '1.45';
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.textContent = 'OK';
+    ok.style.minWidth = '92px';
+    ok.style.padding = '9px 20px';
+    ok.style.border = '0';
+    ok.style.borderRadius = '11px';
+    ok.style.background = '#2563eb';
+    ok.style.color = '#fff';
+    ok.style.fontSize = '15px';
+    ok.style.fontWeight = '700';
+    ok.style.cursor = 'pointer';
+    ok.style.boxShadow = '0 8px 18px rgba(37, 99, 235, .22)';
+
+    function closeModal() {
+      overlay.remove();
+    }
+
+    ok.addEventListener('click', closeModal);
+    overlay.addEventListener('click', function (event) {
+      if (event.target === overlay) closeModal();
+    });
+    document.addEventListener('keydown', function onKeydown(event) {
+      if (event.key !== 'Escape') return;
+      document.removeEventListener('keydown', onKeydown);
+      closeModal();
+    }, { once: true });
+
+    content.appendChild(check);
+    content.appendChild(title);
+    content.appendChild(message);
+    content.appendChild(ok);
+    card.appendChild(robotWrap);
+    card.appendChild(content);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    window.setTimeout(() => ok.focus(), 0);
+  }
+
   function postJson(endpoint, body, actor, options) {
     const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
     const requestOptions = options || {};
@@ -103,7 +238,7 @@
     try {
       if (value === 'push') {
         await Promise.all(selected.map(cb => pushListing(cb.closest('tr'))));
-        alert('Push complete');
+        showPushSuccess();
       }
 
       if (value === 'transfer') {
@@ -143,7 +278,7 @@
 
     try {
       await postJson(`/governed/actions/listings/${listingId}/push`, {}, 'warehouse-market-badge');
-      alert('Market badge push complete');
+      showPushSuccess();
     } catch (err) {
       alert(err.message || 'Govern action failed');
       console.error('Warehouse market badge push failed', err);
