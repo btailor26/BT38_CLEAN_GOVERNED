@@ -27,6 +27,10 @@ from services.governed_ebay_oauth_scopes import governed_ebay_refresh_scopes
 from services.governed_ebay_notification_registration import (
     ensure_ebay_order_notification_registration,
 )
+from services.governed_ebay_sku_recovery import (
+    ensure_single_listing_sku,
+    ensure_variation_sku,
+)
 
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -243,17 +247,6 @@ def _upsert_listing(
     parent_item_id: str | None,
     variation_sku_map: str | None,
 ) -> MarketplaceListing:
-    # Permanent marketplace identity contract:
-    #
-    # The eBay Item ID supplied by the API is the stable parent identity.
-    # Variation children share that Item ID, so their operational identity is
-    # store + Item ID + seller SKU, matching the DB uniqueness contract.
-    #
-    # Resolve the exact composite identity first. Historical imports may have
-    # left more than one row for an Item ID while eBay's current seller SKU is
-    # already present on the canonical row. Selecting only by Item ID in that
-    # situation can pick a stale row and then violate the composite uniqueness
-    # constraint when its SKU is updated.
     identity_query = db.session.query(MarketplaceListing).filter(
         MarketplaceListing.store_id == store.id,
         MarketplaceListing.external_listing_id == item_id,
@@ -290,10 +283,6 @@ def _upsert_listing(
             .first()
         )
 
-    # A non-variation legacy row may already have the stable Item ID but an
-    # old/missing seller SKU. Reuse it only after proving that the exact
-    # composite identity is absent. Variation children must never use this
-    # fallback because they intentionally share the parent Item ID.
     if listing is None and not is_variation_child:
         listing = (
             db.session.query(MarketplaceListing)
@@ -321,8 +310,6 @@ def _upsert_listing(
         )
         db.session.add(listing)
 
-    # Marketplace imports may create an initial relationship, but must never
-    # replace a saved Product Linking relationship. Relinking is user-controlled.
     if listing.warehouse_stock_id is None:
         listing.warehouse_stock_id = stock.id
 
@@ -351,6 +338,32 @@ def _upsert_listing(
     return listing
 
 
+def _retire_collapsed_sku_less_parent(store: Store, item_id: str) -> None:
+    """Retire only the obsolete SKU-less legacy representation.
+
+    Preserve warehouse/group relationships on the historical row for audit and
+    Product Linking history; do not delete or relink it.
+    """
+    rows = (
+        db.session.query(MarketplaceListing)
+        .filter(
+            MarketplaceListing.store_id == store.id,
+            MarketplaceListing.external_listing_id == item_id,
+            db.or_(
+                MarketplaceListing.external_sku.is_(None),
+                MarketplaceListing.external_sku == "",
+            ),
+            MarketplaceListing.parent_item_id.is_(None),
+            MarketplaceListing.external_parent_id.is_(None),
+        )
+        .all()
+    )
+    for row in rows:
+        row.is_active = False
+        row.last_synced_at = datetime.utcnow()
+        db.session.add(row)
+
+
 def _import_item(
     store: Store,
     creds: dict[str, Any],
@@ -365,7 +378,7 @@ def _import_item(
     detail = item if item_is_detail else (_get_item_detail(creds, item_id) or item)
 
     title = _xml_text(detail, "{*}Title") or f"eBay Item {item_id}"
-    parent_sku = _xml_text(detail, "{*}SKU") or item_id
+    parent_sku = _xml_text(detail, "{*}SKU")
     parent_qty = int(_xml_text(detail, "{*}QuantityAvailable", "0") or 0)
     parent_price = float(_xml_text(detail, "{*}SellingStatus/{*}CurrentPrice", "0") or 0)
 
@@ -381,7 +394,11 @@ def _import_item(
         for variation in variations:
             sku = _xml_text(variation, "{*}SKU")
             if not sku:
-                continue
+                sku, variation, _verified_item, _recovered = ensure_variation_sku(
+                    creds,
+                    item_id,
+                    variation,
+                )
 
             qty = int(_xml_text(variation, "{*}Quantity", "0") or 0)
             sold = int(_xml_text(variation, "{*}SellingStatus/{*}QuantitySold", "0") or 0)
@@ -408,7 +425,24 @@ def _import_item(
                 affected_group_ids.append(int(listing.master_product_group_id))
             imported_variations += 1
             imported_items += 1
+
+        if imported_variations:
+            _retire_collapsed_sku_less_parent(store, item_id)
     else:
+        if not parent_sku:
+            parent_sku, detail, _recovered = ensure_single_listing_sku(
+                creds,
+                item_id,
+                detail,
+            )
+            title = _xml_text(detail, "{*}Title") or title
+            parent_qty = int(_xml_text(detail, "{*}QuantityAvailable", str(parent_qty)) or parent_qty or 0)
+            parent_price = float(
+                _xml_text(detail, "{*}SellingStatus/{*}CurrentPrice", str(parent_price))
+                or parent_price
+                or 0
+            )
+
         stock = _find_or_create_stock(parent_sku, title)
         listing = _upsert_listing(
             store=store,
@@ -560,10 +594,6 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
             })
             continue
 
-        # Existing stores may pre-date BT38's LISTING notification support.
-        # Reconcile the existing eBay destination only when the LISTING
-        # subscription is missing/not enabled. This is not polling and does
-        # not create another webhook/import path.
         listing_subscription_id = str(
             creds.get("ebay_notification_listing_subscription_id") or ""
         ).strip()
@@ -584,19 +614,13 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
                         access_token=str(creds.get("access_token") or ""),
                     )
                 )
-                # Registration persists refreshed notification metadata.
                 creds = _parse_creds(store)
             except Exception as exc:
-                # Registration failure must not disable the existing bounded
-                # inventory recovery path.
                 notification_alignment = {
                     "ok": False,
                     "error": str(exc),
                 }
 
-        # Re-read the persisted registration result. If eBay cannot provide
-        # LISTING events, this same existing importer becomes the discovery
-        # recovery path.
         creds = _parse_creds(store)
         listing_subscription_status = str(
             creds.get("ebay_notification_listing_subscription_status") or ""
@@ -647,11 +671,8 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
                     counts.get("affected_group_ids") or []
                 )
 
-            # One commit for the bounded newest-listing recovery batch.
             db.session.commit()
 
-        # eBay may return up to 100 items even when a smaller entries value is requested.
-        # Keep each governed cycle bounded, but resume from the next page next time.
         progress_key = f"ebay_import_next_page_store_{store.id}"
         progress_row = SystemConfig.query.filter_by(key=progress_key).first()
 
@@ -698,7 +719,6 @@ def run_governed_ebay_inventory_import(store_id=None) -> dict[str, Any]:
 
                 db.session.commit()
 
-            # Final page reached. Reset next cycle back to page 1.
             if len(items) < 100:
                 next_page = 1
                 break
