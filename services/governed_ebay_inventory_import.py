@@ -157,7 +157,10 @@ def _get_active_items(
     )
     resp.raise_for_status()
 
-    root = ET.fromstring(resp.text)
+    # Parse the raw response bytes so ElementTree honours eBay's XML encoding
+    # declaration. requests.response.text can default text/xml to latin-1 and
+    # corrupt valid UTF-8 titles such as ✨ into â¨.
+    root = ET.fromstring(resp.content)
     return list(root.findall(".//{*}Item"))
 
 
@@ -181,7 +184,7 @@ def _get_item_detail(creds: dict[str, Any], item_id: str) -> ET.Element | None:
     )
     resp.raise_for_status()
 
-    root = ET.fromstring(resp.text)
+    root = ET.fromstring(resp.content)
     return root.find(".//{*}Item")
 
 
@@ -201,6 +204,11 @@ def _variation_specifics_json(variation: ET.Element) -> str:
 
 def _default_warehouse() -> Warehouse:
     return Warehouse.get_default()
+
+
+def _looks_like_mojibake(value: str | None) -> bool:
+    text = str(value or "")
+    return any(marker in text for marker in ("â", "Ã", "Â", "ð"))
 
 
 def _find_or_create_stock(sku: str, title: str) -> WarehouseStock:
@@ -227,7 +235,9 @@ def _find_or_create_stock(sku: str, title: str) -> WarehouseStock:
         db.session.add(stock)
         db.session.flush()
 
-    if title and not stock.product_name:
+    # Preserve user-managed warehouse titles. Only hydrate an empty title or
+    # repair a title that was previously corrupted by the eBay XML decode bug.
+    if title and (not stock.product_name or _looks_like_mojibake(stock.product_name)):
         stock.product_name = title
 
     stock.last_sync_at = datetime.utcnow()
