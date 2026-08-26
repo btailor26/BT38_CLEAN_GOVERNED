@@ -53,6 +53,59 @@ def _bounded_since(last_webhook_at: datetime | None, max_days: int) -> datetime:
     return max(floor, value - timedelta(minutes=5))
 
 
+def _marketplace_tracking_by_line(
+    *,
+    access_token: str,
+    order_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Read marketplace-owned tracking without creating or confirming fulfilment."""
+    if not order_id:
+        return {}
+
+    try:
+        response = requests.get(
+            f"{EBAY_ORDERS_URL}/{order_id}/shipping_fulfillment",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+    except Exception:
+        return {}
+
+    if response.status_code >= 400:
+        return {}
+
+    payload = response.json() or {}
+    fulfilments = payload.get("fulfillments") or []
+    resolved: dict[str, dict[str, Any]] = {}
+
+    for fulfilment in fulfilments:
+        tracking_number = _text(fulfilment.get("trackingNumber"))
+        carrier = _text(fulfilment.get("shippingCarrierCode"))
+        shipped_at = _parse_ebay_datetime(fulfilment.get("shippedDate"))
+        if not tracking_number and not carrier:
+            continue
+
+        value = {
+            "carrier": carrier or None,
+            "tracking_number": tracking_number or None,
+            "shipped_at": shipped_at,
+            "source": "ebay_shipping_fulfillment",
+        }
+        line_items = fulfilment.get("lineItems") or []
+        for line_item in line_items:
+            line_id = _text(line_item.get("lineItemId"))
+            if line_id:
+                resolved[line_id] = value
+
+        if "__fallback__" not in resolved:
+            resolved["__fallback__"] = value
+
+    return resolved
+
+
 def _persist_notification_auth_state(store: Store, error: str) -> None:
     """Persist only the known seller-consent-required state for the Stores UI."""
     text_error = str(error or "")
@@ -138,11 +191,17 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
             if fulfillment_status == "FULFILLED"
             else None
         )
+        marketplace_tracking = (
+            _marketplace_tracking_by_line(access_token=access_token, order_id=order_id)
+            if fulfillment_status == "FULFILLED"
+            else {}
+        )
 
         for item in order.get("lineItems") or []:
             sku = _text(item.get("sku")) or _text(item.get("legacyItemId"))
             line_id = _text(item.get("lineItemId")) or f"{order_id}:{sku}"
             price = item.get("lineItemCost") or {}
+            tracking = marketplace_tracking.get(line_id) or marketplace_tracking.get("__fallback__") or {}
             result = upsert_governed_marketplace_order_line(
                 store=store,
                 marketplace_order_id=order_id,
@@ -152,7 +211,9 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
                 unit_price=_safe_float(price.get("value") if isinstance(price, dict) else 0),
                 fulfillment_type="FBM",
                 status="pending",
-                shipped_at=shipped_at,
+                carrier=_text(tracking.get("carrier")) or None,
+                tracking_number=_text(tracking.get("tracking_number")) or None,
+                shipped_at=tracking.get("shipped_at") or shipped_at,
                 ship_to_name=_text(ship_to.get("fullName")),
                 ship_to_address=", ".join(part for part in address_parts if part),
                 ship_to_city=_text(address.get("city")),
@@ -180,6 +241,9 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
                     "skipped": True,
                     "reason": "existing_order_line_no_duplicate_stock_processing",
                 }
+            result["marketplace_tracking_hydrated"] = bool(
+                tracking.get("tracking_number") or tracking.get("carrier")
+            )
             imported += 1
             results.append(result)
 
