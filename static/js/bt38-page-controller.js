@@ -289,6 +289,38 @@ window.BT38.pages = window.BT38.pages || {};
     }
   }
 
+  async function updateWarehouseKpis() {
+    try {
+      const response = await fetch("/governed/warehouse/kpis", {
+        credentials: "include",
+        headers: {Accept: "application/json"},
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok || data.success === false) throw new Error(data.error || data.message || "Warehouse KPI data unavailable");
+
+      setWarehouseKpi("Total SKUs", String(Number(data.total_skus || 0)), "Warehouse master SKUs");
+      setWarehouseKpi("Available Units", String(Number(data.total_available || 0)), "Warehouse Available");
+      setWarehouseKpi("Low Stock", String(Number(data.low_stock_count || 0)), "Needs Attention");
+      setWarehouseKpi("Listings", String(Number(data.listing_count || 0)), "Active linked listings");
+
+      const formatted = new Intl.NumberFormat("en-GB", {
+        style: "currency",
+        currency: "GBP",
+        maximumFractionDigits: 0
+      }).format(Number(data.inventory_value || 0));
+      const missing = Number(data.missing_cogs_skus || 0);
+      const costed = Number(data.costed_skus || 0);
+      setWarehouseKpi(
+        "Inventory Value",
+        formatted,
+        missing ? `${costed} SKUs costed · ${missing} missing COGS` : `${costed} SKUs costed · stock × COGS`
+      );
+    } catch (error) {
+      console.warn("[warehouse-kpi] aggregate read unavailable", error);
+    }
+  }
+
   async function updateWarehouseStatusKpi() {
     setWarehouseKpi("Warehouse Status", "Checking", "Runtime heartbeat");
     try {
@@ -330,9 +362,9 @@ window.BT38.pages = window.BT38.pages || {};
       });
     });
 
-    const rows = Array.from(document.querySelectorAll(".bt38-stock-table tbody tr"));
-    updateWarehouseListingKpi(rows);
-    updateWarehouseInventoryValueKpi(rows);
+    // KPI totals come from one compact aggregate endpoint. Do not re-read
+    // economics for every rendered Warehouse row during page refresh.
+    updateWarehouseKpis();
     updateWarehouseStatusKpi();
   }
 
