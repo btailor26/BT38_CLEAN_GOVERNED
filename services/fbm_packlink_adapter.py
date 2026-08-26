@@ -222,6 +222,8 @@ class PacklinkAdapter:
             raise PacklinkRequestError("Packlink destination city/postcode selector could not be resolved; shipment was not handed off.")
         to_address["country"] = self._clean_country(recipient_country_code)
         to_address["country_code"] = self._clean_country(recipient_country_code)
+        to_address["postal_zone_id"] = recipient_postal_zone_id
+        to_address["zip_code_id"] = recipient_postcode_id
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
             "postal_zone_id_to": recipient_postal_zone_id,
