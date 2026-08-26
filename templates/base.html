@@ -104,7 +104,7 @@
                     <i data-feather="activity" class="me-2"></i>System Activity
                 </a>
                 <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" href="/login">
-                    <i data-feather="log-in" class="me-2"></i>Login
+                    <i data-feather="log-in" class="me-1"></i>Login
                 </a>
             </div>
         </div>
@@ -511,7 +511,14 @@
             );
         }
 
-        installCrossTabLiveSignal();
+        // Do not open the long-lived SSE connection while the browser is
+        // completing its normal page refresh. The bell remains event-driven;
+        // it simply starts after the page load event has completed.
+        if (document.readyState === "complete") {
+            window.setTimeout(installCrossTabLiveSignal, 0);
+        } else {
+            window.addEventListener("load", installCrossTabLiveSignal, {once: true});
+        }
 
         window.addEventListener(
             "pagehide",
