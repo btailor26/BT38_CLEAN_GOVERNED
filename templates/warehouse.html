@@ -168,7 +168,7 @@
             <th>Listing Status</th>
             <th>Price</th>
             <th>Warehouse</th>
-            <th>Action</th>
+            <th>Profit</th>
           </tr>
         </thead>
 
@@ -186,6 +186,7 @@
               data-channel="{% if item.is_fba %}FBA{% elif item.is_fbm %}FBM{% else %}{{ item.platform or '' }}{% endif %}"
               data-status="{{ item.listing_status or item.status or '' }}"
               data-marketplace="{{ item.location or "" }}"
+              data-price="{{ '%.2f'|format(item.price or 0) }}"
             >
 
             <td>
@@ -368,11 +369,10 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
             </td>
 
             <td>
-
-              <button type="button" class="bt38-action-btn" onclick="bt38OpenRowAction(this)">
-                Action
+              <button type="button" class="bt38-profit-action" aria-label="Open profitability calculator">
+                <span class="bt38-profit-value">—</span>
+                <small>Calculate</small>
               </button>
-
             </td>
 
           </tr>
@@ -425,19 +425,15 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
     {% endif %}
   </div>
 
-  <!-- AMAZON-STYLE FLOATING ACTION BAR -->
+  <!-- COMPACT FLOATING ACTION BAR -->
   <div id="bt38FloatingActionBar" class="bt38-floating-action-bar" hidden>
 
     <div class="bt38-selected-pill">
-      <span id="bt38SelectedCount">0</span> SKU(s) selected
+      <span id="bt38SelectedCount">0</span> selected
     </div>
 
-    <button type="button" class="bt38-cancel-action" onclick="bt38ClearSelection()">
-      Cancel
-    </button>
-
     <select id="bt38ActionSelect" class="bt38-action-select" onchange="bt38ChooseAction(this.value)">
-      <option value="">Select action</option>
+      <option value="">Action…</option>
       <option value="adjust_stock">Adjust Stock</option>
       <option value="transfer">Transfer</option>
       <option value="push">Push</option>
@@ -450,6 +446,46 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
       <option value="invoice">Invoice</option>
     </select>
 
+    <button type="button" class="bt38-cancel-action" onclick="bt38ClearSelection()" aria-label="Clear selection">
+      ×
+    </button>
+
+  </div>
+
+  <!-- PROFITABILITY PANEL: read-only auto side + local what-if calculator -->
+  <div id="bt38ProfitOverlay" class="bt38-profit-overlay" hidden>
+    <div class="bt38-profit-panel" role="dialog" aria-modal="true" aria-labelledby="bt38ProfitTitle">
+      <div class="bt38-profit-head">
+        <div>
+          <strong id="bt38ProfitTitle">Profitability</strong>
+          <small id="bt38ProfitSku">SKU</small>
+        </div>
+        <button type="button" id="bt38ProfitClose" class="bt38-profit-close" aria-label="Close">×</button>
+      </div>
+
+      <div class="bt38-profit-grid">
+        <section class="bt38-profit-section">
+          <div class="bt38-profit-section-title">AUTO · MARKETPLACE</div>
+          <div class="bt38-profit-line"><span>Sale price</span><strong id="bt38AutoSale">£0.00</strong></div>
+          <div class="bt38-profit-line"><span>COGS</span><strong class="muted">Not wired</strong></div>
+          <div class="bt38-profit-line"><span>Shipping / fulfilment</span><strong class="muted">Not wired</strong></div>
+          <div class="bt38-profit-line"><span>Marketplace fees</span><strong class="muted">Not wired</strong></div>
+          <div class="bt38-profit-result pending"><span>Profit</span><strong>Waiting for costs</strong></div>
+          <small class="bt38-profit-note">Auto values are read-only. Missing costs are not guessed.</small>
+        </section>
+
+        <section class="bt38-profit-section">
+          <div class="bt38-profit-section-title">CALCULATOR · WHAT IF?</div>
+          <label class="bt38-profit-input"><span>Sell price</span><input id="bt38CalcSale" type="number" min="0" step="0.01"></label>
+          <label class="bt38-profit-input"><span>COGS</span><input id="bt38CalcCogs" type="number" min="0" step="0.01" value="0"></label>
+          <label class="bt38-profit-input"><span>Shipping</span><input id="bt38CalcShipping" type="number" min="0" step="0.01" value="0"></label>
+          <label class="bt38-profit-input"><span>Fees</span><input id="bt38CalcFees" type="number" min="0" step="0.01" value="0"></label>
+          <div class="bt38-profit-result"><span>Profit</span><strong id="bt38CalcProfit">£0.00</strong></div>
+          <div class="bt38-profit-margin"><span>Margin</span><strong id="bt38CalcMargin">0.0%</strong></div>
+          <small class="bt38-profit-note">Calculator only. It does not save or update a marketplace listing.</small>
+        </section>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -459,7 +495,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 <style>
 
 .bt38-enterprise-stock{
-  padding:16px 18px;
+  padding:12px 16px;
   background:#f8fafc;
   min-height:100vh;
 }
@@ -468,24 +504,30 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   display:flex;
   justify-content:space-between;
   align-items:flex-start;
-  gap:20px;
-  margin-bottom:14px;
+  gap:16px;
+  margin-bottom:8px;
 }
 
 .bt38-stock-header h1{
   margin:0;
-  font-size:24px;
+  font-size:22px;
   font-weight:700;
+}
+
+.bt38-stock-header p{
+  margin:4px 0 0;
+  color:#64748b;
+  font-size:12px;
 }
 
 .bt38-subtitle{
   display:inline-block;
-  margin-top:8px;
-  padding:4px 10px;
-  border-radius:8px;
+  margin-top:5px;
+  padding:3px 8px;
+  border-radius:7px;
   background:#eef2ff;
   color:#2563eb;
-  font-size:10px;
+  font-size:9px;
 }
 
 .bt38-sync-btn{
@@ -493,23 +535,24 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   background:#2563eb;
   color:#fff;
   border-radius:8px;
-  padding:14px 20px;
+  padding:10px 16px;
   font-weight:600;
 }
 
 .bt38-operational-tabs{
   display:flex;
-  gap:8px;
+  gap:6px;
   overflow:auto;
-  margin-bottom:14px;
+  margin-bottom:8px;
 }
 
 .bt38-operational-tabs button{
   border:none;
   background:#fff;
-  padding:8px 12px;
-  border-radius:8px;
+  padding:6px 10px;
+  border-radius:7px;
   white-space:nowrap;
+  font-size:12px;
   font-weight:600;
 }
 
@@ -521,8 +564,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 .bt38-filter-bar{
   display:grid;
   grid-template-columns:2fr repeat(4,1fr) auto;
-  gap:8px;
-  margin-bottom:14px;
+  gap:7px;
+  margin-bottom:8px;
 }
 
 .bt38-search-wrap input,
@@ -530,7 +573,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   width:100%;
   border:1px solid #dbe1ea;
   border-radius:8px;
-  padding:9px;
+  padding:8px;
   background:#fff;
 }
 
@@ -546,29 +589,35 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 .bt38-kpi-row{
   display:grid;
   grid-template-columns:repeat(6,1fr);
-  gap:16px;
-  margin-bottom:14px;
+  gap:8px;
+  margin-bottom:8px;
 }
 
 .bt38-kpi-card{
   background:#fff;
+  border:1px solid #edf1f5;
   border-radius:8px;
-  padding:14px 16px;
+  padding:7px 10px;
+  min-height:58px;
+  box-sizing:border-box;
 }
 
 .bt38-kpi-card span{
   display:block;
   color:#6b7280;
-  margin-bottom:8px;
+  margin-bottom:2px;
+  font-size:10px;
 }
 
 .bt38-kpi-card strong{
   display:block;
-  font-size:24px;
+  font-size:18px;
+  line-height:20px;
 }
 
 .bt38-kpi-card small{
   color:#9ca3af;
+  font-size:9px;
 }
 
 .bt38-table-shell{
@@ -581,7 +630,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   display:flex;
   justify-content:space-between;
   align-items:center;
-  padding:9px 12px;
+  padding:7px 10px;
   border-bottom:1px solid #f1f5f9;
 }
 
@@ -595,8 +644,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   border:none;
   background:#eef2ff;
   color:#2563eb;
-  border-radius:10px;
-  padding:8px 14px;
+  border-radius:8px;
+  padding:6px 11px;
   font-weight:600;
 }
 
@@ -651,9 +700,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   background:#eef2f7;
 }
 
-
-
-
 .bt38-product-title{
   font-size:14px;
   line-height:18px;
@@ -669,14 +715,6 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   color:#6b7280;
   font-weight:400;
 }
-
-
-.bt38-meta{
-  font-size:10px;
-  color:#6b7280;
-}
-
-
 
 .bt38-marketplace-icons{
   display:flex;
@@ -699,17 +737,9 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   text-transform:uppercase;
 }
 
-.bt38-mp.amazon{
-  background:#fef3c7;
-}
-
-.bt38-mp.ebay{
-  background:#dbeafe;
-}
-
-.bt38-mp.shopify{
-  background:#dcfce7;
-}
+.bt38-mp.amazon{ background:#fef3c7; }
+.bt38-mp.ebay{ background:#dbeafe; }
+.bt38-mp.shopify{ background:#dcfce7; }
 
 .bt38-group-pill{
   background:#ede9fe;
@@ -720,10 +750,7 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   font-weight:600;
 }
 
-.bt38-marketplaces{
-  font-size:10px;
-  font-weight:600;
-}
+.bt38-marketplaces{ font-size:10px; font-weight:600; }
 
 .bt38-status{
   display:inline-block;
@@ -733,75 +760,63 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   font-weight:700;
 }
 
-.bt38-status.active{
-  background:#dcfce7;
-  color:#166534;
-}
-
-.bt38-status.low{
-  background:#fee2e2;
-  color:#991b1b;
-}
-
-.bt38-action-btn{
-  border:none;
-  background:#2563eb;
-  color:#fff;
-  border-radius:8px;
-  padding:8px 14px;
-  font-weight:600;
-}
-
+.bt38-status.active{ background:#dcfce7; color:#166534; }
+.bt38-status.low{ background:#fee2e2; color:#991b1b; }
 
 .bt38-floating-action-bar{
   position:fixed;
   left:50%;
-  bottom:18px;
+  bottom:12px;
   transform:translateX(-50%);
   z-index:9999;
   background:#0f172a;
   color:#fff;
-  border-radius:8px;
-  padding:8px 12px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:999px;
+  padding:5px 7px;
   display:flex;
   align-items:center;
-  gap:10px;
-  box-shadow:0 8px 22px rgba(0,0,0,.22);
+  gap:6px;
+  box-shadow:0 8px 20px rgba(0,0,0,.20);
 }
 
-.bt38-floating-action-bar[hidden]{
-  display:none !important;
-}
+.bt38-floating-action-bar[hidden]{ display:none !important; }
 
 .bt38-selected-pill{
   background:#0ea5e9;
   color:#fff;
   border-radius:999px;
-  padding:6px 14px;
+  padding:5px 9px;
   font-weight:700;
   font-size:10px;
   white-space:nowrap;
 }
 
 .bt38-cancel-action{
-  border:1px solid #d1d5db;
-  background:#fff;
-  color:#111827;
-  border-radius:6px;
-  padding:8px 18px;
-  font-weight:600;
+  width:28px;
+  height:28px;
+  border:0;
+  background:rgba(255,255,255,.12);
+  color:#fff;
+  border-radius:999px;
+  padding:0;
+  font-size:18px;
+  line-height:1;
+  font-weight:500;
+  cursor:pointer;
 }
 
 .bt38-action-select{
-  min-width:160px;
+  min-width:120px;
+  height:28px;
   border:1px solid #22d3ee;
   background:#07575b;
   color:#fff;
-  border-radius:6px;
-  padding:8px 12px;
+  border-radius:999px;
+  padding:3px 9px;
+  font-size:11px;
   font-weight:600;
 }
-
 
 .bt38-source-pill{
   display:inline-block;
@@ -812,16 +827,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   white-space:nowrap;
 }
 
-.bt38-source-pill.readonly{
-  background:#f3f4f6;
-  color:#374151;
-}
-
-.bt38-source-pill.editable{
-  background:#dcfce7;
-  color:#166534;
-}
-
+.bt38-source-pill.readonly{ background:#f3f4f6; color:#374151; }
+.bt38-source-pill.editable{ background:#dcfce7; color:#166534; }
 
 .bt38-cell-action{
   border:1px solid #e5e7eb;
@@ -852,7 +859,8 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 }
 
 .bt38-cell-action:hover,
-.bt38-marketplace-control:hover{
+.bt38-marketplace-control:hover,
+.bt38-profit-action:hover{
   border-color:#2563eb;
   box-shadow:0 0 0 2px rgba(37,99,235,.08);
 }
@@ -868,22 +876,54 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   cursor:pointer;
 }
 
-.bt38-action-btn{
-  border:1px solid #d1d5db;
+.bt38-profit-action{
+  border:1px solid #dbe1ea;
   background:#fff;
-  color:#111827;
   border-radius:8px;
-  padding:7px 12px;
-  font-size:12px;
-  font-weight:700;
+  padding:5px 8px;
+  min-width:78px;
+  display:inline-flex;
+  flex-direction:column;
+  align-items:flex-start;
   cursor:pointer;
+  text-align:left;
 }
+.bt38-profit-action span{font-size:13px;font-weight:800;color:#0f172a;line-height:16px;}
+.bt38-profit-action small{font-size:9px;font-weight:700;color:#2563eb;line-height:12px;}
 
-.bt38-action-btn:hover{
-  border-color:#2563eb;
-  color:#2563eb;
+.bt38-profit-overlay{
+  position:fixed;
+  inset:0;
+  z-index:10000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(15,23,42,.36);
 }
-
+.bt38-profit-overlay[hidden]{display:none !important;}
+.bt38-profit-panel{
+  width:min(720px, calc(100vw - 36px));
+  background:#fff;
+  border-radius:14px;
+  box-shadow:0 24px 70px rgba(15,23,42,.26);
+  overflow:hidden;
+}
+.bt38-profit-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #e5e7eb;}
+.bt38-profit-head strong{display:block;font-size:18px;color:#0f172a;}
+.bt38-profit-head small{display:block;margin-top:2px;color:#64748b;font-size:11px;}
+.bt38-profit-close{border:0;background:#f1f5f9;width:30px;height:30px;border-radius:50%;font-size:20px;cursor:pointer;}
+.bt38-profit-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#e5e7eb;}
+.bt38-profit-section{background:#fff;padding:16px;}
+.bt38-profit-section-title{font-size:10px;font-weight:800;letter-spacing:.06em;color:#64748b;margin-bottom:12px;}
+.bt38-profit-line,.bt38-profit-input,.bt38-profit-result,.bt38-profit-margin{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;font-size:12px;}
+.bt38-profit-line strong,.bt38-profit-result strong,.bt38-profit-margin strong{color:#0f172a;}
+.bt38-profit-line .muted{color:#94a3b8;font-weight:600;}
+.bt38-profit-input input{width:110px;border:1px solid #dbe1ea;border-radius:7px;padding:6px 8px;text-align:right;font-weight:700;}
+.bt38-profit-result{margin-top:13px;padding-top:11px;border-top:1px solid #e5e7eb;font-size:14px;font-weight:800;}
+.bt38-profit-result.pending strong{color:#94a3b8;font-size:11px;}
+.bt38-profit-margin{font-size:12px;font-weight:700;}
+.bt38-profit-note{display:block;margin-top:10px;color:#94a3b8;font-size:10px;line-height:1.35;}
 
 .bt38-qty-locked{
   background:#f3f4f6 !important;
@@ -892,29 +932,11 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   opacity:.85;
 }
 
-.bt38-qty-locked small::before{
-  content:"🔒 ";
-}
+.bt38-qty-locked small::before{ content:"🔒 "; }
 
-
-.bt38-group-pill.master{
-  background:#fef3c7;
-  color:#92400e;
-  border:1px solid #fde68a;
-}
-
-.bt38-group-pill.child{
-  background:#e0f2fe;
-  color:#075985;
-  border:1px solid #bae6fd;
-}
-
-.bt38-group-pill.none{
-  background:#f3f4f6;
-  color:#6b7280;
-  border:1px solid #e5e7eb;
-}
-
+.bt38-group-pill.master{ background:#fef3c7; color:#92400e; border:1px solid #fde68a; }
+.bt38-group-pill.child{ background:#e0f2fe; color:#075985; border:1px solid #bae6fd; }
+.bt38-group-pill.none{ background:#f3f4f6; color:#6b7280; border:1px solid #e5e7eb; }
 
 .bt38-stock-table thead th{
   position:sticky;
@@ -929,27 +951,11 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   padding-bottom:8px !important;
 }
 
-.bt38-stock-table tbody tr:hover{
-  background:#f8fafc;
-}
-
-.bt38-product-row{
-  gap:8px !important;
-}
-
-.bt38-product-title{
-  margin-bottom:3px !important;
-}
-
-.bt38-meta{
-  line-height:14px !important;
-}
-
-.bt38-cell-action{
-  padding:5px 7px !important;
-  min-width:68px !important;
-}
-
+.bt38-stock-table tbody tr:hover{ background:#f8fafc; }
+.bt38-product-row{ gap:8px !important; }
+.bt38-product-title{ margin-bottom:3px !important; }
+.bt38-meta{ line-height:14px !important; }
+.bt38-cell-action{ padding:5px 7px !important; min-width:68px !important; }
 
 .bt38-mp-logo{
   min-width:30px;
@@ -964,85 +970,27 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   line-height:1;
 }
 
-.bt38-mp-logo.amazon{
-  background:#ff9900;
-  color:#111827;
-  font-family:Arial, sans-serif;
-}
+.bt38-mp-logo.amazon{ background:#ff9900; color:#111827; font-family:Arial, sans-serif; }
+.bt38-mp-logo.ebay{ background:#ffffff; color:#0654ba; border:1px solid #e5e7eb; font-size:11px; }
+.bt38-mp-logo.shopify{ background:#95bf47; color:#ffffff; }
+.bt38-mp-logo.tiktok{ background:#111827; color:#ffffff; }
+.bt38-mp-logo.unknown{ background:#f3f4f6; color:#6b7280; }
 
-.bt38-mp-logo.ebay{
-  background:#ffffff;
-  color:#0654ba;
-  border:1px solid #e5e7eb;
-  font-size:11px;
-}
-
-.bt38-mp-logo.shopify{
-  background:#95bf47;
-  color:#ffffff;
-}
-
-.bt38-mp-logo.tiktok{
-  background:#111827;
-  color:#ffffff;
-}
-
-.bt38-mp-logo.unknown{
-  background:#f3f4f6;
-  color:#6b7280;
-}
-
-
-.bt38-status.locked{
-  background:#f3f4f6;
-  color:#374151;
-}
-
-.bt38-status.locked::before{
-  content:"🔒 ";
-}
-
-.bt38-status.inactive{
-  background:#fee2e2;
-  color:#991b1b;
-}
-
+.bt38-status.locked{ background:#f3f4f6; color:#374151; }
+.bt38-status.locked::before{ content:"🔒 "; }
+.bt38-status.inactive{ background:#fee2e2; color:#991b1b; }
 
 @media(max-width:1100px){
-
-  .bt38-filter-bar{
-    grid-template-columns:1fr 1fr;
-  }
-
-  .bt38-kpi-row{
-    grid-template-columns:1fr 1fr;
-  }
-
+  .bt38-filter-bar{ grid-template-columns:1fr 1fr; }
+  .bt38-kpi-row{ grid-template-columns:repeat(3,1fr); }
 }
 
 @media(max-width:700px){
-
-  .bt38-enterprise-stock{
-    padding:9px;
-  }
-
-  .bt38-stock-header{
-    flex-direction:column;
-  }
-
-  .bt38-kpi-row{
-    grid-template-columns:1fr;
-  }
-
-  .bt38-filter-bar{
-    grid-template-columns:1fr;
-  }
-
-  .bt38-bottom-action-bar{
-    flex-direction:column;
-    align-items:flex-start;
-  }
-
+  .bt38-enterprise-stock{ padding:9px; }
+  .bt38-stock-header{ flex-direction:column; }
+  .bt38-kpi-row{ grid-template-columns:1fr 1fr; }
+  .bt38-filter-bar{ grid-template-columns:1fr; }
+  .bt38-profit-grid{grid-template-columns:1fr;}
 }
 
 </style>
@@ -1062,26 +1010,12 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   font-weight:800;
 }
 
-/* BT38 compact warehouse info boxes and search button */
-.bt38-stat-card{
-  padding:12px 14px !important;
-  min-height:78px !important;
-}
-.bt38-stat-card span{
-  font-size:12px !important;
-}
-.bt38-stat-card strong{
-  font-size:20px !important;
-  line-height:1.1 !important;
-}
 .bt38-search-wrap{
   display:flex !important;
   align-items:stretch !important;
   gap:8px !important;
 }
-.bt38-search-wrap input[type="text"]{
-  flex:1 1 auto !important;
-}
+.bt38-search-wrap input[type="text"]{ flex:1 1 auto !important; }
 .bt38-search-btn{
   border:0;
   border-radius:10px;
@@ -1091,58 +1025,34 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
   color:#fff;
 }
 
-
-/* BT38 warehouse bottom results control */
-.bt38-results-bottom{display:flex;justify-content:flex-end;padding:14px 0 8px;}
+.bt38-results-bottom{display:flex;justify-content:flex-end;padding:10px 0 6px;}
 .bt38-results-form{display:flex;align-items:center;gap:8px;font-weight:700;}
 .bt38-results-form select{border:1px solid #d1d5db;border-radius:10px;padding:7px 10px;background:#fff;font-weight:700;}
 
-
-/* BT38 governed compact warehouse control row */
 .bt38-filter-bar-governed{
   display:grid !important;
   grid-template-columns:minmax(260px, 1fr) repeat(4, minmax(130px, 150px)) !important;
-  gap:8px !important;
+  gap:7px !important;
   align-items:center !important;
 }
 .bt38-filter-bar-governed .bt38-search-wrap{
   display:flex !important;
   align-items:stretch !important;
-  gap:8px !important;
+  gap:7px !important;
 }
-.bt38-filter-bar-governed .bt38-search-wrap input{
-  min-height:38px !important;
-}
+.bt38-filter-bar-governed .bt38-search-wrap input{ min-height:34px !important; }
 .bt38-filter-bar-governed select,
 .bt38-filter-bar-governed .bt38-search-btn{
-  height:38px !important;
-  min-height:38px !important;
-  border-radius:10px !important;
+  height:34px !important;
+  min-height:34px !important;
+  border-radius:8px !important;
   box-sizing:border-box !important;
 }
-.bt38-filter-bar-governed select{
-  width:100% !important;
-}
-.bt38-search-btn{
-  white-space:nowrap !important;
-}
-.bt38-stat-card{
-  min-height:72px !important;
-  padding:10px 12px !important;
-}
-.bt38-stat-card strong{
-  font-size:19px !important;
-}
-.bt38-stat-card span{
-  font-size:12px !important;
-}
+.bt38-filter-bar-governed select{ width:100% !important; }
+.bt38-search-btn{ white-space:nowrap !important; }
 @media (max-width: 900px){
-  .bt38-filter-bar-governed{
-    grid-template-columns:1fr 1fr !important;
-  }
-  .bt38-filter-bar-governed .bt38-search-wrap{
-    grid-column:1 / -1 !important;
-  }
+  .bt38-filter-bar-governed{ grid-template-columns:1fr 1fr !important; }
+  .bt38-filter-bar-governed .bt38-search-wrap{ grid-column:1 / -1 !important; }
 }
 
 </style>
@@ -1154,4 +1064,55 @@ onclick="window.location.href='/warehouse?view=groups&q={{ item.sku|urlencode }}
 <script src="{{ url_for('static', filename='js/bt38-global-state.js') }}?v=bt38-global-state"></script>
 <script src="{{ url_for('static', filename='js/bt38-page-controller.js') }}?v=design-b-session-dataset"></script>
 <script src="{{ url_for('static', filename='js/warehouse-governed.js') }}?v=warehouse-governed-controller"></script>
+<script>
+(function(){
+  'use strict';
+  const overlay = document.getElementById('bt38ProfitOverlay');
+  if (!overlay) return;
+
+  const closeBtn = document.getElementById('bt38ProfitClose');
+  const skuEl = document.getElementById('bt38ProfitSku');
+  const autoSale = document.getElementById('bt38AutoSale');
+  const saleInput = document.getElementById('bt38CalcSale');
+  const cogsInput = document.getElementById('bt38CalcCogs');
+  const shippingInput = document.getElementById('bt38CalcShipping');
+  const feesInput = document.getElementById('bt38CalcFees');
+  const profitEl = document.getElementById('bt38CalcProfit');
+  const marginEl = document.getElementById('bt38CalcMargin');
+
+  function money(value){ return '£' + Number(value || 0).toFixed(2); }
+  function number(input){ const value = parseFloat(input.value); return Number.isFinite(value) ? value : 0; }
+  function calculate(){
+    const sale = number(saleInput);
+    const profit = sale - number(cogsInput) - number(shippingInput) - number(feesInput);
+    const margin = sale > 0 ? (profit / sale) * 100 : 0;
+    profitEl.textContent = money(profit);
+    marginEl.textContent = margin.toFixed(1) + '%';
+    profitEl.style.color = profit < 0 ? '#b91c1c' : profit > 0 ? '#166534' : '#0f172a';
+  }
+  function close(){ overlay.hidden = true; }
+
+  document.addEventListener('click', function(event){
+    const trigger = event.target && event.target.closest ? event.target.closest('.bt38-profit-action') : null;
+    if (!trigger) return;
+    const row = trigger.closest('tr');
+    if (!row) return;
+    const price = parseFloat(row.dataset.price || '0') || 0;
+    skuEl.textContent = (row.dataset.sku || 'SKU') + ' · ' + (row.dataset.platform || 'Marketplace');
+    autoSale.textContent = money(price);
+    saleInput.value = price.toFixed(2);
+    cogsInput.value = '0';
+    shippingInput.value = '0';
+    feesInput.value = '0';
+    calculate();
+    overlay.hidden = false;
+    window.setTimeout(function(){ saleInput.focus(); saleInput.select(); }, 0);
+  });
+
+  [saleInput,cogsInput,shippingInput,feesInput].forEach(function(input){ input.addEventListener('input', calculate); });
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', function(event){ if (event.target === overlay) close(); });
+  document.addEventListener('keydown', function(event){ if (event.key === 'Escape' && !overlay.hidden) close(); });
+})();
+</script>
 {% endblock %}
