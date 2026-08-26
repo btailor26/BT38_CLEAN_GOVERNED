@@ -34,7 +34,10 @@ from services.governed_marketplace_order_import import (
 
 def _last_durable_ebay_webhook_at() -> datetime | None:
     return db.session.execute(
-        text("SELECT MAX(received_at) FROM webhooks.ebay_notifications")
+        text(
+            "SELECT MAX(received_at) FROM webhooks.ebay_notifications "
+            "WHERE topic = 'ORDER_CONFIRMATION'"
+        )
     ).scalar()
 
 
