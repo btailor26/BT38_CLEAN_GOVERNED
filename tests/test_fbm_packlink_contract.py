@@ -189,9 +189,9 @@ def test_packlink_incomplete_provider_draft_is_not_a_success(monkeypatch):
         )
 
 
-def test_packlink_location_lookup_failure_does_not_block_handoff(monkeypatch):
+def test_packlink_location_lookup_failure_blocks_handoff_before_post(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
-    order = SimpleNamespace(marketplace_order_id="AMAZON-NONBLOCK")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-BLOCK")
     line = SimpleNamespace(quantity=1, sku="SKU-1", unit_price=2.00)
     monkeypatch.setattr(packlink_module, "ship_from", _sender)
     monkeypatch.setattr(packlink_module, "ship_to", lambda _order: _destination())
@@ -200,20 +200,18 @@ def test_packlink_location_lookup_failure_does_not_block_handoff(monkeypatch):
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 7, "client_id": 9, "country": "GB"}
-        if endpoint.startswith("shipments/"):
-            return _verified_shipment_snapshot()
         raise PacklinkRequestError("lookup unavailable", status_code=503)
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
-    posted = {}
-    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference": "UN-NONBLOCK"})
-    result = adapter.create_shipment_draft(
-        order=order,
-        parcel={"weight_kg": 1, "width_cm": 10, "height_cm": 10, "length_cm": 10},
-        rate={"service_id": 20149},
-    )
-    assert result["reference"] == "UN-NONBLOCK"
-    assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
+    posted = []
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.append((endpoint, body)))
+    with pytest.raises(PacklinkRequestError, match="destination country selector"):
+        adapter.create_shipment_draft(
+            order=order,
+            parcel={"weight_kg": 1, "width_cm": 10, "height_cm": 10, "length_cm": 10},
+            rate={"service_id": 20149},
+        )
+    assert posted == []
 
 
 def test_packlink_draft_accepts_reference_field(monkeypatch):
