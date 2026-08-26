@@ -27,3 +27,19 @@ def test_warehouse_sync_releases_ui_and_does_not_force_reload():
     assert "btn.disabled = false" in source
     assert "btn.textContent = originalText" in source
     assert "window.location.reload()" not in source
+
+
+def test_warehouse_page_controller_does_not_issue_duplicate_row_economics_batch():
+    controller = _read("static/js/bt38-page-controller.js")
+
+    assert "/governed/warehouse/economics-batch" not in controller
+    assert "/governed/warehouse/summary" in controller
+
+
+def test_global_live_bell_starts_only_after_normal_page_load():
+    base = _read("templates/base.html")
+
+    assert "installCrossTabLiveSignal();" in base
+    assert 'window.addEventListener("load"' in base
+    load_block = base.split('window.addEventListener("load"', 1)[1].split("pagehide", 1)[0]
+    assert "installCrossTabLiveSignal();" in load_block
