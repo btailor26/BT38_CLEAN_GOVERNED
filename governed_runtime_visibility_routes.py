@@ -26,6 +26,22 @@ def _non_negative_float(value, field_name: str):
     return number
 
 
+def _stock_economics_payload(stock):
+    unit_cost = float(getattr(stock, "unit_cost", 0) or 0)
+    weight_kg = float(getattr(stock, "product_weight_kg", 0) or 0)
+    shipping_rate = float(getattr(stock, "shipping_cost_per_kg", 0) or 0)
+    fee_rate = float(getattr(stock, "commission_rate", 0) or 0)
+    return {
+        "warehouse_stock_id": int(stock.id),
+        "sku": stock.sku,
+        "unit_cost": round(unit_cost, 2),
+        "product_weight_kg": round(weight_kg, 4),
+        "shipping_cost_per_kg": round(shipping_rate, 4),
+        "shipping_cost": round(weight_kg * shipping_rate, 2),
+        "commission_rate": round(fee_rate, 4),
+    }
+
+
 @governed_runtime_visibility_bp.get("/governed/warehouse/runtime-state")
 def governed_warehouse_runtime_state():
     """Lightweight warehouse runtime heartbeat.
@@ -59,6 +75,47 @@ def governed_warehouse_runtime_state():
     })
 
 
+@governed_runtime_visibility_bp.get("/governed/warehouse/economics-batch")
+def governed_warehouse_economics_batch():
+    """Return local costing defaults for visible Master Stock rows in one read."""
+    from extensions import db
+    from models import WarehouseStock
+
+    raw_ids = (request.args.get("stock_ids") or "").strip()
+    stock_ids = []
+    for raw in raw_ids.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0 and value not in stock_ids:
+            stock_ids.append(value)
+        if len(stock_ids) >= 250:
+            break
+
+    if not stock_ids:
+        return jsonify(success=True, ok=True, governed=True, local_only=True, economics=[])
+
+    rows = (
+        db.session.query(WarehouseStock)
+        .filter(WarehouseStock.id.in_(stock_ids))
+        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+        .all()
+    )
+
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "local_only": True,
+        "marketplace_calls": False,
+        "economics": [_stock_economics_payload(stock) for stock in rows],
+    })
+
+
 @governed_runtime_visibility_bp.get("/governed/warehouse/<int:stock_id>/economics")
 def governed_warehouse_economics(stock_id: int):
     """Read warehouse-owned unit economics for one Master Stock identity.
@@ -84,11 +141,10 @@ def governed_warehouse_economics(stock_id: int):
             listing = candidate
 
     sale_price = float(getattr(listing, "price", 0) or 0)
-    unit_cost = float(getattr(stock, "unit_cost", 0) or 0)
-    weight_kg = float(getattr(stock, "product_weight_kg", 0) or 0)
-    shipping_rate = float(getattr(stock, "shipping_cost_per_kg", 0) or 0)
-    shipping_cost = round(weight_kg * shipping_rate, 2)
-    fee_rate = float(getattr(stock, "commission_rate", 0) or 0)
+    base = _stock_economics_payload(stock)
+    unit_cost = base["unit_cost"]
+    shipping_cost = base["shipping_cost"]
+    fee_rate = base["commission_rate"]
     estimated_fee = round(sale_price * (fee_rate / 100.0), 2) if sale_price > 0 else 0.0
 
     complete = bool(sale_price > 0 and unit_cost > 0)
@@ -100,15 +156,9 @@ def governed_warehouse_economics(stock_id: int):
         "ok": True,
         "governed": True,
         "local_only": True,
-        "warehouse_stock_id": stock.id,
-        "sku": stock.sku,
+        **base,
         "listing_id": getattr(listing, "id", None),
         "sale_price": round(sale_price, 2),
-        "unit_cost": round(unit_cost, 2),
-        "product_weight_kg": round(weight_kg, 4),
-        "shipping_cost_per_kg": round(shipping_rate, 4),
-        "shipping_cost": shipping_cost,
-        "commission_rate": round(fee_rate, 4),
         "estimated_marketplace_fee": estimated_fee,
         "fee_source": "warehouse_estimate_rate",
         "actual_marketplace_fees_wired": False,
@@ -157,12 +207,7 @@ def governed_warehouse_economics_save(stock_id: int):
         return jsonify(success=False, ok=False, error="no_economics_fields_supplied"), 400
 
     db.session.commit()
-
-    shipping_cost = round(
-        float(getattr(stock, "product_weight_kg", 0) or 0)
-        * float(getattr(stock, "shipping_cost_per_kg", 0) or 0),
-        2,
-    )
+    base = _stock_economics_payload(stock)
 
     return jsonify({
         "success": True,
@@ -170,13 +215,7 @@ def governed_warehouse_economics_save(stock_id: int):
         "governed": True,
         "local_only": True,
         "marketplace_write": False,
-        "warehouse_stock_id": stock.id,
-        "sku": stock.sku,
-        "unit_cost": round(float(stock.unit_cost or 0), 2),
-        "product_weight_kg": round(float(stock.product_weight_kg or 0), 4),
-        "shipping_cost_per_kg": round(float(stock.shipping_cost_per_kg or 0), 4),
-        "shipping_cost": shipping_cost,
-        "commission_rate": round(float(stock.commission_rate or 0), 4),
+        **base,
         "updated_fields": sorted(updates.keys()),
         "message": "Warehouse costing defaults saved locally. No marketplace write was performed.",
     })
