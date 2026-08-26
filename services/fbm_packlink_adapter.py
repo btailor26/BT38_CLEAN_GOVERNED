@@ -105,6 +105,9 @@ class PacklinkAdapter:
     def _post_json(self, endpoint: str, body: dict[str, Any]) -> Any:
         return self._request_json("POST", endpoint, body=body)
 
+    def _put_json(self, endpoint: str, body: dict[str, Any]) -> Any:
+        return self._request_json("PUT", endpoint, body=body)
+
     def connection_check(self) -> PacklinkConnectionResult:
         if not self.configured:
             return PacklinkConnectionResult(False, False, None, message="PACKLINK_API_KEY is not configured.")
@@ -152,7 +155,7 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Create a Packlink draft and verify the exact provider draft once before success."""
+        """Create a Packlink draft, save it provider-side, then verify before success."""
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
@@ -240,10 +243,11 @@ class PacklinkAdapter:
             provider_reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
+        self._put_json(f"shipments/{provider_reference}", body)
         provider_snapshot = self.get_shipment(provider_reference)
         missing_fields = self._draft_required_fields_missing(provider_snapshot)
         if missing_fields:
-            raise PacklinkRequestError("Packlink handoff incomplete; provider draft is missing required fields: " + ", ".join(missing_fields))
+            raise PacklinkRequestError("Packlink handoff incomplete after provider save; shipment is missing required fields: " + ", ".join(missing_fields))
         return {"reference": provider_reference, "payment_status": "pending_packlink_payment", "label_ready": False, "raw": payload, "verified": True}
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
