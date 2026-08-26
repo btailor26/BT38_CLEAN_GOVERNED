@@ -1741,8 +1741,8 @@ def governed_warehouse_page():
     """
     from flask import make_response
     from extensions import db
-    from models import MarketplaceListing, WarehouseStock, Store, AmazonFBAInventory
-    from sqlalchemy import or_
+    from models import MarketplaceListing, WarehouseStock, Store
+    from sqlalchemy import case, func, or_
     from sqlalchemy.orm import joinedload
 
     # Warehouse UI must always reflect the latest committed database state.
@@ -1773,7 +1773,7 @@ def governed_warehouse_page():
             joinedload(MarketplaceListing.warehouse_stock),
         )
         .filter(MarketplaceListing.is_active == True)  # noqa: E712
-        # FBA Read Only quantity is shown as a shortcut from AmazonFBAInventory.
+        # FBA Read Only quantity uses the value already handed over by the governed FBA import.
         # Do not show generated "Amazon SKU ..." shadow rows as separate Master Stock listings.
         .filter(~MarketplaceListing.title.ilike("Amazon SKU%"))
         .populate_existing()
@@ -1877,28 +1877,6 @@ def governed_warehouse_page():
             or ""
         )
 
-        fba_truth = None
-
-        if is_fba:
-            # Amazon FBA identity must be SKU-first.
-            # ASIN is metadata only and must not merge multiple seller SKUs.
-            # FNSKU is a secondary fallback only when seller SKU is unavailable.
-            fba_truth = None
-
-            if listing.external_sku:
-                fba_truth = (
-                    db.session.query(AmazonFBAInventory)
-                    .filter(AmazonFBAInventory.seller_sku == listing.external_sku)
-                    .first()
-                )
-
-            if not fba_truth and listing.fnsku and not listing.external_sku:
-                fba_truth = (
-                    db.session.query(AmazonFBAInventory)
-                    .filter(AmazonFBAInventory.fnsku == listing.fnsku)
-                    .first()
-                )
-
         rows.append(SimpleNamespace(
             id=stock.id if stock else 0,
             inventory_item_id=None,
@@ -1925,7 +1903,7 @@ def governed_warehouse_page():
             # eBay variation child rows display their own imported marketplace quantity.
             # MFN/FBM rows display warehouse sellable quantity.
             available_quantity=(
-                int(getattr(fba_truth, "available_quantity", 0) or 0)
+                int(getattr(listing, "last_marketplace_qty", 0) or 0)
                 if is_fba
                 else (
                     int(stock.sellable_quantity or 0)
@@ -1940,7 +1918,7 @@ def governed_warehouse_page():
                     )
                 )
             ) if stock else (
-                int(getattr(fba_truth, "available_quantity", 0) or 0)
+                int(getattr(listing, "last_marketplace_qty", 0) or 0)
                 if is_fba
                 else int(listing.last_marketplace_qty or 0)
             ),
@@ -2025,17 +2003,36 @@ def governed_warehouse_page():
         rows = [row for row in rows if getattr(row, "master_product_group_id", None) or getattr(row, "is_group_controlled", False)]
 
     # Real database totals for the top information boxes.
-    # Do not calculate these from the limited visible rows.
-    active_stock_rows = (
-        db.session.query(WarehouseStock)
-        .filter(WarehouseStock.is_active == True)  # noqa: E712
-        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
-        .all()
+    # Use one compact aggregate query; do not materialize every WarehouseStock row.
+    raw_sellable = (
+        func.coalesce(WarehouseStock.available_quantity, 0)
+        - func.coalesce(WarehouseStock.reserved_quantity, 0)
+        - func.coalesce(WarehouseStock.allocated_quantity, 0)
+    )
+    sellable = case(
+        (raw_sellable > 0, raw_sellable),
+        else_=0,
     )
 
-    total_skus = len(active_stock_rows)
-    total_available = sum(int(getattr(stock, "sellable_quantity", 0) or 0) for stock in active_stock_rows)
-    low_stock_count = sum(1 for stock in active_stock_rows if int(getattr(stock, "sellable_quantity", 0) or 0) <= 0)
+    total_skus, total_available, low_stock_count = (
+        db.session.query(
+            func.count(WarehouseStock.id),
+            func.coalesce(func.sum(sellable), 0),
+            func.coalesce(
+                func.sum(
+                    case((sellable <= 0, 1), else_=0)
+                ),
+                0,
+            ),
+        )
+        .filter(WarehouseStock.is_active == True)  # noqa: E712
+        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+        .one()
+    )
+
+    total_skus = int(total_skus or 0)
+    total_available = int(total_available or 0)
+    low_stock_count = int(low_stock_count or 0)
 
     listing_count = (
         db.session.query(MarketplaceListing)
@@ -2441,7 +2438,7 @@ def _patch_warehouse_phase1_ui(html: str, stats, search_query: str, active_view:
     wireSearch();
     wireKpis();
     wireTabs();
-    loadRuntimeOverlay();
+
   }});
 }})();
 </script>
