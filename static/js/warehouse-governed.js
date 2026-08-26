@@ -392,7 +392,9 @@
   async function loadVisibleProfitability() {
     if (!warehouseActive()) return;
 
-    const rows = Array.from(document.querySelectorAll('.bt38-stock-table tbody tr[data-stock-id]'));
+    const rows = Array.from(
+      document.querySelectorAll('.bt38-stock-table tbody tr[data-stock-id]')
+    ).filter(row => !row.hidden);
     const stockIds = [];
     rows.forEach(row => {
       const stockId = String(row.dataset.stockId || '').trim();
@@ -411,6 +413,12 @@
     } catch (err) {
       console.warn('[warehouse-profit] batch economics unavailable', err);
     }
+  }
+
+  function scheduleVisibleProfitabilityRefresh() {
+    window.requestAnimationFrame(() => {
+      loadVisibleProfitability();
+    });
   }
 
   function ensureAutoDefaultsEditor(autoSection) {
@@ -552,7 +560,6 @@
 
       const row = document.querySelector(`.bt38-stock-table tr[data-stock-id="${CSS.escape(String(stockId))}"]`);
       if (row) await loadEconomics(row);
-      await loadVisibleProfitability();
       save.textContent = 'Saved';
       window.setTimeout(() => { save.textContent = oldText; }, 900);
     } catch (err) {
@@ -566,6 +573,27 @@
   document.addEventListener('input', function (e) {
     if (!e.target || !['bt38CalcSale', 'bt38CalcCogs', 'bt38CalcShipping', 'bt38CalcFees'].includes(e.target.id)) return;
     recalcWhatIf();
+  });
+
+  document.addEventListener('input', function (e) {
+    if (!e.target || !e.target.closest || !e.target.closest('#bt38WarehouseSearchForm')) return;
+    scheduleVisibleProfitabilityRefresh();
+  });
+
+  document.addEventListener('change', function (e) {
+    if (!e.target) return;
+    if (
+      (e.target.closest && e.target.closest('#bt38WarehouseSearchForm')) ||
+      e.target.id === 'bt38ResultsPerPageSelect'
+    ) {
+      scheduleVisibleProfitabilityRefresh();
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    const pageLink = e.target && e.target.closest ? e.target.closest('.bt38-page-nav .bt38-page-link') : null;
+    if (!pageLink) return;
+    scheduleVisibleProfitabilityRefresh();
   });
 
   function alignWarehouseFilterRow() {
