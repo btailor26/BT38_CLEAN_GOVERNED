@@ -22,9 +22,13 @@ def test_bell_hydrates_once_when_page_opens():
     assert '"/governed/ui/notifications?limit=20"' in block
     assert 'loadNotifications();' in block
 
-    # Event-driven contract: no repeated browser polling.
+    # Event-driven contract: no repeated browser polling. A single zero-delay
+    # transport deferral is allowed only after document.readyState is complete.
     assert 'setInterval(' not in block
-    assert 'setTimeout(' not in block
+    if 'setTimeout(' in block:
+        assert 'window.setTimeout(installCrossTabLiveSignal, 0)' in block
+        assert 'document.readyState === "complete"' in block
+        assert block.count('setTimeout(') == 1
 
 
 def test_unseen_state_survives_until_bell_is_checked():
@@ -53,6 +57,7 @@ def test_bell_is_display_only():
     for token in forbidden:
         assert token not in block
 
+
 def test_bell_sale_records_include_existing_product_title():
     assert "MarketplaceListing.query" in ROUTES
     assert "MarketplaceListing.store_id == order.store_id" in ROUTES
@@ -65,6 +70,7 @@ def test_bell_renders_title_before_sale_metadata():
     assert 'record.title || record.message' in BASE
     assert 'Qty ${record.quantity || 0}' in BASE
     assert 'Order ${record.order_id}' in BASE
+
 
 def test_bell_unread_uses_persisted_event_identity_not_marketplace_time():
     assert 'bt38.notifications.seenEventKeys' in BASE
@@ -83,4 +89,3 @@ def test_late_recovered_event_can_still_be_unread():
 def test_checking_bell_marks_only_loaded_event_keys_seen():
     assert 'JSON.stringify(seenEvents)' in BASE
     assert 'setBellLight(false);' in BASE
-
