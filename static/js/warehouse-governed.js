@@ -184,9 +184,24 @@
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok || data.success === false) {
-        throw new Error(data.message || 'Action failed');
+        throw new Error(data.message || data.error || 'Action failed');
       }
 
+      return data;
+    });
+  }
+
+  function getJson(endpoint) {
+    return fetch(endpoint, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' },
+      cache: 'no-store'
+    }).then(async res => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || data.error || 'Load failed');
+      }
       return data;
     });
   }
@@ -314,6 +329,194 @@
       alert(err.message || 'Quantity update failed');
       console.error(err);
     }
+  });
+
+  function money(value) {
+    const number = Number(value || 0);
+    return `£${number.toFixed(2)}`;
+  }
+
+  function numberValue(id) {
+    const el = document.getElementById(id);
+    const value = Number(el && el.value ? el.value : 0);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function recalcWhatIf() {
+    const sale = numberValue('bt38CalcSale');
+    const cogs = numberValue('bt38CalcCogs');
+    const shipping = numberValue('bt38CalcShipping');
+    const fees = numberValue('bt38CalcFees');
+    const profit = sale - cogs - shipping - fees;
+    const margin = sale > 0 ? (profit / sale) * 100 : 0;
+
+    const profitEl = document.getElementById('bt38CalcProfit');
+    const marginEl = document.getElementById('bt38CalcMargin');
+    if (profitEl) profitEl.textContent = money(profit);
+    if (marginEl) marginEl.textContent = `${margin.toFixed(1)}%`;
+  }
+
+  function ensureAutoDefaultsEditor(autoSection) {
+    let editor = document.getElementById('bt38AutoDefaultsEditor');
+    if (editor) return editor;
+
+    editor = document.createElement('div');
+    editor.id = 'bt38AutoDefaultsEditor';
+    editor.style.marginTop = '10px';
+    editor.style.paddingTop = '10px';
+    editor.style.borderTop = '1px solid #e5e7eb';
+    editor.innerHTML = `
+      <div style="font-size:10px;font-weight:800;color:#64748b;margin-bottom:7px;letter-spacing:.04em">WAREHOUSE DEFAULTS</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+        <label class="bt38-profit-input"><span>COGS £</span><input id="bt38AutoCogsInput" type="number" min="0" step="0.01"></label>
+        <label class="bt38-profit-input"><span>Weight kg</span><input id="bt38AutoWeightInput" type="number" min="0" step="0.001"></label>
+        <label class="bt38-profit-input"><span>Ship £ / kg</span><input id="bt38AutoShipRateInput" type="number" min="0" step="0.01"></label>
+        <label class="bt38-profit-input"><span>Fee rate %</span><input id="bt38AutoFeeRateInput" type="number" min="0" step="0.01"></label>
+      </div>
+      <button type="button" id="bt38AutoDefaultsSave" style="margin-top:8px;width:100%;height:32px;border:0;border-radius:8px;background:#111827;color:#fff;font-weight:700;cursor:pointer">Save warehouse defaults</button>
+      <small style="display:block;margin-top:5px;color:#64748b">Local warehouse values only. This does not change Amazon or eBay.</small>
+    `;
+    autoSection.appendChild(editor);
+    return editor;
+  }
+
+  function populateAutoEconomics(data, row) {
+    const overlay = document.getElementById('bt38ProfitOverlay');
+    if (!overlay) return;
+
+    const autoSection = overlay.querySelector('.bt38-profit-section');
+    if (!autoSection) return;
+
+    const autoStrong = autoSection.querySelectorAll('.bt38-profit-line strong');
+    if (autoStrong[0]) autoStrong[0].textContent = money(data.sale_price);
+    if (autoStrong[1]) { autoStrong[1].textContent = money(data.unit_cost); autoStrong[1].classList.remove('muted'); }
+    if (autoStrong[2]) { autoStrong[2].textContent = money(data.shipping_cost); autoStrong[2].classList.remove('muted'); }
+    if (autoStrong[3]) {
+      autoStrong[3].textContent = `${money(data.estimated_marketplace_fee)} est.`;
+      autoStrong[3].classList.remove('muted');
+      autoStrong[3].title = `Estimated from stored ${Number(data.commission_rate || 0).toFixed(2)}% rate until marketplace fee extraction is connected.`;
+    }
+
+    const result = autoSection.querySelector('.bt38-profit-result');
+    if (result) {
+      const resultValue = result.querySelector('strong');
+      if (data.estimated_profit === null || data.estimated_profit === undefined) {
+        result.classList.add('pending');
+        if (resultValue) resultValue.textContent = 'Set COGS';
+      } else {
+        result.classList.remove('pending');
+        if (resultValue) resultValue.textContent = `${money(data.estimated_profit)} · ${Number(data.estimated_margin || 0).toFixed(1)}%`;
+      }
+    }
+
+    ensureAutoDefaultsEditor(autoSection);
+    document.getElementById('bt38AutoCogsInput').value = Number(data.unit_cost || 0).toFixed(2);
+    document.getElementById('bt38AutoWeightInput').value = Number(data.product_weight_kg || 0).toFixed(3);
+    document.getElementById('bt38AutoShipRateInput').value = Number(data.shipping_cost_per_kg || 0).toFixed(2);
+    document.getElementById('bt38AutoFeeRateInput').value = Number(data.commission_rate || 0).toFixed(2);
+
+    const saleInput = document.getElementById('bt38CalcSale');
+    const cogsInput = document.getElementById('bt38CalcCogs');
+    const shipInput = document.getElementById('bt38CalcShipping');
+    const feeInput = document.getElementById('bt38CalcFees');
+    if (saleInput) saleInput.value = Number(data.sale_price || 0).toFixed(2);
+    if (cogsInput) cogsInput.value = Number(data.unit_cost || 0).toFixed(2);
+    if (shipInput) shipInput.value = Number(data.shipping_cost || 0).toFixed(2);
+    if (feeInput) feeInput.value = Number(data.estimated_marketplace_fee || 0).toFixed(2);
+    recalcWhatIf();
+
+    const profitButton = row ? row.querySelector('.bt38-profit-action') : null;
+    if (profitButton) {
+      const valueEl = profitButton.querySelector('.bt38-profit-value');
+      const small = profitButton.querySelector('small');
+      if (data.estimated_profit === null || data.estimated_profit === undefined) {
+        if (valueEl) valueEl.textContent = '—';
+        if (small) small.textContent = 'Set cost';
+      } else {
+        if (valueEl) valueEl.textContent = money(data.estimated_profit);
+        if (small) small.textContent = `${Number(data.estimated_margin || 0).toFixed(1)}% est.`;
+      }
+    }
+  }
+
+  async function loadEconomics(row) {
+    const { stockId, listingId, sku } = getRow(row);
+    if (!stockId || stockId === '0') throw new Error('Warehouse stock identity is missing');
+    const query = listingId ? `?listing_id=${encodeURIComponent(listingId)}` : '';
+    const data = await getJson(`/governed/warehouse/${stockId}/economics${query}`);
+    const skuEl = document.getElementById('bt38ProfitSku');
+    if (skuEl) skuEl.textContent = sku || data.sku || 'SKU';
+    populateAutoEconomics(data, row);
+    return data;
+  }
+
+  document.addEventListener('click', async function (e) {
+    const button = e.target && e.target.closest ? e.target.closest('.bt38-profit-action') : null;
+    if (!button) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const row = button.closest('tr');
+    const overlay = document.getElementById('bt38ProfitOverlay');
+    if (!row || !overlay) return;
+
+    overlay.hidden = false;
+    overlay.dataset.stockId = row.dataset.stockId || '';
+    overlay.dataset.listingId = row.dataset.listingId || '';
+
+    try {
+      await loadEconomics(row);
+    } catch (err) {
+      overlay.hidden = true;
+      alert(err.message || 'Profitability could not be loaded');
+    }
+  });
+
+  document.addEventListener('click', async function (e) {
+    const save = e.target && e.target.closest ? e.target.closest('#bt38AutoDefaultsSave') : null;
+    if (!save) return;
+
+    const overlay = document.getElementById('bt38ProfitOverlay');
+    const stockId = overlay && overlay.dataset ? overlay.dataset.stockId : '';
+    if (!stockId) return;
+
+    save.disabled = true;
+    const oldText = save.textContent;
+    save.textContent = 'Saving…';
+
+    try {
+      await postJson(`/governed/warehouse/${stockId}/economics`, {
+        unit_cost: numberValue('bt38AutoCogsInput'),
+        product_weight_kg: numberValue('bt38AutoWeightInput'),
+        shipping_cost_per_kg: numberValue('bt38AutoShipRateInput'),
+        commission_rate: numberValue('bt38AutoFeeRateInput')
+      }, 'warehouse-economics');
+
+      const row = document.querySelector(`.bt38-stock-table tr[data-stock-id="${CSS.escape(String(stockId))}"]`);
+      if (row) await loadEconomics(row);
+      save.textContent = 'Saved';
+      window.setTimeout(() => { save.textContent = oldText; }, 900);
+    } catch (err) {
+      save.textContent = oldText;
+      alert(err.message || 'Warehouse costing defaults could not be saved');
+    } finally {
+      save.disabled = false;
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    if (!e.target || !['bt38CalcSale', 'bt38CalcCogs', 'bt38CalcShipping', 'bt38CalcFees'].includes(e.target.id)) return;
+    recalcWhatIf();
+  });
+
+  document.addEventListener('DOMContentLoaded', function () {
+    const overlay = document.getElementById('bt38ProfitOverlay');
+    const close = document.getElementById('bt38ProfitClose');
+    if (close && overlay) close.addEventListener('click', () => { overlay.hidden = true; });
+    if (overlay) overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) overlay.hidden = true;
+    });
   });
 
   document.addEventListener('DOMContentLoaded', function () {
