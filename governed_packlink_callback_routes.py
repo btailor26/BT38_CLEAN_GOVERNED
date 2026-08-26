@@ -55,6 +55,15 @@ def _register_callback(adapter: PacklinkAdapter) -> str:
     registered = adapter.register_callback(callback_url)
     if not registered:
         raise PacklinkRequestError("Packlink did not confirm callback registration.")
+
+    # Packlink keeps tracking notifications on a separate callback setting.
+    # Restore it to the same authenticated BT38 event endpoint so tracking
+    # continues through the existing Packlink post-purchase confirmation path.
+    tracking_registered = adapter._post_json("shipments/tracking_callback", {"url": callback_url})
+    if tracking_registered is False:
+        raise PacklinkRequestError("Packlink did not confirm tracking callback registration.")
+    if isinstance(tracking_registered, dict) and tracking_registered.get("success") is False:
+        raise PacklinkRequestError("Packlink did not confirm tracking callback registration.")
     return callback_url
 
 
