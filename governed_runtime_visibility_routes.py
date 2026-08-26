@@ -95,6 +95,88 @@ def governed_warehouse_runtime_state():
     })
 
 
+@governed_runtime_visibility_bp.get("/governed/warehouse/kpis")
+def governed_warehouse_kpis():
+    """Return compact Warehouse KPI aggregates without exporting row datasets.
+
+    One aggregate WarehouseStock query + one listing count. This endpoint never
+    calls a marketplace, starts a sync, or expands the Warehouse row working set.
+    """
+    from extensions import db
+    from models import MarketplaceListing, WarehouseStock
+    from sqlalchemy import case, func
+
+    (
+        total_skus,
+        total_available,
+        low_stock_count,
+        inventory_value,
+        costed_skus,
+    ) = (
+        db.session.query(
+            func.count(WarehouseStock.id),
+            func.coalesce(func.sum(WarehouseStock.sellable_quantity), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (func.coalesce(WarehouseStock.sellable_quantity, 0) <= 0, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.coalesce(WarehouseStock.sellable_quantity, 0)
+                    * func.coalesce(WarehouseStock.unit_cost, 0)
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (func.coalesce(WarehouseStock.unit_cost, 0) > 0, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        )
+        .filter(WarehouseStock.is_active == True)  # noqa: E712
+        .filter(WarehouseStock.is_deleted == False)  # noqa: E712
+        .one()
+    )
+
+    listing_count = (
+        db.session.query(func.count(MarketplaceListing.id))
+        .filter(MarketplaceListing.is_active == True)  # noqa: E712
+        .filter(~MarketplaceListing.title.ilike("Amazon SKU%"))
+        .scalar()
+        or 0
+    )
+
+    total_skus = int(total_skus or 0)
+    costed_skus = int(costed_skus or 0)
+
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "read_only": True,
+        "local_only": True,
+        "marketplace_calls": False,
+        "full_row_scan": False,
+        "total_skus": total_skus,
+        "total_available": int(total_available or 0),
+        "low_stock_count": int(low_stock_count or 0),
+        "listing_count": int(listing_count),
+        "inventory_value": round(float(inventory_value or 0), 2),
+        "costed_skus": costed_skus,
+        "missing_cogs_skus": max(0, total_skus - costed_skus),
+        "inventory_value_source": "warehouse_sellable_quantity_x_unit_cost",
+    })
+
+
 @governed_runtime_visibility_bp.get("/governed/warehouse/economics-batch")
 def governed_warehouse_economics_batch():
     """Return local costing defaults for visible Master Stock rows in one read."""
