@@ -1,0 +1,130 @@
+name: One-time Warehouse FBA cache alignment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  align:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/full-system-release-alignment
+          fetch-depth: 0
+
+      - name: Require expected restored checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          EXPECTED="5cc16a8afebeb1a9be50484546bfa85754c02487"
+          if [ "$ACTUAL" != "$EXPECTED" ] && [ "$ACTUAL" != "${{ github.sha }}" ]; then
+            echo "Ref moved unexpectedly: $ACTUAL"
+            exit 1
+          fi
+
+      - name: Apply exact Warehouse FBA cache alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('governed_routes.py')
+          text = path.read_text(encoding='utf-8')
+          original = text
+
+          old_import = 'from models import MarketplaceListing, WarehouseStock, Store, AmazonFBAInventory'
+          new_import = 'from models import MarketplaceListing, WarehouseStock, Store'
+          assert text.count(old_import) == 1, f'warehouse import match count={text.count(old_import)}'
+          text = text.replace(old_import, new_import, 1)
+
+          old_comment = '# FBA Read Only quantity is shown as a shortcut from AmazonFBAInventory.'
+          new_comment = '# FBA Read Only quantity is the listing cache already handed over by the governed FBA import.'
+          assert text.count(old_comment) == 1, f'warehouse FBA comment match count={text.count(old_comment)}'
+          text = text.replace(old_comment, new_comment, 1)
+
+          old_block = '''        fba_truth = None
+
+        if is_fba:
+            # Amazon FBA identity must be SKU-first.
+            # ASIN is metadata only and must not merge multiple seller SKUs.
+            # FNSKU is a secondary fallback only when seller SKU is unavailable.
+            fba_truth = None
+
+            if listing.external_sku:
+                fba_truth = (
+                    db.session.query(AmazonFBAInventory)
+                    .filter(AmazonFBAInventory.seller_sku == listing.external_sku)
+                    .first()
+                )
+
+            if not fba_truth and listing.fnsku and not listing.external_sku:
+                fba_truth = (
+                    db.session.query(AmazonFBAInventory)
+                    .filter(AmazonFBAInventory.fnsku == listing.fnsku)
+                    .first()
+                )
+
+'''
+          new_block = '''        # Governed FBA import already copied the exact Amazon quantity to
+        # MarketplaceListing.last_marketplace_qty. Warehouse consumes that hand-off
+        # directly and must not re-query AmazonFBAInventory during page render.
+        fba_cached_quantity = int(listing.last_marketplace_qty or 0) if is_fba else None
+
+'''
+          assert text.count(old_block) == 1, f'FBA lookup block match count={text.count(old_block)}'
+          text = text.replace(old_block, new_block, 1)
+
+          old_qty = 'int(getattr(fba_truth, "available_quantity", 0) or 0)'
+          new_qty = 'int(fba_cached_quantity or 0)'
+          assert text.count(old_qty) == 2, f'FBA quantity expression count={text.count(old_qty)}'
+          text = text.replace(old_qty, new_qty, 2)
+
+          route_start = text.index('def governed_warehouse_page():')
+          route_end = text.index('@governed_bp.post("/governed/actions/sku/dry-run")', route_start)
+          route = text[route_start:route_end]
+
+          assert 'db.session.query(AmazonFBAInventory)' not in route
+          assert 'fba_truth' not in route
+          assert 'fba_cached_quantity' in route
+          assert 'listing.last_marketplace_qty' in route
+          assert original != text
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify route compile and focused diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile governed_routes.py
+          git diff --check
+          git diff -- governed_routes.py
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('governed_routes.py').read_text(encoding='utf-8')
+          start = text.index('def governed_warehouse_page():')
+          end = text.index('@governed_bp.post("/governed/actions/sku/dry-run")', start)
+          route = text[start:end]
+          assert 'AmazonFBAInventory' not in route
+          assert 'db.session.query(AmazonFBAInventory)' not in route
+          assert route.count('fba_cached_quantity') >= 3
+          print('Warehouse FBA cache alignment verified')
+          PY
+
+      - name: Remove one-time workflow and commit only source alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "btailor26"
+          git config user.email "bhavtee@gmail.com"
+          git rm .github/workflows/one-time-warehouse-fba-cache-align.yml
+          git add governed_routes.py
+          git diff --cached --check
+          git commit -m "Align Warehouse FBA rows to imported listing cache"
+          git push origin HEAD:fix/full-system-release-alignment
