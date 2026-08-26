@@ -183,8 +183,31 @@ def test_warehouse_profit_cells_batch_hydrate_from_local_economics_only():
     assert "/governed/warehouse/economics-batch?stock_ids=" in controller
     assert "renderRowProfit" in controller
     assert "loadVisibleProfitability();" in controller
+    assert ".filter(row => !row.hidden)" in controller
+    assert "scheduleVisibleProfitabilityRefresh" in controller
     assert "e.stopImmediatePropagation();" in controller
     assert '"marketplace_calls": False' in runtime
+
+
+def test_warehouse_economics_save_refreshes_only_the_saved_row():
+    controller = _source(WAREHOUSE_GOVERNED_JS)
+    start = controller.index("const save = e.target")
+    end = controller.index("document.addEventListener('input'", start)
+    block = controller[start:end]
+
+    assert "if (row) await loadEconomics(row);" in block
+    assert "await loadVisibleProfitability();" not in block
+
+
+def test_warehouse_runtime_heartbeat_reads_fuse_config_in_one_query():
+    runtime = _source(WAREHOUSE_RUNTIME_VISIBILITY)
+    start = runtime.index("def governed_warehouse_runtime_state")
+    end = runtime.index("def governed_warehouse_economics_batch", start)
+    block = runtime[start:end]
+
+    assert "SystemConfig.key.in_(fuse_keys)" in block
+    assert ".all()" in block
+    assert "filter_by(key=key).first()" not in block
 
 
 def test_warehouse_profit_batch_never_becomes_a_marketplace_write_path():
