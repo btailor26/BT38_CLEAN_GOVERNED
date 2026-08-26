@@ -213,15 +213,23 @@ class PacklinkAdapter:
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
         recipient_country_code = self._selector_id(location_data.get("country_code_to")) or self._clean_country(to_address.get("country") or destination.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+        recipient_postal_zone_id = self._selector_id(location_data.get("postal_zone_id_to"))
+        recipient_postcode_id = self._selector_id(location_data.get("zip_code_id_to"))
+        recipient_postal_zone_name = self._clean_text(location_data.get("postal_zone_name_to"))
+        if not recipient_postal_zone_id:
+            raise PacklinkRequestError("Packlink destination country selector could not be resolved; shipment was not handed off.")
+        if not recipient_postcode_id:
+            raise PacklinkRequestError("Packlink destination city/postcode selector could not be resolved; shipment was not handed off.")
+        to_address["country"] = self._clean_country(recipient_country_code)
         to_address["country_code"] = self._clean_country(recipient_country_code)
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
-            "postal_zone_id_to": self._selector_id(location_data.get("postal_zone_id_to")),
+            "postal_zone_id_to": recipient_postal_zone_id,
             "shipping_service_name": rate.get("service_name") or rate.get("service") or None,
             "zip_code_id_from": self._selector_id(location_data.get("zip_code_id_from")),
-            "zip_code_id_to": self._selector_id(location_data.get("zip_code_id_to")),
+            "zip_code_id_to": recipient_postcode_id,
             "selectedWarehouseId": None, "parcel_Ids": [],
-            "postal_zone_name_to": location_data.get("postal_zone_name_to"),
+            "postal_zone_name_to": recipient_postal_zone_name,
             "order_id": draft_attempt_id, "seller_user_id": None, "items": items,
         }
         body = {
@@ -260,14 +268,12 @@ class PacklinkAdapter:
                     continue
                 try:
                     zones_payload = self._get_json("locations/postalzones/destinations", query={"platform": PACKLINK_PLATFORM, "platform_country": country, "language": "en"})
-                    zones = zones_payload if isinstance(zones_payload, list) else []
-                    if isinstance(zones_payload, dict):
-                        for key in ("items", "results", "destinations", "postalzones", "postal_zones"):
-                            candidate = zones_payload.get(key)
-                            if isinstance(candidate, list):
-                                zones = candidate
-                                break
-                    zone = next((item for item in zones if isinstance(item, dict) and self._clean_country(self._first_scalar(item.get("isoCode"), item.get("iso_code"), item.get("countryCode"), item.get("country_code"), item.get("code"), item.get("value")) or "") == country), zones[0] if len(zones) == 1 and isinstance(zones[0], dict) else None)
+                    zones = self._postal_zone_rows(zones_payload)
+                    zone = self._matching_postal_zone(zones, country)
+                    if zone is None:
+                        zones_payload = self._get_json("locations/postalzones/destinations")
+                        zones = self._postal_zone_rows(zones_payload)
+                        zone = self._matching_postal_zone(zones, country)
                     if isinstance(zone, dict):
                         resolved_zone_country = self._clean_country(self._first_scalar(zone.get("isoCode"), zone.get("iso_code"), zone.get("countryCode"), zone.get("country_code"), zone.get("code"), zone.get("value")) or country)
                         if resolved_zone_country:
@@ -320,6 +326,36 @@ class PacklinkAdapter:
             except (PacklinkRequestError, PacklinkConfigurationError, TypeError, ValueError, KeyError):
                 continue
         return result
+
+    @classmethod
+    def _matching_postal_zone(cls, zones: list[dict[str, Any]], country: str) -> dict[str, Any] | None:
+        match = next(
+            (
+                item for item in zones
+                if isinstance(item, dict)
+                and cls._clean_country(
+                    cls._first_scalar(
+                        item.get("isoCode"), item.get("iso_code"), item.get("countryCode"),
+                        item.get("country_code"), item.get("code"), item.get("value"),
+                    ) or ""
+                ) == country
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+        return zones[0] if len(zones) == 1 and isinstance(zones[0], dict) else None
+
+    @staticmethod
+    def _postal_zone_rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("items", "results", "destinations", "postalzones", "postal_zones"):
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    return [item for item in candidate if isinstance(item, dict)]
+        return []
 
     @staticmethod
     def _canonical_postcode_row(payload: Any) -> dict[str, Any] | None:
