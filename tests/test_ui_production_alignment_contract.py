@@ -6,6 +6,8 @@ PRODUCT_LINKING_SESSION = Path("static/js/product-linking-session.js")
 PRODUCT_LINKING = Path("templates/product_linking.html")
 WAREHOUSE = Path("templates/warehouse.html")
 WAREHOUSE_ROUTE = Path("governed_routes.py")
+WAREHOUSE_GOVERNED_JS = Path("static/js/warehouse-governed.js")
+WAREHOUSE_RUNTIME_VISIBILITY = Path("governed_runtime_visibility_routes.py")
 STORES = Path("templates/stores.html")
 
 
@@ -144,6 +146,44 @@ def test_templates_keep_required_controller_scripts():
     assert "bt38-global-state.js" in product_linking
     assert "bt38-page-controller.js" in product_linking
     assert "bt38-page-controller.js" in warehouse
+
+
+def test_warehouse_profit_replaces_duplicate_row_action_and_keeps_compact_selection_bar():
+    warehouse = _source(WAREHOUSE)
+
+    assert "<th>Profit</th>" in warehouse
+    assert 'class="bt38-profit-action"' in warehouse
+    assert '>Action<' not in warehouse
+    assert '<span id="bt38SelectedCount">0</span> selected' in warehouse
+    assert '<option value="">Action…</option>' in warehouse
+    assert 'aria-label="Clear selection"' in warehouse
+
+
+def test_warehouse_profitability_has_separate_auto_and_what_if_sections():
+    warehouse = _source(WAREHOUSE)
+    controller = _source(WAREHOUSE_GOVERNED_JS)
+
+    assert "AUTO · MARKETPLACE" in warehouse
+    assert "CALCULATOR · WHAT IF?" in warehouse
+    assert "Calculator only. It does not save or update a marketplace listing." in warehouse
+    assert "bt38AutoDefaultsSave" in controller
+    assert "Save warehouse defaults" in controller
+    assert "recalcWhatIf" in controller
+    assert "warehouse-economics" in controller
+
+
+def test_warehouse_economics_save_is_local_only_and_reuses_existing_cost_fields():
+    source = _source(WAREHOUSE_RUNTIME_VISIBILITY)
+
+    assert '/governed/warehouse/<int:stock_id>/economics' in source
+    assert '/governed/warehouse/economics-batch' in source
+    assert '"unit_cost": "unit_cost"' in source
+    assert '"product_weight_kg": "product_weight_kg"' in source
+    assert '"shipping_cost_per_kg": "shipping_cost_per_kg"' in source
+    assert '"commission_rate": "commission_rate"' in source
+    assert '"marketplace_write": False' in source
+    assert '"marketplace_calls": False' in source
+    assert "push_marketplace_listing" not in source
 
 
 def test_ebay_commercial_oauth_uses_one_store_aware_authorization_code_flow():
