@@ -129,10 +129,22 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch, packlink_save_ca
     body = posted["body"]
     assert provider_gets[0] == ("clients", None)
     postcode_calls = [call[0] for call in provider_gets if call[0].startswith("locations/postalcodes/")]
-    assert postcode_calls == ["locations/postalcodes/GB/LE1%201AA", "locations/postalcodes/GB/SW1A%201AA"]
+    assert postcode_calls == [
+        "locations/postalcodes/GB/LE1%201AA",
+        "locations/postalcodes/GB/SW1A%201AA",
+        "locations/postalcodes/GB/SW1A%201AA",
+    ]
     assert provider_gets[-1][0] == "shipments/UN2026PRO0009999999"
     assert posted["endpoint"] == "shipments"
-    assert packlink_save_calls == [("shipments/UN2026PRO0009999999", body)]
+    assert len(packlink_save_calls) == 2
+    stage_endpoint, stage_body = packlink_save_calls[0]
+    final_endpoint, final_body = packlink_save_calls[1]
+    assert stage_endpoint == "shipments/UN2026PRO0009999999"
+    assert final_endpoint == "shipments/UN2026PRO0009999999"
+    assert stage_body["additional_data"]["postal_zone_id_to"] == "gb-zone"
+    assert stage_body["additional_data"]["zip_code_id_to"] is None
+    assert "zip_code_id" not in stage_body["to"]
+    assert final_body == body
     assert body["user_id"] == 7
     assert body["client_id"] == 9
     assert body["platform"] == "PRO"
@@ -147,6 +159,8 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch, packlink_save_ca
     assert body["to"]["country"] == "GB"
     assert body["to"]["zip_code"] == "SW1A 1AA"
     assert body["to"]["city"] == "London"
+    assert body["to"]["postal_zone_id"] == "gb-zone"
+    assert body["to"]["zip_code_id"] == "pc_sw1a1aa"
     assert body["packages"] == [{"width": 20, "height": 10, "length": 30, "weight": 1.25}]
     assert body["content"] == "2 SKU-1"
     assert "from" not in body["additional_data"]
