@@ -568,7 +568,58 @@
     recalcWhatIf();
   });
 
+  function alignWarehouseFilterRow() {
+    const form = document.getElementById('bt38WarehouseSearchForm');
+    if (!form) return;
+
+    form.style.setProperty('display', 'grid', 'important');
+    form.style.setProperty('grid-template-columns', 'minmax(320px, 2fr) repeat(4, minmax(150px, 1fr))', 'important');
+    form.style.setProperty('gap', '8px', 'important');
+    form.style.setProperty('align-items', 'center', 'important');
+
+    const searchWrap = form.querySelector('.bt38-search-wrap');
+    if (searchWrap) {
+      searchWrap.style.setProperty('display', 'grid', 'important');
+      searchWrap.style.setProperty('grid-template-columns', 'minmax(0, 1fr) auto', 'important');
+      searchWrap.style.setProperty('gap', '8px', 'important');
+      searchWrap.style.setProperty('align-items', 'center', 'important');
+      searchWrap.style.setProperty('min-width', '0', 'important');
+    }
+
+    const controls = Array.from(form.querySelectorAll('.bt38-search-wrap input[type="text"], .bt38-search-btn, select'));
+    controls.forEach(control => {
+      control.style.setProperty('height', '38px', 'important');
+      control.style.setProperty('min-height', '38px', 'important');
+      control.style.setProperty('max-height', '38px', 'important');
+      control.style.setProperty('margin', '0', 'important');
+      control.style.setProperty('box-sizing', 'border-box', 'important');
+      control.style.setProperty('border-radius', '8px', 'important');
+      control.style.setProperty('align-self', 'center', 'important');
+    });
+
+    const input = searchWrap && searchWrap.querySelector('input[type="text"]');
+    if (input) {
+      input.style.setProperty('width', '100%', 'important');
+      input.style.setProperty('min-width', '0', 'important');
+      input.style.setProperty('padding', '0 11px', 'important');
+    }
+
+    const searchButton = searchWrap && searchWrap.querySelector('.bt38-search-btn');
+    if (searchButton) {
+      searchButton.style.setProperty('width', 'auto', 'important');
+      searchButton.style.setProperty('padding', '0 14px', 'important');
+      searchButton.style.setProperty('white-space', 'nowrap', 'important');
+    }
+
+    form.querySelectorAll('select').forEach(select => {
+      select.style.setProperty('width', '100%', 'important');
+      select.style.setProperty('padding', '0 34px 0 11px', 'important');
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
+    alignWarehouseFilterRow();
+
     const overlay = document.getElementById('bt38ProfitOverlay');
     const close = document.getElementById('bt38ProfitClose');
     if (close && overlay) close.addEventListener('click', () => { overlay.hidden = true; });
