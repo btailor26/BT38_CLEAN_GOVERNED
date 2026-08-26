@@ -2,11 +2,24 @@ from inspect import getsource
 from types import SimpleNamespace
 from urllib.parse import unquote
 
+import pytest
+
 import governed_packlink_callback_routes as callback_routes
 import services.fbm_packlink_adapter as packlink_module
 from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkRequestError
 from services.fbm_packlink_callback import _attach_by_marketplace_reference
 from services.fbm_packlink_event_processor import process_packlink_event
+
+
+@pytest.fixture(autouse=True)
+def packlink_save_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        PacklinkAdapter,
+        "_put_json",
+        lambda self, endpoint, body: calls.append((endpoint, body)) or {},
+    )
+    return calls
 
 
 def _verified_snapshot():
@@ -59,7 +72,7 @@ def _mock_packlink_handoff(monkeypatch, adapter):
     return calls
 
 
-def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(monkeypatch):
+def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(monkeypatch, packlink_save_calls):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-999")
     line = SimpleNamespace(
@@ -120,6 +133,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
 
     body = posted["body"]
     assert posted["endpoint"] == "shipments"
+    assert packlink_save_calls == [("shipments/GB000999ABC", body)]
     assert result["reference"] == "GB000999ABC"
     assert result["payment_status"] == "pending_packlink_payment"
     assert result["label_ready"] is False
