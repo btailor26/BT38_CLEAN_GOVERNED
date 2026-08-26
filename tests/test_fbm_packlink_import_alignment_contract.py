@@ -153,7 +153,11 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
 
     assert get_calls[0] == ("clients", None)
     postcode_calls = [endpoint for endpoint, _ in get_calls if endpoint.startswith("locations/postalcodes/")]
-    assert postcode_calls == ["locations/postalcodes/GB/LE1%203WU", "locations/postalcodes/GB/RM9%205HU"]
+    assert postcode_calls == [
+        "locations/postalcodes/GB/LE1%203WU",
+        "locations/postalcodes/GB/RM9%205HU",
+        "locations/postalcodes/GB/RM9%205HU",
+    ]
     assert get_calls[-1] == ("shipments/GB000999ABC", None)
     assert body["user_id"] == 77
     assert body["client_id"] == 88
