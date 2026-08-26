@@ -9,10 +9,6 @@ window.BT38.pages = window.BT38.pages || {};
 
   const root = document.querySelector("[data-bt38-page]");
 
-  // Product Linking has its own complete-working-set session controller.
-  // Its legacy async loader is retired; the page already contains the Neon
-  // server-rendered working set. Reveal that state immediately and never wait
-  // on a second request that no longer exists.
   if (root && root.dataset.bt38Page === "productLinking") {
     const revealServerRenderedProductLinking = function () {
       const loading = document.getElementById("warehouseLoadingState");
@@ -22,26 +18,15 @@ window.BT38.pages = window.BT38.pages || {};
     };
 
     if (document.readyState === "loading") {
-      document.addEventListener(
-        "DOMContentLoaded",
-        revealServerRenderedProductLinking,
-        {once: true}
-      );
+      document.addEventListener("DOMContentLoaded", revealServerRenderedProductLinking, {once: true});
     } else {
       revealServerRenderedProductLinking();
     }
 
-    // Compatibility only for legacy template callbacks. Relationship writes
-    // remain owned by product-linking-session.js; this function performs no
-    // fetch, scan, marketplace read or write.
     if (typeof window.loadProductLinkingData !== "function") {
       window.loadProductLinkingData = function () {
         revealServerRenderedProductLinking();
-        return Promise.resolve({
-          success: true,
-          server_rendered: true,
-          network_request_started: false
-        });
+        return Promise.resolve({success: true, server_rendered: true, network_request_started: false});
       };
     }
 
@@ -72,9 +57,7 @@ window.BT38.pages = window.BT38.pages || {};
   }
 
   function getFilters(page) {
-    const form = page.filterFormSelector
-      ? document.querySelector(page.filterFormSelector)
-      : null;
+    const form = page.filterFormSelector ? document.querySelector(page.filterFormSelector) : null;
     if (!form) return {};
 
     const filters = {};
@@ -158,9 +141,7 @@ window.BT38.pages = window.BT38.pages || {};
     const page = pageState(name);
     if (!page) return false;
 
-    const table = page.tableSelector
-      ? document.querySelector(page.tableSelector)
-      : null;
+    const table = page.tableSelector ? document.querySelector(page.tableSelector) : null;
     if (!table) return false;
 
     page.rows = Array.from(table.querySelectorAll(page.rowSelector)).map((element) => ({
@@ -174,9 +155,7 @@ window.BT38.pages = window.BT38.pages || {};
   }
 
   function wireForm(page) {
-    const form = page.filterFormSelector
-      ? document.querySelector(page.filterFormSelector)
-      : null;
+    const form = page.filterFormSelector ? document.querySelector(page.filterFormSelector) : null;
     if (!form) return;
 
     form.addEventListener("submit", (event) => {
@@ -228,6 +207,108 @@ window.BT38.pages = window.BT38.pages || {};
     }
   }
 
+  function warehouseKpiCard(label) {
+    return Array.from(document.querySelectorAll(".bt38-kpi-card")).find(
+      (card) => lower(card.querySelector("span")?.textContent) === lower(label)
+    );
+  }
+
+  function setWarehouseKpi(label, value, note) {
+    const card = warehouseKpiCard(label);
+    if (!card) return;
+    const strong = card.querySelector("strong");
+    const small = card.querySelector("small");
+    if (strong) strong.textContent = value;
+    if (small && note) small.textContent = note;
+  }
+
+  function quantityForWarehouseRow(row) {
+    const quantityText = row.querySelector(".bt38-qty-action span, .bt38-qty-locked span")?.textContent || "0";
+    return Number.parseInt(quantityText.replace(/[^0-9-]/g, ""), 10) || 0;
+  }
+
+  function updateWarehouseListingKpi(rows) {
+    const listingIds = new Set();
+    rows.forEach((row) => {
+      const listingId = text(row.dataset.listingId);
+      if (listingId) listingIds.add(listingId);
+    });
+    setWarehouseKpi("Listings", String(listingIds.size), "Active linked listings");
+  }
+
+  async function updateWarehouseInventoryValueKpi(rows) {
+    const stockRows = new Map();
+    rows.forEach((row) => {
+      const stockId = text(row.dataset.stockId);
+      if (!stockId || stockRows.has(stockId)) return;
+      stockRows.set(stockId, row);
+    });
+
+    const stockIds = Array.from(stockRows.keys());
+    if (!stockIds.length) {
+      setWarehouseKpi("Inventory Value", "£0", "No warehouse stock loaded");
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `/governed/warehouse/economics-batch?stock_ids=${encodeURIComponent(stockIds.join(","))}`,
+        {credentials: "include", headers: {Accept: "application/json"}, cache: "no-store"}
+      );
+      const data = await response.json();
+      if (!response.ok || data.success === false) throw new Error(data.error || data.message || "Cost data unavailable");
+
+      const byStockId = new Map((data.economics || []).map((item) => [String(item.warehouse_stock_id), item]));
+      let total = 0;
+      let costed = 0;
+      let missing = 0;
+
+      stockRows.forEach((row, stockId) => {
+        const economics = byStockId.get(String(stockId));
+        const unitCost = Number(economics && economics.unit_cost ? economics.unit_cost : 0);
+        if (!(unitCost > 0)) {
+          missing += 1;
+          return;
+        }
+        total += quantityForWarehouseRow(row) * unitCost;
+        costed += 1;
+      });
+
+      const formatted = new Intl.NumberFormat("en-GB", {
+        style: "currency",
+        currency: "GBP",
+        maximumFractionDigits: 0
+      }).format(total);
+      const note = missing
+        ? `${costed} SKUs costed · ${missing} missing COGS`
+        : `${costed} SKUs costed · stock × COGS`;
+      setWarehouseKpi("Inventory Value", formatted, note);
+    } catch (error) {
+      setWarehouseKpi("Inventory Value", "—", "COGS data unavailable");
+      console.warn("[warehouse-kpi] inventory value unavailable", error);
+    }
+  }
+
+  async function updateWarehouseStatusKpi() {
+    setWarehouseKpi("Warehouse Status", "Checking", "Runtime heartbeat");
+    try {
+      const response = await fetch("/governed/warehouse/runtime-state", {
+        credentials: "include",
+        headers: {Accept: "application/json"},
+        cache: "no-store"
+      });
+      const data = await response.json();
+      const live = response.ok && data && data.ok === true;
+      setWarehouseKpi(
+        "Warehouse Status",
+        live ? "Live" : "Attention",
+        live ? "Runtime healthy" : "Runtime check required"
+      );
+    } catch (error) {
+      setWarehouseKpi("Warehouse Status", "Attention", "Runtime unavailable");
+    }
+  }
+
   function normalizeWarehouseUi() {
     if (!document.querySelector('[data-bt38-page="warehouse"]')) return;
 
@@ -249,45 +330,10 @@ window.BT38.pages = window.BT38.pages || {};
       });
     });
 
-    const cards = Array.from(document.querySelectorAll(".bt38-kpi-card"));
     const rows = Array.from(document.querySelectorAll(".bt38-stock-table tbody tr"));
-
-    const listingCard = cards.find(
-      (card) => lower(card.querySelector("span")?.textContent) === "listings"
-    );
-    if (listingCard) {
-      const strong = listingCard.querySelector("strong");
-      if (strong) {
-        strong.textContent = String(rows.filter((row) => text(row.dataset.listingId)).length);
-      }
-      const small = listingCard.querySelector("small");
-      if (small) small.textContent = "Loaded marketplace listings";
-    }
-
-    const valueCard = cards.find(
-      (card) => lower(card.querySelector("span")?.textContent) === "inventory value"
-    );
-    if (valueCard) {
-      let total = 0;
-      rows.forEach((row) => {
-        const priceText = row.querySelector(".bt38-price-action span")?.textContent || "";
-        const quantityText = row.querySelector(".bt38-qty-action span, .bt38-qty-locked span")?.textContent || "0";
-        const price = Number.parseFloat(priceText.replace(/[^0-9.-]/g, "")) || 0;
-        const quantity = Number.parseInt(quantityText.replace(/[^0-9-]/g, ""), 10) || 0;
-        total += price * quantity;
-      });
-
-      const strong = valueCard.querySelector("strong");
-      if (strong) {
-        strong.textContent = new Intl.NumberFormat("en-GB", {
-          style: "currency",
-          currency: "GBP",
-          maximumFractionDigits: 0
-        }).format(total);
-      }
-      const small = valueCard.querySelector("small");
-      if (small) small.textContent = "Loaded stock × price";
-    }
+    updateWarehouseListingKpi(rows);
+    updateWarehouseInventoryValueKpi(rows);
+    updateWarehouseStatusKpi();
   }
 
   const controller = {
