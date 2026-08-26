@@ -41,6 +41,9 @@ worker_class = 'gthread'
 loglevel = 'info'
 accesslog = '-'
 errorlog = '-'
+# Include total server request time in seconds on every access-log line.
+# Example: request_time=2.431 means Gunicorn took 2.431 seconds to serve it.
+access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s request_time=%(L)s'
 
 # Bind address (may be overridden by command line --bind).
 bind = '0.0.0.0:5000'
