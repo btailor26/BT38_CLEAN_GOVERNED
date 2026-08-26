@@ -172,6 +172,33 @@ def test_warehouse_profitability_has_separate_auto_and_what_if_sections():
     assert "warehouse-economics" in controller
 
 
+def test_warehouse_profit_cells_batch_hydrate_from_local_economics_only():
+    controller = _source(WAREHOUSE_GOVERNED_JS)
+    runtime = _source(WAREHOUSE_RUNTIME_VISIBILITY)
+
+    assert "loadVisibleProfitability" in controller
+    assert "/governed/warehouse/economics-batch?stock_ids=" in controller
+    assert "renderRowProfit" in controller
+    assert "loadVisibleProfitability();" in controller
+    assert "e.stopImmediatePropagation();" in controller
+    assert '"marketplace_calls": False' in runtime
+
+
+def test_warehouse_profit_batch_never_becomes_a_marketplace_write_path():
+    controller = _source(WAREHOUSE_GOVERNED_JS)
+    runtime = _source(WAREHOUSE_RUNTIME_VISIBILITY)
+
+    batch_start = runtime.index('def governed_warehouse_economics_batch')
+    single_start = runtime.index('def governed_warehouse_economics(stock_id', batch_start)
+    batch_block = runtime[batch_start:single_start]
+
+    assert "MarketplaceListing" not in batch_block
+    assert "push_marketplace_listing" not in batch_block
+    assert "amazon" not in batch_block.lower()
+    assert "ebay" not in batch_block.lower()
+    assert "postJson(`/governed/warehouse/economics-batch" not in controller
+
+
 def test_warehouse_economics_save_is_local_only_and_reuses_existing_cost_fields():
     source = _source(WAREHOUSE_RUNTIME_VISIBILITY)
 
