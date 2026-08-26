@@ -29,11 +29,13 @@ def test_warehouse_sync_releases_ui_and_does_not_force_reload():
     assert "window.location.reload()" not in source
 
 
-def test_warehouse_page_controller_does_not_issue_duplicate_row_economics_batch():
+def test_warehouse_page_refresh_uses_one_aggregate_kpi_read():
     controller = _read("static/js/bt38-page-controller.js")
 
-    assert "/governed/warehouse/economics-batch" not in controller
-    assert "/governed/warehouse/summary" in controller
+    assert "/governed/warehouse/kpis" in controller
+    normalize_block = controller.split("function normalizeWarehouseUi()", 1)[1].split("const controller =", 1)[0]
+    assert "updateWarehouseKpis();" in normalize_block
+    assert "updateWarehouseInventoryValueKpi(" not in normalize_block
 
 
 def test_global_live_bell_starts_only_after_normal_page_load():
