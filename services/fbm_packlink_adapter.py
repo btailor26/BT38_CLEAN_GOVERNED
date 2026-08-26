@@ -253,6 +253,29 @@ class PacklinkAdapter:
             provider_reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
+
+        country_stage = json.loads(json.dumps(body))
+        country_stage["to"].pop("zip_code_id", None)
+        country_stage["additional_data"]["zip_code_id_to"] = None
+        self._put_json(f"shipments/{provider_reference}", country_stage)
+
+        refreshed_to = dict(to_address)
+        refreshed_location = self._best_effort_location_ids({}, refreshed_to)
+        refreshed_postal_zone_id = self._selector_id(refreshed_location.get("postal_zone_id_to"))
+        refreshed_postcode_id = self._selector_id(refreshed_location.get("zip_code_id_to"))
+        refreshed_country_code = self._selector_id(refreshed_location.get("country_code_to")) or recipient_country_code
+        refreshed_postal_zone_name = self._clean_text(refreshed_location.get("postal_zone_name_to")) or recipient_postal_zone_name
+        if not refreshed_postal_zone_id:
+            raise PacklinkRequestError("Packlink destination country selector could not be re-confirmed after country selection; shipment remains a draft.")
+        if not refreshed_postcode_id:
+            raise PacklinkRequestError("Packlink destination city/postcode selector could not be re-confirmed after country selection; shipment remains a draft.")
+        body["to"]["country"] = self._clean_country(refreshed_country_code)
+        body["to"]["country_code"] = self._clean_country(refreshed_country_code)
+        body["to"]["postal_zone_id"] = refreshed_postal_zone_id
+        body["to"]["zip_code_id"] = refreshed_postcode_id
+        body["additional_data"]["postal_zone_id_to"] = refreshed_postal_zone_id
+        body["additional_data"]["postal_zone_name_to"] = refreshed_postal_zone_name
+        body["additional_data"]["zip_code_id_to"] = refreshed_postcode_id
         self._put_json(f"shipments/{provider_reference}", body)
         provider_snapshot = self.get_shipment(provider_reference)
         missing_fields = self._draft_required_fields_missing(provider_snapshot)
