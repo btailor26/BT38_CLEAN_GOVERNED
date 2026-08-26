@@ -57,10 +57,74 @@ raw_env = [
 ]
 
 
+def _align_notification_noop_labels(app):
+    """Relabel notification feed no-op checks without changing push execution.
+
+    A marketplace_push_noop SyncLog means the marketplace already matched the
+    governed quantity and no write occurred. The notification panel must not
+    describe that verification as a marketplace push.
+    """
+    from flask import request
+
+    @app.after_request
+    def _bt38_align_notification_noop_response(response):
+        if request.path.rstrip('/') != '/governed/ui/notifications':
+            return response
+        if not response.is_json:
+            return response
+
+        payload = response.get_json(silent=True)
+        if payload is None:
+            return response
+
+        def align(value):
+            if isinstance(value, list):
+                for item in value:
+                    align(item)
+                return
+            if not isinstance(value, dict):
+                return
+
+            evidence = ' '.join(
+                str(value.get(key) or '')
+                for key in (
+                    'event_type',
+                    'log_type',
+                    'message',
+                    'reason',
+                    'source',
+                    'raw_message',
+                )
+            ).lower()
+
+            if (
+                'marketplace_push_noop' in evidence
+                or 'marketplace_already_matches_warehouse' in evidence
+            ):
+                value['title'] = 'Quantity verified'
+                value['message'] = (
+                    'Already aligned — no marketplace write required.'
+                )
+                value['no_op'] = True
+                value['marketplace_write_skipped'] = True
+
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    align(child)
+
+        align(payload)
+        response.set_data(app.json.dumps(payload))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Length'] = str(len(response.get_data()))
+        return response
+
+
 def post_worker_init(worker):
     """Start one governed event listener after the WSGI app is fully loaded."""
     from main import app
     from services.governed_event_runtime import start_event_only_runtime
+
+    _align_notification_noop_labels(app)
 
     started = start_event_only_runtime(app)
     app.logger.info(
