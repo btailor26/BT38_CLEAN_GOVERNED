@@ -167,6 +167,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
     assert body["to"]["city"] == "DAGENHAM"
     assert body["to"]["state"] is None
     assert body["to"]["country"] == "GB"
+    assert body["to"]["country_code"] == "GB"
 
     assert body["packages"] == [{
         "width": 10,
@@ -248,7 +249,7 @@ def test_packlink_preserves_marketplace_second_address_line(monkeypatch):
     assert posted["body"]["additional_data"]["zip_code_id_to"] == "pc_dn118qr"
 
 
-def test_packlink_location_enrichment_is_not_a_handoff_gate(monkeypatch):
+def test_packlink_destination_selector_is_a_handoff_gate(monkeypatch):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-FALLBACK")
     line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
@@ -259,16 +260,47 @@ def test_packlink_location_enrichment_is_not_a_handoff_gate(monkeypatch):
     def fake_get(endpoint, *, query=None):
         if endpoint == "clients":
             return {"id": 77, "client_id": 88, "country": "GB"}
-        if endpoint.startswith("shipments/"):
-            return _verified_snapshot()
         raise PacklinkRequestError("location service unavailable", status_code=503)
 
     monkeypatch.setattr(adapter, "_get_json", fake_get)
     posted = {}
     monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference":"GB-FALLBACK"})
+    with pytest.raises(PacklinkRequestError, match="destination country selector"):
+        adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
+    assert posted == {}
+
+
+def test_packlink_country_selector_retries_unfiltered_zone_lookup(monkeypatch):
+    adapter = PacklinkAdapter(api_key="test-key")
+    order = SimpleNamespace(marketplace_order_id="AMAZON-RETRY")
+    line = SimpleNamespace(quantity=1, sku="SKU", unit_price=5, line_total=5, warehouse_stock=None)
+    monkeypatch.setattr(packlink_module, "ship_from", lambda: {"name":"B & T Outlet","company":"B & T OUTLET LTD","address1":"Sender","address2":None,"city":"Leicester","region":"Leicestershire","postcode":"LE1 3WU","country":"GB","email":"sender@example.test","phone":"07900000000"})
+    monkeypatch.setattr(packlink_module, "ship_to", lambda _order: {"name":"Customer One","address1":"1 Road","address2":None,"city":"London","region":None,"postcode":"SW1A 1AA","country":"GB","email":"buyer@example.test","phone":"07900000001"})
+    monkeypatch.setattr(packlink_module, "order_lines", lambda _order: [line])
+    zone_calls = []
+
+    def fake_get(endpoint, *, query=None):
+        if endpoint == "clients":
+            return {"id": 77, "client_id": 88, "country": "GB"}
+        if endpoint == "locations/postalzones/destinations":
+            zone_calls.append(query)
+            if query is not None:
+                return []
+            return [{"id":"gb-zone","isoCode":"GB","name":"United Kingdom"}]
+        if endpoint.startswith("locations/postalcodes/"):
+            postcode = unquote(endpoint.rsplit("/", 1)[1]).upper()
+            return {"id":"pc_" + postcode.replace(" ", "").lower(), "zipcode":postcode, "country_code":"GB"}
+        if endpoint.startswith("shipments/"):
+            return _verified_snapshot()
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get)
+    posted = {}
+    monkeypatch.setattr(adapter, "_post_json", lambda endpoint, body: posted.update({"body": body}) or {"reference":"GB-RETRY"})
     result = adapter.create_shipment_draft(order=order, parcel={"weight_kg":1,"width_cm":10,"length_cm":10,"height_cm":10}, rate={"service_id":21367})
-    assert result["reference"] == "GB-FALLBACK"
-    assert posted["body"]["to"]["zip_code"] == "SW1A 1AA"
+    assert result["reference"] == "GB-RETRY"
+    assert None in zone_calls
+    assert posted["body"]["additional_data"]["postal_zone_id_to"] == "gb-zone"
 
 
 def test_packlink_provider_reference_requires_exact_remote_shipment_readback(monkeypatch):
