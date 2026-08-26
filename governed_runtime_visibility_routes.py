@@ -7,15 +7,6 @@ from flask import Blueprint, jsonify, request
 governed_runtime_visibility_bp = Blueprint("governed_runtime_visibility", __name__)
 
 
-def _config_on(key: str) -> bool:
-    from models import SystemConfig
-
-    row = SystemConfig.query.filter_by(key=key).first()
-    if not row:
-        return False
-    return str(row.value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-
 def _non_negative_float(value, field_name: str):
     try:
         number = float(value)
@@ -50,6 +41,35 @@ def governed_warehouse_runtime_state():
     diagnostics dumps, or hidden overlay payloads. Pages can use it only to know
     whether the governed runtime/fuse-box layer is alive.
     """
+    from models import SystemConfig
+
+    fuse_keys = (
+        "read_only_mode",
+        "dry_run_mode",
+        "queue_frozen",
+        "sync_enabled",
+        "runtime_sync_enabled",
+        "marketplace_sync_enabled",
+        "manual_sync_enabled",
+        "push_enabled",
+        "runtime_push_enabled",
+        "marketplace_push_enabled",
+        "manual_push_enabled",
+    )
+
+    config_rows = (
+        SystemConfig.query
+        .filter(SystemConfig.key.in_(fuse_keys))
+        .all()
+    )
+    config_values = {
+        str(row.key): str(row.value).strip().lower()
+        for row in config_rows
+    }
+
+    def enabled(key: str) -> bool:
+        return config_values.get(key, "") in {"1", "true", "yes", "on", "enabled"}
+
     return jsonify({
         "success": True,
         "ok": True,
@@ -59,17 +79,17 @@ def governed_warehouse_runtime_state():
         "runtime_state_lightweight": True,
         "timestamp": datetime.utcnow().isoformat(),
         "fuse_box": {
-            "read_only_mode": _config_on("read_only_mode"),
-            "dry_run_mode": _config_on("dry_run_mode"),
-            "queue_frozen": _config_on("queue_frozen"),
-            "sync_enabled": _config_on("sync_enabled"),
-            "runtime_sync_enabled": _config_on("runtime_sync_enabled"),
-            "marketplace_sync_enabled": _config_on("marketplace_sync_enabled"),
-            "manual_sync_enabled": _config_on("manual_sync_enabled"),
-            "push_enabled": _config_on("push_enabled"),
-            "runtime_push_enabled": _config_on("runtime_push_enabled"),
-            "marketplace_push_enabled": _config_on("marketplace_push_enabled"),
-            "manual_push_enabled": _config_on("manual_push_enabled"),
+            "read_only_mode": enabled("read_only_mode"),
+            "dry_run_mode": enabled("dry_run_mode"),
+            "queue_frozen": enabled("queue_frozen"),
+            "sync_enabled": enabled("sync_enabled"),
+            "runtime_sync_enabled": enabled("runtime_sync_enabled"),
+            "marketplace_sync_enabled": enabled("marketplace_sync_enabled"),
+            "manual_sync_enabled": enabled("manual_sync_enabled"),
+            "push_enabled": enabled("push_enabled"),
+            "runtime_push_enabled": enabled("runtime_push_enabled"),
+            "marketplace_push_enabled": enabled("marketplace_push_enabled"),
+            "manual_push_enabled": enabled("manual_push_enabled"),
         },
         "message": "Runtime heartbeat only. No listing or warehouse rows are exported from this endpoint.",
     })
