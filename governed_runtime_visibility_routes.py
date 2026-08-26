@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 governed_runtime_visibility_bp = Blueprint("governed_runtime_visibility", __name__)
 
@@ -14,6 +14,16 @@ def _config_on(key: str) -> bool:
     if not row:
         return False
     return str(row.value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _non_negative_float(value, field_name: str):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid_{field_name}")
+    if number < 0:
+        raise ValueError(f"negative_{field_name}_not_allowed")
+    return number
 
 
 @governed_runtime_visibility_bp.get("/governed/warehouse/runtime-state")
@@ -46,4 +56,127 @@ def governed_warehouse_runtime_state():
             "manual_push_enabled": _config_on("manual_push_enabled"),
         },
         "message": "Runtime heartbeat only. No listing or warehouse rows are exported from this endpoint.",
+    })
+
+
+@governed_runtime_visibility_bp.get("/governed/warehouse/<int:stock_id>/economics")
+def governed_warehouse_economics(stock_id: int):
+    """Read warehouse-owned unit economics for one Master Stock identity.
+
+    This is local database truth only. It never calls Amazon/eBay and never
+    triggers a marketplace write.
+    """
+    from extensions import db
+    from models import MarketplaceListing, WarehouseStock
+
+    stock = db.session.get(WarehouseStock, stock_id)
+    if not stock or bool(getattr(stock, "is_deleted", False)):
+        return jsonify(success=False, ok=False, error="warehouse_stock_not_found"), 404
+
+    listing = None
+    listing_id = request.args.get("listing_id")
+    if listing_id:
+        try:
+            candidate = db.session.get(MarketplaceListing, int(listing_id))
+        except (TypeError, ValueError):
+            candidate = None
+        if candidate and int(getattr(candidate, "warehouse_stock_id", 0) or 0) == int(stock.id):
+            listing = candidate
+
+    sale_price = float(getattr(listing, "price", 0) or 0)
+    unit_cost = float(getattr(stock, "unit_cost", 0) or 0)
+    weight_kg = float(getattr(stock, "product_weight_kg", 0) or 0)
+    shipping_rate = float(getattr(stock, "shipping_cost_per_kg", 0) or 0)
+    shipping_cost = round(weight_kg * shipping_rate, 2)
+    fee_rate = float(getattr(stock, "commission_rate", 0) or 0)
+    estimated_fee = round(sale_price * (fee_rate / 100.0), 2) if sale_price > 0 else 0.0
+
+    complete = bool(sale_price > 0 and unit_cost > 0)
+    estimated_profit = round(sale_price - unit_cost - shipping_cost - estimated_fee, 2) if complete else None
+    margin = round((estimated_profit / sale_price) * 100.0, 1) if estimated_profit is not None and sale_price > 0 else None
+
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "local_only": True,
+        "warehouse_stock_id": stock.id,
+        "sku": stock.sku,
+        "listing_id": getattr(listing, "id", None),
+        "sale_price": round(sale_price, 2),
+        "unit_cost": round(unit_cost, 2),
+        "product_weight_kg": round(weight_kg, 4),
+        "shipping_cost_per_kg": round(shipping_rate, 4),
+        "shipping_cost": shipping_cost,
+        "commission_rate": round(fee_rate, 4),
+        "estimated_marketplace_fee": estimated_fee,
+        "fee_source": "warehouse_estimate_rate",
+        "actual_marketplace_fees_wired": False,
+        "estimated_profit": estimated_profit,
+        "estimated_margin": margin,
+        "complete": complete,
+        "message": "Warehouse economics loaded. Marketplace fees are estimated from the stored rate until marketplace fee extraction is wired.",
+    })
+
+
+@governed_runtime_visibility_bp.post("/governed/warehouse/<int:stock_id>/economics")
+def governed_warehouse_economics_save(stock_id: int):
+    """Save warehouse-owned costing assumptions only.
+
+    Explicitly does not push price, quantity, stock, fulfilment or any other
+    state to a marketplace.
+    """
+    from extensions import db
+    from models import WarehouseStock
+
+    stock = db.session.get(WarehouseStock, stock_id)
+    if not stock or bool(getattr(stock, "is_deleted", False)):
+        return jsonify(success=False, ok=False, error="warehouse_stock_not_found"), 404
+
+    payload = request.get_json(silent=True) or {}
+
+    updates = {}
+    fields = {
+        "unit_cost": "unit_cost",
+        "product_weight_kg": "product_weight_kg",
+        "shipping_cost_per_kg": "shipping_cost_per_kg",
+        "commission_rate": "commission_rate",
+    }
+
+    try:
+        for payload_key, model_field in fields.items():
+            if payload_key not in payload:
+                continue
+            value = _non_negative_float(payload.get(payload_key), payload_key)
+            setattr(stock, model_field, value)
+            updates[payload_key] = value
+    except ValueError as exc:
+        return jsonify(success=False, ok=False, error=str(exc)), 400
+
+    if not updates:
+        return jsonify(success=False, ok=False, error="no_economics_fields_supplied"), 400
+
+    db.session.commit()
+
+    shipping_cost = round(
+        float(getattr(stock, "product_weight_kg", 0) or 0)
+        * float(getattr(stock, "shipping_cost_per_kg", 0) or 0),
+        2,
+    )
+
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "governed": True,
+        "local_only": True,
+        "marketplace_write": False,
+        "warehouse_stock_id": stock.id,
+        "sku": stock.sku,
+        "unit_cost": round(float(stock.unit_cost or 0), 2),
+        "product_weight_kg": round(float(stock.product_weight_kg or 0), 4),
+        "shipping_cost_per_kg": round(float(stock.shipping_cost_per_kg or 0), 4),
+        "shipping_cost": shipping_cost,
+        "commission_rate": round(float(stock.commission_rate or 0), 4),
+        "updated_fields": sorted(updates.keys()),
+        "message": "Warehouse costing defaults saved locally. No marketplace write was performed.",
     })
