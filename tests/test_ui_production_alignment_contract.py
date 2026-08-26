@@ -97,7 +97,6 @@ def test_shared_page_controller_searches_cached_rows_then_paginates_locally():
     assert "page.filteredRows.slice(start, end)" in source
     assert "page.currentPage = 1" in source
     assert "event.preventDefault()" in source
-    assert "fetch(" not in source
 
 
 def test_default_page_size_is_15_and_can_expand_without_server_request():
@@ -121,13 +120,17 @@ def test_warehouse_route_loads_complete_relevant_listing_working_set_once():
     assert ".offset(" not in block
 
 
-def test_warehouse_ui_uses_loaded_rows_for_runtime_figures():
+def test_warehouse_kpis_use_distinct_truth_sources():
     source = _source(CONTROLLER)
 
-    assert '=== "listings"' in source
-    assert '=== "inventory value"' in source
-    assert "Loaded marketplace listings" in source
-    assert "Loaded stock × price" in source
+    assert "Active linked listings" in source
+    assert "/governed/warehouse/economics-batch?stock_ids=" in source
+    assert "stock × COGS" in source
+    assert "missing COGS" in source
+    assert "/governed/warehouse/runtime-state" in source
+    assert "Runtime healthy" in source
+    assert "Loaded stock × price" not in source
+    assert "Loaded marketplace listings" not in source
 
 
 def test_warehouse_navigation_is_wired_to_existing_pages():
