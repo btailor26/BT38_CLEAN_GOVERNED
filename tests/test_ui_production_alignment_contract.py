@@ -151,6 +151,15 @@ def test_templates_keep_required_controller_scripts():
     assert "bt38-page-controller.js" in warehouse
 
 
+def test_warehouse_critical_paint_rules_precede_first_warehouse_markup():
+    warehouse = _source(WAREHOUSE)
+    critical = warehouse.index('id="bt38WarehouseCriticalPaint"')
+    root = warehouse.index('<div class="bt38-enterprise-stock"')
+
+    assert critical < root
+    assert 'loading="lazy" decoding="async"' in warehouse
+
+
 def test_warehouse_profit_replaces_duplicate_row_action_and_keeps_compact_selection_bar():
     warehouse = _source(WAREHOUSE)
 
