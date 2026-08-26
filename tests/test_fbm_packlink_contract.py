@@ -9,6 +9,17 @@ from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkRequestError
 from services.fbm_packlink_callback import _tracking_code, extract_packlink_tracking
 
 
+@pytest.fixture(autouse=True)
+def packlink_save_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        PacklinkAdapter,
+        "_put_json",
+        lambda self, endpoint, body: calls.append((endpoint, body)) or {},
+    )
+    return calls
+
+
 def _destination():
     return {
         "name": "Test Customer",
@@ -88,7 +99,7 @@ def test_packlink_connection_uses_api_key_verification_endpoint(monkeypatch):
     assert called == [("users/api/keys", None)]
 
 
-def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
+def test_packlink_draft_uses_proven_direct_handoff(monkeypatch, packlink_save_calls):
     adapter = PacklinkAdapter(api_key="test-key")
     order = SimpleNamespace(marketplace_order_id="AMAZON-123")
     line = SimpleNamespace(quantity=2, sku="SKU-1", title="OxyLife Bleach 27G", unit_price=4.50)
@@ -121,6 +132,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch):
     assert postcode_calls == ["locations/postalcodes/GB/LE1%201AA", "locations/postalcodes/GB/SW1A%201AA"]
     assert provider_gets[-1][0] == "shipments/UN2026PRO0009999999"
     assert posted["endpoint"] == "shipments"
+    assert packlink_save_calls == [("shipments/UN2026PRO0009999999", body)]
     assert body["user_id"] == 7
     assert body["client_id"] == 9
     assert body["platform"] == "PRO"
