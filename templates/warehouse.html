@@ -4,6 +4,19 @@
 
 {% block content %}
 
+<!-- Critical Warehouse paint rules must be parsed before the first Warehouse element. -->
+<style id="bt38WarehouseCriticalPaint">
+.bt38-enterprise-stock{padding:12px 16px;background:#f8fafc;min-height:100vh}
+.bt38-stock-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:8px}
+.bt38-stock-header h1{margin:0;font-size:22px;font-weight:700}.bt38-stock-header p{margin:4px 0 0;color:#64748b;font-size:12px}
+.bt38-subtitle{display:inline-block;margin-top:5px;padding:3px 8px;border-radius:7px;background:#eef2ff;color:#2563eb;font-size:9px}
+.bt38-operational-tabs{display:flex;gap:6px;overflow:auto;margin-bottom:8px}.bt38-operational-tabs button{border:0;background:#fff;padding:6px 10px;border-radius:7px;white-space:nowrap;font-size:12px;font-weight:600}.bt38-operational-tabs button.active{background:#2563eb;color:#fff}
+.bt38-filter-bar-governed{display:grid!important;grid-template-columns:minmax(320px,2fr) repeat(4,minmax(150px,1fr))!important;gap:8px!important;align-items:center!important;margin-bottom:8px}.bt38-filter-bar-governed .bt38-search-wrap{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;align-items:center!important;min-width:0}.bt38-filter-bar-governed .bt38-search-wrap input,.bt38-filter-bar-governed select,.bt38-filter-bar-governed .bt38-search-btn{height:38px!important;min-height:38px!important;max-height:38px!important;margin:0!important;box-sizing:border-box!important;border-radius:8px!important}.bt38-filter-bar-governed .bt38-search-wrap input,.bt38-filter-bar-governed select{width:100%;border:1px solid #dbe1ea;background:#fff}.bt38-filter-bar-governed .bt38-search-wrap input{min-width:0;padding:0 11px}.bt38-filter-bar-governed select{padding:0 34px 0 11px}.bt38-search-btn{border:0;padding:0 14px;background:#111827;color:#fff;font-weight:700;white-space:nowrap}
+.bt38-kpi-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:8px}.bt38-kpi-card{background:#fff;border:1px solid #edf1f5;border-radius:8px;padding:7px 10px;min-height:58px;box-sizing:border-box}.bt38-kpi-card span{display:block;color:#6b7280;margin-bottom:2px;font-size:10px}.bt38-kpi-card strong{display:block;font-size:18px;line-height:20px}.bt38-kpi-card small{color:#9ca3af;font-size:9px}
+.bt38-table-shell{background:#fff;border-radius:8px;overflow:hidden}.bt38-table-topbar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-bottom:1px solid #f1f5f9}.bt38-table-scroll{overflow:auto}.bt38-stock-table{width:100%;border-collapse:collapse}.bt38-stock-table th,.bt38-stock-table td{padding:9px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-align:middle}.bt38-stock-table thead th{background:#f8fafc}.bt38-product-row{display:flex;align-items:flex-start;gap:8px;min-width:230px}.bt38-product-image img,.bt38-placeholder-img{width:54px;height:54px;border-radius:8px;object-fit:cover;background:#eef2f7}.bt38-product-title{font-size:14px;line-height:18px;font-weight:700;color:#111827;max-width:420px}.bt38-meta{font-size:10px;line-height:14px;color:#6b7280}
+@media(max-width:1100px){.bt38-kpi-row{grid-template-columns:repeat(3,1fr)}}@media(max-width:900px){.bt38-filter-bar-governed{grid-template-columns:1fr 1fr!important}.bt38-filter-bar-governed .bt38-search-wrap{grid-column:1/-1!important}}@media(max-width:700px){.bt38-enterprise-stock{padding:9px}.bt38-stock-header{flex-direction:column}.bt38-kpi-row{grid-template-columns:1fr 1fr}.bt38-filter-bar-governed{grid-template-columns:1fr!important}}
+</style>
+
 <div class="bt38-enterprise-stock" data-bt38-page="warehouse" data-bt38-filter-form="#bt38WarehouseSearchForm" data-bt38-table=".bt38-stock-table" data-bt38-submit-name="bt38WarehouseLocalSubmit">
 
   <!-- HEADER -->
@@ -199,7 +212,7 @@
 
                 <div class="bt38-product-image">
                   {% if item.image_url %}
-                    <img src="{{ item.image_url }}" width="54" height="54">
+                    <img src="{{ item.image_url }}" width="54" height="54" loading="lazy" decoding="async">
                   {% else %}
                     <div class="bt38-placeholder-img"></div>
                   {% endif %}
