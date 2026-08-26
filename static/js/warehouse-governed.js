@@ -356,6 +356,63 @@
     if (marginEl) marginEl.textContent = `${margin.toFixed(1)}%`;
   }
 
+  function renderRowProfit(row, base) {
+    if (!row || !base) return;
+    const button = row.querySelector('.bt38-profit-action');
+    if (!button) return;
+
+    const valueEl = button.querySelector('.bt38-profit-value');
+    const small = button.querySelector('small');
+    const sale = Number(row.dataset.price || 0);
+    const unitCost = Number(base.unit_cost || 0);
+    const shipping = Number(base.shipping_cost || 0);
+    const feeRate = Number(base.commission_rate || 0);
+    const fees = sale > 0 ? sale * (feeRate / 100) : 0;
+
+    row.dataset.cogs = unitCost.toFixed(2);
+    row.dataset.shippingCost = shipping.toFixed(2);
+    row.dataset.feeRate = feeRate.toFixed(4);
+    row.dataset.estimatedFees = fees.toFixed(2);
+
+    if (!(sale > 0) || !(unitCost > 0)) {
+      if (valueEl) valueEl.textContent = '—';
+      if (small) small.textContent = unitCost > 0 ? 'No price' : 'Set cost';
+      button.dataset.profitState = 'incomplete';
+      return;
+    }
+
+    const profit = sale - unitCost - shipping - fees;
+    const margin = sale > 0 ? (profit / sale) * 100 : 0;
+    if (valueEl) valueEl.textContent = money(profit);
+    if (small) small.textContent = `${margin.toFixed(1)}% est.`;
+    button.dataset.profitState = profit < 0 ? 'loss' : 'estimated';
+    button.title = `Estimated: ${money(sale)} sale - ${money(unitCost)} COGS - ${money(shipping)} shipping - ${money(fees)} fees`;
+  }
+
+  async function loadVisibleProfitability() {
+    if (!warehouseActive()) return;
+
+    const rows = Array.from(document.querySelectorAll('.bt38-stock-table tbody tr[data-stock-id]'));
+    const stockIds = [];
+    rows.forEach(row => {
+      const stockId = String(row.dataset.stockId || '').trim();
+      if (!stockId || stockId === '0' || stockIds.includes(stockId)) return;
+      stockIds.push(stockId);
+    });
+
+    if (!stockIds.length) return;
+
+    try {
+      const data = await getJson(`/governed/warehouse/economics-batch?stock_ids=${encodeURIComponent(stockIds.join(','))}`);
+      const byStockId = new Map(
+        (data.economics || []).map(item => [String(item.warehouse_stock_id), item])
+      );
+      rows.forEach(row => renderRowProfit(row, byStockId.get(String(row.dataset.stockId || ''))));
+    } catch (err) {
+      console.warn('[warehouse-profit] batch economics unavailable', err);
+    }
+  }
+
   function ensureAutoDefaultsEditor(autoSection) {
     let editor = document.getElementById('bt38AutoDefaultsEditor');
     if (editor) return editor;
@@ -455,7 +512,7 @@
     if (!button) return;
 
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
 
     const row = button.closest('tr');
     const overlay = document.getElementById('bt38ProfitOverlay');
@@ -495,6 +552,7 @@
 
       const row = document.querySelector(`.bt38-stock-table tr[data-stock-id="${CSS.escape(String(stockId))}"]`);
       if (row) await loadEconomics(row);
+      await loadVisibleProfitability();
       save.textContent = 'Saved';
       window.setTimeout(() => { save.textContent = oldText; }, 900);
     } catch (err) {
@@ -533,6 +591,7 @@
     }
 
     updateActionBar();
+    loadVisibleProfitability();
   });
 
   window.bt38ChooseAction = chooseAction;
