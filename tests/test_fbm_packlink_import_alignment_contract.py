@@ -133,19 +133,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
 
     body = posted["body"]
     assert posted["endpoint"] == "shipments"
-    assert len(packlink_save_calls) == 2
-    country_endpoint, country_body = packlink_save_calls[0]
-    postcode_endpoint, postcode_body = packlink_save_calls[1]
-    assert country_endpoint == "shipments/GB000999ABC"
-    assert postcode_endpoint == "shipments/GB000999ABC"
-    assert country_body["additional_data"]["postal_zone_id_to"] == "gb-zone"
-    assert country_body["additional_data"]["zip_code_id_to"] is None
-    assert country_body["to"]["postal_zone_id"] == "gb-zone"
-    assert "zip_code_id" not in country_body["to"]
-    assert postcode_body["additional_data"]["postal_zone_id_to"] == "gb-zone"
-    assert postcode_body["additional_data"]["zip_code_id_to"] == "pc_rm95hu"
-    assert postcode_body["to"]["postal_zone_id"] == "gb-zone"
-    assert postcode_body["to"]["zip_code_id"] == "pc_rm95hu"
+    assert packlink_save_calls == [("shipments/GB000999ABC", body)]
     assert result["reference"] == "GB000999ABC"
     assert result["payment_status"] == "pending_packlink_payment"
     assert result["label_ready"] is False
@@ -153,11 +141,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
 
     assert get_calls[0] == ("clients", None)
     postcode_calls = [endpoint for endpoint, _ in get_calls if endpoint.startswith("locations/postalcodes/")]
-    assert postcode_calls == [
-        "locations/postalcodes/GB/LE1%203WU",
-        "locations/postalcodes/GB/RM9%205HU",
-        "locations/postalcodes/GB/RM9%205HU",
-    ]
+    assert postcode_calls == ["locations/postalcodes/GB/LE1%203WU", "locations/postalcodes/GB/RM9%205HU"]
     assert get_calls[-1] == ("shipments/GB000999ABC", None)
     assert body["user_id"] == 77
     assert body["client_id"] == 88
