@@ -133,7 +133,7 @@ def test_packlink_future_draft_posts_full_marketplace_address_with_location_ids(
 
     body = posted["body"]
     assert posted["endpoint"] == "shipments"
-    assert packlink_save_calls == [("shipments/GB000999ABC", body)]
+    assert packlink_save_calls == []
     assert result["reference"] == "GB000999ABC"
     assert result["payment_status"] == "pending_packlink_payment"
     assert result["label_ready"] is False
