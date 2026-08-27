@@ -168,6 +168,54 @@
         updateBar();
     }
 
+    function packlinkStatusKind(payload) {
+        if (payload && payload.label_ready) return 'label';
+        const status = String(payload && payload.provider_status || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+        if (!status) return 'draft';
+        if (status.includes('AWAITING_COMPLETION')) return 'blocked';
+        if (/(CANCEL|ERROR|FAIL|REJECT)/.test(status)) return 'issue';
+        if (status.includes('READY_TO_SHIP') || status.includes('READY_FOR_PAYMENT') || status.includes('READY_TO_PAY') || status.includes('PAYMENT_PENDING')) return 'ready';
+        return 'draft';
+    }
+
+    function renderPacklinkStatus(box, payload, shipmentId, handoffUrl) {
+        const reference = payload.provider_reference || '';
+        const kind = packlinkStatusKind(payload);
+        if (kind === 'label') {
+            const tracking = payload.tracking_number || payload.tracking || 'pending';
+            box.innerHTML = `<div class="alert alert-success"><strong>✓ Packlink label ready.</strong></div><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Open label details</button>`;
+            return;
+        }
+        if (kind === 'blocked') {
+            box.innerHTML = `<div class="alert alert-warning mb-2"><strong>Action required</strong><div class="small">Confirm country in Packlink, then click Save.</div></div><div class="d-flex gap-2 flex-wrap"><a class="btn btn-sm btn-primary packlink-pro-handoff" href="${handoffUrl}" target="_blank" rel="noopener noreferrer">Continue to Packlink</a><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check status</button></div>`;
+            return;
+        }
+        if (kind === 'ready') {
+            box.innerHTML = `<div class="alert alert-success mb-2"><strong>✓ Ready to Ship</strong><div class="small">Packlink has accepted the saved shipment.</div></div><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check label</button>`;
+            return;
+        }
+        if (kind === 'issue') {
+            box.innerHTML = `<div class="alert alert-warning mb-2"><strong>Packlink needs attention</strong><div class="small">Open Packlink and correct the shipment before continuing.</div></div><div class="d-flex gap-2 flex-wrap"><a class="btn btn-sm btn-primary packlink-pro-handoff" href="${handoffUrl}" target="_blank" rel="noopener noreferrer">Continue to Packlink</a><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check status</button></div>`;
+            return;
+        }
+        box.innerHTML = `<div class="alert alert-info mb-2"><strong>✓ Packlink draft created.</strong>${reference ? `<div class="small">Reference: <code>${esc(reference)}</code></div>` : ''}</div><div class="d-flex gap-2 flex-wrap"><a class="btn btn-sm btn-primary packlink-pro-handoff" href="${handoffUrl}" target="_blank" rel="noopener noreferrer">Continue to Packlink</a><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check status</button></div>`;
+    }
+
+    async function refreshPacklinkBox(box, shipmentId, handoffUrl) {
+        if (!box || !shipmentId || box.dataset.packlinkStatusLoading === '1') return;
+        box.dataset.packlinkStatusLoading = '1';
+        try {
+            const response = await fetch(`/fbm/shipments/${encodeURIComponent(shipmentId)}/packlink/status`, {credentials: 'same-origin', cache: 'no-store', headers: {'Accept': 'application/json'}});
+            const payload = await response.json().catch(function () { return {}; });
+            if (!response.ok || payload.success !== true) throw new Error(payload.message || `HTTP ${response.status}`);
+            renderPacklinkStatus(box, payload, shipmentId, handoffUrl);
+        } catch (error) {
+            box.innerHTML = `<div class="alert alert-warning mb-2"><strong>Packlink status unavailable</strong><div class="small">${esc(error.message)}</div></div><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check again</button>`;
+        } finally {
+            delete box.dataset.packlinkStatusLoading;
+        }
+    }
+
     function installPacklinkHandoff() {
         const root = document.getElementById('fbmShippingOrders');
         if (!root || root.dataset.packlinkHandoffInstalled === '1') return;
@@ -177,33 +225,16 @@
             root.querySelectorAll('.rate-results').forEach(function (box) {
                 const text = String(box.textContent || '');
                 if (!text.includes('Packlink shipment prepared.') || !text.includes('Reference:')) return;
-
+                const statusButton = box.querySelector('.packlink-status[data-shipment-id]');
+                const shipmentId = statusButton ? statusButton.dataset.shipmentId : '';
+                if (shipmentId) {
+                    refreshPacklinkBox(box, shipmentId, handoffUrl);
+                    return;
+                }
                 const alert = box.querySelector('.alert-info');
-                if (alert && alert.dataset.packlinkDraftConfirmed !== '1') {
-                    alert.dataset.packlinkDraftConfirmed = '1';
+                if (alert) {
                     const heading = alert.querySelector('strong');
                     if (heading) heading.textContent = '✓ Packlink draft created.';
-                    const referenceLine = Array.from(alert.querySelectorAll('.small')).find(function (el) {
-                        return String(el.textContent || '').includes('Reference:');
-                    });
-                    if (referenceLine && !alert.querySelector('.packlink-draft-saved-copy')) {
-                        const saved = document.createElement('div');
-                        saved.className = 'small packlink-draft-saved-copy';
-                        saved.textContent = 'Shipment saved in Packlink — payment and label pending.';
-                        referenceLine.insertAdjacentElement('beforebegin', saved);
-                    }
-                }
-
-                if (box.querySelector('.packlink-pro-handoff')) return;
-                const link = document.createElement('a');
-                link.className = 'btn btn-sm btn-primary ms-2 packlink-pro-handoff'; link.href = handoffUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
-                link.innerHTML = '<span class="badge bg-light text-primary me-1">Packlink PRO</span> Continue to Packlink';
-                const statusButton = box.querySelector('.packlink-status');
-                if (statusButton) {
-                    statusButton.textContent = 'Check label';
-                    statusButton.insertAdjacentElement('beforebegin', link);
-                } else {
-                    box.appendChild(link);
                 }
             });
         };
@@ -217,7 +248,7 @@
         const handoffUrl = 'https://pro.packlink.com/private/shipments/draft';
 
         const align = function () {
-            root.querySelectorAll('.card[data-order-id]').forEach(async function (card) {
+            root.querySelectorAll('.card[data-order-id]').forEach(function (card) {
                 const orderId = card.dataset.orderId;
                 const sourceRow = document.querySelector(`.fbm-order-row[data-order-id="${CSS.escape(String(orderId))}"]`);
                 const existing = sourceRow ? sourceRow.querySelector('.packlink-existing-status[data-shipment-id]') : null;
@@ -225,30 +256,37 @@
                 if (!existing || !box || box.dataset.existingPacklinkAligned === '1' || String(box.textContent || '').trim()) return;
                 box.dataset.existingPacklinkAligned = '1';
                 const shipmentId = existing.dataset.shipmentId;
-                box.innerHTML = '<div class="text-muted">Restoring existing Packlink draft…</div>';
-                try {
-                    const response = await fetch(`/fbm/shipments/${encodeURIComponent(shipmentId)}/packlink/status`, {credentials: 'same-origin', cache: 'no-store', headers: {'Accept': 'application/json'}});
-                    const payload = await response.json().catch(function () { return {}; });
-                    if (!response.ok || payload.success !== true) throw new Error(payload.message || `HTTP ${response.status}`);
-                    const reference = payload.provider_reference || '';
-                    if (payload.label_ready) {
-                        const tracking = payload.tracking_number || payload.tracking || 'pending';
-                        box.innerHTML = `<div class="alert alert-success"><strong>✓ Packlink label ready.</strong><div class="small">Existing shipment restored${reference ? ` · Reference: <code>${esc(reference)}</code>` : ''}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div></div><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Open label details</button>`;
-                        return;
-                    }
-                    box.innerHTML = `<div class="alert alert-info"><strong>✓ Packlink draft created.</strong><div class="small">Shipment saved in Packlink — payment and label pending.</div>${reference ? `<div class="small">Reference: <code>${esc(reference)}</code></div>` : ''}</div><div class="d-flex gap-2 flex-wrap"><a class="btn btn-sm btn-primary" href="${handoffUrl}" target="_blank" rel="noopener noreferrer">Continue to Packlink</a><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check label</button></div>`;
-                } catch (error) {
-                    box.innerHTML = `<div class="alert alert-warning"><strong>Existing Packlink shipment.</strong><div class="small">${esc(error.message)}</div></div><div class="d-flex gap-2 flex-wrap"><a class="btn btn-sm btn-primary" href="${handoffUrl}" target="_blank" rel="noopener noreferrer">Continue to Packlink</a><button class="btn btn-sm btn-outline-primary packlink-status" data-shipment-id="${esc(shipmentId)}">Check again</button></div>`;
-                }
+                box.dataset.packlinkShipmentId = shipmentId;
+                box.innerHTML = '<div class="text-muted">Checking Packlink status…</div>';
+                refreshPacklinkBox(box, shipmentId, handoffUrl);
             });
         };
         new MutationObserver(align).observe(root, {childList: true, subtree: true}); align();
+
+        const refreshVisiblePacklinkDrafts = function () {
+            root.querySelectorAll('.rate-results[data-order-id]').forEach(function (box) {
+                const shipmentId = box.dataset.packlinkShipmentId || (box.querySelector('.packlink-status[data-shipment-id]') || {}).dataset?.shipmentId;
+                if (shipmentId) refreshPacklinkBox(box, shipmentId, handoffUrl);
+            });
+        };
+        window.addEventListener('focus', refreshVisiblePacklinkDrafts);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) refreshVisiblePacklinkDrafts();
+        });
     }
 
     document.addEventListener('click', function (event) {
-        const button = event.target.closest('.fbm-tracking-journey');
-        if (!button) return;
-        event.preventDefault(); event.stopPropagation(); openJourney(button);
+        const journeyButton = event.target.closest('.fbm-tracking-journey');
+        if (journeyButton) {
+            event.preventDefault(); event.stopPropagation(); openJourney(journeyButton); return;
+        }
+        const statusButton = event.target.closest('.packlink-status[data-shipment-id]');
+        if (!statusButton) return;
+        const box = statusButton.closest('.rate-results');
+        if (!box) return;
+        event.preventDefault(); event.stopPropagation();
+        box.dataset.packlinkShipmentId = statusButton.dataset.shipmentId;
+        refreshPacklinkBox(box, statusButton.dataset.shipmentId, 'https://pro.packlink.com/private/shipments/draft');
     });
 
     installManualShippingButton();
