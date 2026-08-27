@@ -214,8 +214,7 @@ class PacklinkAdapter:
         location_data = self._best_effort_location_ids(from_address, to_address)
         # Packlink's shipment address contract uses the ISO country directly.
         # Keep Packlink location selector IDs as optional additional_data only;
-        # embedding them into the recipient address leaves the PRO country
-        # selector unresolved/red in the browser handoff.
+        # embedding selector IDs into the recipient address can leave PRO fields unresolved.
         recipient_country_code = self._clean_country(
             location_data.get("country_code_to")
             or to_address.get("country")
@@ -225,8 +224,12 @@ class PacklinkAdapter:
         recipient_postal_zone_id = self._selector_id(location_data.get("postal_zone_id_to"))
         recipient_postcode_id = self._selector_id(location_data.get("zip_code_id_to"))
         recipient_postal_zone_name = self._clean_text(location_data.get("postal_zone_name_to"))
+        if not recipient_postal_zone_id:
+            raise PacklinkRequestError("Packlink destination country selector could not be resolved; shipment was not handed off.")
+        if not recipient_postcode_id:
+            raise PacklinkRequestError("Packlink destination city/postcode selector could not be resolved; shipment was not handed off.")
         to_address["country"] = recipient_country_code
-        to_address.pop("country_code", None)
+        to_address["country_code"] = recipient_country_code
         to_address.pop("postal_zone_id", None)
         to_address.pop("zip_code_id", None)
         additional_data = {
