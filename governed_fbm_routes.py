@@ -533,8 +533,6 @@ def packlink_create_draft(order_id: int):
     if selected is None:
         return jsonify({"success": False, "message": "Selected Packlink service is not in the stored quote."}), 409
 
-    # Tracking is the only completion boundary. Before tracking exists, a stale
-    # or deleted Packlink draft must never stop the order being sent again.
     completed = (
         FBMShipment.query
         .filter_by(
@@ -594,8 +592,6 @@ def packlink_create_draft(order_id: int):
                 purchase_key=purchase_key,
             )
             db.session.add(shipment)
-        # Re-use the DB slot for the original shipment until tracking exists.
-        # This intentionally removes the old "draft already exists" block.
         shipment.provider_shipment_id = None
         shipment.provider_service_id = str(selected.get("service_id") or selected.get("id") or "") or None
         shipment.carrier = str(selected.get("carrier_name") or selected.get("carrier") or "").strip() or None
@@ -661,6 +657,10 @@ def packlink_shipment_status(shipment_id: int):
     except (PacklinkConfigurationError, PacklinkRequestError) as exc:
         return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
     provider_state = str(provider_payload.get("state") or provider_payload.get("status") or "").strip()
+    blockers = adapter.draft_blockers(provider_payload)
+    normalized_state = provider_state.upper().replace(" ", "_").replace("-", "_")
+    ready_to_ship = bool(provider_state) and not blockers and normalized_state not in {"AWAITING_COMPLETION", "INCOMPLETE", "DRAFT", "DRAFT_INCOMPLETE"}
+    blocking_reason = blockers[0]["label"] if blockers else None
     shipment.last_provider_status = provider_state or shipment.last_provider_status
     shipment.last_provider_checked_at = datetime.utcnow()
     carrier = str(provider_payload.get("carrier") or shipment.carrier or "").strip() or None
@@ -670,9 +670,64 @@ def packlink_shipment_status(shipment_id: int):
         first_label = labels[0]
         label_url = first_label if isinstance(first_label, str) else (first_label.get("url") if isinstance(first_label, dict) else None)
         result = persist_external_label(shipment=shipment, marketplace=_platform(order), provider="packlink", provider_shipment_id=shipment.provider_shipment_id, carrier=carrier, service=service, tracking_number=tracking, provider_service_id=str(provider_payload.get("service_id") or shipment.provider_service_id or "") or None, label={"type": "LABEL", "format": "PDF", "url": label_url, "storage_ref": shipment.provider_shipment_id})
-        return jsonify({"success": True, "payment_complete": True, "label_ready": True, "label": {"format": "PDF", "url": label_url}, "provider_status": provider_state, "tracking": tracking, "tracking_history": tracking_history, **result})
+        return jsonify({"success": True, "payment_complete": True, "label_ready": True, "ready_to_ship": True, "blockers": [], "blocking_reason": None, "label": {"format": "PDF", "url": label_url}, "provider_status": provider_state, "tracking": tracking, "tracking_history": tracking_history, **result})
     db.session.commit()
-    return jsonify({"success": True, "payment_complete": False, "label_ready": False, "shipment_id": shipment.id, "provider_reference": shipment.provider_shipment_id, "provider_status": provider_state, "payment_status": shipment.purchase_status, "message": "Packlink label is not available yet. The shipment may still require Packlink-side payment or label generation."})
+    return jsonify({
+        "success": True,
+        "payment_complete": False,
+        "label_ready": False,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "provider_status": provider_state,
+        "payment_status": shipment.purchase_status,
+        "ready_to_ship": ready_to_ship,
+        "blockers": blockers,
+        "blocking_reason": blocking_reason,
+        "message": "Packlink draft status read from the provider.",
+    })
+
+
+@governed_fbm_bp.post("/fbm/shipments/<int:shipment_id>/packlink/save")
+@login_required
+def packlink_save_draft(shipment_id: int):
+    shipment = db.session.get(FBMShipment, shipment_id)
+    if shipment is None or shipment.provider != "packlink" or not shipment.provider_shipment_id:
+        return jsonify({"success": False, "message": "Packlink shipment not found."}), 404
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm_save") != "SAVE_PACKLINK_DRAFT":
+        return jsonify({"success": False, "message": "Explicit SAVE_PACKLINK_DRAFT confirmation is required."}), 400
+    order = MarketplaceOrder.query.filter_by(store_id=shipment.store_id, marketplace_order_id=shipment.marketplace_order_id).first()
+    if order is None:
+        return jsonify({"success": False, "message": "Marketplace order for this shipment is missing."}), 404
+    adapter = PacklinkAdapter()
+    try:
+        saved = adapter.save_shipment_draft(shipment.provider_shipment_id)
+    except (PacklinkConfigurationError, PacklinkRequestError) as exc:
+        return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
+    shipment.last_provider_status = saved.get("provider_status") or shipment.last_provider_status
+    shipment.last_provider_checked_at = datetime.utcnow()
+    if saved.get("ready_to_ship") is True:
+        shipment.purchase_status = "ready_to_ship"
+        shipment.purchase_error = None
+        shipment.status = "awaiting_provider_payment"
+    else:
+        shipment.purchase_status = "draft_requires_save"
+        shipment.purchase_error = saved.get("blocking_reason") or saved.get("provider_status") or "Packlink draft still requires completion"
+        shipment.status = "awaiting_provider_payment"
+    db.session.commit()
+    return jsonify({
+        "success": True,
+        "shipment_id": shipment.id,
+        "provider_reference": shipment.provider_shipment_id,
+        "same_reference": True,
+        "save_applied": True,
+        "provider_status": saved.get("provider_status"),
+        "ready_to_ship": bool(saved.get("ready_to_ship")),
+        "blockers": saved.get("blockers") or [],
+        "blocking_reason": saved.get("blocking_reason"),
+        "payment_status": shipment.purchase_status,
+        "message": "Existing Packlink draft saved back to the same provider reference.",
+    })
 
 
 @governed_fbm_bp.post("/fbm/orders/<int:order_id>/amazon/rates")
