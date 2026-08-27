@@ -132,7 +132,7 @@ def test_packlink_draft_uses_proven_direct_handoff(monkeypatch, packlink_save_ca
     assert postcode_calls == ["locations/postalcodes/GB/LE1%201AA", "locations/postalcodes/GB/SW1A%201AA"]
     assert provider_gets[-1][0] == "shipments/UN2026PRO0009999999"
     assert posted["endpoint"] == "shipments"
-    assert packlink_save_calls == [("shipments/UN2026PRO0009999999", body)]
+    assert packlink_save_calls == []
     assert body["user_id"] == 7
     assert body["client_id"] == 9
     assert body["platform"] == "PRO"
