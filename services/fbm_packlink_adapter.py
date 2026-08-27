@@ -155,7 +155,7 @@ class PacklinkAdapter:
         return [self._normalise_rate(rate) for rate in payload if isinstance(rate, dict)]
 
     def create_shipment_draft(self, *, order: Any, parcel: dict[str, Any], rate: dict[str, Any]) -> dict[str, Any]:
-        """Create a Packlink draft, save it provider-side, then verify before success."""
+        """Create one Packlink draft and verify Packlink's stored result without rewriting it."""
         service_id = str(rate.get("service_id") or rate.get("id") or "").strip()
         if not service_id:
             raise PacklinkConfigurationError("Selected Packlink service ID is missing.")
@@ -212,9 +212,8 @@ class PacklinkAdapter:
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
-        # Packlink's shipment address contract uses the ISO country directly.
-        # Keep Packlink location selector IDs as optional additional_data only;
-        # embedding selector IDs into the recipient address can leave PRO fields unresolved.
+        # Packlink's official integration address DTO uses the ISO country directly.
+        # Location selector IDs belong in additional_data, not inside the address.
         recipient_country_code = self._clean_country(
             location_data.get("country_code_to")
             or to_address.get("country")
@@ -261,11 +260,13 @@ class PacklinkAdapter:
             provider_reference = str(payload.get("shipment_reference") or payload.get("reference") or "").strip()
         if not provider_reference:
             raise PacklinkRequestError("Packlink created no shipment reference.")
-        self._put_json(f"shipments/{provider_reference}", body)
+        # Packlink's own e-commerce integration stops after POST /shipments and
+        # reads the created shipment back. Do not PUT our pre-create body over
+        # Packlink's normalized address/location state.
         provider_snapshot = self.get_shipment(provider_reference)
         missing_fields = self._draft_required_fields_missing(provider_snapshot)
         if missing_fields:
-            raise PacklinkRequestError("Packlink handoff incomplete after provider save; shipment is missing required fields: " + ", ".join(missing_fields))
+            raise PacklinkRequestError("Packlink handoff incomplete after provider create; shipment is missing required fields: " + ", ".join(missing_fields))
         return {"reference": provider_reference, "payment_status": "pending_packlink_payment", "label_ready": False, "raw": payload, "verified": True}
 
     def _best_effort_location_ids(self, from_address: dict[str, Any], to_address: dict[str, Any]) -> dict[str, Any]:
