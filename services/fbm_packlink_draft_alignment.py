@@ -1,10 +1,11 @@
 """Narrow Packlink draft-save alignment for BT38 FBM.
 
-Keep the existing Packlink contract intact. The only behavioural change is that
-sender location selector identities resolved from Packlink are written back onto
-the sender address before the existing shipment POST/PUT save runs. After the
-existing save, BT38 exposes the exact provider state and provider-reported
-missing fields instead of inventing a Ready/Draft status.
+Keep the existing Packlink contract intact. Packlink location selector identities
+resolved by the canonical adapter are bound to the outgoing address objects at
+the existing shipment POST boundary. This preserves one Packlink execution path
+while making the recipient country/postcode selection persist exactly as a
+completed Packlink form expects. BT38 then exposes Packlink's exact provider
+state and provider-reported missing fields instead of inventing Ready/Draft.
 """
 from __future__ import annotations
 
@@ -22,6 +23,38 @@ def _provider_state(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _bind_recipient_selectors(adapter: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Bind Packlink-owned recipient selector IDs onto the visible address.
+
+    The canonical adapter already resolves postal_zone_id_to and zip_code_id_to
+    from Packlink before creating a shipment. Packlink PRO can display the ISO
+    country text when those IDs exist only in additional_data, while its edit
+    form still treats Country as mandatory. Bind the same resolved IDs onto the
+    recipient address immediately before the existing POST /shipments call.
+    """
+    if not isinstance(body, dict):
+        return body
+    recipient = body.get("to")
+    additional = body.get("additional_data")
+    if not isinstance(recipient, dict) or not isinstance(additional, dict):
+        return body
+
+    country = adapter._clean_country(
+        recipient.get("country_code") or recipient.get("country")
+    )
+    postal_zone_id = adapter._selector_id(additional.get("postal_zone_id_to"))
+    zip_code_id = adapter._selector_id(additional.get("zip_code_id_to"))
+
+    if country:
+        recipient["country"] = country
+        recipient["country_code"] = country
+    if postal_zone_id:
+        recipient["postal_zone_id"] = postal_zone_id
+    if zip_code_id:
+        recipient["zip_code_id"] = zip_code_id
+    return body
+
+
 def install_packlink_draft_alignment() -> None:
     from services.fbm_packlink_adapter import PacklinkAdapter
 
@@ -36,10 +69,9 @@ def install_packlink_draft_alignment() -> None:
         result = original_location_ids(self, from_address, to_address)
         result = result if isinstance(result, dict) else {}
 
-        # The existing adapter already resolves Packlink's sender selector IDs,
-        # but previously only copied them into additional_data. Put those exact
-        # Packlink-owned selector identities onto the sender address before the
-        # existing shipment PUT/save is sent.
+        # The canonical adapter resolves Packlink's sender selector IDs but only
+        # exposes them through additional_data. Keep the same Packlink-owned
+        # identities on the sender address as well.
         sender_country = self._clean_country(
             result.get("country_code_from") or from_address.get("country")
         )
@@ -58,12 +90,35 @@ def install_packlink_draft_alignment() -> None:
 
     @wraps(original_create_draft)
     def aligned_create_draft(self, *, order, parcel, rate):
-        result = original_create_draft(
-            self,
-            order=order,
-            parcel=parcel,
-            rate=rate,
-        )
+        # The canonical adapter currently strips recipient selector IDs from the
+        # address after resolving them. Intercept only this adapter instance's
+        # existing shipment POST, bind those same IDs back onto body['to'], then
+        # immediately restore the original method. No second request/path is
+        # introduced and the adapter remains POST-once + provider readback.
+        original_post_json = self._post_json
+        had_instance_override = "_post_json" in self.__dict__
+        prior_instance_override = self.__dict__.get("_post_json")
+
+        def post_with_bound_recipient(endpoint, body):
+            normalized_endpoint = str(endpoint or "").strip("/")
+            if normalized_endpoint == "shipments" and isinstance(body, dict):
+                _bind_recipient_selectors(self, body)
+            return original_post_json(endpoint, body)
+
+        self._post_json = post_with_bound_recipient
+        try:
+            result = original_create_draft(
+                self,
+                order=order,
+                parcel=parcel,
+                rate=rate,
+            )
+        finally:
+            if had_instance_override:
+                self._post_json = prior_instance_override
+            else:
+                self.__dict__.pop("_post_json", None)
+
         if not isinstance(result, dict):
             return result
 
@@ -71,7 +126,7 @@ def install_packlink_draft_alignment() -> None:
         if not reference:
             return result
 
-        # Read back the exact Packlink record after the existing save. Do not
+        # Read back the exact Packlink record after the provider create. Do not
         # translate or invent Ready/Draft. Keep Packlink's own state and the
         # concrete fields still incomplete on the persisted provider snapshot.
         snapshot = self.get_shipment(reference)
@@ -89,7 +144,7 @@ def install_packlink_draft_alignment() -> None:
 
 
 def install_packlink_draft_response_alignment() -> None:
-    """Expose Packlink's real post-save state on the existing BT38 draft route."""
+    """Expose Packlink's real post-create state on the existing BT38 route."""
     from app import app
     from services.fbm_packlink_adapter import (
         PacklinkAdapter,
