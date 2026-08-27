@@ -212,8 +212,8 @@ class PacklinkAdapter:
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
-        # Packlink's official integration address DTO uses the ISO country directly.
-        # Location selector IDs belong in additional_data, not inside the address.
+        # The ISO country is the display value, but Packlink's form also needs
+        # its resolved destination selector identities on the recipient address.
         recipient_country_code = self._clean_country(
             location_data.get("country_code_to")
             or to_address.get("country")
@@ -229,8 +229,8 @@ class PacklinkAdapter:
             raise PacklinkRequestError("Packlink destination city/postcode selector could not be resolved; shipment was not handed off.")
         to_address["country"] = recipient_country_code
         to_address["country_code"] = recipient_country_code
-        to_address.pop("postal_zone_id", None)
-        to_address.pop("zip_code_id", None)
+        to_address["postal_zone_id"] = recipient_postal_zone_id
+        to_address["zip_code_id"] = recipient_postcode_id
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
             "postal_zone_id_to": recipient_postal_zone_id,
