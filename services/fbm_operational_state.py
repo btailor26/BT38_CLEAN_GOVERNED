@@ -161,10 +161,30 @@ def saved_order_parcel(order: Any) -> dict[str, float]:
     return result
 
 
+def _latest_shipment(order: Any):
+    if order is None or getattr(order, "store_id", None) is None:
+        return None
+    order_id = str(getattr(order, "marketplace_order_id", "") or "").strip()
+    if not order_id:
+        return None
+    try:
+        from fbm_models import FBMShipment
+        return (
+            FBMShipment.query
+            .filter_by(store_id=order.store_id, marketplace_order_id=order_id)
+            .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+            .first()
+        )
+    except Exception:
+        return None
+
+
 def promise_state(order: Any, shipment: Any = None, *, now: datetime | None = None) -> dict[str, Any]:
     """Return display state against the marketplace-owned delivery promise."""
     current = now or datetime.utcnow()
     state = operational_state(order, create=False)
+    if shipment is None:
+        shipment = _latest_shipment(order)
     latest = getattr(state, "latest_delivery_at", None) if state is not None else None
     delivered_at = getattr(shipment, "delivered_at", None) if shipment is not None else None
 
