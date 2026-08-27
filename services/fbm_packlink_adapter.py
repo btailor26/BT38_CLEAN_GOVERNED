@@ -212,18 +212,23 @@ class PacklinkAdapter:
         content_value = round(content_value, 2)
         items = [{"title": str(getattr(line, "sku", "Item") or "Item"), "quantity": max(1, int(getattr(line, "quantity", 1) or 1)), "price": (self._positive_amount(getattr(line, "unit_price", None)) or 0.0) * max(1, int(getattr(line, "quantity", 1) or 1))} for line in lines]
         location_data = self._best_effort_location_ids(from_address, to_address)
-        recipient_country_code = self._selector_id(location_data.get("country_code_to")) or self._clean_country(to_address.get("country") or destination.get("country") or PACKLINK_ACCOUNT_COUNTRY)
+        # Packlink's shipment address contract uses the ISO country directly.
+        # Keep Packlink location selector IDs as optional additional_data only;
+        # embedding them into the recipient address leaves the PRO country
+        # selector unresolved/red in the browser handoff.
+        recipient_country_code = self._clean_country(
+            location_data.get("country_code_to")
+            or to_address.get("country")
+            or destination.get("country")
+            or PACKLINK_ACCOUNT_COUNTRY
+        )
         recipient_postal_zone_id = self._selector_id(location_data.get("postal_zone_id_to"))
         recipient_postcode_id = self._selector_id(location_data.get("zip_code_id_to"))
         recipient_postal_zone_name = self._clean_text(location_data.get("postal_zone_name_to"))
-        if not recipient_postal_zone_id:
-            raise PacklinkRequestError("Packlink destination country selector could not be resolved; shipment was not handed off.")
-        if not recipient_postcode_id:
-            raise PacklinkRequestError("Packlink destination city/postcode selector could not be resolved; shipment was not handed off.")
-        to_address["country"] = self._clean_country(recipient_country_code)
-        to_address["country_code"] = self._clean_country(recipient_country_code)
-        to_address["postal_zone_id"] = recipient_postal_zone_id
-        to_address["zip_code_id"] = recipient_postcode_id
+        to_address["country"] = recipient_country_code
+        to_address.pop("country_code", None)
+        to_address.pop("postal_zone_id", None)
+        to_address.pop("zip_code_id", None)
         additional_data = {
             "postal_zone_id_from": self._selector_id(location_data.get("postal_zone_id_from")),
             "postal_zone_id_to": recipient_postal_zone_id,
