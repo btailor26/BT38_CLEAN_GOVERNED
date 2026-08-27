@@ -45,12 +45,32 @@ def _strip_non_contract_address_selectors(body: dict[str, Any]) -> dict[str, Any
 def _clean_address(value: Any) -> dict[str, Any]:
     address = dict(value) if isinstance(value, dict) else {}
     _strip_non_contract_address_selectors({"to": address})
-    # Packlink PRO's browser Save sends the ordinary Address DTO only.
     allowed = (
         "city", "country", "state", "zip_code", "company", "email",
         "name", "phone", "street1", "street2", "surname",
     )
     return {key: address.get(key) for key in allowed if key in address and address.get(key) not in (None, "")}
+
+
+def _normalise_browser_items(additional_data: dict[str, Any]) -> None:
+    """Match the item object shape emitted by Packlink PRO's browser Save."""
+    raw_items = additional_data.get("items")
+    if not isinstance(raw_items, list):
+        return
+    items: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "quantity": item.get("quantity"),
+            "price": item.get("price", 0),
+            "title": item.get("title"),
+            "category_name": item.get("category_name"),
+            "picture_url": item.get("picture_url"),
+            "item_id": item.get("item_id"),
+            "currency": item.get("currency"),
+        })
+    additional_data["items"] = items
 
 
 def _browser_save_body(snapshot: dict[str, Any], reference: str) -> dict[str, Any]:
@@ -60,20 +80,34 @@ def _browser_save_body(snapshot: dict[str, Any], reference: str) -> dict[str, An
         source = {}
 
     additional_data = dict(source.get("additional_data")) if isinstance(source.get("additional_data"), dict) else {}
-
-    # Preserve provider-resolved selector IDs and names exactly where Packlink's
-    # browser sends them. Do not duplicate them into from/to address objects.
     from_address = _clean_address(source.get("from"))
     to_address = _clean_address(source.get("to"))
 
-    if from_address.get("country") and not additional_data.get("postal_zone_name_from"):
-        additional_data["postal_zone_name_from"] = from_address.get("state") or "United Kingdom"
-    if to_address.get("country") and not additional_data.get("postal_zone_name_to"):
-        additional_data["postal_zone_name_to"] = to_address.get("state") or "United Kingdom"
+    # The successful Packlink browser Save for GB sends the country label in
+    # Address.state as well as country="GB". The provider-created BT38 draft can
+    # return country="GB" while state is blank, which leaves Packlink's country
+    # selector visually populated but internally unsaved ("Country is mandatory").
+    from_zone_name = str(additional_data.get("postal_zone_name_from") or "").strip()
+    to_zone_name = str(additional_data.get("postal_zone_name_to") or "").strip()
+    if str(from_address.get("country") or "").upper() == "GB":
+        from_zone_name = from_zone_name or "United Kingdom"
+        from_address["state"] = from_zone_name
+        additional_data["postal_zone_name_from"] = from_zone_name
+    elif from_address.get("country") and not from_zone_name:
+        additional_data["postal_zone_name_from"] = str(from_address.get("state") or "").strip()
+
+    if str(to_address.get("country") or "").upper() == "GB":
+        to_zone_name = to_zone_name or "United Kingdom"
+        to_address["state"] = to_zone_name
+        additional_data["postal_zone_name_to"] = to_zone_name
+    elif to_address.get("country") and not to_zone_name:
+        additional_data["postal_zone_name_to"] = str(to_address.get("state") or "").strip()
+
+    _normalise_browser_items(additional_data)
 
     packages: list[dict[str, Any]] = []
     raw_packages = source.get("packages") if isinstance(source.get("packages"), list) else []
-    for index, package in enumerate(raw_packages):
+    for package in raw_packages:
         if not isinstance(package, dict):
             continue
         row = dict(package)
@@ -119,8 +153,6 @@ def _browser_save_body(snapshot: dict[str, Any], reference: str) -> dict[str, An
         },
     }
 
-    # Remove only keys Packlink's browser omits when absent; keep explicit false/null
-    # values that are part of the proven Save contract.
     if body.get("service_id") is None:
         body.pop("service_id", None)
     return body
@@ -136,8 +168,6 @@ def install_packlink_draft_alignment() -> None:
 
     @wraps(original_create_draft)
     def aligned_create_draft(self, *, order, parcel, rate):
-        # Keep the initial POST aligned to Packlink's Address DTO. Selector IDs
-        # already resolved by the adapter remain in additional_data.
         original_post_json = self._post_json
         had_instance_override = "_post_json" in self.__dict__
         prior_instance_override = self.__dict__.get("_post_json")
@@ -169,8 +199,6 @@ def install_packlink_draft_alignment() -> None:
         if not reference:
             return result
 
-        # The captured successful Packlink PRO Save uses a full browser-shaped PUT,
-        # not BT38's older reduced writable-key reconstruction. Mirror that body.
         snapshot = self.get_shipment(reference)
         if not isinstance(snapshot, dict) or not snapshot:
             raise PacklinkRequestError(
