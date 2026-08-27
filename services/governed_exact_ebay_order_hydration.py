@@ -7,6 +7,7 @@ stock, push marketplaces, or submit MCF.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -14,13 +15,66 @@ import requests
 from sqlalchemy import text
 
 from extensions import db
+from fbm_models import FBMOrderProfile
 from models import MarketplaceOrder
+from services.fbm_operational_state import update_marketplace_facts
 from services.governed_marketplace_order_import import (
     EBAY_ORDERS_URL,
     _ebay_access_token,
     _parse_ebay_datetime,
     _text,
 )
+
+
+def _ebay_shipping_facts(order: dict[str, Any]) -> dict[str, Any]:
+    """Read eBay-owned service, ship-by and delivery-window facts.
+
+    Fulfillment API exposes the customer delivery window on each line item's
+    lineItemFulfillmentInstructions. For multi-line orders BT38 uses the widest
+    buyer promise: earliest minimum and latest maximum. No dates are inferred.
+    """
+    earliest_values = []
+    latest_values = []
+    ship_by_values = []
+    service = None
+
+    instructions = order.get("fulfillmentStartInstructions") or []
+    first_instruction = instructions[0] if instructions else {}
+    shipping_step = first_instruction.get("shippingStep") or {}
+    service = (
+        _text(shipping_step.get("shippingServiceCode"))
+        or _text(shipping_step.get("shippingService"))
+        or _text(order.get("shippingServiceCode"))
+        or _text(order.get("shippingService"))
+    )
+
+    for item in order.get("lineItems") or []:
+        if not isinstance(item, dict):
+            continue
+        facts = item.get("lineItemFulfillmentInstructions") or {}
+        if not isinstance(facts, dict):
+            continue
+        earliest = _parse_ebay_datetime(facts.get("minEstimatedDeliveryDate"))
+        latest = _parse_ebay_datetime(facts.get("maxEstimatedDeliveryDate"))
+        ship_by = _parse_ebay_datetime(facts.get("shipByDate"))
+        if earliest:
+            earliest_values.append(earliest)
+        if latest:
+            latest_values.append(latest)
+        if ship_by:
+            ship_by_values.append(ship_by)
+        if not service:
+            service = (
+                _text(facts.get("shippingServiceCode"))
+                or _text(facts.get("shippingService"))
+            )
+
+    return {
+        "shipping_service": service,
+        "earliest_delivery_at": min(earliest_values) if earliest_values else None,
+        "latest_delivery_at": max(latest_values) if latest_values else None,
+        "ship_by_at": min(ship_by_values) if ship_by_values else None,
+    }
 
 
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
@@ -98,6 +152,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         or _text(ship_to.get("phoneNumber")),
     }
     marketplace_created_at = _parse_ebay_datetime(order.get("creationDate"))
+    shipping_facts = _ebay_shipping_facts(order)
 
     item_by_line_id = {
         _text(item.get("lineItemId")): item
@@ -171,6 +226,36 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
             },
         )
 
+    profile = FBMOrderProfile.query.filter_by(
+        store_id=store.id,
+        marketplace_order_id=order_id,
+    ).first()
+    if profile is None:
+        profile = FBMOrderProfile(
+            store_id=store.id,
+            marketplace_order_id=order_id,
+            platform="ebay",
+        )
+    profile.is_prime = False
+    profile.is_premium = False
+    profile.fulfillment_channel = "FBM"
+    if shipping_facts["shipping_service"]:
+        profile.shipment_service_level = shipping_facts["shipping_service"]
+    if shipping_facts["ship_by_at"]:
+        profile.latest_ship_at = shipping_facts["ship_by_at"]
+    profile.checked_at = datetime.utcnow()
+    profile.last_error = None
+    db.session.add(profile)
+
+    update_marketplace_facts(
+        rows[0],
+        platform="ebay",
+        shipping_service=shipping_facts["shipping_service"],
+        ship_by_at=shipping_facts["ship_by_at"],
+        earliest_delivery_at=shipping_facts["earliest_delivery_at"],
+        latest_delivery_at=shipping_facts["latest_delivery_at"],
+    )
+
     db.session.commit()
 
     required_address_complete = bool(
@@ -199,4 +284,17 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "rows_hydrated": len(rows),
         "identity_updates": identity_updates,
         "identity_conflicts": identity_conflicts,
+        "shipping_service": shipping_facts["shipping_service"],
+        "earliest_delivery_at": (
+            shipping_facts["earliest_delivery_at"].isoformat()
+            if shipping_facts["earliest_delivery_at"] else None
+        ),
+        "latest_delivery_at": (
+            shipping_facts["latest_delivery_at"].isoformat()
+            if shipping_facts["latest_delivery_at"] else None
+        ),
+        "ship_by_at": (
+            shipping_facts["ship_by_at"].isoformat()
+            if shipping_facts["ship_by_at"] else None
+        ),
     }
