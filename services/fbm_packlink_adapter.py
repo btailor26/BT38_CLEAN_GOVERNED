@@ -431,6 +431,84 @@ class PacklinkAdapter:
             missing.append("Recipient country")
         return missing
 
+    @classmethod
+    def draft_blockers(cls, payload: dict[str, Any]) -> list[dict[str, str]]:
+        """Return concise blockers derived only from Packlink's stored draft snapshot."""
+        blockers: list[dict[str, str]] = []
+        for field in cls._draft_required_fields_missing(payload):
+            normalized = str(field or "").strip().lower()
+            if normalized == "recipient country":
+                blockers.append({"code": "recipient_country", "label": "Confirm country"})
+            elif normalized == "recipient postcode":
+                blockers.append({"code": "recipient_postcode", "label": "Confirm postcode"})
+            elif normalized == "recipient phone":
+                blockers.append({"code": "recipient_phone", "label": "Confirm phone number"})
+            elif normalized.startswith("recipient "):
+                blockers.append({"code": normalized.replace(" ", "_"), "label": "Confirm " + normalized.removeprefix("recipient ")})
+            elif normalized.startswith("sender "):
+                blockers.append({"code": normalized.replace(" ", "_"), "label": "Confirm sender " + normalized.removeprefix("sender ")})
+            else:
+                blockers.append({"code": normalized.replace(" ", "_") or "packlink_draft", "label": str(field)})
+        return blockers
+
+    @staticmethod
+    def _provider_state(payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        source = payload.get("shipment") if isinstance(payload.get("shipment"), dict) else payload
+        return str(source.get("state") or source.get("status") or payload.get("state") or payload.get("status") or "").strip()
+
+    @classmethod
+    def _provider_ready_to_ship(cls, payload: dict[str, Any]) -> bool:
+        state = cls._provider_state(payload)
+        normalized = state.upper().replace(" ", "_").replace("-", "_")
+        if not normalized or cls.draft_blockers(payload):
+            return False
+        if normalized in {"AWAITING_COMPLETION", "INCOMPLETE", "DRAFT", "DRAFT_INCOMPLETE"}:
+            return False
+        return True
+
+    def save_shipment_draft(self, reference: str) -> dict[str, Any]:
+        """Save the existing Packlink draft using Packlink's own returned shape.
+
+        This never POSTs a new shipment. BT38 reads the existing provider draft,
+        PUTs only Packlink's writable shipment fields back to the same reference,
+        then re-reads that same reference to prove the handoff state.
+        """
+        reference = str(reference or "").strip()
+        if not reference:
+            raise PacklinkConfigurationError("Packlink shipment reference is required.")
+        raw = self._get_json(f"shipments/{reference}")
+        if not isinstance(raw, dict):
+            raise PacklinkRequestError("Packlink did not return the existing draft for saving.")
+        source = raw.get("shipment") if isinstance(raw.get("shipment"), dict) else raw
+        writable_keys = (
+            "user_id", "client_id", "platform", "platform_country", "source",
+            "from", "to", "service", "carrier", "service_id", "packages",
+            "content", "contentvalue", "content_second_hand",
+            "shipment_custom_reference", "priority", "contentValue_currency",
+            "has_customs", "additional_data",
+        )
+        body = {key: source.get(key) for key in writable_keys if key in source}
+        if not isinstance(body.get("from"), dict) or not isinstance(body.get("to"), dict):
+            raise PacklinkRequestError("Packlink returned a draft without saveable sender/recipient details.")
+        if not body.get("packages"):
+            raise PacklinkRequestError("Packlink returned a draft without saveable parcel details.")
+        self._put_json(f"shipments/{reference}", body)
+        saved = self._get_json(f"shipments/{reference}")
+        if not isinstance(saved, dict):
+            raise PacklinkRequestError("Packlink did not confirm the saved draft.")
+        blockers = self.draft_blockers(saved)
+        state = self._provider_state(saved)
+        return {
+            "reference": reference,
+            "provider_status": state,
+            "blockers": blockers,
+            "blocking_reason": blockers[0]["label"] if blockers else None,
+            "ready_to_ship": self._provider_ready_to_ship(saved),
+            "raw": saved,
+        }
+
     @staticmethod
     def _shipment_address(payload: dict[str, Any], side: str) -> dict[str, Any]:
         aliases = (("from", "from_address", "sender", "origin") if side == "from" else ("to", "to_address", "recipient", "destination"))
