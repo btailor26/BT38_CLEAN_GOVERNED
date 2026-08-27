@@ -175,14 +175,36 @@
         const handoffUrl = 'https://pro.packlink.com/private/shipments/draft';
         const addHandoff = function () {
             root.querySelectorAll('.rate-results').forEach(function (box) {
-                if (box.querySelector('.packlink-pro-handoff')) return;
                 const text = String(box.textContent || '');
                 if (!text.includes('Packlink shipment prepared.') || !text.includes('Reference:')) return;
+
+                const alert = box.querySelector('.alert-info');
+                if (alert && alert.dataset.packlinkDraftConfirmed !== '1') {
+                    alert.dataset.packlinkDraftConfirmed = '1';
+                    const heading = alert.querySelector('strong');
+                    if (heading) heading.textContent = '✓ Packlink draft created.';
+                    const referenceLine = Array.from(alert.querySelectorAll('.small')).find(function (el) {
+                        return String(el.textContent || '').includes('Reference:');
+                    });
+                    if (referenceLine && !alert.querySelector('.packlink-draft-saved-copy')) {
+                        const saved = document.createElement('div');
+                        saved.className = 'small packlink-draft-saved-copy';
+                        saved.textContent = 'Shipment saved in Packlink — payment and label pending.';
+                        referenceLine.insertAdjacentElement('beforebegin', saved);
+                    }
+                }
+
+                if (box.querySelector('.packlink-pro-handoff')) return;
                 const link = document.createElement('a');
                 link.className = 'btn btn-sm btn-primary ms-2 packlink-pro-handoff'; link.href = handoffUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
-                link.innerHTML = '<span class="badge bg-light text-primary me-1">Packlink PRO</span> Continue to payment';
+                link.innerHTML = '<span class="badge bg-light text-primary me-1">Packlink PRO</span> Continue to Packlink';
                 const statusButton = box.querySelector('.packlink-status');
-                if (statusButton) statusButton.insertAdjacentElement('beforebegin', link); else box.appendChild(link);
+                if (statusButton) {
+                    statusButton.textContent = 'Check label';
+                    statusButton.insertAdjacentElement('beforebegin', link);
+                } else {
+                    box.appendChild(link);
+                }
             });
         };
         new MutationObserver(addHandoff).observe(root, {childList: true, subtree: true}); addHandoff();
