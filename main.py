@@ -10,8 +10,12 @@ import services.public_early_access  # noqa: F401
 from services.governed_notification_read_alignment import (
     install_governed_notification_read_alignment,
 )
+from services.governed_product_linking_unlink_alignment import (
+    install_product_linking_unlink_alignment,
+)
 
 install_governed_notification_read_alignment(app)
+install_product_linking_unlink_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
