@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from mcf_service import MCFService
 from services.governed_mcf_execution import refresh_mcf_status, submit_mcf_order
+import services.fbm_packlink_draft_alignment  # noqa: F401
 
 
 def _submit(self, mcf_order):
