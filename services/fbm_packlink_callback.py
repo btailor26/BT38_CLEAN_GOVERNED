@@ -17,7 +17,7 @@ from extensions import db
 from fbm_models import FBMShipment
 from models import MarketplaceOrder
 from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkRequestError
-from services.fbm_post_purchase import persist_external_label
+from services.fbm_post_purchase import persist_external_label, reconcile_provider_lifecycle_state
 
 
 SUPPORTED_EVENTS = {
@@ -107,6 +107,91 @@ def extract_packlink_tracking(
         return history_value
     fallback_text = str(fallback or "").strip()
     return fallback_text or None
+
+
+def _status_texts(payload: Any) -> list[str]:
+    """Collect provider lifecycle text without guessing from tracking presence."""
+    values: list[str] = []
+    if isinstance(payload, str):
+        text = payload.strip()
+        return [text] if text else []
+    if isinstance(payload, list):
+        for item in payload:
+            values.extend(_status_texts(item))
+        return values
+    if not isinstance(payload, dict):
+        return values
+
+    for key in (
+        "status",
+        "state",
+        "event",
+        "event_name",
+        "eventName",
+        "status_name",
+        "statusName",
+        "description",
+        "message",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+        elif isinstance(value, (dict, list)):
+            values.extend(_status_texts(value))
+
+    for key in ("events", "history", "tracking_history", "trackingHistory", "tracking_info"):
+        nested = payload.get(key)
+        if isinstance(nested, (dict, list)):
+            values.extend(_status_texts(nested))
+    return values
+
+
+def _canonical_tracking_lifecycle(
+    provider_state: Any,
+    tracking_history: list[dict[str, Any]] | None,
+) -> str | None:
+    """Return the strongest explicit provider lifecycle proven by Packlink data."""
+    texts = [str(provider_state or "").strip(), *_status_texts(tracking_history or [])]
+    normalized = [
+        text.upper().replace(" ", "_").replace("-", "_").replace(".", "_").replace("/", "_")
+        for text in texts
+        if text
+    ]
+    if any("DELIVER" in value and "FAILED" not in value and "UNDELIVER" not in value for value in normalized):
+        return "DELIVERED"
+    if any(
+        token in value
+        for value in normalized
+        for token in ("OUT_FOR_DELIVERY", "IN_TRANSIT", "IN_DELIVERY", "ON_ROUTE")
+    ):
+        return "IN_TRANSIT"
+    if any(
+        token in value
+        for value in normalized
+        for token in ("PICKED_UP", "PICKEDUP", "COLLECTED", "CARRIER_ACCEPTED", "ACCEPTED")
+    ):
+        return "ACCEPTED"
+    return None
+
+
+def reconcile_packlink_tracking_lifecycle(
+    shipment: FBMShipment,
+    *,
+    provider_state: Any = None,
+    tracking_history: list[dict[str, Any]] | None = None,
+    observed_at: datetime | None = None,
+) -> str:
+    """Project exact Packlink shipment/history truth onto BT38 Journey milestones."""
+    canonical = _canonical_tracking_lifecycle(provider_state, tracking_history)
+    if canonical:
+        shipment.last_provider_status = canonical
+    elif str(provider_state or "").strip():
+        shipment.last_provider_status = str(provider_state).strip()
+    shipment.last_provider_checked_at = observed_at or datetime.utcnow()
+    return reconcile_provider_lifecycle_state(
+        shipment,
+        observed_at=shipment.last_provider_checked_at,
+    )
 
 
 def _first_label_url(labels: list[Any]) -> str | None:
@@ -322,8 +407,12 @@ def process_packlink_callback(
     provider_state = str(
         provider_payload.get("state") or provider_payload.get("status") or event_name
     ).strip()
-    shipment.last_provider_status = provider_state
-    shipment.last_provider_checked_at = now
+    reconcile_packlink_tracking_lifecycle(
+        shipment,
+        provider_state=provider_state,
+        tracking_history=tracking_history,
+        observed_at=now,
+    )
     carrier, service, service_id = _provider_identity(provider_payload, shipment)
     tracking = extract_packlink_tracking(
         provider_payload,
@@ -383,6 +472,12 @@ def process_packlink_callback(
         )
 
     _apply_lifecycle_state(shipment, event_name, now)
+    reconcile_packlink_tracking_lifecycle(
+        shipment,
+        provider_state=shipment.last_provider_status,
+        tracking_history=tracking_history,
+        observed_at=now,
+    )
     db.session.commit()
 
     response = {
@@ -393,7 +488,7 @@ def process_packlink_callback(
         "custom_reference": custom_reference,
         "label_ready": bool(label_url),
         "tracking_number": tracking,
-        "provider_status": provider_state,
+        "provider_status": shipment.last_provider_status,
         "shipment_status": shipment.status,
     }
     if result:
@@ -410,9 +505,9 @@ def recover_packlink_shipments_for_day(
     """One-shot recovery for exact Packlink shipments already known to BT38.
 
     This is deliberately not a polling loop. It hydrates only Packlink shipment
-    references created on the requested day and still not confirmed to their
-    marketplace. Paid labels flow through the exact same callback/post-purchase
-    confirmation path as a live Packlink callback.
+    references created on the requested day. Already-confirmed marketplace rows
+    are lifecycle-refreshed only and can never trigger another marketplace write.
+    Unconfirmed paid labels keep using the existing confirmation path.
     """
     start = datetime.combine(target_day, time.min)
     end = start + timedelta(days=1)
@@ -423,7 +518,6 @@ def recover_packlink_shipments_for_day(
             FBMShipment.provider_shipment_id.isnot(None),
             FBMShipment.created_at >= start,
             FBMShipment.created_at < end,
-            FBMShipment.marketplace_confirmed_at.is_(None),
         )
         .order_by(FBMShipment.id.asc())
         .all()
@@ -433,6 +527,40 @@ def recover_packlink_shipments_for_day(
     results: list[dict[str, Any]] = []
     for shipment in shipments:
         try:
+            if shipment.marketplace_confirmed_at is not None:
+                now = datetime.utcnow()
+                provider_payload = adapter.get_shipment(shipment.provider_shipment_id)
+                tracking_history = adapter.get_tracking_status(reference=shipment.provider_shipment_id)
+                provider_state = str(
+                    provider_payload.get("state") or provider_payload.get("status") or shipment.last_provider_status or ""
+                ).strip()
+                tracking = extract_packlink_tracking(
+                    provider_payload,
+                    tracking_history,
+                    shipment.tracking_number,
+                )
+                if tracking:
+                    shipment.tracking_number = tracking
+                reconcile_packlink_tracking_lifecycle(
+                    shipment,
+                    provider_state=provider_state,
+                    tracking_history=tracking_history,
+                    observed_at=now,
+                )
+                db.session.commit()
+                results.append({
+                    "success": True,
+                    "shipment_id": shipment.id,
+                    "marketplace_order_id": shipment.marketplace_order_id,
+                    "provider_reference": shipment.provider_shipment_id,
+                    "lifecycle_only": True,
+                    "marketplace_write_attempted": False,
+                    "provider_status": shipment.last_provider_status,
+                    "shipment_status": shipment.status,
+                    "tracking_number": shipment.tracking_number,
+                })
+                continue
+
             result = process_packlink_callback(
                 {
                     "event": "shipment.label.ready",
