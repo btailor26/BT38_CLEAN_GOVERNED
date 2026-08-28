@@ -14,3 +14,13 @@ import services.governed_fba_settlement_ui_alignment  # noqa: F401,E402
 # including multi-package tracking that arrives after a Fly sleep/restart.
 # This reuses the existing MCF refresh and marketplace enrichment path.
 import services.governed_mcf_tracking_startup_alignment  # noqa: F401,E402
+
+# UI-only order clarity alignment. It installs against the Flask app that has
+# already been created by app.py and performs read-only presentation work only:
+# no marketplace calls, no DB writes, no shipping execution and no MCF changes.
+from services.governed_order_clarity_alignment import (  # noqa: E402
+    install_governed_order_clarity_alignment,
+)
+from app import app as _bt38_app  # noqa: E402
+
+install_governed_order_clarity_alignment(_bt38_app)
