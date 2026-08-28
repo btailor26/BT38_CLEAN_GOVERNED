@@ -68,6 +68,27 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
 
     _hydrate_marketplace_order(order, payload, address_payload)
 
+    # Orders v0 does not return FBM package tracking. Once Amazon reports the
+    # order shipped/partially shipped, use the current Orders v2026-01-01
+    # PACKAGES dataset to fill carrier/tracking on the existing DB order. This
+    # is a readback only; profile hydration remains usable if package tracking is
+    # not yet available or the new read is temporarily unavailable.
+    order_status = (_text(payload.get("OrderStatus")) or "").upper()
+    if order_status in {"SHIPPED", "PARTIALLYSHIPPED", "PARTIALLY_SHIPPED"}:
+        try:
+            from services.governed_amazon_tracking_readback import (
+                hydrate_amazon_tracking_for_order,
+            )
+            hydrate_amazon_tracking_for_order(
+                store=store,
+                marketplace_order_id=str(order.marketplace_order_id),
+                source="fbm_amazon_order_profile",
+            )
+        except Exception:
+            # Tracking readback must never break the existing shipping profile.
+            # The next governed/on-demand refresh can retry the read safely.
+            pass
+
     profile = existing or FBMOrderProfile(
         store_id=order.store_id,
         marketplace_order_id=order.marketplace_order_id,
