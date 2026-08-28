@@ -8,6 +8,7 @@ small operational snapshot used by the FBM UI.
 from __future__ import annotations
 
 from flask import jsonify, request
+from flask_login import login_required
 
 from app import app
 from extensions import db
@@ -77,6 +78,7 @@ def _hydrate_exact_shipping(order: MarketplaceOrder) -> str | None:
 
 
 @app.get("/fbm/alignment-snapshot")
+@login_required
 def fbm_alignment_snapshot():
     raw = str(request.args.get("order_ids") or "")
     order_ids: list[int] = []
