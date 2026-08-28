@@ -7,7 +7,7 @@ Scope is deliberately narrow:
 - no inventory/runtime work;
 - no MCF handling or classification changes.
 
-Historical and new records use the same persisted DB facts.  The FBM page keeps
+Historical and new records use the same persisted DB facts. The FBM page keeps
 its existing Prime/SFP badge authority (`FBMOrderProfile.is_prime`) and shipment
 state authority; this module only removes numeric Journey prefixes from rendered
 HTML and makes persisted sale type clearer in the global notification bell.
@@ -53,16 +53,26 @@ def _sale_identity(record: dict[str, Any]) -> tuple[int, str] | None:
     return store_id, order_id
 
 
+def _canonical_fulfillment(
+    marketplace_fulfillment: str | None,
+    profile_fulfillment: str | None,
+) -> str:
+    """Use only persisted fulfilment evidence; never guess a missing order type."""
+    marketplace_value = str(marketplace_fulfillment or "").strip().upper()
+    profile_value = str(profile_fulfillment or "").strip().upper()
+    return marketplace_value or profile_value
+
+
 def _order_display_platform(
     platform: str | None,
     fulfillment_type: str | None,
     is_prime: bool | None,
 ) -> str:
-    """Return a clear display label from persisted order/profile facts only.
+    """Return a clear order label from persisted facts only.
 
     Prime is shown only when the persisted FBM profile positively says True.
-    FBA/AFN remains FBA.  MCF is intentionally left untouched and outside this
-    alignment's scope.
+    FBA/AFN remains FBA. Unknown historical types remain neutral rather than
+    being guessed. MCF is deliberately left untouched and outside this scope.
     """
     raw_platform = str(platform or "Marketplace").strip() or "Marketplace"
     normalized_platform = raw_platform.lower()
@@ -76,14 +86,18 @@ def _order_display_platform(
             return "Amazon · FBA"
         if is_prime is True:
             return "Amazon · Prime"
-        if fulfillment in {"FBM", "MFN", "SELLERFULFILLED", "SELLER_FULFILLED", ""}:
+        if fulfillment in {"FBM", "MFN", "SELLERFULFILLED", "SELLER_FULFILLED"}:
             return "Amazon · FBM"
-        return f"Amazon · {fulfillment}"
+        if fulfillment:
+            return f"Amazon · {fulfillment}"
+        return "Amazon · Order"
 
     if "ebay" in normalized_platform:
-        if fulfillment in {"FBM", "MFN", "SELLERFULFILLED", "SELLER_FULFILLED", ""}:
+        if fulfillment in {"FBM", "MFN", "SELLERFULFILLED", "SELLER_FULFILLED"}:
             return "eBay · FBM"
-        return f"eBay · {fulfillment}"
+        if fulfillment:
+            return f"eBay · {fulfillment}"
+        return "eBay · Order"
 
     if fulfillment:
         return f"{raw_platform} · {fulfillment}"
@@ -91,7 +105,7 @@ def _order_display_platform(
 
 
 def _enrich_notification_records(records: list[dict[str, Any]]) -> None:
-    """Add display clarity to already-persisted sale records in one DB read set."""
+    """Add clarity to displayed persisted sale records in one read-only DB pass."""
     from extensions import db
     from fbm_models import FBMOrderProfile
     from models import MarketplaceOrder
@@ -120,7 +134,7 @@ def _enrich_notification_records(records: list[dict[str, Any]]) -> None:
         )
         .all()
     )
-    fulfillment_by_identity = {
+    marketplace_fulfillment_by_identity = {
         (int(row.store_id), str(row.marketplace_order_id)): row.fulfillment_type
         for row in order_rows
         if row.store_id is not None and row.marketplace_order_id
@@ -131,6 +145,7 @@ def _enrich_notification_records(records: list[dict[str, Any]]) -> None:
             FBMOrderProfile.store_id,
             FBMOrderProfile.marketplace_order_id,
             FBMOrderProfile.is_prime,
+            FBMOrderProfile.fulfillment_channel,
         )
         .filter(
             tuple_(
@@ -140,8 +155,11 @@ def _enrich_notification_records(records: list[dict[str, Any]]) -> None:
         )
         .all()
     )
-    prime_by_identity = {
-        (int(row.store_id), str(row.marketplace_order_id)): row.is_prime
+    profile_by_identity = {
+        (int(row.store_id), str(row.marketplace_order_id)): (
+            row.is_prime,
+            row.fulfillment_channel,
+        )
         for row in profile_rows
         if row.store_id is not None and row.marketplace_order_id
     }
@@ -150,20 +168,26 @@ def _enrich_notification_records(records: list[dict[str, Any]]) -> None:
         identity = _sale_identity(record)
         if identity is None:
             continue
-        fulfillment = fulfillment_by_identity.get(identity)
-        is_prime = prime_by_identity.get(identity)
+
+        profile_prime, profile_fulfillment = profile_by_identity.get(
+            identity,
+            (None, None),
+        )
+        fulfillment = _canonical_fulfillment(
+            marketplace_fulfillment_by_identity.get(identity),
+            profile_fulfillment,
+        )
 
         # MCF stays exactly outside this presentation alignment.
-        normalized_fulfillment = str(fulfillment or "").strip().upper()
-        if normalized_fulfillment == "MCF" or normalized_fulfillment.startswith("MCF_"):
+        if fulfillment == "MCF" or fulfillment.startswith("MCF_"):
             continue
 
-        record["fulfillment_type"] = fulfillment
-        record["is_prime"] = is_prime is True
+        record["fulfillment_type"] = fulfillment or None
+        record["is_prime"] = profile_prime is True
         record["platform"] = _order_display_platform(
             record.get("platform"),
             fulfillment,
-            is_prime,
+            profile_prime,
         )
 
 
