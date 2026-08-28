@@ -7,6 +7,7 @@ import services.governed_mcf_compat  # noqa: F401
 import services.governed_ui_event_signal  # noqa: F401
 import services.governed_webhook_rejection_recovery  # noqa: F401
 import services.public_early_access  # noqa: F401
+import services.fbm_live_feed_alignment  # noqa: F401
 from services.governed_notification_read_alignment import (
     install_governed_notification_read_alignment,
 )
