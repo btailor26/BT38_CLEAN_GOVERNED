@@ -9,7 +9,7 @@ from typing import Any
 
 from extensions import db
 from fbm_models import FBMOrderProfile
-from models import MarketplaceOrder
+from models import MarketplaceOrder, Store
 
 
 BACKFILL_BATCH_SIZE = 20
@@ -28,30 +28,34 @@ def refresh_amazon_prime_profiles(*, limit: int = BACKFILL_BATCH_SIZE) -> dict[s
     repeatedly reading the newest batch. Amazon's exact IsPrime fact remains the
     authority; service speed and IsPremiumOrder are never treated as Prime.
     """
+    bounded_limit = max(1, min(int(limit or BACKFILL_BATCH_SIZE), 50))
     candidates = (
         db.session.query(MarketplaceOrder)
+        .join(Store, Store.id == MarketplaceOrder.store_id)
         .outerjoin(
             FBMOrderProfile,
             (FBMOrderProfile.store_id == MarketplaceOrder.store_id)
             & (FBMOrderProfile.marketplace_order_id == MarketplaceOrder.marketplace_order_id),
         )
         .filter(
+            Store.is_active == True,  # noqa: E712
+            Store.platform.ilike("%amazon%"),
             ~db.func.upper(db.func.coalesce(MarketplaceOrder.fulfillment_type, "")).in_(["FBA", "AFN", "MCF"]),
             db.or_(FBMOrderProfile.id.is_(None), FBMOrderProfile.source != BACKFILL_SOURCE),
         )
         .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
-        .limit(max(20, min(int(limit or BACKFILL_BATCH_SIZE) * 3, 150)))
+        # Pull extra line rows only to allow multi-line Amazon orders to collapse
+        # to one exact order read while keeping the whole SQL candidate set Amazon-only.
+        .limit(min(bounded_limit * 3, 150))
         .all()
     )
 
     unique: dict[tuple[int, str], MarketplaceOrder] = {}
     for row in candidates:
-        store = getattr(row, "store", None)
-        platform = _text(getattr(store, "platform", None)).lower() if store else ""
         order_id = _text(getattr(row, "marketplace_order_id", None))
-        if store is not None and "amazon" in platform and order_id:
+        if order_id:
             unique.setdefault((row.store_id, order_id), row)
-            if len(unique) >= max(1, min(int(limit or BACKFILL_BATCH_SIZE), 50)):
+            if len(unique) >= bounded_limit:
                 break
 
     refreshed = 0
