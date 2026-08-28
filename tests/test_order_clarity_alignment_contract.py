@@ -24,7 +24,16 @@ def test_historical_orders_use_the_same_persisted_rules_without_age_cutoff():
     assert "MarketplaceOrder.marketplace_order_id" in ALIGNMENT
     assert "FBMOrderProfile.store_id" in ALIGNMENT
     assert "FBMOrderProfile.marketplace_order_id" in ALIGNMENT
-    assert "created_at" not in ALIGNMENT
+    # created_at is allowed only as a calendar-year anchor for the rendered
+    # marketplace promise. Historical eligibility must never be date-filtered.
+    assert "MarketplaceOrder.created_at >=" not in ALIGNMENT
+    assert "MarketplaceOrder.created_at >" not in ALIGNMENT
+    assert "MarketplaceOrder.created_at <=" not in ALIGNMENT
+    assert "MarketplaceOrder.created_at <" not in ALIGNMENT
+    assert "FBMShipment.created_at >=" not in ALIGNMENT
+    assert "FBMShipment.created_at >" not in ALIGNMENT
+    assert "FBMShipment.created_at <=" not in ALIGNMENT
+    assert "FBMShipment.created_at <" not in ALIGNMENT
 
 
 def test_prime_badge_authority_remains_persisted_profile_truth():
@@ -65,7 +74,8 @@ def test_recovered_tracking_is_inserted_into_shipment_column_not_order_column():
     assert 'body.rfind("</td>", 0, marker_at)' in ALIGNMENT
     assert "body[:shipment_cell_end] + tracking_html + body[shipment_cell_end:]" in ALIGNMENT
     assert 'data-no-row-click="1"' in ALIGNMENT
-    assert "Defensive fallback" in ALIGNMENT
+    # Preserve the structural fallback even if the template marker changes.
+    assert "body = tracking_html + body" in ALIGNMENT
 
 
 def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
