@@ -10,6 +10,7 @@ from services.governed_mcf_execution import refresh_mcf_status, submit_mcf_order
 import services.fbm_packlink_draft_alignment  # noqa: F401
 import services.fbm_operational_autosave  # noqa: F401
 import services.fbm_marketplace_order_update_alignment  # noqa: F401
+import services.fbm_live_feed_alignment  # noqa: F401
 
 
 def _submit(self, mcf_order):
