@@ -1,9 +1,10 @@
-"""Exact eBay order hydration for the governed webhook -> MCF path.
+"""Exact eBay order hydration for the governed webhook path.
 
 The durable webhook already identifies and creates the MarketplaceOrder. This
-module reads only that exact eBay order and fills missing delivery/timestamp
-fields on those existing rows. It does not create orders, mutate Warehouse
-stock, push marketplaces, or submit MCF.
+module reads only that exact eBay order and its exact shipping fulfillments,
+then fills missing delivery/timestamp/tracking fields on those existing rows.
+It does not create orders, mutate Warehouse stock, push marketplaces, or submit
+MCF.
 """
 from __future__ import annotations
 
@@ -21,6 +22,86 @@ from services.governed_marketplace_order_import import (
     _parse_ebay_datetime,
     _text,
 )
+
+
+def _fulfillment_truth(
+    *,
+    access_token: str,
+    order_id: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Read eBay's exact shipment fulfillments without making a marketplace write."""
+    response = requests.get(
+        f"{EBAY_ORDERS_URL}/{quote(order_id, safe='')}/shipping_fulfillment",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return [], None
+    if response.status_code >= 400:
+        return [], f"shipping_fulfillment_read_failed:{response.status_code}:{response.text[:500]}"
+
+    payload = response.json() or {}
+    fulfillments = payload.get("fulfillments") or []
+    return [row for row in fulfillments if isinstance(row, dict)], None
+
+
+def _fulfillment_line_ids(fulfillment: dict[str, Any]) -> set[str]:
+    result: set[str] = set()
+    for item in fulfillment.get("lineItems") or []:
+        if not isinstance(item, dict):
+            continue
+        line_id = _text(item.get("lineItemId") or item.get("orderLineItemId"))
+        if line_id:
+            result.add(line_id)
+    return result
+
+
+def _fulfillment_values(fulfillment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "carrier": _text(
+            fulfillment.get("shippingCarrierCode")
+            or fulfillment.get("carrier")
+            or fulfillment.get("carrierCode")
+        ),
+        "tracking_number": _text(
+            fulfillment.get("trackingNumber")
+            or fulfillment.get("shipmentTrackingNumber")
+        ),
+        "shipped_at": _parse_ebay_datetime(
+            fulfillment.get("shippedDate")
+            or fulfillment.get("shipDate")
+        ),
+    }
+
+
+def _best_fulfillment_for_row(
+    *,
+    row: MarketplaceOrder,
+    fulfillments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Select only unambiguous shipment truth for one order line."""
+    if not fulfillments:
+        return None
+
+    line_id = _text(row.marketplace_order_item_id)
+    line_matches = [
+        fulfillment
+        for fulfillment in fulfillments
+        if line_id and line_id in _fulfillment_line_ids(fulfillment)
+    ]
+    candidates = line_matches
+
+    # A single order-level fulfillment is safe for every line when eBay did not
+    # return line-item linkage. Never collapse multiple shipment tracking IDs
+    # into one MarketplaceOrder field.
+    if not candidates and len(fulfillments) == 1:
+        candidates = fulfillments
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
 
 
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
@@ -75,6 +156,11 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
             "returned_order_id": returned_id,
         }
 
+    fulfillments, fulfillment_error = _fulfillment_truth(
+        access_token=access_token,
+        order_id=order_id,
+    )
+
     instructions = order.get("fulfillmentStartInstructions") or []
     instruction = instructions[0] if instructions else {}
     shipping_step = instruction.get("shippingStep") or {}
@@ -112,6 +198,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
 
     identity_updates = 0
     identity_conflicts = []
+    tracking_updates = 0
 
     for row in rows:
         for field, value in values.items():
@@ -125,12 +212,6 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         if item:
             line_id = _text(item.get("lineItemId"))
             if line_id:
-                # eBay notifications may initially identify a sold item with the
-                # legacy listing/item id. The Fulfillment API then gives us the
-                # canonical order lineItemId. Keep BOTH identity columns aligned
-                # when canonicalising the row; otherwise the later recovery read
-                # builds a different idempotency key and can create a duplicate
-                # pending MarketplaceOrder for the same sale.
                 canonical_key = f"{store.id}:{order_id}:{line_id}:{_text(row.sku)}"
                 conflict = (
                     MarketplaceOrder.query
@@ -154,6 +235,22 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
                         "conflicting_row_id": conflict.id,
                         "line_item_id": line_id,
                     })
+
+        fulfillment = _best_fulfillment_for_row(row=row, fulfillments=fulfillments)
+        if fulfillment is not None:
+            shipment = _fulfillment_values(fulfillment)
+            changed = False
+            if shipment["carrier"] and not _text(row.carrier):
+                row.carrier = shipment["carrier"]
+                changed = True
+            if shipment["tracking_number"] and not _text(row.tracking_number):
+                row.tracking_number = shipment["tracking_number"]
+                changed = True
+            if shipment["shipped_at"] is not None and row.shipped_at is None:
+                row.shipped_at = shipment["shipped_at"]
+                changed = True
+            if changed:
+                tracking_updates += 1
 
         db.session.execute(
             text(
@@ -186,17 +283,16 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "reason": (
             "exact_ebay_order_identity_conflict"
             if identity_conflicts
-            else (
-                None if required_address_complete
-                else "exact_ebay_order_missing_mcf_delivery_fields"
-            )
+            else (None if required_address_complete else "exact_ebay_order_missing_delivery_fields")
         ),
         "order_id": order_id,
-        "marketplace_created_at": (
-            marketplace_created_at.isoformat() if marketplace_created_at else None
-        ),
+        "marketplace_created_at": marketplace_created_at.isoformat() if marketplace_created_at else None,
         "required_address_complete": required_address_complete,
         "rows_hydrated": len(rows),
         "identity_updates": identity_updates,
         "identity_conflicts": identity_conflicts,
+        "fulfillments_seen": len(fulfillments),
+        "tracking_updates": tracking_updates,
+        "fulfillment_error": fulfillment_error,
+        "marketplace_write_started": False,
     }
