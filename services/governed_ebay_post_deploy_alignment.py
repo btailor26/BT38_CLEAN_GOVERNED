@@ -273,6 +273,7 @@ def align_ebay_notifications_and_recover_missed_changes(
     since = _bounded_since(last_webhook_at, max_days=max_days)
 
     registration: dict[str, Any]
+    access_token = None
     try:
         access_token = _ebay_access_token(store)
         registration = ensure_ebay_order_notification_registration(
@@ -292,6 +293,37 @@ def align_ebay_notifications_and_recover_missed_changes(
             _persist_notification_auth_state(store, registration_error)
         except Exception:
             db.session.rollback()
+
+    shipping_notification: dict[str, Any]
+    if access_token and (registration.get("destination_id") or registration.get("ok")):
+        try:
+            from services.governed_ebay_shipping_notification_alignment import (
+                ensure_ebay_shipping_notification_alignment,
+            )
+            shipping_notification = ensure_ebay_shipping_notification_alignment(
+                store=store,
+                access_token=access_token,
+                destination_id=registration.get("destination_id"),
+            )
+        except Exception as exc:
+            shipping_notification = {
+                "success": False,
+                "ok": False,
+                "enabled": False,
+                "topic_id": "ITEM_MARKED_SHIPPED",
+                "reason": "shipping_notification_alignment_failed",
+                "error": str(exc),
+                "marketplace_write_started": False,
+            }
+    else:
+        shipping_notification = {
+            "success": True,
+            "ok": True,
+            "enabled": False,
+            "topic_id": "ITEM_MARKED_SHIPPED",
+            "reason": "base_notification_registration_unavailable",
+            "marketplace_write_started": False,
+        }
 
     try:
         orders = _catch_up_ebay_orders(store, since=since)
@@ -322,6 +354,7 @@ def align_ebay_notifications_and_recover_missed_changes(
         ),
         "bounded_since": since.isoformat(),
         "registration": registration,
+        "shipping_notification": shipping_notification,
         "order_catchup": orders,
         "listing_catchup": listing_recovery,
         "event_driven_primary": True,
