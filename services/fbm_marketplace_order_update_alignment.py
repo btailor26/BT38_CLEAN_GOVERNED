@@ -1,10 +1,11 @@
 """Persist marketplace-owned FBM facts when governed orders update.
 
 This is deliberately NOT a page-render path. /fbm stays DB-only and fast.
-After the existing governed order update completes, only the exact marketplace
-orders touched by that update are refreshed for shipping facts. Amazon owns
-IsPrime/EarliestDeliveryDate/LatestDeliveryDate; eBay owns its line-item
-fulfilment delivery window. No delivery dates are calculated by BT38.
+After the existing governed order update completes, exact marketplace orders
+touched by that update are refreshed for shipping facts. A bounded Amazon
+backfill also closes historical Prime/SFP profile gaps from the live feed.
+Amazon owns IsPrime/EarliestDeliveryDate/LatestDeliveryDate; eBay owns its
+line-item fulfilment delivery window. No delivery dates are calculated by BT38.
 """
 from __future__ import annotations
 
@@ -64,7 +65,7 @@ def _refresh_exact_updated_order(order: MarketplaceOrder) -> dict[str, Any]:
 
 
 def refresh_updated_fbm_marketplace_facts(result: Any) -> list[dict[str, Any]]:
-    """Refresh only exact order IDs returned by the governed update."""
+    """Refresh exact order IDs returned by the governed update."""
     order_ids: set[str] = set()
     _collect_order_ids(result, order_ids)
     refreshed: list[dict[str, Any]] = []
@@ -78,10 +79,9 @@ def refresh_updated_fbm_marketplace_facts(result: Any) -> list[dict[str, Any]]:
         )
         if not rows:
             continue
-        # One marketplace read per order, never one per line item.
         row = rows[0]
         fulfillment = _text(getattr(row, "fulfillment_type", None)).upper()
-        if fulfillment in {"FBA", "AFN"}:
+        if fulfillment in {"FBA", "AFN", "MCF"}:
             continue
         try:
             refreshed.append(_refresh_exact_updated_order(row))
@@ -108,8 +108,24 @@ def install_governed_order_update_alignment() -> None:
     def aligned_run(*args, **kwargs):
         result = current(*args, **kwargs)
         refreshes = refresh_updated_fbm_marketplace_facts(result)
+
+        # Historical Prime/SFP alignment is intentionally bounded and only runs
+        # with the existing governed feed cycle. It never runs from /fbm page
+        # rendering and never guesses Prime from premium/NextDay service text.
+        from services.fbm_prime_feed_alignment import refresh_amazon_prime_profiles
+        try:
+            prime_backfill = refresh_amazon_prime_profiles()
+        except Exception as exc:
+            db.session.rollback()
+            prime_backfill = {
+                "success": False,
+                "reason": "amazon_prime_backfill_failed",
+                "error": str(exc),
+            }
+
         if isinstance(result, dict):
             result["fbm_marketplace_facts"] = refreshes
+            result["fbm_prime_backfill"] = prime_backfill
         return result
 
     aligned_run._bt38_fbm_update_alignment = True
