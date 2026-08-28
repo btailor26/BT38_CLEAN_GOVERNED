@@ -3,8 +3,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
+NOTIFICATION_ALIGNMENT = (
+    ROOT / "services" / "governed_notification_read_alignment.py"
+).read_text(encoding="utf-8")
 FBM = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
-SERVICES_INIT = (ROOT / "services" / "__init__.py").read_text(encoding="utf-8")
 
 
 def test_journey_numbers_are_removed_at_render_without_changing_state_authority():
@@ -54,6 +56,7 @@ def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
     assert 'if fulfillment == "MCF" or fulfillment.startswith("MCF_"):' in ALIGNMENT
 
 
-def test_alignment_is_installed_on_existing_governed_app():
-    assert "install_governed_order_clarity_alignment" in SERVICES_INIT
-    assert "install_governed_order_clarity_alignment(_bt38_app)" in SERVICES_INIT
+def test_alignment_is_installed_through_existing_notification_ui_path():
+    assert "install_governed_order_clarity_alignment" in NOTIFICATION_ALIGNMENT
+    assert "install_governed_order_clarity_alignment(app)" in NOTIFICATION_ALIGNMENT
+    assert "from app import app" not in NOTIFICATION_ALIGNMENT
