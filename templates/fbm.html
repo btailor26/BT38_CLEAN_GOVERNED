@@ -4,7 +4,7 @@
 
 {% block content %}
 <style>
-.bt38-prime-badge{display:inline-flex;align-items:center;gap:2px;margin-top:4px;font-weight:700;line-height:1}.bt38-prime-badge .prime-check{color:#ff9900;font-size:18px;transform:rotate(-12deg);display:inline-block}.bt38-prime-badge .prime-word{color:#00a8e1;font-size:16px;font-style:italic;letter-spacing:-.4px}.fbm-journey{min-width:122px}.fbm-journey .badge{font-weight:600}.fbm-address-ready{font-size:.75rem}.fbm-address-missing{font-size:.75rem;color:#dc3545}.fbm-promise{font-size:.78rem;margin-top:5px}.fbm-service{font-size:.78rem;color:#6c757d;margin-top:3px}
+.bt38-prime-badge-img{display:block;width:74px;height:auto;margin-top:4px}.fbm-journey{min-width:122px}.fbm-journey .badge{font-weight:600}.fbm-address-ready{font-size:.75rem}.fbm-address-missing{font-size:.75rem;color:#dc3545}.fbm-promise{font-size:.78rem;margin-top:5px}.fbm-service{font-size:.78rem;color:#6c757d;margin-top:3px}
 </style>
 
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
@@ -33,7 +33,7 @@
     {% set order = item.order %}{% set ops = order.fbm_view_state %}{% set shipment = item.shipment %}{% set mapping_review = item.mapping_review %}{% set carrier_mapping = mapping_review.mapping if mapping_review else none %}{% set tracking_number = shipment.tracking_number if shipment and shipment.tracking_number else order.tracking_number %}{% set carrier_name = shipment.carrier if shipment and shipment.carrier else order.carrier %}{% set promise = ops.promise %}{% set third_label = 'Delivered' %}{% set third_class = 'bg-light text-muted border' %}{% if promise.delivered_late %}{% set third_label = 'Delivered late' %}{% set third_class = 'bg-danger' %}{% elif ops.delivered %}{% set third_class = 'bg-success' %}{% elif promise.late %}{% set third_label = 'Delayed' %}{% set third_class = 'bg-danger' %}{% endif %}
     <tr class="fbm-order-row" data-order-id="{{ order.id }}" style="cursor:pointer">
       <td class="text-center" data-no-row-click="1"><input class="form-check-input fbm-order-checkbox" type="checkbox" value="{{ order.id }}"></td>
-      <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div>{% if ops.is_prime %}<span class="bt38-prime-badge" title="Amazon Prime / Seller Fulfilled Prime"><span class="prime-check">✓</span><span class="prime-word">prime</span></span>{% endif %}</td>
+      <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div>{% if ops.is_prime %}<img class="bt38-prime-badge-img" src="{{ url_for('static', filename='img/marketplaces/prime-badge.svg') }}" alt="Prime" title="Amazon Prime / Seller Fulfilled Prime">{% endif %}</td>
       <td>{{ order.marketplace_order_id }}<div class="small text-muted">{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</div></td>
       <td><strong>{{ order.warehouse_stock.product_name if order.warehouse_stock and order.warehouse_stock.product_name else (order.sku or '—') }}</strong><div class="small text-muted"><code>{{ order.sku or '—' }}</code></div></td>
       <td>{{ order.quantity or 0 }}</td>
