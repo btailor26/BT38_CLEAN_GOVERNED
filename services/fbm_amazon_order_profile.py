@@ -13,7 +13,6 @@ from typing import Any
 from extensions import db
 from fbm_models import FBMOrderProfile
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
-from services.fbm_operational_state import operational_state, update_marketplace_facts
 
 
 PROFILE_CACHE_TTL = timedelta(minutes=5)
@@ -51,19 +50,8 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
             "ship_to_phone",
         )
     )
-    ops = operational_state(order, create=False)
-    promise_known = bool(
-        ops
-        and (
-            getattr(ops, "earliest_delivery_at", None)
-            or getattr(ops, "latest_delivery_at", None)
-        )
-    )
 
-    # A profile without Amazon's customer delivery promise is incomplete for
-    # the FBM desk. Force one exact read after this alignment even if the older
-    # Prime/profile cache is otherwise fresh.
-    if existing is not None and not force and cache_fresh and order_has_destination and promise_known:
+    if existing is not None and not force and cache_fresh and order_has_destination:
         return existing
 
     creds = getattr(store, "amazon_credentials", None)
@@ -77,18 +65,8 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     service_level = _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel"))
     is_prime = _prime_from_shipping_facts(raw_is_prime, service_level)
     latest_ship = _parse_iso(payload.get("LatestShipDate"))
-    earliest_delivery = _parse_iso(payload.get("EarliestDeliveryDate"))
-    latest_delivery = _parse_iso(payload.get("LatestDeliveryDate"))
 
     _hydrate_marketplace_order(order, payload, address_payload)
-    update_marketplace_facts(
-        order,
-        platform="amazon",
-        shipping_service=service_level,
-        ship_by_at=latest_ship,
-        earliest_delivery_at=earliest_delivery,
-        latest_delivery_at=latest_delivery,
-    )
 
     profile = existing or FBMOrderProfile(
         store_id=order.store_id,
@@ -124,15 +102,6 @@ def get_amazon_delivery_promise(order: Any) -> dict[str, Any]:
     payload, _ = _fetch_order(store, str(order.marketplace_order_id))
     earliest = _parse_iso(payload.get("EarliestDeliveryDate"))
     latest = _parse_iso(payload.get("LatestDeliveryDate"))
-    update_marketplace_facts(
-        order,
-        platform="amazon",
-        shipping_service=_text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel")),
-        ship_by_at=_parse_iso(payload.get("LatestShipDate")),
-        earliest_delivery_at=earliest,
-        latest_delivery_at=latest,
-    )
-    db.session.commit()
     return {
         "source": "amazon",
         "earliest_delivery_at": earliest.isoformat() if earliest else None,
@@ -251,19 +220,19 @@ def _response_payload(response: Any) -> Any:
 
 
 def _prime_from_shipping_facts(raw_is_prime: bool | None, service_level: str | None) -> bool | None:
-    """Use Amazon's IsPrime flag as the routing authority for Prime/SFP.
+    """Lock Prime/SFP only when Amazon's shipping service explicitly says Prime/SFP.
 
-    ShipmentServiceLevelCategory describes the service category (for example
-    Standard or NextDay) and is not a reliable Prime classifier. If Amazon
-    returns IsPrime, BT38 must preserve that exact marketplace fact. Service
-    text is only a fallback when the IsPrime field is absent.
+    Amazon order/webhook shipping facts are the routing authority. A generic
+    service such as Standard or NextDay must not be converted into a Prime lock
+    solely because a contradictory IsPrime flag is present. When Amazon does not
+    provide a service level at all, preserve the raw IsPrime value rather than
+    inventing a classification.
     """
-    if raw_is_prime is not None:
-        return bool(raw_is_prime)
     service = str(service_level or "").strip().lower()
     if not service:
-        return None
-    return any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
+        return raw_is_prime
+    explicit_prime = any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
+    return bool(raw_is_prime is True and explicit_prime)
 
 
 def _bool(value: Any) -> bool | None:

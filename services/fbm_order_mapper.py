@@ -3,9 +3,9 @@
 MarketplaceOrder remains the order source of truth. This module does not import
 orders, call marketplaces, buy postage, or mutate inventory quantities. Missing
 marketplace-owned delivery facts may be hydrated through the single exact-order
-hydration rule before an external provider is called. Explicit packed-parcel
-facts are always persisted against the exact order; safe single-unit values may
-also become reusable ProductPackMapping defaults.
+hydration rule before an external provider is called. Explicit single-unit
+parcel facts may be persisted into ProductPackMapping so the same SKU can reuse
+those FBM shipping defaults on later orders.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from typing import Any
 from extensions import db
 from models import MarketplaceOrder, ProductPackMapping, WarehouseStock
 from services.fbm_marketplace_destination import destination_complete, hydrate_marketplace_destination
-from services.fbm_operational_state import save_order_parcel, saved_order_parcel
 
 
 DEFAULT_SHIP_FROM = {
@@ -155,44 +154,24 @@ def _single_unit_mapping(order: Any, *, create: bool = False) -> ProductPackMapp
 
 
 def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, Any]) -> None:
-    """Persist explicit parcel values before provider calls.
+    """Persist explicit safe single-unit parcel values before provider calls.
 
-    Every valid weight/dimension entered for the actual marketplace order is
-    committed to FBMOrderOperationalState, including mixed and multi-quantity
-    parcels. Safe one-unit SKU values are additionally mirrored to
-    ProductPackMapping so later one-unit orders can reuse them.
+    Weight and dimensions entered in the FBM desk are committed to the reusable
+    ProductPackMapping before Packlink/Amazon rate execution. A later provider
+    error therefore does not discard the entered parcel defaults.
     """
     order = base.order_ref
     if order is None:
         return
 
     values = {
-        "weight_kg": _positive_float(overrides.get("weight_kg")),
-        "length_cm": _positive_float(overrides.get("length_cm")),
-        "width_cm": _positive_float(overrides.get("width_cm")),
-        "height_cm": _positive_float(overrides.get("height_cm")),
+        "carton_weight_kg": _positive_float(overrides.get("weight_kg")),
+        "carton_length_cm": _positive_float(overrides.get("length_cm")),
+        "carton_width_cm": _positive_float(overrides.get("width_cm")),
+        "carton_height_cm": _positive_float(overrides.get("height_cm")),
     }
     values = {key: value for key, value in values.items() if value is not None}
     if not values:
-        return
-
-    # Exact-order persistence is unconditional for valid entered parcel facts.
-    try:
-        saved = save_order_parcel(order, values)
-        if saved is not None:
-            db.session.commit()
-    except Exception:
-        db.session.rollback()
-
-    # Reusable SKU defaults stay deliberately strict and separate.
-    reusable_values = {
-        "carton_weight_kg": values.get("weight_kg"),
-        "carton_length_cm": values.get("length_cm"),
-        "carton_width_cm": values.get("width_cm"),
-        "carton_height_cm": values.get("height_cm"),
-    }
-    reusable_values = {key: value for key, value in reusable_values.items() if value is not None}
-    if not reusable_values:
         return
 
     try:
@@ -200,7 +179,7 @@ def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, A
         if mapping is None:
             return
         changed = False
-        for field_name, value in reusable_values.items():
+        for field_name, value in values.items():
             current = _positive_float(getattr(mapping, field_name, None))
             if current != value:
                 setattr(mapping, field_name, value)
@@ -212,11 +191,14 @@ def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, A
 
 
 def parcel_from_db(order: Any) -> ParcelInput:
-    """Resolve packed parcel defaults for the complete marketplace order.
+    """Resolve package defaults from the complete marketplace order.
 
-    Exact-order values entered previously in the FBM desk have highest priority.
-    Warehouse weight and safe one-unit ProductPackMapping defaults remain useful
-    fallbacks. Mixed/multi-line dimensions are never invented.
+    Weight normally comes from WarehouseStock.product_weight_kg x line
+    quantity. For an exact one-unit SKU, an active ProductPackMapping may
+    provide the previously entered FBM parcel weight and dimensions. For
+    mixed/multi-line orders BT38 deliberately leaves dimensions blank because
+    adding product carton dimensions would be unsafe; the user must enter the
+    actual packed parcel dimensions.
     """
     lines = order_lines(order)
     total_weight = 0.0
@@ -272,15 +254,6 @@ def parcel_from_db(order: Any) -> ParcelInput:
                 sources.append("pack_mapping")
     else:
         sources.append("multi_item_dimensions_required")
-
-    saved = saved_order_parcel(order)
-    if saved:
-        weight = saved.get("weight_kg") or weight
-        length = saved.get("length_cm") or length
-        width = saved.get("width_cm") or width
-        height = saved.get("height_cm") or height
-        sources = [source for source in sources if source != "multi_item_dimensions_required"]
-        sources.append("order_parcel")
 
     return ParcelInput(weight_kg=weight, length_cm=length, width_cm=width, height_cm=height, source="+".join(sources) if sources else "missing", order_ref=order)
 

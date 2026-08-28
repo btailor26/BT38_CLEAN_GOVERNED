@@ -3,11 +3,6 @@
 This is not a new stock or push path. It checks only the Warehouse and listing
 IDs recorded by the existing governed webhook push and reuses that same governed
 push path when those exact rows are not aligned.
-
-For eBay sale events the same exact verification also hydrates the already
-created MarketplaceOrder from eBay Fulfillment API truth. This keeps customer
-shipping facts and the canonical lineItemId aligned without introducing a
-marketplace-wide order scan or a second order-import path.
 """
 
 from __future__ import annotations
@@ -51,47 +46,6 @@ def _is_fba_read_only(listing: Any) -> bool:
     )
 
 
-def _hydrate_exact_ebay_order_for_event(event: dict[str, Any]) -> dict[str, Any] | None:
-    """Hydrate only the exact eBay order identified by the queued webhook event."""
-    marketplace = _text(event.get("marketplace")).lower()
-    order_id = _text(event.get("order_id"))
-    store_id = _safe_int(event.get("store_id"), 0)
-
-    if "ebay" not in marketplace or not order_id or store_id <= 0:
-        return None
-
-    from extensions import db
-    from models import Store
-    from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
-
-    store = db.session.get(Store, store_id)
-    if store is None or "ebay" not in _text(getattr(store, "platform", None)).lower():
-        return {
-            "success": False,
-            "skipped": True,
-            "reason": "exact_ebay_store_missing",
-            "order_id": order_id,
-            "store_id": store_id,
-        }
-
-    try:
-        return hydrate_exact_ebay_order(
-            store=store,
-            marketplace_order_id=order_id,
-            source="webhook_alignment_15m_exact_ebay_order",
-        )
-    except Exception as exc:
-        db.session.rollback()
-        return {
-            "success": False,
-            "skipped": False,
-            "reason": "exact_ebay_order_hydration_failed",
-            "order_id": order_id,
-            "store_id": store_id,
-            "error": str(exc),
-        }
-
-
 def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
     """Verify only the exact Warehouse row and listing IDs saved by the webhook."""
     from extensions import db
@@ -100,13 +54,6 @@ def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
         push_group_listings,
         push_marketplace_listing,
     )
-
-    # The eBay webhook can initially identify a sold line with the legacy item
-    # ID. Exact Fulfillment API hydration resolves the canonical lineItemId and
-    # complete delivery facts before the shipping desk consumes the order. The
-    # hydrator is exact-order scoped and safely removes only zero-value,
-    # unprocessed legacy aliases when a canonical row already exists.
-    ebay_order_hydration = _hydrate_exact_ebay_order_for_event(event)
 
     warehouse_stock_id = event.get("warehouse_stock_id")
     listing_ids = []
@@ -119,17 +66,11 @@ def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
 
     if warehouse_stock_id is None or not listing_ids:
         return {
-            "verified": bool(
-                ebay_order_hydration
-                and (ebay_order_hydration.get("success") or ebay_order_hydration.get("skipped"))
-            ),
+            "verified": False,
             "aligned": False,
             "skipped": True,
             "reason": "exact_alignment_scope_required",
-            "database_touched": bool(
-                ebay_order_hydration and ebay_order_hydration.get("success")
-            ),
-            "ebay_order_hydration": ebay_order_hydration,
+            "database_touched": False,
         }
 
     stock = db.session.get(WarehouseStock, int(warehouse_stock_id))
@@ -140,7 +81,6 @@ def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
             "reason": "warehouse_stock_missing",
             "warehouse_stock_id": warehouse_stock_id,
             "rows_examined_max": 1,
-            "ebay_order_hydration": ebay_order_hydration,
         }
 
     listings = (
@@ -231,5 +171,4 @@ def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
         "full_scan_started": False,
         "warehouse_scan_started": False,
         "marketplace_hydration_started": False,
-        "ebay_order_hydration": ebay_order_hydration,
     }

@@ -4,40 +4,20 @@ from flask import jsonify, request
 from flask_login import login_required
 
 
-def _fulfillment_mode(order, profile) -> str:
-    """Return the persisted marketplace fulfillment truth used by the bell.
-
-    FBA/AFN always wins and is never treated as merchant fulfilled. Seller
-    Fulfilled Prime is only true when the exact Amazon order profile says
-    is_prime=True. Premium/service-level text is deliberately not authority.
-    Every remaining merchant-fulfilled order is standard FBM.
-    """
-    fulfillment = str(getattr(order, "fulfillment_type", None) or "").strip().upper()
-    profile_channel = str(
-        getattr(profile, "fulfillment_channel", None) or ""
-    ).strip().upper()
-    if fulfillment in {"FBA", "AFN"} or profile_channel in {"FBA", "AFN"}:
-        return "FBA"
-    if profile is not None and getattr(profile, "is_prime", None) is True:
-        return "SFP"
-    return "FBM"
-
-
 def install_governed_notification_read_alignment(app):
     """Replace only the existing notification bell read implementation.
 
     The registered URL and endpoint stay unchanged. This is read-only UI
-    alignment: MarketplaceOrder, MarketplaceListing, FBMOrderProfile and
-    SyncLog remain the persisted sources. No marketplace call, sync, import,
-    push or DB write is introduced here.
+    alignment: MarketplaceOrder, MarketplaceListing and SyncLog remain the
+    persisted sources. No marketplace call, sync, import, push or DB write is
+    introduced here.
     """
 
     @login_required
     def fast_governed_ui_notifications():
         from extensions import db
-        from fbm_models import FBMOrderProfile
         from models import MarketplaceOrder, MarketplaceListing, SyncLog
-        from sqlalchemy import and_, or_, tuple_
+        from sqlalchemy import and_, or_
         from sqlalchemy.orm import joinedload
 
         try:
@@ -48,6 +28,8 @@ def install_governed_notification_read_alignment(app):
 
         records = []
 
+        # Recent sales plus Store in one read. The previous route could lazy-load
+        # Store once per row and then queried MarketplaceListing once per order.
         orders = (
             db.session.query(MarketplaceOrder)
             .options(joinedload(MarketplaceOrder.store))
@@ -58,32 +40,6 @@ def install_governed_notification_read_alignment(app):
             .limit(limit)
             .all()
         )
-
-        profile_keys = sorted({
-            (
-                int(getattr(order, "store_id")),
-                str(getattr(order, "marketplace_order_id", None) or "").strip(),
-            )
-            for order in orders
-            if getattr(order, "store_id", None) is not None
-            and str(getattr(order, "marketplace_order_id", None) or "").strip()
-        })
-        profiles_by_key = {}
-        if profile_keys:
-            profile_rows = (
-                db.session.query(FBMOrderProfile)
-                .filter(
-                    tuple_(
-                        FBMOrderProfile.store_id,
-                        FBMOrderProfile.marketplace_order_id,
-                    ).in_(profile_keys)
-                )
-                .all()
-            )
-            profiles_by_key = {
-                (int(profile.store_id), str(profile.marketplace_order_id)): profile
-                for profile in profile_rows
-            }
 
         order_listing_filters = []
         seen_order_listing_keys = set()
@@ -102,6 +58,7 @@ def install_governed_notification_read_alignment(app):
                 )
             )
 
+        # Resolve all sale titles together instead of one query per order.
         order_title_by_key = {}
         if order_listing_filters:
             title_rows = (
@@ -125,7 +82,7 @@ def install_governed_notification_read_alignment(app):
 
         for order in orders:
             store = getattr(order, "store", None)
-            marketplace = getattr(store, "platform", None) or "Marketplace"
+            platform = getattr(store, "platform", None) or "Marketplace"
             order_id = (
                 getattr(order, "marketplace_order_id", None)
                 or getattr(order, "external_order_id", None)
@@ -135,15 +92,10 @@ def install_governed_notification_read_alignment(app):
             quantity = int(getattr(order, "quantity", 0) or 0)
             store_id = getattr(order, "store_id", None)
             product_title = order_title_by_key.get((store_id, sku), "")
-            profile = (
-                profiles_by_key.get((int(store_id), str(order_id)))
-                if store_id is not None and order_id
-                else None
-            )
-            fulfillment_mode = _fulfillment_mode(order, profile)
-            fulfillment_label = "Prime" if fulfillment_mode == "SFP" else fulfillment_mode
-            platform_display = f"{marketplace} · {fulfillment_label}"
 
+            # Use marketplace line identity for display de-duplication. Provider
+            # webhook retries may have produced more than one DB row, but the bell
+            # should show the commercial sale once. DB history is not modified.
             line_identity = (
                 getattr(order, "marketplace_order_item_id", None)
                 or sku
@@ -153,15 +105,11 @@ def install_governed_notification_read_alignment(app):
             records.append({
                 "event_key": f"order:{store_id}:{order_id}:{line_identity}",
                 "log_type": "marketplace_sale",
-                "platform": platform_display,
-                "marketplace": marketplace,
+                "platform": platform,
                 "title": product_title,
                 "sku": sku,
                 "quantity": quantity,
                 "order_id": order_id,
-                "fulfillment_mode": fulfillment_mode,
-                "fulfillment_label": fulfillment_label,
-                "is_prime": bool(fulfillment_mode == "SFP"),
                 "message": (
                     product_title
                     or (
@@ -177,6 +125,7 @@ def install_governed_notification_read_alignment(app):
                 ),
             })
 
+        # Canonical listing truth plus Store in one read.
         listing_rows = (
             db.session.query(MarketplaceListing)
             .options(joinedload(MarketplaceListing.store))
@@ -217,6 +166,7 @@ def install_governed_notification_read_alignment(app):
                 ),
             })
 
+        # Existing governed push/link audit truth.
         sync_event_rows = (
             db.session.query(SyncLog)
             .filter(
@@ -257,6 +207,8 @@ def install_governed_notification_read_alignment(app):
 
             parsed_sync_rows.append((row, message, fields))
 
+        # Resolve every SyncLog listing and Store in one batch rather than one
+        # MarketplaceListing.query.get() per event.
         sync_listings_by_id = {}
         if sync_listing_ids:
             sync_listings = (
