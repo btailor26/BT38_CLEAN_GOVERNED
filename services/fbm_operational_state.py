@@ -1,9 +1,10 @@
 """Persist and expose one governed FBM operational state path.
 
-MarketplaceOrder remains the order source of truth. This module stores only
-shipping-desk facts (marketplace promise/service and packed parcel values) and
-builds the server-side state used by the existing /fbm page. It does not create
-orders, buy postage, dispatch, mutate inventory, or create a second UI route.
+Initial /fbm rendering is deliberately DB-only. Marketplace-owned delivery
+facts are refreshed only by the existing governed interaction paths and are
+cached here for display. This module never calls Amazon/eBay while rendering
+/fbm, never buys postage, dispatches, mutates inventory, or creates another UI
+or marketplace path.
 """
 from __future__ import annotations
 
@@ -51,18 +52,17 @@ class FBMOrderOperationalState(db.Model):
         return value.strftime("%d %b") if value else None
 
 
-def ensure_operational_table() -> None:
-    FBMOrderOperationalState.__table__.create(bind=db.engine, checkfirst=True)
-
-
 def operational_state(order: Any, *, create: bool = False) -> FBMOrderOperationalState | None:
+    """Read the exact order state without DDL or marketplace traffic."""
     if order is None or getattr(order, "store_id", None) is None:
         return None
     order_id = str(getattr(order, "marketplace_order_id", "") or "").strip()
     if not order_id:
         return None
-    ensure_operational_table()
-    row = FBMOrderOperationalState.query.filter_by(store_id=order.store_id, marketplace_order_id=order_id).first()
+    row = FBMOrderOperationalState.query.filter_by(
+        store_id=order.store_id,
+        marketplace_order_id=order_id,
+    ).first()
     if row is None and create:
         store = getattr(order, "store", None)
         row = FBMOrderOperationalState(
@@ -118,16 +118,19 @@ def save_order_parcel(order: Any, values: dict[str, Any]) -> FBMOrderOperational
     return row
 
 
-def saved_order_parcel(order: Any) -> dict[str, float]:
-    row = operational_state(order, create=False)
-    if row is None or not isinstance(row.parcel, dict):
+def _parcel_from_state(state: FBMOrderOperationalState | None) -> dict[str, float]:
+    if state is None or not isinstance(state.parcel, dict):
         return {}
     result: dict[str, float] = {}
     for key in ("weight_kg", "length_cm", "width_cm", "height_cm"):
-        value = _positive_float(row.parcel.get(key))
+        value = _positive_float(state.parcel.get(key))
         if value is not None:
             result[key] = value
     return result
+
+
+def saved_order_parcel(order: Any) -> dict[str, float]:
+    return _parcel_from_state(operational_state(order, create=False))
 
 
 def _latest_shipment(order: Any):
@@ -148,11 +151,13 @@ def _latest_shipment(order: Any):
         return None
 
 
-def promise_state(order: Any, shipment: Any = None, *, now: datetime | None = None) -> dict[str, Any]:
+def _promise_from_loaded_state(
+    state: FBMOrderOperationalState | None,
+    shipment: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     current = now or datetime.utcnow()
-    state = operational_state(order, create=False)
-    if shipment is None:
-        shipment = _latest_shipment(order)
     latest = getattr(state, "latest_delivery_at", None) if state is not None else None
     delivered_at = getattr(shipment, "delivered_at", None) if shipment is not None else None
     late = bool(latest and current > latest and not delivered_at)
@@ -169,12 +174,19 @@ def promise_state(order: Any, shipment: Any = None, *, now: datetime | None = No
     }
 
 
-def fbm_view_state(order: Any) -> dict[str, Any]:
-    """Return the single server-side state consumed by the existing /fbm page.
+def promise_state(order: Any, shipment: Any = None, *, now: datetime | None = None) -> dict[str, Any]:
+    state = operational_state(order, create=False)
+    if shipment is None:
+        shipment = _latest_shipment(order)
+    return _promise_from_loaded_state(state, shipment, now=now)
 
-    Missing marketplace-owned facts are hydrated through the existing exact-order
-    readers only. No alternate endpoint, browser overlay or second import path is
-    created.
+
+def fbm_view_state(order: Any) -> dict[str, Any]:
+    """Build /fbm row state from cached DB facts only.
+
+    Exact Amazon/eBay reads belong to Shipping Options/provider execution and
+    then persist their marketplace-owned facts here. Initial page rendering must
+    never wait on a marketplace request.
     """
     cached = getattr(order, "_bt38_fbm_view_state", None)
     if isinstance(cached, dict):
@@ -182,34 +194,8 @@ def fbm_view_state(order: Any) -> dict[str, Any]:
 
     store = getattr(order, "store", None)
     platform = str(getattr(store, "platform", "") or "").strip().lower()
-    refresh_error = None
-
-    try:
-        state = operational_state(order, create=False)
-        promise_known = bool(state and (state.earliest_delivery_at or state.latest_delivery_at))
-        service_known = bool(state and state.shipping_service)
-        address_missing = any(
-            not str(getattr(order, field, "") or "").strip()
-            for field in ("ship_to_name", "ship_to_address", "ship_to_city", "ship_to_postcode", "ship_to_country")
-        )
-
-        if platform == "amazon":
-            from services.fbm_amazon_order_profile import get_or_refresh_amazon_profile
-            get_or_refresh_amazon_profile(order, force=not promise_known)
-        elif platform == "ebay" and (address_missing or not promise_known or not service_known):
-            from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
-            hydrate_exact_ebay_order(
-                store=store,
-                marketplace_order_id=str(order.marketplace_order_id),
-                source="fbm_page",
-            )
-    except Exception as exc:
-        db.session.rollback()
-        refresh_error = str(exc)
-
     state = operational_state(order, create=False)
     shipment = _latest_shipment(order)
-    promise = promise_state(order, shipment=shipment)
 
     profile = None
     try:
@@ -220,6 +206,8 @@ def fbm_view_state(order: Any) -> dict[str, Any]:
         ).first()
     except Exception:
         profile = None
+
+    promise = _promise_from_loaded_state(state, shipment)
 
     journey = "not_started"
     if shipment is not None:
@@ -258,8 +246,8 @@ def fbm_view_state(order: Any) -> dict[str, Any]:
         "destination": destination,
         "address_complete": not missing_address,
         "missing_address": missing_address,
-        "parcel": saved_order_parcel(order),
-        "refresh_error": refresh_error,
+        "parcel": _parcel_from_state(state),
+        "refresh_error": None,
     }
     setattr(order, "_bt38_fbm_view_state", result)
     return result
