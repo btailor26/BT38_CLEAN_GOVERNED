@@ -60,6 +60,14 @@ def test_all_market_fbm_tracking_is_visible_from_any_persisted_order_or_shipment
     assert 'platform == "ebay"' not in ALIGNMENT.split("def _persisted_tracking_by_order_row", 1)[1].split("def _sale_identity", 1)[0]
 
 
+def test_recovered_tracking_is_inserted_into_shipment_column_not_order_column():
+    assert "_FBM_JOURNEY_CELL_MARKER" in ALIGNMENT
+    assert 'body.rfind("</td>", 0, marker_at)' in ALIGNMENT
+    assert "body[:shipment_cell_end] + tracking_html + body[shipment_cell_end:]" in ALIGNMENT
+    assert 'data-no-row-click="1"' in ALIGNMENT
+    assert "Defensive fallback" in ALIGNMENT
+
+
 def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
     assert "@app.after_request" in ALIGNMENT
     assert "db.session.add" not in ALIGNMENT
