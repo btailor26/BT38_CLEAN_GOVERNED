@@ -3,58 +3,279 @@
 {% block title %}FBM | BT38 Inventory{% endblock %}
 
 {% block content %}
-<style>
-.bt38-prime-badge-img{display:block;width:74px;height:auto;margin-top:4px}.fbm-journey{min-width:122px}.fbm-journey .badge{font-weight:600}.fbm-address-ready{font-size:.75rem}.fbm-address-missing{font-size:.75rem;color:#dc3545}.fbm-promise{font-size:.78rem;margin-top:5px}.fbm-service{font-size:.78rem;color:#6c757d;margin-top:3px}
-</style>
-
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
-  <div>
-    <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
-    <p class="text-muted mb-0">One governed shipping desk for live merchant-fulfilled marketplace orders.</p>
-  </div>
+    <div>
+        <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
+        <p class="text-muted mb-0">One DB-backed workspace for merchant-fulfilled orders, shipping choice, labels, carrier acceptance, tracking and marketplace mapping.</p>
+    </div>
+    <span class="badge bg-secondary fs-6">Build mode · provider writes disabled</span>
+</div>
+
+<div class="alert alert-info">
+    <strong>Source of truth:</strong> FBM reads orders already committed to the BT38 database. MCF/FBA orders are excluded. Shipping charges stay on the seller's marketplace, Packlink or carrier account; BT38 does not handle postage money or carrier claims.
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <strong>Packlink PRO</strong>
+            <div class="small text-muted">Connection status only. No shipment or label is created.</div>
+        </div>
+        <button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test Packlink connection</button>
+    </div>
+    <div class="card-body py-3">
+        <div id="packlinkConnectionStatus" class="small text-muted">Not tested in this browser session.</div>
+    </div>
 </div>
 
 <div class="row g-3 mb-4">
-  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
-  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
-  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Awaiting carrier</div><div class="fs-3 fw-bold">{{ counts.awaiting_acceptance }}</div></div></div></div>
-  <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Carrier overdue</div><div class="fs-3 fw-bold">{{ counts.overdue }}</div></div></div></div>
-</div>
-
-<div class="row g-3 mb-4">
-  <div class="col-lg-6"><div class="card h-100"><div class="card-header d-flex justify-content-between align-items-center gap-2"><strong>Packlink PRO</strong><button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test connection</button></div><div class="card-body py-3"><div id="packlinkConnectionStatus" class="small text-muted">Payment is completed in Packlink; labels return to BT38.</div></div></div></div>
-  <div class="col-lg-6"><div class="card h-100"><div class="card-header"><strong>Label printer · QZ Tray</strong></div><div class="card-body"><div class="d-flex flex-wrap gap-2 align-items-center"><button id="qzConnect" class="btn btn-sm btn-outline-primary" type="button">Connect QZ</button><select id="qzPrinter" class="form-select form-select-sm" style="max-width:300px"><option value="">Saved/default printer</option></select><button id="qzSavePrinter" class="btn btn-sm btn-outline-secondary" type="button">Save printer</button><div class="form-check ms-lg-auto"><input id="qzAutoPrint" class="form-check-input" type="checkbox" checked><label class="form-check-label" for="qzAutoPrint">Auto-print label</label></div></div><div id="qzStatus" class="small text-muted mt-2">QZ not connected.</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Marketplace shipping</div><div class="fs-3 fw-bold">{{ counts.marketplace_shipping }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Awaiting carrier</div><div class="fs-3 fw-bold">{{ counts.awaiting_acceptance }}</div></div></div></div>
+    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Carrier overdue</div><div class="fs-3 fw-bold">{{ counts.overdue }}</div></div></div></div>
 </div>
 
 <div class="card">
-  <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2"><div><span class="fw-semibold">FBM Orders</span><span id="selectedOrderCount" class="badge bg-light text-dark border ms-2">0 selected</span></div><button id="readyToShipSelected" class="btn btn-sm btn-primary" type="button" disabled><i data-feather="package" class="me-1"></i>Ready to Ship</button></div>
-  <div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th style="width:42px" class="text-center"><input id="selectAllOrders" class="form-check-input" type="checkbox"></th><th>Marketplace</th><th>Order</th><th>Product</th><th>Qty</th><th>Delivery</th><th>Shipping</th><th>Shipment</th><th>Journey</th><th>Action</th></tr></thead><tbody>
-  {% for item in orders %}
-    {% set order = item.order %}{% set ops = order.fbm_view_state %}{% set shipment = item.shipment %}{% set mapping_review = item.mapping_review %}{% set carrier_mapping = mapping_review.mapping if mapping_review else none %}{% set tracking_number = shipment.tracking_number if shipment and shipment.tracking_number else order.tracking_number %}{% set carrier_name = shipment.carrier if shipment and shipment.carrier else order.carrier %}{% set promise = ops.promise %}{% set is_prime = item.shipping_mode.prime_locked %}{% set third_label = 'Delivered' %}{% set third_class = 'bg-light text-muted border' %}{% if promise.delivered_late %}{% set third_label = 'Delivered late' %}{% set third_class = 'bg-danger' %}{% elif ops.delivered %}{% set third_class = 'bg-success' %}{% elif promise.late %}{% set third_label = 'Delayed' %}{% set third_class = 'bg-danger' %}{% endif %}
-    <tr class="fbm-order-row" data-order-id="{{ order.id }}" style="cursor:pointer">
-      <td class="text-center" data-no-row-click="1"><input class="form-check-input fbm-order-checkbox" type="checkbox" value="{{ order.id }}"></td>
-      <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div>{% if is_prime %}<img class="bt38-prime-badge-img" src="{{ url_for('static', filename='img/marketplaces/prime-badge.svg') }}" alt="Prime" title="Amazon Prime / Seller Fulfilled Prime">{% endif %}</td>
-      <td>{{ order.marketplace_order_id }}<div class="small text-muted">{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</div></td>
-      <td><strong>{{ order.warehouse_stock.product_name if order.warehouse_stock and order.warehouse_stock.product_name else (order.sku or '—') }}</strong><div class="small text-muted"><code>{{ order.sku or '—' }}</code></div></td>
-      <td>{{ order.quantity or 0 }}</td>
-      <td><strong>{{ ops.destination.postcode or '—' }}</strong>{% if ops.address_complete %}<div class="fbm-address-ready text-success">Address ready</div>{% else %}<div class="fbm-address-missing">Missing: {{ ops.missing_address|join(', ') }}</div>{% endif %}{% if ops.refresh_error %}<div class="small text-danger">Marketplace read failed</div>{% endif %}</td>
-      <td>{% if is_prime %}<strong>Amazon Buy Shipping only</strong>{% elif item.platform|lower == 'amazon' %}<strong>Amazon Buy Shipping / Packlink / Manual</strong>{% elif item.platform|lower == 'ebay' %}<strong>Packlink / Manual</strong>{% else %}<strong>Connected provider / Manual</strong>{% endif %}<div class="fbm-service">{{ ops.shipping_service or 'Shipping service pending' }}</div></td>
-      <td>{% if shipment or tracking_number %}<strong>{{ carrier_name or (shipment.provider if shipment else item.platform) or 'Shipment' }}</strong>{% if shipment %}<div class="small text-muted">{{ shipment.service or 'Service pending' }}</div>{% endif %}<div class="small" data-no-row-click="1">{% if shipment and shipment.provider == 'packlink' and shipment.provider_shipment_id and tracking_number %}<button class="btn btn-link btn-sm p-0 align-baseline fbm-tracking-journey" type="button" data-shipment-id="{{ shipment.id }}" data-tracking-number="{{ tracking_number }}"><code>{{ tracking_number }}</code></button>{% elif tracking_number %}<code>{{ tracking_number }}</code>{% else %}<code>Parcel ID pending</code>{% endif %}</div>{% if mapping_review and mapping_review.status == 'under_review' %}<span class="badge bg-warning text-dark mt-1">Mapping under review</span>{% endif %}{% elif order.shipped_at %}<span class="text-muted">Marketplace says shipped</span>{% else %}<span class="text-muted">Unshipped</span>{% endif %}</td>
-      <td><div class="d-flex flex-column gap-1 fbm-journey"><span class="badge {{ 'bg-success' if ops.picked_up else 'bg-light text-muted border' }}">Picked up</span><span class="badge {{ 'bg-success' if ops.in_transit else 'bg-light text-muted border' }}">In transit</span><span class="badge {{ third_class }}">{{ third_label }}</span></div>{% if item.platform|lower == 'amazon' %}<div class="fbm-promise text-muted">Ship by: {{ item.profile.latest_ship_at.strftime('%d %b') if item.profile and item.profile.latest_ship_at else 'Marketplace ship-by pending' }}</div><div class="fbm-promise {{ 'text-danger fw-semibold' if promise.late or promise.delivered_late else 'text-muted' }}">Deliver by: {{ promise.latest_delivery_at.strftime('%d %b') if promise.latest_delivery_at else 'Marketplace deliver-by pending' }}</div>{% else %}<div class="fbm-promise {{ 'text-danger fw-semibold' if promise.late or promise.delivered_late else 'text-muted' }}">Promise: {{ promise.label or 'Marketplace promise pending' }}</div>{% endif %}{% if promise.delivered_on_time %}<div class="small text-success">On time</div>{% endif %}{% if item.shipment_state == 'acceptance_overdue' %}<div class="small text-danger">Carrier pickup overdue</div>{% endif %}</td>
-      <td data-no-row-click="1"><button class="btn btn-sm btn-outline-primary fbm-shipping-options" type="button" data-order-id="{{ order.id }}">Shipping options</button>{% if shipment and shipment.provider == 'packlink' and shipment.provider_shipment_id %}<button class="btn btn-sm btn-outline-secondary mt-1 packlink-existing-status" type="button" data-shipment-id="{{ shipment.id }}">Check label</button>{% endif %}{% if shipment and shipment.label_url %}<a class="btn btn-sm btn-outline-primary mt-1" href="{{ shipment.label_url }}" target="_blank" rel="noopener" download>Download label</a>{% endif %}{% if mapping_review and mapping_review.status == 'under_review' and carrier_mapping %}<div class="mapping-editor border rounded p-2 mt-2" data-mapping-id="{{ carrier_mapping.id }}"><div class="small fw-semibold">{{ carrier_mapping.provider_carrier_display }} · {{ carrier_mapping.provider_service_display }}</div><input class="form-control form-control-sm mapping-carrier-code mb-1 mt-2" placeholder="Marketplace carrier"><input class="form-control form-control-sm mapping-service-code mb-1" placeholder="Marketplace service"><button class="btn btn-sm btn-warning save-inline-mapping" type="button" data-mapping-id="{{ carrier_mapping.id }}">Save mapping</button></div>{% endif %}</td>
-    </tr>
-  {% else %}<tr><td colspan="10" class="text-center text-muted py-5">No merchant-fulfilled marketplace orders are currently available.</td></tr>{% endfor %}
-  </tbody></table></div>
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <span class="fw-semibold">FBM Orders</span>
+            <span id="selectedOrderCount" class="badge bg-light text-dark border ms-2">0 selected</span>
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+            <button id="readyToShipSelected" class="btn btn-sm btn-primary" type="button" disabled>
+                <i data-feather="package" class="me-1"></i>Ready to Ship
+            </button>
+            <span class="text-muted small">Select one or more orders, or click an order to view shipping routes.</span>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th style="width:42px" class="text-center"><input id="selectAllOrders" class="form-check-input" type="checkbox" aria-label="Select all visible FBM orders"></th>
+                    <th>Marketplace</th>
+                    <th>Order</th>
+                    <th>SKU</th>
+                    <th>Qty</th>
+                    <th>Postcode</th>
+                    <th>Recommended shipping</th>
+                    <th>Shipment</th>
+                    <th>Carrier confirmation</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for item in orders %}
+                {% set order = item.order %}
+                {% set shipping = item.shipping_mode %}
+                {% set shipment = item.shipment %}
+                <tr class="fbm-order-row" data-order-id="{{ order.id }}" style="cursor:pointer">
+                    <td class="text-center" data-no-row-click="1"><input class="form-check-input fbm-order-checkbox" type="checkbox" value="{{ order.id }}" aria-label="Select order {{ order.marketplace_order_id }}"></td>
+                    <td><strong>{{ item.platform }}</strong><div class="small text-muted">{{ item.store_name }}</div></td>
+                    <td>{{ order.marketplace_order_id }}<div class="small text-muted">{{ order.created_at.strftime('%d/%m/%Y %H:%M') if order.created_at else '—' }}</div></td>
+                    <td><code>{{ order.sku or '—' }}</code></td>
+                    <td>{{ order.quantity or 0 }}</td>
+                    <td>{{ order.ship_to_postcode or '—' }}</td>
+                    <td>
+                        <strong>{{ shipping.recommended }}</strong>
+                        <div class="small mt-1">
+                            {% if shipping.marketplace_buy_shipping %}<span class="badge bg-primary me-1">Marketplace</span>{% endif %}
+                            {% if shipping.external_provider %}<span class="badge bg-light text-dark border me-1">Packlink / carrier</span>{% endif %}
+                            {% if shipping.manual %}<span class="badge bg-light text-dark border">Manual</span>{% endif %}
+                        </div>
+                    </td>
+                    <td>
+                        {% if shipment %}
+                            <strong>{{ shipment.carrier or shipment.provider or 'Shipment' }}</strong>
+                            <div class="small text-muted">{{ shipment.service or 'Service pending' }}</div>
+                            <div class="small"><code>{{ shipment.tracking_number or 'Tracking pending' }}</code></div>
+                        {% else %}
+                            <span class="text-muted">Not started</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if item.shipment_state == 'delivered' %}
+                            <span class="badge bg-success">Delivered</span>
+                        {% elif item.shipment_state == 'in_transit' %}
+                            <span class="badge bg-success">In transit</span>
+                        {% elif item.shipment_state == 'accepted' %}
+                            <span class="badge bg-success">Carrier accepted</span>
+                        {% elif item.shipment_state == 'acceptance_overdue' %}
+                            <span class="badge bg-danger">Acceptance overdue</span>
+                        {% elif item.shipment_state == 'awaiting_carrier_acceptance' %}
+                            <span class="badge bg-warning text-dark">Awaiting carrier</span>
+                        {% elif item.shipment_state == 'awaiting_label' %}
+                            <span class="badge bg-light text-dark border">Awaiting label</span>
+                        {% else %}
+                            <span class="badge bg-light text-dark border">Not started</span>
+                        {% endif %}
+                        {% if shipment and shipment.handover_due_at %}
+                            <div class="small text-muted mt-1">Due {{ shipment.handover_due_at.strftime('%d/%m/%Y %H:%M') }}</div>
+                        {% endif %}
+                    </td>
+                    <td data-no-row-click="1">
+                        <button class="btn btn-sm btn-outline-primary fbm-shipping-options" type="button" data-order-id="{{ order.id }}">Shipping options</button>
+                        {% if item.case.eligible %}
+                            <button class="btn btn-sm btn-outline-danger mt-1" type="button" disabled title="Provider case write is not enabled yet">Open case</button>
+                        {% elif item.case.reason == 'case_already_open' %}
+                            <span class="badge bg-warning text-dark mt-1">Case open</span>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="10" class="text-center text-muted py-5">No merchant-fulfilled marketplace orders are currently available in the BT38 database.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
-<div class="modal fade" id="fbmShippingModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-xl modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Ready to Ship</h5><div id="fbmShippingModalSubtitle" class="small text-muted">Loading shipping routes…</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="fbmShippingLoading" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Loading shipping options…</div><div id="fbmShippingError" class="alert alert-danger d-none"></div><div id="fbmShippingOrders"></div></div><div class="modal-footer"><span class="me-auto small text-muted">Postage purchase and marketplace confirmation stay on the governed provider routes.</span><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div></div></div></div>
-<div class="modal fade" id="fbmTrackingJourneyModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Shipment journey</h5><div id="fbmTrackingJourneySubtitle" class="small text-muted">Tracking journey</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="fbmTrackingJourneyBody"><div class="text-muted">Select a tracking number.</div></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div></div></div></div>
+<div class="modal fade" id="fbmShippingModal" tabindex="-1" aria-labelledby="fbmShippingModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h5 class="modal-title" id="fbmShippingModalLabel">Ready to Ship</h5>
+                    <div id="fbmShippingModalSubtitle" class="small text-muted">Loading shipping routes…</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="fbmShippingLoading" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Loading shipping options…</div>
+                <div id="fbmShippingError" class="alert alert-danger d-none"></div>
+                <div id="fbmShippingOrders"></div>
+            </div>
+            <div class="modal-footer">
+                <span class="me-auto small text-muted">No label is purchased until you explicitly choose a service and confirm the purchase.</span>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.6/qz-tray.js"></script>
-<script src="{{ url_for('static', filename='js/fbm_qz_print.js') }}"></script>
-<script src="{{ url_for('static', filename='js/fbm_label_fallback.js') }}"></script>
-<script src="{{ url_for('static', filename='js/fbm_tracking_journey.js') }}"></script>
-<script src="{{ url_for('static', filename='js/fbm_shipping_desk.js') }}"></script>
+<script>
+(function () {
+    const packlinkButton = document.getElementById('packlinkConnectionTest');
+    const packlinkStatus = document.getElementById('packlinkConnectionStatus');
+    if (packlinkButton && packlinkStatus) {
+        packlinkButton.addEventListener('click', async function () {
+            if (packlinkButton.disabled) return;
+            packlinkButton.disabled = true;
+            packlinkStatus.className = 'small text-muted';
+            packlinkStatus.textContent = 'Testing Packlink PRO authentication…';
+            try {
+                const response = await fetch('/fbm/providers/packlink/connection', {method:'GET', credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json'}});
+                const payload = await response.json();
+                if (!response.ok || payload.success !== true) throw new Error(payload.message || `Packlink returned HTTP ${response.status}`);
+                packlinkStatus.className = 'small text-success';
+                const account = [payload.account_email, payload.account_country].filter(Boolean).join(' · ');
+                packlinkStatus.textContent = account ? `Connected successfully · ${account}` : 'Connected successfully to Packlink PRO.';
+            } catch (error) {
+                packlinkStatus.className = 'small text-danger';
+                packlinkStatus.textContent = error instanceof Error ? error.message : 'Packlink connection test failed.';
+            } finally {
+                packlinkButton.disabled = false;
+            }
+        });
+    }
+
+    const checkboxes = Array.from(document.querySelectorAll('.fbm-order-checkbox'));
+    const selectAll = document.getElementById('selectAllOrders');
+    const readyButton = document.getElementById('readyToShipSelected');
+    const selectedCount = document.getElementById('selectedOrderCount');
+    const modalElement = document.getElementById('fbmShippingModal');
+    const modal = modalElement ? new bootstrap.Modal(modalElement) : null;
+    const modalSubtitle = document.getElementById('fbmShippingModalSubtitle');
+    const loading = document.getElementById('fbmShippingLoading');
+    const errorBox = document.getElementById('fbmShippingError');
+    const ordersBox = document.getElementById('fbmShippingOrders');
+
+    function selectedIds() {
+        return checkboxes.filter(box => box.checked).map(box => box.value);
+    }
+
+    function updateSelection() {
+        const ids = selectedIds();
+        if (selectedCount) selectedCount.textContent = `${ids.length} selected`;
+        if (readyButton) readyButton.disabled = ids.length === 0;
+        if (selectAll) {
+            selectAll.checked = checkboxes.length > 0 && ids.length === checkboxes.length;
+            selectAll.indeterminate = ids.length > 0 && ids.length < checkboxes.length;
+        }
+    }
+
+    checkboxes.forEach(box => {
+        box.addEventListener('click', event => event.stopPropagation());
+        box.addEventListener('change', updateSelection);
+    });
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function () {
+            checkboxes.forEach(box => { box.checked = selectAll.checked; });
+            updateSelection();
+        });
+    }
+
+    function providerBadge(provider) {
+        if (provider.kind === 'marketplace') return '<span class="badge bg-primary">Marketplace</span>';
+        if (provider.kind === 'provider') return '<span class="badge bg-info text-dark">Provider</span>';
+        return '<span class="badge bg-light text-dark border">Manual</span>';
+    }
+
+    function renderShippingOrders(payload) {
+        ordersBox.innerHTML = '';
+        payload.orders.forEach(order => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'card mb-3';
+            const providerHtml = order.providers.map(provider => {
+                const disabled = provider.available ? '' : 'disabled';
+                const recommendation = provider.recommended ? '<span class="badge bg-success ms-2">Recommended</span>' : '';
+                const sfp = provider.supports_prime_sfp ? '<span class="badge bg-warning text-dark ms-2">Prime / SFP</span>' : '';
+                const actionText = provider.provider === 'packlink' ? 'Get Packlink rates' : provider.provider === 'amazon_buy_shipping' ? 'Get Amazon rates' : provider.provider === 'ebay_shipping' ? 'Check eBay shipping' : 'Use manual carrier';
+                return `<div class="border rounded p-3 mb-2 d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><div class="d-flex align-items-center gap-2 flex-wrap"><strong>${provider.label}</strong>${providerBadge(provider)}${recommendation}${sfp}</div><div class="small text-muted mt-1">${provider.message || ''}</div></div><button class="btn btn-sm ${provider.recommended ? 'btn-primary' : 'btn-outline-primary'}" type="button" ${disabled} data-provider="${provider.provider}" data-order-id="${order.id}">${actionText}</button></div>`;
+            }).join('');
+            wrapper.innerHTML = `<div class="card-header d-flex justify-content-between flex-wrap gap-2"><div><strong>${order.platform} · ${order.marketplace_order_id}</strong><div class="small text-muted">${order.store_name || ''}</div></div><div class="small text-muted">${order.sku || 'No SKU'} · Qty ${order.quantity || 0} · ${order.postcode || 'No postcode'}</div></div><div class="card-body"><div class="mb-2 fw-semibold">Choose shipping route</div>${providerHtml}</div>`;
+            ordersBox.appendChild(wrapper);
+        });
+        feather.replace();
+    }
+
+    async function openShippingOptions(ids) {
+        if (!ids.length || !modal) return;
+        modal.show();
+        loading.classList.remove('d-none');
+        errorBox.classList.add('d-none');
+        ordersBox.innerHTML = '';
+        modalSubtitle.textContent = ids.length === 1 ? 'Preparing shipping routes for 1 order…' : `Preparing shipping routes for ${ids.length} orders…`;
+        try {
+            const response = await fetch(`/fbm/shipping-options?order_ids=${encodeURIComponent(ids.join(','))}`, {method:'GET', credentials:'same-origin', cache:'no-store', headers:{'Accept':'application/json'}});
+            const payload = await response.json();
+            if (!response.ok || payload.success !== true) throw new Error(payload.message || `Shipping options returned HTTP ${response.status}`);
+            modalSubtitle.textContent = `${payload.selected_count} FBM order${payload.selected_count === 1 ? '' : 's'} ready for shipping choice`;
+            renderShippingOrders(payload);
+        } catch (error) {
+            errorBox.textContent = error instanceof Error ? error.message : 'Unable to load shipping options.';
+            errorBox.classList.remove('d-none');
+        } finally {
+            loading.classList.add('d-none');
+        }
+    }
+
+    if (readyButton) readyButton.addEventListener('click', () => openShippingOptions(selectedIds()));
+    document.querySelectorAll('.fbm-shipping-options').forEach(button => {
+        button.addEventListener('click', event => { event.stopPropagation(); openShippingOptions([button.dataset.orderId]); });
+    });
+    document.querySelectorAll('.fbm-order-row').forEach(row => {
+        row.addEventListener('click', event => {
+            if (event.target.closest('[data-no-row-click="1"]')) return;
+            openShippingOptions([row.dataset.orderId]);
+        });
+    });
+
+    updateSelection();
+})();
+</script>
 {% endblock %}
