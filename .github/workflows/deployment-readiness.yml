@@ -69,6 +69,7 @@ jobs:
             services/governed_marketplace_order_import.py \
             services/governed_order_stock_mutation.py \
             services/governed_mcf_execution.py \
+            services/governed_order_clarity_alignment.py \
             services/governed_warehouse_sync.py
 
       - name: Verify deterministic production build inputs
@@ -96,4 +97,5 @@ jobs:
             tests/test_fbm_packlink_import_alignment_contract.py \
             tests/test_fbm_amazon_tracking_contract.py \
             tests/test_fbm_amazon_confirmation_payload.py \
-            tests/test_fbm_manual_shipping_order_contract.py
+            tests/test_fbm_manual_shipping_order_contract.py \
+            tests/test_order_clarity_alignment_contract.py
