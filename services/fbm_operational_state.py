@@ -11,6 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from flask import g, has_request_context
+from sqlalchemy import tuple_
+
 from extensions import db
 from models import MarketplaceOrder
 
@@ -151,6 +154,65 @@ def _latest_shipment(order: Any):
         return None
 
 
+def _request_page_maps() -> dict[str, dict[tuple[int, str], Any]] | None:
+    """Batch the DB-only rows needed by /fbm once per HTTP request.
+
+    The page shows at most the latest 300 MarketplaceOrder rows. Loading their
+    operational state, profile and latest shipment in three set-based queries
+    avoids the previous per-row Neon query pattern while keeping the initial
+    render marketplace-I/O free.
+    """
+    if not has_request_context():
+        return None
+    cached = getattr(g, "_bt38_fbm_page_maps", None)
+    if isinstance(cached, dict):
+        return cached
+
+    try:
+        key_rows = (
+            db.session.query(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)
+            .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
+            .limit(300)
+            .all()
+        )
+        keys = []
+        seen = set()
+        for store_id, marketplace_order_id in key_rows:
+            order_id = str(marketplace_order_id or "").strip()
+            key = (store_id, order_id)
+            if store_id is None or not order_id or key in seen:
+                continue
+            seen.add(key)
+            keys.append(key)
+
+        maps = {"state": {}, "profile": {}, "shipment": {}}
+        if keys:
+            pair = tuple_(FBMOrderOperationalState.store_id, FBMOrderOperationalState.marketplace_order_id)
+            for row in FBMOrderOperationalState.query.filter(pair.in_(keys)).all():
+                maps["state"][(row.store_id, row.marketplace_order_id)] = row
+
+            from fbm_models import FBMOrderProfile, FBMShipment
+
+            profile_pair = tuple_(FBMOrderProfile.store_id, FBMOrderProfile.marketplace_order_id)
+            for row in FBMOrderProfile.query.filter(profile_pair.in_(keys)).all():
+                maps["profile"][(row.store_id, row.marketplace_order_id)] = row
+
+            shipment_pair = tuple_(FBMShipment.store_id, FBMShipment.marketplace_order_id)
+            shipment_rows = (
+                FBMShipment.query
+                .filter(shipment_pair.in_(keys))
+                .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+                .all()
+            )
+            for row in shipment_rows:
+                maps["shipment"].setdefault((row.store_id, row.marketplace_order_id), row)
+
+        g._bt38_fbm_page_maps = maps
+        return maps
+    except Exception:
+        return None
+
+
 def _promise_from_loaded_state(
     state: FBMOrderOperationalState | None,
     shipment: Any,
@@ -194,18 +256,25 @@ def fbm_view_state(order: Any) -> dict[str, Any]:
 
     store = getattr(order, "store", None)
     platform = str(getattr(store, "platform", "") or "").strip().lower()
-    state = operational_state(order, create=False)
-    shipment = _latest_shipment(order)
+    key = (getattr(order, "store_id", None), str(getattr(order, "marketplace_order_id", "") or "").strip())
+    page_maps = _request_page_maps()
 
-    profile = None
-    try:
-        from fbm_models import FBMOrderProfile
-        profile = FBMOrderProfile.query.filter_by(
-            store_id=order.store_id,
-            marketplace_order_id=order.marketplace_order_id,
-        ).first()
-    except Exception:
+    if page_maps is not None:
+        state = page_maps["state"].get(key)
+        shipment = page_maps["shipment"].get(key)
+        profile = page_maps["profile"].get(key)
+    else:
+        state = operational_state(order, create=False)
+        shipment = _latest_shipment(order)
         profile = None
+        try:
+            from fbm_models import FBMOrderProfile
+            profile = FBMOrderProfile.query.filter_by(
+                store_id=order.store_id,
+                marketplace_order_id=order.marketplace_order_id,
+            ).first()
+        except Exception:
+            profile = None
 
     promise = _promise_from_loaded_state(state, shipment)
 
