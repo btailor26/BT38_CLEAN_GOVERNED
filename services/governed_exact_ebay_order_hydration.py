@@ -77,6 +77,42 @@ def _ebay_shipping_facts(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _zero_amount(value: Any) -> bool:
+    try:
+        return float(value or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _safe_stale_identity_alias(
+    row: MarketplaceOrder,
+    conflict: MarketplaceOrder,
+    *,
+    canonical_line_id: str,
+) -> bool:
+    """Return True only for an unprocessed legacy-id alias of a canonical row.
+
+    eBay notifications can identify the sale first with legacyItemId while the
+    Fulfillment API later identifies the same sale with lineItemId. If the
+    canonical row already exists, the legacy alias must not be counted as a
+    second unit. We only collapse a zero-value, unprocessed, unshipped alias;
+    anything with independent lifecycle facts remains held for audit.
+    """
+    return bool(
+        row.id != conflict.id
+        and row.store_id == conflict.store_id
+        and _text(row.marketplace_order_id) == _text(conflict.marketplace_order_id)
+        and _text(row.sku) == _text(conflict.sku)
+        and _text(conflict.marketplace_order_item_id) == canonical_line_id
+        and _text(row.marketplace_order_item_id) != canonical_line_id
+        and getattr(row, "processed_at", None) is None
+        and getattr(row, "shipped_at", None) is None
+        and not _text(getattr(row, "tracking_number", None))
+        and _zero_amount(getattr(row, "unit_price", None))
+        and _zero_amount(getattr(row, "line_total", None))
+    )
+
+
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
     order_id = _text(marketplace_order_id)
     if not order_id:
@@ -167,6 +203,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
 
     identity_updates = 0
     identity_conflicts = []
+    stale_aliases: list[MarketplaceOrder] = []
 
     for row in rows:
         for field, value in values.items():
@@ -203,6 +240,12 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
                         row.marketplace_order_item_id = line_id
                         row.idempotency_key = canonical_key
                         identity_updates += 1
+                elif _safe_stale_identity_alias(
+                    row,
+                    conflict,
+                    canonical_line_id=line_id,
+                ):
+                    stale_aliases.append(row)
                 else:
                     identity_conflicts.append({
                         "row_id": row.id,
@@ -226,6 +269,10 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
             },
         )
 
+    stale_alias_ids = sorted({row.id for row in stale_aliases})
+    for row in stale_aliases:
+        db.session.delete(row)
+
     profile = FBMOrderProfile.query.filter_by(
         store_id=store.id,
         marketplace_order_id=order_id,
@@ -247,8 +294,9 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
     profile.last_error = None
     db.session.add(profile)
 
+    canonical_row = next((row for row in rows if row.id not in stale_alias_ids), rows[0])
     update_marketplace_facts(
-        rows[0],
+        canonical_row,
         platform="ebay",
         shipping_service=shipping_facts["shipping_service"],
         ship_by_at=shipping_facts["ship_by_at"],
@@ -283,6 +331,8 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "required_address_complete": required_address_complete,
         "rows_hydrated": len(rows),
         "identity_updates": identity_updates,
+        "identity_aliases_removed": len(stale_alias_ids),
+        "identity_alias_ids_removed": stale_alias_ids,
         "identity_conflicts": identity_conflicts,
         "shipping_service": shipping_facts["shipping_service"],
         "earliest_delivery_at": (
