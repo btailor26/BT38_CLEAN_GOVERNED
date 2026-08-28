@@ -33,6 +33,7 @@ _FBM_ROW_RE = re.compile(
     r'(<tr class="fbm-order-row" data-order-id="(?P<row_id>\d+)">)(?P<body>.*?)(</tr>)',
     re.DOTALL,
 )
+_FBM_JOURNEY_CELL_MARKER = '<td><div class="d-flex flex-column gap-1" style="min-width:118px">'
 
 
 def _clean_fbm_journey_html(html: str) -> str:
@@ -148,7 +149,7 @@ def _persisted_tracking_by_order_row(order_row_ids: set[int]) -> dict[int, list[
 
 
 def _enrich_fbm_tracking_html(html: str) -> str:
-    """Make every persisted courier tracking value visible on the FBM page."""
+    """Make every persisted courier tracking value visible in the Shipment column."""
     value = str(html or "")
     row_ids = {
         int(match.group("row_id"))
@@ -174,23 +175,26 @@ def _enrich_fbm_tracking_html(html: str) -> str:
             carrier = escape(record.get("carrier") or "Courier")
             tracking = escape(record["tracking_number"])
             blocks.append(
-                '<div class="small mt-1 bt38-db-tracking">'
+                '<div class="small mt-1 bt38-db-tracking" data-no-row-click="1">'
                 f'<span class="text-muted">{carrier} tracking:</span> '
                 f'<code>{tracking}</code>'
                 '</div>'
             )
         tracking_html = "".join(blocks)
 
-        order_cell_match = re.search(
-            r'(<td>[^<]+)(<div class="small text-muted">)',
-            body,
-            re.DOTALL,
-        )
-        if order_cell_match:
-            insert_at = order_cell_match.end(1)
-            body = body[:insert_at] + tracking_html + body[insert_at:]
-        else:
-            body = tracking_html + body
+        # The Shipment cell is immediately before the Journey cell. Put recovered
+        # historical/order-only tracking there so all marketplaces render the same
+        # way even when the newest FBMShipment row itself has no tracking value.
+        marker_at = body.find(_FBM_JOURNEY_CELL_MARKER)
+        if marker_at >= 0:
+            shipment_cell_end = body.rfind("</td>", 0, marker_at)
+            if shipment_cell_end >= 0:
+                body = body[:shipment_cell_end] + tracking_html + body[shipment_cell_end:]
+                return match.group(1) + body + match.group(4)
+
+        # Defensive fallback: keep persisted tracking visible even if the template
+        # structure changes, rather than silently dropping DB truth from the page.
+        body = tracking_html + body
         return match.group(1) + body + match.group(4)
 
     return _FBM_ROW_RE.sub(replace_row, value)
