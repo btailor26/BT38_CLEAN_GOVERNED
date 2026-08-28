@@ -1,26 +1,79 @@
 """Optional eBay shipment-tracking notification alignment.
 
 ORDER_CONFIRMATION remains the required sale intake. ITEM_MARKED_SHIPPED is a
-tracking accelerator: this module probes the current seller token against the
-shipping topic and, when permitted, adds the subscription to BT38's existing
-webhook destination. A token without commerce.shipping consent remains usable;
+tracking accelerator: this module obtains a commerce.shipping-scoped seller
+token and, when permitted, adds the subscription to BT38's existing webhook
+destination. A legacy seller authorization without that grant remains usable;
 bounded Fulfillment API readback stays the recovery authority.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import requests
 
 from services.governed_ebay_notification_registration import (
     NOTIFICATION_BASE_URL,
+    _decode_store_credentials,
     _ensure_subscription,
     _headers,
     _safe_response_payload,
 )
+from services.governed_ebay_oauth_scopes import EBAY_COMMERCE_SHIPPING_SCOPE
 
 
 SHIPPING_TOPIC_ID = "ITEM_MARKED_SHIPPED"
+EBAY_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+
+
+def _shipping_access_token(store: Any) -> dict[str, Any]:
+    creds = _decode_store_credentials(store)
+    refresh_token = str(creds.get("refresh_token") or "").strip()
+    client_id = str(os.getenv("EBAY_CLIENT_ID") or creds.get("client_id") or "").strip()
+    client_secret = str(os.getenv("EBAY_CLIENT_SECRET") or creds.get("client_secret") or "").strip()
+    if not refresh_token or not client_id or not client_secret:
+        return {
+            "ok": False,
+            "authorization_required": False,
+            "reason": "ebay_shipping_token_credentials_missing",
+        }
+
+    response = requests.post(
+        EBAY_TOKEN_URL,
+        auth=(client_id, client_secret),
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": EBAY_COMMERCE_SHIPPING_SCOPE,
+        },
+        timeout=30,
+    )
+    if response.status_code in {400, 401, 403}:
+        return {
+            "ok": False,
+            "authorization_required": True,
+            "reason": "commerce_shipping_scope_not_granted",
+            "status_code": response.status_code,
+            "error": response.text[:500],
+        }
+    if response.status_code >= 400:
+        return {
+            "ok": False,
+            "authorization_required": False,
+            "reason": "ebay_shipping_token_failed",
+            "status_code": response.status_code,
+            "error": response.text[:500],
+        }
+
+    token = str((response.json() or {}).get("access_token") or "").strip()
+    if not token:
+        return {
+            "ok": False,
+            "authorization_required": False,
+            "reason": "ebay_shipping_token_missing_access_token",
+        }
+    return {"ok": True, "access_token": token}
 
 
 def _topic_probe(*, access_token: str) -> dict[str, Any]:
@@ -85,8 +138,8 @@ def ensure_ebay_shipping_notification_alignment(
     access_token: str,
     destination_id: str | None,
 ) -> dict[str, Any]:
-    """Subscribe to ITEM_MARKED_SHIPPED when the current seller token permits it."""
-    del store  # kept in the public contract for store-scoped callers/auditing
+    """Subscribe to ITEM_MARKED_SHIPPED when the seller authorization permits it."""
+    del access_token  # base registration token can remain sell.fulfillment scoped
 
     if not destination_id:
         return {
@@ -99,7 +152,24 @@ def ensure_ebay_shipping_notification_alignment(
             "marketplace_write_started": False,
         }
 
-    probe = _topic_probe(access_token=access_token)
+    token_result = _shipping_access_token(store)
+    if not token_result.get("ok"):
+        authorization_required = bool(token_result.get("authorization_required"))
+        return {
+            "success": True if authorization_required else False,
+            "ok": True if authorization_required else False,
+            "enabled": False,
+            "topic_id": SHIPPING_TOPIC_ID,
+            "authorization_required": authorization_required,
+            "reauthorization_required": authorization_required,
+            "reason": token_result.get("reason"),
+            "status_code": token_result.get("status_code"),
+            "error": token_result.get("error"),
+            "marketplace_write_started": False,
+        }
+
+    shipping_token = str(token_result["access_token"])
+    probe = _topic_probe(access_token=shipping_token)
     if probe.get("authorization_required"):
         return {
             "success": True,
@@ -128,7 +198,7 @@ def ensure_ebay_shipping_notification_alignment(
 
     try:
         subscription_id, created = _ensure_subscription(
-            access_token=access_token,
+            access_token=shipping_token,
             destination_id=str(destination_id),
             topic_id=SHIPPING_TOPIC_ID,
             schema_version=schema_version,
