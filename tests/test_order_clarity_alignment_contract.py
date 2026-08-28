@@ -45,6 +45,21 @@ def test_bell_has_clear_persisted_order_type_without_guessing_unknown_history():
     assert "_canonical_fulfillment" in ALIGNMENT
 
 
+def test_all_market_fbm_tracking_is_visible_from_any_persisted_order_or_shipment_row():
+    assert "_persisted_tracking_by_order_row" in ALIGNMENT
+    assert "MarketplaceOrder.tracking_number" in ALIGNMENT
+    assert "MarketplaceOrder.carrier" in ALIGNMENT
+    assert "FBMShipment.tracking_number" in ALIGNMENT
+    assert "FBMShipment.carrier" in ALIGNMENT
+    assert "FBMShipment.provider" in ALIGNMENT
+    assert "_enrich_fbm_tracking_html" in ALIGNMENT
+    assert "bt38-db-tracking" in ALIGNMENT
+    assert '"source": "marketplace_order"' in ALIGNMENT
+    assert '"source": "fbm_shipment"' in ALIGNMENT
+    assert 'platform == "amazon"' not in ALIGNMENT.split("def _persisted_tracking_by_order_row", 1)[1].split("def _sale_identity", 1)[0]
+    assert 'platform == "ebay"' not in ALIGNMENT.split("def _persisted_tracking_by_order_row", 1)[1].split("def _sale_identity", 1)[0]
+
+
 def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
     assert "@app.after_request" in ALIGNMENT
     assert "db.session.add" not in ALIGNMENT
