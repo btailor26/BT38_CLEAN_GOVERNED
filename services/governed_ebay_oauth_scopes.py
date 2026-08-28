@@ -9,7 +9,7 @@ EBAY_COMMERCE_SHIPPING_SCOPE = (
     "https://api.ebay.com/oauth/api_scope/commerce.shipping"
 )
 
-DEFAULT_EBAY_OAUTH_SCOPES = (
+LEGACY_EBAY_OAUTH_SCOPES = (
     "https://api.ebay.com/oauth/api_scope",
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
@@ -17,10 +17,12 @@ DEFAULT_EBAY_OAUTH_SCOPES = (
     "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription",
     "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription.readonly",
     "https://api.ebay.com/oauth/api_scope/sell.listing.read",
-    EBAY_COMMERCE_SHIPPING_SCOPE,
 )
 
-LEGACY_EBAY_OAUTH_SCOPES = DEFAULT_EBAY_OAUTH_SCOPES
+DEFAULT_EBAY_OAUTH_SCOPES = (
+    *LEGACY_EBAY_OAUTH_SCOPES,
+    EBAY_COMMERCE_SHIPPING_SCOPE,
+)
 
 
 def governed_ebay_oauth_scopes() -> str:
