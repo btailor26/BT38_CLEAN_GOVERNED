@@ -220,19 +220,19 @@ def _response_payload(response: Any) -> Any:
 
 
 def _prime_from_shipping_facts(raw_is_prime: bool | None, service_level: str | None) -> bool | None:
-    """Lock Prime/SFP only when Amazon's shipping service explicitly says Prime/SFP.
+    """Use Amazon's IsPrime flag as the routing authority for Prime/SFP.
 
-    Amazon order/webhook shipping facts are the routing authority. A generic
-    service such as Standard or NextDay must not be converted into a Prime lock
-    solely because a contradictory IsPrime flag is present. When Amazon does not
-    provide a service level at all, preserve the raw IsPrime value rather than
-    inventing a classification.
+    ShipmentServiceLevelCategory describes the service category (for example
+    Standard or NextDay) and is not a reliable Prime classifier. If Amazon
+    returns IsPrime, BT38 must preserve that exact marketplace fact. Service
+    text is only a fallback when the IsPrime field is absent.
     """
+    if raw_is_prime is not None:
+        return bool(raw_is_prime)
     service = str(service_level or "").strip().lower()
     if not service:
-        return raw_is_prime
-    explicit_prime = any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
-    return bool(raw_is_prime is True and explicit_prime)
+        return None
+    return any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
 
 
 def _bool(value: Any) -> bool | None:
