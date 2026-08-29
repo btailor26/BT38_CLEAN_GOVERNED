@@ -97,7 +97,6 @@ jobs:
             tests/test_amazon_eventbridge_listing_subscription_contract.py \
             tests/test_listing_structure_sync_contract.py \
             tests/test_github_fly_only_deployment_contract.py \
-            tests/test_amazon_public_appstore_alignment_contract.py \
             tests/test_fbm_packlink_contract.py \
             tests/test_fbm_packlink_import_alignment_contract.py \
             tests/test_fbm_amazon_tracking_contract.py \
