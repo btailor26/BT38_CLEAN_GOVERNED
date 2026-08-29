@@ -38,6 +38,7 @@ from services.fbm_shipping_state import provider_case_eligibility, shipment_conf
 
 _FBM_PAGE_SIZE = 15
 _FBM_MAX_EXPANDED = 300
+_FBM_DISCOVERY_MULTIPLIER = 4
 
 
 def _requested_limit() -> int:
@@ -73,28 +74,19 @@ def _profile_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMOrder
 
 
 def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]:
-    """Read only the requested distinct persisted FBM orders plus one sentinel."""
+    """Read the newest persisted FBM rows from a bounded candidate window.
+
+    Marketplace events can leave more than one persisted row for an order. The
+    previous read grouped the complete eligible history on every page request.
+    This keeps the same latest-row authority but first limits discovery to the
+    newest candidate rows, then de-duplicates that small set in process.
+    """
     eligible = (
         func.upper(func.coalesce(MarketplaceOrder.fulfillment_type, "")).notin_(("FBA", "AFN", "MCF")),
         ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
     )
 
-    latest_ids = (
-        db.session.query(func.max(MarketplaceOrder.id).label("id"))
-        .filter(*eligible)
-        .group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)
-        .subquery()
-    )
-
-    query = (
-        db.session.query(MarketplaceOrder)
-        .join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)
-        .options(
-            joinedload(MarketplaceOrder.store),
-            joinedload(MarketplaceOrder.warehouse_stock),
-        )
-        .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
-    )
+    query = db.session.query(MarketplaceOrder).filter(*eligible)
 
     platform_filter = str(request.args.get("platform") or "").strip().lower()
     status_filter = str(request.args.get("status") or "").strip().lower()
@@ -109,8 +101,33 @@ def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]
     elif status_filter == "ready for fbm routing":
         query = query.filter(~tracking_present, MarketplaceOrder.shipped_at.is_(None))
 
-    rows = query.limit(limit + 1).all()
-    has_more = len(rows) > limit
+    candidate_limit = min(_FBM_MAX_EXPANDED * _FBM_DISCOVERY_MULTIPLIER, max(limit + 1, (limit + 1) * _FBM_DISCOVERY_MULTIPLIER))
+    candidates = (
+        query
+        .options(
+            joinedload(MarketplaceOrder.store),
+            joinedload(MarketplaceOrder.warehouse_stock),
+        )
+        .order_by(MarketplaceOrder.id.desc())
+        .limit(candidate_limit)
+        .all()
+    )
+
+    rows: list[MarketplaceOrder] = []
+    seen: set[tuple[int, str]] = set()
+    for row in candidates:
+        if row.store_id is None or not row.marketplace_order_id:
+            continue
+        key = (int(row.store_id), str(row.marketplace_order_id))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+        if len(rows) >= limit + 1:
+            break
+
+    rows.sort(key=lambda row: (row.created_at is not None, row.created_at, row.id), reverse=True)
+    has_more = len(rows) > limit or len(candidates) == candidate_limit
     return rows[:limit], has_more
 
 
@@ -270,5 +287,5 @@ def install_governed_fbm_page_alignment(app) -> None:
     app.view_functions[endpoint] = bounded_fbm_page
     app._bt38_fbm_page_alignment_installed = True
     app.logger.info(
-        "BT38 FBM page alignment installed: 15-order bounded read with in-workspace eBay capability gating"
+        "BT38 FBM page alignment installed: bounded latest-order discovery with 15-order expansion and in-workspace eBay capability gating"
     )
