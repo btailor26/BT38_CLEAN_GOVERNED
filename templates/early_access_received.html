@@ -3,18 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BT38 Application Received</title>
+  <title>BT38 Inventory Application Received</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-50 text-slate-950">
   <main class="min-h-screen px-6 py-16 flex items-center justify-center">
     <div class="max-w-xl w-full bg-white border border-slate-200 rounded-3xl p-8 text-center shadow-sm">
-      <div class="text-2xl font-black">BT38</div>
-      <p class="mt-2 text-sm uppercase tracking-wider font-bold text-slate-500">Early Access</p>
+      <img src="{{ url_for('static', filename='img/marketplaces/bt38-inventory-amazon-developer.svg') }}" alt="BT38 Inventory" class="mx-auto w-full max-w-sm rounded-xl">
+      <p class="mt-5 text-sm uppercase tracking-wider font-bold text-slate-500">Early Access</p>
       <h1 class="mt-4 text-4xl font-black">{{ 'Application already received.' if existing else 'Application received.' }}</h1>
-      <p class="mt-4 text-slate-600">Your early-access profile is in the BT38 review queue. An account is not created until the application is approved.</p>
+      <p class="mt-4 text-slate-600">Your early-access profile is in the BT38 Inventory review queue. An account is not created until the application is approved.</p>
       <div class="mt-6 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">Reference: BT38-EA-{{ application_id }}</div>
-      <a href="/login" class="mt-7 inline-block rounded-xl bg-black text-white font-semibold px-6 py-3">Return to BT38</a>
+      <a href="/" class="mt-7 inline-block rounded-xl bg-black text-white font-semibold px-6 py-3">Return to BT38 Inventory</a>
+      <div class="mt-7 flex justify-center gap-5 text-sm text-slate-500"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div>
     </div>
   </main>
 </body>
