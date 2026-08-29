@@ -285,7 +285,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HASH_CMD="find . -type f \\( -name '*.py' -o -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.toml' -o -name '*.svg' -o -name '*.json' -o -name 'Dockerfile' -o -name 'uv.lock' \\) -not -path './.git/*' -not -path './.github/*' -not -path './tests/*' -not -path './_retired_tests/*' -not -path './docs/*' -not -path './.venv/*' -not -path './static/uploads/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \\$1}'"
+          HASH_CMD="find . -type f \\( -name '*.py' -o -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.toml' -o -name '*.svg' -o -name '*.json' -o -name 'Dockerfile' -o -name 'uv.lock' \\) -not -path './.git/*' -not -path './.github/*' -not -path './tests/*' -not -path './_retired_tests/*' -not -path './docs/*' -not -path './.venv/*' -not -path './static/uploads/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \$1}'"
           EXPECTED_SOURCE_HASH="$(bash -lc "$HASH_CMD")"
           REMOTE_SOURCE_HASH="$(flyctl ssh console \
             --app bt38-prod \
