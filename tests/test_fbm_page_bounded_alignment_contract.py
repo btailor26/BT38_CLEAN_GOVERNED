@@ -10,18 +10,23 @@ LEGACY_ROUTE = (ROOT / "governed_fbm_routes.py").read_text(encoding="utf-8")
 def test_fbm_default_page_is_exactly_fifteen_orders_and_expands_in_fifteens():
     assert "_FBM_PAGE_SIZE = 15" in ALIGNMENT
     assert 'request.args.get("limit") or _FBM_PAGE_SIZE' in ALIGNMENT
-    assert "query.limit(limit + 1).all()" in ALIGNMENT
+    assert "limit + 1" in ALIGNMENT
     assert 'id="fbmExpandOrders"' in ALIGNMENT
     assert "visible_limit + _FBM_PAGE_SIZE" in ALIGNMENT
     assert "Show 15 more" in ALIGNMENT
     assert "Show latest 15" in ALIGNMENT
 
 
-def test_fbm_limit_is_applied_after_distinct_marketplace_order_identity():
-    assert "group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in ALIGNMENT
-    assert 'func.max(MarketplaceOrder.id).label("id")' in ALIGNMENT
-    assert ".join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)" in ALIGNMENT
-    assert "rows[:limit]" in ALIGNMENT
+def test_fbm_latest_order_discovery_is_bounded_before_distinct_identity_selection():
+    assert "_FBM_DISCOVERY_MULTIPLIER = 4" in ALIGNMENT
+    assert "candidate_limit = min(" in ALIGNMENT
+    assert ".order_by(MarketplaceOrder.id.desc())" in ALIGNMENT
+    assert ".limit(candidate_limit)" in ALIGNMENT
+    assert "seen: set[tuple[int, str]] = set()" in ALIGNMENT
+    assert "if key in seen:" in ALIGNMENT
+    assert "if len(rows) >= limit + 1:" in ALIGNMENT
+    assert "group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" not in ALIGNMENT
+    assert "func.max(MarketplaceOrder.id)" not in ALIGNMENT
 
 
 def test_fbm_page_batches_profile_and_shipment_reads_instead_of_n_plus_one():
