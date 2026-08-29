@@ -92,11 +92,30 @@
     }
 
     function historyHtml(history) {
-        if (!history.length) return '<div class="alert alert-light border mb-0">Packlink/carrier returned no journey events yet.</div>';
+        if (!history.length) return '<div class="alert alert-light border mb-0">No additional carrier scan events are stored yet.</div>';
         return history.map(function (event) {
             const detail = eventDetail(event), location = eventLocation(event);
             return `<div class="border-start border-3 ps-3 py-2 mb-2"><div class="fw-semibold">${esc(eventTitle(event))}</div>${detail ? `<div class="small text-muted">${esc(detail)}</div>` : ''}${location ? `<div class="small text-muted">${esc(location)}</div>` : ''}<div class="small text-muted">${esc(formatDate(eventTime(event)))}</div></div>`;
         }).join('');
+    }
+
+    function marketplaceJourneyHtml(button) {
+        const row = button.closest('.fbm-order-row');
+        const tracking = button.dataset.trackingNumber || String(button.textContent || '').trim() || '—';
+        const platform = button.dataset.platform || (row ? String(row.children[1]?.querySelector('strong')?.textContent || 'Marketplace').trim() : 'Marketplace');
+        const shipmentCell = row ? row.children[7] : null;
+        const carrier = button.dataset.carrier || (shipmentCell ? String(shipmentCell.querySelector('strong')?.textContent || platform).trim() : platform);
+        const journeyCell = row ? row.children[8] : null;
+        const badges = journeyCell ? Array.from(journeyCell.querySelectorAll('.badge')) : [];
+        const milestoneHtml = badges.slice(0, 4).map(function (badge) {
+            const text = String(badge.textContent || '').replace(/^\d+\s*·\s*/, '').trim();
+            const active = badge.classList.contains('bg-success') || badge.classList.contains('bg-danger') || badge.classList.contains('bg-primary');
+            const statusClass = badge.classList.contains('bg-danger') ? 'bg-danger' : (active ? 'bg-success' : 'bg-light text-muted border');
+            return `<div class="d-flex align-items-center justify-content-between border rounded px-3 py-2 mb-2"><span class="fw-semibold">${esc(text)}</span><span class="badge ${statusClass}">${active ? 'Confirmed' : 'Pending'}</span></div>`;
+        }).join('');
+        const promiseText = journeyCell ? Array.from(journeyCell.querySelectorAll('.small')).map(function (node) { return String(node.textContent || '').trim(); }).find(function (text) { return text.startsWith('Deliver by:') || text.startsWith('Delivery promise'); }) : '';
+        const source = /ebay/i.test(platform) ? 'eBay' : (/amazon/i.test(platform) ? 'Amazon' : platform);
+        return `<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(source)}</div></div></div>${promiseText ? `<div class="border rounded p-3 mb-3"><div class="small"><strong>${esc(promiseText)}</strong></div></div>` : ''}<div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
     }
 
     async function openJourney(button) {
@@ -106,8 +125,14 @@
         if (!modalElement || !body) return;
         const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
         modal.show();
-        body.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Reading Packlink/carrier journey…</div>';
         if (subtitle) subtitle.textContent = button.dataset.trackingNumber || 'Tracking journey';
+
+        if (button.dataset.journeySource === 'marketplace' || !button.dataset.shipmentId) {
+            body.innerHTML = marketplaceJourneyHtml(button);
+            return;
+        }
+
+        body.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm me-2"></div>Reading Packlink/carrier journey…</div>';
         try {
             const response = await fetch(`/fbm/shipments/${encodeURIComponent(button.dataset.shipmentId)}/packlink/status`, {credentials: 'same-origin', cache: 'no-store', headers: {'Accept': 'application/json'}});
             const payload = await response.json().catch(function () { return {}; });
@@ -118,6 +143,43 @@
         } catch (error) {
             body.innerHTML = `<div class="alert alert-danger mb-0">${esc(error.message)}</div>`;
         }
+    }
+
+    function installMarketplaceJourneyLinks() {
+        document.querySelectorAll('.fbm-order-row').forEach(function (row) {
+            const marketplace = String(row.children[1]?.querySelector('strong')?.textContent || '').trim();
+            const shipmentCell = row.children[7];
+            if (!shipmentCell) return;
+            const carrier = String(shipmentCell.querySelector('strong')?.textContent || marketplace).trim();
+
+            shipmentCell.querySelectorAll('a[href*="ebay.co.uk/mesh/ord/details"], a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]').forEach(function (link) {
+                const tracking = String(link.textContent || '').trim();
+                link.removeAttribute('href');
+                link.removeAttribute('target');
+                link.removeAttribute('rel');
+                link.setAttribute('role', 'button');
+                link.setAttribute('tabindex', '0');
+                link.classList.add('fbm-tracking-journey');
+                link.dataset.journeySource = 'marketplace';
+                link.dataset.trackingNumber = tracking;
+                link.dataset.platform = marketplace;
+                link.dataset.carrier = carrier;
+            });
+
+            shipmentCell.querySelectorAll('.bt38-db-tracking code').forEach(function (code) {
+                if (code.closest('.fbm-tracking-journey')) return;
+                const tracking = String(code.textContent || '').trim();
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn btn-link btn-sm p-0 align-baseline fbm-tracking-journey';
+                button.dataset.journeySource = 'marketplace';
+                button.dataset.trackingNumber = tracking;
+                button.dataset.platform = marketplace;
+                button.dataset.carrier = carrier;
+                code.replaceWith(button);
+                button.appendChild(code);
+            });
+        });
     }
 
     function installManualShippingButton() {
@@ -298,10 +360,18 @@
         }
         const journeyButton = event.target.closest('.fbm-tracking-journey');
         if (journeyButton) {
-            event.preventDefault(); event.stopPropagation(); openJourney(journeyButton);
+            event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); openJourney(journeyButton);
         }
     }, true);
 
+    document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const journeyButton = event.target.closest('.fbm-tracking-journey[data-journey-source="marketplace"]');
+        if (!journeyButton) return;
+        event.preventDefault(); openJourney(journeyButton);
+    });
+
+    installMarketplaceJourneyLinks();
     installManualShippingButton();
     installBulkActionBar();
     installPacklinkHandoff();
