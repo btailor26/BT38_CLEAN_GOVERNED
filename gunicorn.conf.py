@@ -120,13 +120,27 @@ def _align_notification_noop_labels(app):
 
 
 def post_worker_init(worker):
-    """Start one governed event listener after the WSGI app is fully loaded."""
+    """Start governed runtime without allowing it to take down the web worker.
+
+    The WSGI application is the availability boundary. Governed runtime startup
+    remains the normal path, but a runtime bootstrap failure is logged and left
+    disabled instead of raising through Gunicorn's worker-init hook and causing
+    a whole-site 502/restart loop.
+    """
     from main import app
-    from services.governed_event_runtime import start_event_only_runtime
 
     _align_notification_noop_labels(app)
 
-    started = start_event_only_runtime(app)
+    try:
+        from services.governed_event_runtime import start_event_only_runtime
+
+        started = start_event_only_runtime(app)
+    except Exception:
+        app.logger.exception(
+            'BT38 governed runtime bootstrap failed; web worker remains available and runtime stays disabled'
+        )
+        return
+
     app.logger.info(
         'BT38 low-DB governed runtime started=%s; broad hydration disabled; bounded eBay missed-listing recovery enabled',
         started,
