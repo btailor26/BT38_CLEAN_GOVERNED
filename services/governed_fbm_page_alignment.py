@@ -148,26 +148,13 @@ def _workspace_shipping_mode(row: MarketplaceOrder, platform: str, profile: FBMO
 
 
 def _neutralise_legacy_ebay_handoff(html: str) -> str:
-    """Keep eBay fulfilment in BT38 instead of redirecting the operator to Seller Hub."""
-    if not html or "</body>" not in html:
-        return html
-    script = r'''<script id="bt38EbayShippingWorkspaceAlignment">
-(function(){
-  'use strict';
-  function alignEbayShipping(){
-    document.querySelectorAll('.provider-action[data-provider="ebay_shipping"]').forEach(function(button){
-      button.disabled = true;
-      button.textContent = 'eBay postage unavailable';
-      button.title = 'Use Packlink / connected carrier or Manual / own carrier inside BT38. Native eBay label purchase is not enabled for this app/account.';
-      button.setAttribute('aria-disabled','true');
-    });
-  }
-  const root=document.getElementById('fbmShippingOrders');
-  if(root){new MutationObserver(alignEbayShipping).observe(root,{childList:true,subtree:true});}
-  alignEbayShipping();
-})();
-</script>'''
-    return html.replace("</body>", script + "\n</body>", 1)
+    """Compatibility no-op: preserve the existing eBay shipping click handler.
+
+    The former overlay forced "eBay postage unavailable" and said
+    "Native eBay label purchase is not enabled", which disabled the button after
+    the existing FBM JavaScript had enabled it. Do not override that click path.
+    """
+    return html
 
 
 def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
