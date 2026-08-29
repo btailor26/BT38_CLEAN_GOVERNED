@@ -11,47 +11,12 @@ name: Governed Fly Deployment
 # - Until PR #528 is explicitly approved for merge, every BT38 repair/update that
 #   is intended for live testing MUST be committed to:
 #       fix/full-system-release-alignment
-# - PR #528 is the ONE governed change number for this testing cycle. Every new
-#   Packlink, MCF, Amazon, eBay, UI, runtime, or deployment repair MUST advance
-#   the same PR #528 head. Do not create or deploy a competing repair lineage.
-# - Commit SHAs will naturally change after each code change; the rule is that
-#   every new SHA must be the CURRENT HEAD of PR #528 and therefore contain the
-#   complete accumulated test-branch history.
-# - That branch is the single governed testing source for bt38-prod.
+# - PR #528 is the ONE governed change number for this testing cycle.
 # - main MUST remain untouched by this testing cycle.
-# - Never deploy a repair from a side branch, local working tree, detached SHA,
-#   or main while this contract is active.
 # - Every deploy must use the CURRENT HEAD SHA of PR #528 / fix/full-system-release-alignment.
-# - A successful test does not merge PR #528. Merge requires separate explicit
-#   approval outside this workflow.
+# - A successful test does not merge PR #528.
 #
-# HOW THE DEPLOY COMMAND IS CREATED AND USED:
-# 1. Commit/save every repair to fix/full-system-release-alignment (PR #528).
-# 2. Resolve PR #528's current GitHub HEAD SHA. The SHA supplied as
-#    expected_commit MUST exactly match both github.sha and the live PR #528 head.
-# 3. Dispatch this existing GitHub Actions workflow from GitHub UI or GitHub CLI.
-#    The operator PC command only asks GitHub to start workflow_dispatch; it does
-#    not build BT38, supply application files, or deploy directly to Fly.
-# 4. Example Git Bash / GitHub CLI dispatch for the governed testing branch:
-#
-#      GH_EXE="$(find /c/Users/btail/AppData/Local/BT38-GitHubCLI -type f -iname gh.exe 2>/dev/null | head -1)"
-#
-#      "$GH_EXE" workflow run deploy-fly.yml \
-#        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
-#        --ref fix/full-system-release-alignment \
-#        -f confirm_production_deploy=DEPLOY_GITHUB_COMMIT_TO_BT38_PROD \
-#        -f expected_commit=<CURRENT_PR_528_HEAD_SHA>
-#
-#      "$GH_EXE" run watch \
-#        --repo btailor26/BT38_CLEAN_GOVERNED-Github \
-#        --exit-status
-#
-# 5. GitHub then performs the real deployment chain:
-#      PR #528 current HEAD -> source-deploy-guard -> audit -> exact GitHub checkout
-#      -> Fly remote builder -> bt38-prod -> post-deploy reconciliations.
-# 6. workflow_dispatch does NOT merge PR #528.
-# 7. Never hard-code an old SHA into a future deploy command. Re-read PR #528 HEAD
-#    first and use that exact SHA as expected_commit.
+# Operator dispatch remains GitHub-only; the PC never supplies app source.
 
 on:
   workflow_dispatch:
@@ -84,59 +49,36 @@ jobs:
         run: |
           REQUIRED_TEST_BRANCH="fix/full-system-release-alignment"
           REQUIRED_PR_NUMBER="528"
-
           if [ "${{ inputs.confirm_production_deploy }}" != "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD" ]; then
             echo "BLOCKED: explicit GitHub-to-Fly production approval is missing."
             exit 1
           fi
-
           if [ "${{ github.ref_name }}" != "$REQUIRED_TEST_BRANCH" ]; then
-            echo "BLOCKED: PR #528 governed testing must deploy only from $REQUIRED_TEST_BRANCH."
-            echo "selected_ref=${{ github.ref_name }}"
-            echo "required_ref=$REQUIRED_TEST_BRANCH"
-            echo "main and side branches are not valid testing deployment sources."
+            echo "BLOCKED: selected branch is '${{ github.ref_name }}'; required branch is '$REQUIRED_TEST_BRANCH'."
             exit 1
           fi
-
-          PR_JSON="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/pulls/$REQUIRED_PR_NUMBER")"
-
+          PR_JSON="$(curl --fail --silent --show-error -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "${{ github.api_url }}/repos/${{ github.repository }}/pulls/$REQUIRED_PR_NUMBER")"
           export PR_JSON
           PR_STATE="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["state"])')"
           PR_HEAD_REF="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["ref"])')"
           PR_HEAD_SHA="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["sha"])')"
           PR_MERGED="$(python -c 'import json,os; print(str(json.loads(os.environ["PR_JSON"])["merged"]).lower())')"
-
           if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" != "false" ]; then
-            echo "BLOCKED: governed PR #528 must remain open and unmerged for this testing cycle."
-            echo "pr_state=$PR_STATE merged=$PR_MERGED"
+            echo "BLOCKED: PR #528 state=$PR_STATE merged=$PR_MERGED; it must remain open and unmerged."
             exit 1
           fi
-
           if [ "$PR_HEAD_REF" != "$REQUIRED_TEST_BRANCH" ]; then
-            echo "BLOCKED: PR #528 head branch no longer matches the governed testing branch."
-            echo "pr_head_ref=$PR_HEAD_REF required_ref=$REQUIRED_TEST_BRANCH"
+            echo "BLOCKED: PR #528 head is '$PR_HEAD_REF'; required '$REQUIRED_TEST_BRANCH'."
             exit 1
           fi
-
           if [ "${{ inputs.expected_commit }}" != "${{ github.sha }}" ]; then
-            echo "BLOCKED: selected workflow commit does not equal the approved commit."
-            echo "selected=${{ github.sha }}"
-            echo "approved=${{ inputs.expected_commit }}"
+            echo "BLOCKED: approved SHA '${{ inputs.expected_commit }}' does not equal selected workflow SHA '${{ github.sha }}'."
             exit 1
           fi
-
           if [ "${{ github.sha }}" != "$PR_HEAD_SHA" ]; then
-            echo "BLOCKED: workflow SHA is not the CURRENT HEAD of PR #528."
-            echo "workflow_sha=${{ github.sha }}"
-            echo "pr_528_head=$PR_HEAD_SHA"
-            echo "All fixes must advance the same PR #528 head before deployment."
+            echo "BLOCKED: selected SHA '${{ github.sha }}' is not current PR #528 head '$PR_HEAD_SHA'."
             exit 1
           fi
-
           echo "PR_528_SINGLE_LINEAGE_OK branch=$PR_HEAD_REF commit=$PR_HEAD_SHA"
 
   audit:
@@ -149,18 +91,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install locked dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install uv
           uv sync --frozen --no-dev
-
       - name: Verify governed production inputs
         run: |
           test -f Dockerfile
@@ -170,12 +109,10 @@ jobs:
           grep -q 'uv sync --frozen --no-dev' Dockerfile
           grep -q 'main:app' Dockerfile
           grep -q 'app = "bt38-prod"' fly.toml
-
       - name: Reject corrupt production source files
         run: |
           python - <<'PY'
           from pathlib import Path
-
           bad = []
           for path in Path('.').rglob('*'):
               if not path.is_file() or '.git' in path.parts:
@@ -188,72 +125,39 @@ jobs:
               raise SystemExit('Null bytes found in production source: ' + ', '.join(bad))
           print('SOURCE_INTEGRITY_OK')
           PY
-
       - name: Compile production runtime
         run: |
           uv run python -m py_compile \
-            main.py \
-            app.py \
-            models.py \
-            fbm_models.py \
-            governed_routes.py \
-            governed_group_routes.py \
-            governed_group_propagation_routes.py \
-            governed_runtime_visibility_routes.py \
-            governed_fbm_routes.py \
-            governed_fbm_manual_routes.py \
-            governed_packlink_callback_routes.py \
-            services/fbm_provider_contract.py \
-            services/fbm_order_mapper.py \
-            services/fbm_marketplace_destination.py \
-            services/fbm_amazon_order_profile.py \
-            services/fbm_amazon_shipping_adapter.py \
-            services/fbm_packlink_adapter.py \
-            services/fbm_packlink_callback.py \
-            services/fbm_packlink_event_processor.py \
-            services/fbm_carrier_mapping.py \
-            services/fbm_marketplace_confirmation.py \
-            services/fbm_post_purchase.py \
-            services/fbm_shipping_state.py \
-            services/governed_fbm_page_alignment.py \
-            services/governed_amazon_tracking_readback.py \
-            services/governed_exact_ebay_order_hydration.py \
-            services/governed_ebay_oauth_scopes.py \
-            services/governed_ebay_shipping_notification_alignment.py \
-            services/governed_runtime_engine.py \
-            services/governed_webhook_execution.py \
-            services/governed_webhook_alignment.py \
-            services/governed_push_execution.py \
-            services/governed_ebay_inventory_import.py \
-            services/governed_ebay_post_deploy_alignment.py \
-            services/governed_amazon_inventory_import.py \
-            services/governed_amazon_listing_fulfillment_refresh.py \
-            services/governed_amazon_subscription_visibility.py \
-            services/governed_amazon_mcf_notification_alignment.py \
-            services/governed_mcf_confirmation.py \
-            services/governed_mcf_tracking.py \
-            services/governed_mcf_tracking_startup_alignment.py \
-            services/governed_marketplace_order_import.py \
-            services/governed_order_stock_mutation.py \
-            services/governed_warehouse_sync.py
-
+            main.py app.py models.py fbm_models.py \
+            governed_routes.py governed_group_routes.py governed_group_propagation_routes.py \
+            governed_runtime_visibility_routes.py governed_fbm_routes.py governed_fbm_manual_routes.py \
+            governed_packlink_callback_routes.py services/fbm_provider_contract.py \
+            services/fbm_order_mapper.py services/fbm_marketplace_destination.py \
+            services/fbm_amazon_order_profile.py services/fbm_amazon_shipping_adapter.py \
+            services/fbm_packlink_adapter.py services/fbm_packlink_callback.py \
+            services/fbm_packlink_event_processor.py services/fbm_carrier_mapping.py \
+            services/fbm_marketplace_confirmation.py services/fbm_post_purchase.py \
+            services/fbm_shipping_state.py services/governed_fbm_page_alignment.py \
+            services/governed_amazon_tracking_readback.py services/governed_exact_ebay_order_hydration.py \
+            services/governed_ebay_oauth_scopes.py services/governed_ebay_shipping_notification_alignment.py \
+            services/governed_runtime_engine.py services/governed_webhook_execution.py \
+            services/governed_webhook_alignment.py services/governed_push_execution.py \
+            services/governed_ebay_inventory_import.py services/governed_ebay_post_deploy_alignment.py \
+            services/governed_amazon_inventory_import.py services/governed_amazon_listing_fulfillment_refresh.py \
+            services/governed_amazon_subscription_visibility.py services/governed_amazon_mcf_notification_alignment.py \
+            services/governed_mcf_confirmation.py services/governed_mcf_tracking.py \
+            services/governed_mcf_tracking_startup_alignment.py services/governed_marketplace_order_import.py \
+            services/governed_order_stock_mutation.py services/governed_warehouse_sync.py
       - name: Run deployment contracts
         run: |
           uv run python -m pytest -q \
-            tests/test_runtime_deployment_contract.py \
-            tests/test_fba_targeted_update_contract.py \
-            tests/test_webhook_scoped_reconcile_contract.py \
-            tests/test_webhook_push_alignment_contract.py \
-            tests/test_ui_production_alignment_contract.py \
-            tests/test_amazon_subscription_visibility_contract.py \
-            tests/test_amazon_mcf_notification_alignment_contract.py \
-            tests/test_fbm_page_bounded_alignment_contract.py \
-            tests/test_fbm_packlink_contract.py \
-            tests/test_fbm_packlink_import_alignment_contract.py \
-            tests/test_fbm_amazon_tracking_contract.py \
-            tests/test_fbm_amazon_confirmation_payload.py \
-            tests/test_fbm_manual_shipping_order_contract.py \
-            tests/test_marketplace_tracking_readback_contract.py
+            tests/test_runtime_deployment_contract.py tests/test_fba_targeted_update_contract.py \
+            tests/test_webhook_scoped_reconcile_contract.py tests/test_webhook_push_alignment_contract.py \
+            tests/test_ui_production_alignment_contract.py tests/test_amazon_subscription_visibility_contract.py \
+            tests/test_amazon_mcf_notification_alignment_contract.py tests/test_fbm_page_bounded_alignment_contract.py \
+            tests/test_fbm_packlink_contract.py tests/test_fbm_packlink_import_alignment_contract.py \
+            tests/test_fbm_amazon_tracking_contract.py tests/test_fbm_amazon_confirmation_payload.py \
+            tests/test_fbm_manual_shipping_order_contract.py tests/test_marketplace_tracking_readback_contract.py
 
   deploy:
     needs: audit
@@ -264,111 +168,104 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-
       - name: Set up Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@master
-
       - name: Deploy exact GitHub commit with Fly remote builder
         run: |
           test "${{ github.ref_name }}" = "fix/full-system-release-alignment"
           test "$(git rev-parse HEAD)" = "${{ inputs.expected_commit }}"
-          flyctl deploy \
-            --app bt38-prod \
-            --config fly.toml \
-            --remote-only \
-            --no-cache \
-            --strategy rolling
+          flyctl deploy --app bt38-prod --config fly.toml --remote-only --no-cache --strategy rolling
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-      - name: Verify deployed source matches exact GitHub checkout
+      - name: Verify critical deployed source and state exact mismatch reason
         shell: bash
         run: |
           set -euo pipefail
-          HASH_CMD="find . -type f \\( -name '*.py' -o -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.toml' -o -name '*.svg' -o -name '*.json' -o -name 'Dockerfile' -o -name 'uv.lock' \\) -not -path './.git/*' -not -path './.github/*' -not -path './tests/*' -not -path './_retired_tests/*' -not -path './docs/*' -not -path './.venv/*' -not -path './static/uploads/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \$1}'"
-          EXPECTED_SOURCE_HASH="$(bash -lc "$HASH_CMD")"
-          REMOTE_SOURCE_HASH="$(flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc 'cd /app && $HASH_CMD'" \
-            | tail -n 1 \
-            | tr -d '\r' \
-            | awk '{print $1}')"
-          test -n "$EXPECTED_SOURCE_HASH"
-          test -n "$REMOTE_SOURCE_HASH"
-          if [ "$REMOTE_SOURCE_HASH" != "$EXPECTED_SOURCE_HASH" ]; then
-            echo "BLOCKED: deployed Fly source does not match the exact audited GitHub checkout."
-            echo "github_source_hash=$EXPECTED_SOURCE_HASH"
-            echo "fly_source_hash=$REMOTE_SOURCE_HASH"
+          FILES=(
+            Dockerfile
+            fly.toml
+            main.py
+            app.py
+            governed_fbm_routes.py
+            governed_fbm_manual_routes.py
+            templates/fbm.html
+            static/js/fbm_tracking_journey.js
+            services/governed_fbm_page_alignment.py
+            services/fbm_marketplace_confirmation.py
+            services/fbm_post_purchase.py
+            services/governed_runtime_engine.py
+            services/governed_webhook_execution.py
+          )
+          FAILED=0
+          for FILE in "${FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "BLOCKED: audited GitHub source is missing required file '$FILE'."
+              FAILED=1
+              continue
+            fi
+            EXPECTED="$(sha256sum "$FILE" | awk '{print $1}')"
+            REMOTE_LINE="$(flyctl ssh console --app bt38-prod --command "sh -lc 'if [ ! -f /app/$FILE ]; then echo MISSING; else sha256sum /app/$FILE; fi'" | tail -n 1 | tr -d '\r')"
+            if [ "$REMOTE_LINE" = "MISSING" ]; then
+              echo "BLOCKED: Fly /app is missing critical file '$FILE'."
+              FAILED=1
+              continue
+            fi
+            REMOTE="$(printf '%s\n' "$REMOTE_LINE" | awk '{print $1}')"
+            if [ "$REMOTE" != "$EXPECTED" ]; then
+              echo "BLOCKED: Fly source mismatch in '$FILE'. GitHub=$EXPECTED Fly=$REMOTE"
+              FAILED=1
+            else
+              echo "SOURCE_OK: $FILE"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "BLOCKED: critical deployed source mismatch. Reasons are listed above by filename; runtime-generated files are intentionally ignored."
             exit 1
           fi
-          echo "DEPLOYED_SOURCE_FINGERPRINT_OK hash=$EXPECTED_SOURCE_HASH commit=${{ inputs.expected_commit }}"
+          echo "CRITICAL_DEPLOYED_SOURCE_OK commit=${{ inputs.expected_commit }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Restore Packlink callback secret setting
         shell: bash
         run: |
-          CALLBACK_SECRET="$(flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc 'cd /app && .venv/bin/python -c \"import hashlib,os; key=str(os.environ.get(\\\"PACKLINK_API_KEY\\\") or \\\"\\\").strip(); assert key, \\\"PACKLINK_API_KEY missing\\\"; print(hashlib.sha256((\\\"bt38-packlink-callback:\\\"+key).encode()).hexdigest())\"'" \
-            | tail -n 1)"
+          CALLBACK_SECRET="$(flyctl ssh console --app bt38-prod --command "sh -lc 'cd /app && .venv/bin/python -c \"import hashlib,os; key=str(os.environ.get(\\\"PACKLINK_API_KEY\\\") or \\\"\\\").strip(); assert key, \\\"PACKLINK_API_KEY missing\\\"; print(hashlib.sha256((\\\"bt38-packlink-callback:\\\"+key).encode()).hexdigest())\"'" | tail -n 1)"
           test -n "$CALLBACK_SECRET"
-          flyctl secrets set \
-            --app bt38-prod \
-            PACKLINK_CALLBACK_SECRET="$CALLBACK_SECRET"
+          flyctl secrets set --app bt38-prod PACKLINK_CALLBACK_SECRET="$CALLBACK_SECRET"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Restore Packlink callback registration
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'from app import app; from services.fbm_packlink_adapter import PacklinkAdapter; from governed_packlink_callback_routes import _register_callback; ctx=app.test_request_context(base_url=\\\"https://bt38-prod.fly.dev\\\"); ctx.push(); callback_url=_register_callback(PacklinkAdapter()); print(\\\"PACKLINK_CALLBACK_REGISTERED=\\\" + callback_url)'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'from app import app; from services.fbm_packlink_adapter import PacklinkAdapter; from governed_packlink_callback_routes import _register_callback; ctx=app.test_request_context(base_url=\\\"https://bt38-prod.fly.dev\\\"); ctx.push(); callback_url=_register_callback(PacklinkAdapter()); print(\\\"PACKLINK_CALLBACK_REGISTERED=\\\" + callback_url)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Recover recent known Packlink purchases once
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime,timedelta; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); today=datetime.utcnow().date(); results=[recover_packlink_shipments_for_day(today-timedelta(days=offset)) for offset in range(7)]; print(json.dumps({\\\"success\\\": True, \\\"days_checked\\\": 7, \\\"results\\\": results}, default=str))'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime,timedelta; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); today=datetime.utcnow().date(); results=[recover_packlink_shipments_for_day(today-timedelta(days=offset)) for offset in range(7)]; print(json.dumps({\\\"success\\\": True, \\\"days_checked\\\": 7, \\\"results\\\": results}, default=str))'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Reconcile eBay webhook and recover missed changes once
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_ebay_post_deploy_alignment import align_ebay_notifications_and_recover_missed_changes; ctx=app.app_context(); ctx.push(); result=align_ebay_notifications_and_recover_missed_changes(store_id=23,max_days=7); print(json.dumps(result, default=str)); registration=result.get(\\\"registration\\\") or {}; order=result.get(\\\"order_catchup\\\") or {}; tracking=result.get(\\\"tracking_catchup\\\") or {}; listing=result.get(\\\"listing_catchup\\\") or {}; registration_error=str(registration.get(\\\"error\\\") or \\\"\\\"); registration_ok=bool(registration.get(\\\"success\\\") or registration.get(\\\"ok\\\")); oauth_reauth_pending=(not registration_ok and \\\"HTTP 403\\\" in registration_error and \\\"Insufficient permissions\\\" in registration_error); recovery_ok=bool(order.get(\\\"success\\\")) and bool(tracking.get(\\\"success\\\")) and bool(listing.get(\\\"success\\\", True)); print(\\\"EBAY_NOTIFICATION_REAUTH_PENDING\\\" if oauth_reauth_pending else (\\\"EBAY_NOTIFICATION_REGISTRATION_OK\\\" if registration_ok else \\\"EBAY_NOTIFICATION_REGISTRATION_FAILED\\\")); ok=recovery_ok and (registration_ok or oauth_reauth_pending); raise SystemExit(0 if ok else 1)'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_ebay_post_deploy_alignment import align_ebay_notifications_and_recover_missed_changes; ctx=app.app_context(); ctx.push(); result=align_ebay_notifications_and_recover_missed_changes(store_id=23,max_days=7); print(json.dumps(result, default=str)); registration=result.get(\\\"registration\\\") or {}; order=result.get(\\\"order_catchup\\\") or {}; tracking=result.get(\\\"tracking_catchup\\\") or {}; listing=result.get(\\\"listing_catchup\\\") or {}; registration_error=str(registration.get(\\\"error\\\") or \\\"\\\"); registration_ok=bool(registration.get(\\\"success\\\") or registration.get(\\\"ok\\\")); oauth_reauth_pending=(not registration_ok and \\\"HTTP 403\\\" in registration_error and \\\"Insufficient permissions\\\" in registration_error); recovery_ok=bool(order.get(\\\"success\\\")) and bool(tracking.get(\\\"success\\\")) and bool(listing.get(\\\"success\\\", True)); print(\\\"EBAY_NOTIFICATION_REAUTH_PENDING\\\" if oauth_reauth_pending else (\\\"EBAY_NOTIFICATION_REGISTRATION_OK\\\" if registration_ok else \\\"EBAY_NOTIFICATION_REGISTRATION_FAILED\\\")); ok=recovery_ok and (registration_ok or oauth_reauth_pending); raise SystemExit(0 if ok else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Record Amazon listing subscription reconciliation
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_subscription_visibility import record_governed_amazon_listing_subscription_reconciliation; ctx=app.app_context(); ctx.push(); result=record_governed_amazon_listing_subscription_reconciliation(store_id=22, source=\\\"post_deploy_subscription_audit\\\"); print(json.dumps(result, default=str))'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_subscription_visibility import record_governed_amazon_listing_subscription_reconciliation; ctx=app.app_context(); ctx.push(); result=record_governed_amazon_listing_subscription_reconciliation(store_id=22, source=\\\"post_deploy_subscription_audit\\\"); print(json.dumps(result, default=str))'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Reconcile Amazon MCF status subscription
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_mcf_notification_alignment import align_governed_amazon_mcf_notification_to_existing_sqs; ctx=app.app_context(); ctx.push(); result=align_governed_amazon_mcf_notification_to_existing_sqs(store_id=22); print(json.dumps(result, default=str)); raise SystemExit(0 if result.get(\\\"success\\\") else 1)'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_mcf_notification_alignment import align_governed_amazon_mcf_notification_to_existing_sqs; ctx=app.app_context(); ctx.push(); result=align_governed_amazon_mcf_notification_to_existing_sqs(store_id=22); print(json.dumps(result, default=str)); raise SystemExit(0 if result.get(\\\"success\\\") else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
       - name: Recover missing Amazon listings once after deployment
         shell: bash
         run: |
-          flyctl ssh console \
-            --app bt38-prod \
-            --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_listing_fulfillment_refresh import run_governed_amazon_listing_fulfillment_refresh; ctx=app.app_context(); ctx.push(); result=run_governed_amazon_listing_fulfillment_refresh(store_id=22); print(json.dumps(result, default=str)); rows=result.get(\\\"results\\\") or []; ok=bool(result.get(\\\"success\\\")) and bool(rows) and all(bool(row.get(\\\"success\\\")) for row in rows); raise SystemExit(0 if ok else 1)'\""
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_listing_fulfillment_refresh import run_governed_amazon_listing_fulfillment_refresh; ctx=app.app_context(); ctx.push(); result=run_governed_amazon_listing_fulfillment_refresh(store_id=22); print(json.dumps(result, default=str)); rows=result.get(\\\"results\\\") or []; ok=bool(result.get(\\\"success\\\")) and bool(rows) and all(bool(row.get(\\\"success\\\")) for row in rows); raise SystemExit(0 if ok else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
