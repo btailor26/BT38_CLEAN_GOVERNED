@@ -10,6 +10,9 @@ EBAY_NOTIFICATION = Path(
 EBAY_SCOPES = Path(
     "services/governed_ebay_oauth_scopes.py"
 ).read_text(encoding="utf-8")
+EBAY_POST_DEPLOY = Path(
+    "services/governed_ebay_post_deploy_alignment.py"
+).read_text(encoding="utf-8")
 AMAZON_TRACKING = Path(
     "services/governed_amazon_tracking_readback.py"
 ).read_text(encoding="utf-8")
@@ -46,6 +49,27 @@ def test_ebay_shipping_notification_is_optional_accelerator_with_reauth_fallback
     assert '_ensure_subscription(' in EBAY_NOTIFICATION
     assert 'marketplace_write_started' in EBAY_NOTIFICATION
     assert 'https://api.ebay.com/oauth/api_scope/commerce.shipping' in EBAY_SCOPES
+
+
+def test_ebay_post_deploy_recovers_recent_missing_tracking_independent_of_latest_webhook():
+    assert 'def _recover_recent_missing_tracking(' in EBAY_POST_DEPLOY
+    recovery = EBAY_POST_DEPLOY.split(
+        'def _recover_recent_missing_tracking(', 1
+    )[1].split(
+        'def align_ebay_notifications_and_recover_missed_changes(', 1
+    )[0]
+    assert 'MarketplaceOrder.fulfillment_type == "FBM"' in recovery
+    assert 'MarketplaceOrder.tracking_number.is_(None)' in recovery
+    assert 'MarketplaceOrder.tracking_number == ""' in recovery
+    assert 'MarketplaceOrder.created_at >= cutoff' in recovery
+    assert 'MarketplaceOrder.marketplace_created_at' not in recovery
+    assert '.limit(max(1, min(int(limit), 100)))' in recovery
+    assert 'hydrate_exact_ebay_order(' in recovery
+    assert 'last_webhook_at' not in recovery
+    assert '"marketplace_write_started": False' in recovery
+    assert '"polling_started": False' in recovery
+    assert '"scheduler_started": False' in recovery
+    assert '"tracking_catchup": tracking_recovery' in EBAY_POST_DEPLOY
 
 
 def test_amazon_tracking_uses_current_orders_packages_dataset():
