@@ -1,7 +1,8 @@
-"""Public early-access application workflow for BT38.
+"""Public early-access application workflow for BT38 Inventory.
 
 Scope:
 - public landing and application intake only
+- public privacy, terms and support pages
 - store application evidence in existing SystemLog
 - no marketplace calls
 - no stock/sync/push/import execution
@@ -67,6 +68,21 @@ def bt38_public_root_landing():
     )
 
 
+@app.get("/privacy")
+def bt38_public_privacy():
+    return render_template("privacy.html")
+
+
+@app.get("/terms")
+def bt38_public_terms():
+    return render_template("terms.html")
+
+
+@app.get("/support")
+def bt38_public_support():
+    return render_template("support.html")
+
+
 @app.route("/apply", methods=["GET", "POST"])
 def bt38_early_access_apply():
     if current_user.is_authenticated:
@@ -85,13 +101,13 @@ def bt38_early_access_apply():
     if not all(required) or "@" not in payload["email"]:
         return render_template(
             "early_access_apply.html",
-            error="Please complete your name, business name, valid email and what you want to manage with BT38.",
+            error="Please complete your name, business name, valid email and what you want to manage with BT38 Inventory.",
             form=request.form,
         ), 400
 
     existing_user = User.query.filter(User.email.ilike(payload["email"])).first()
     if existing_user:
-        flash("An approved BT38 account already exists for this email. Please sign in.", "info")
+        flash("An approved BT38 Inventory account already exists for this email. Please sign in.", "info")
         return redirect(url_for("governed.login"))
 
     recent = (
@@ -194,7 +210,7 @@ def bt38_early_access_application_decision(application_id: int, decision: str):
     if decision == "approved":
         email = quote(str(details.get("email") or ""))
         username = quote(str(details.get("full_name") or ""))
-        flash("Application approved. Create the BT38 account through the existing governed user workflow.", "success")
+        flash("Application approved. Create the BT38 Inventory account through the existing governed user workflow.", "success")
         return redirect(f"/users/create?email={email}&username={username}")
 
     flash(f"Application marked {decision}.", "success")
