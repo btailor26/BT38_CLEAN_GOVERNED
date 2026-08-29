@@ -8,19 +8,18 @@
 5. Changes must be 100% aligned with the intended setup.
 6. No deployment or forward movement until verified.
 7. If any error appears in output, stop and audit that error first.
-8. GitHub is the only source of production application files and deployment context.
-9. Never clone, copy, overlay, build, test, or deploy BT38 application files from an operator PC. The operator PC may only inspect GitHub/Fly or dispatch the approved GitHub Actions workflow.
-10. All testing repairs for the active governed cycle must advance `fix/full-system-release-alignment` / PR #528. Main and side branches are not valid test-deployment sources while this contract is active.
+8. Bash-only workflows unless explicitly approved otherwise.
+9. Every command block must start from the correct project directory:
+   cd /c/Users/btail/_ARCHIVE_OLD_BT38/BT38 || exit 1
+10. The user has zero coding experience and should not be expected to interpret code.
 11. The user is the architect/decision-maker. AI acts as cautious engineer.
 12. No guesswork. Evidence first.
 13. One clean wiring only. No circular restore/patch attempts.
-14. Before page layout/UI changes, show visual proof/mockup first unless the user has explicitly approved the exact change.
-15. Do not change the approved application shell logo, sidebar, top nav, nav colours, or warehouse layout unless explicitly approved. Public Amazon/Appstore branding work must remain isolated from the application shell and Warehouse controls.
+14. Before page layout/UI changes, show visual proof/mockup first.
+15. Do not change logo, sidebar, top nav, nav colours, or approved shell unless explicitly approved.
 16. Preserve mobile usability by default.
-17. Use Git/version control discipline. Every deployable state must be an exact GitHub commit.
-18. Do not deploy until compile/import/runtime and required contract checks pass and the user explicitly approves the exact current PR #528 HEAD.
-19. Production deployment is manual only through `.github/workflows/deploy-fly.yml` using the current PR #528 HEAD SHA and Fly remote builder. Direct `fly deploy` from an operator PC is prohibited.
-20. A successful test deployment does not authorize or perform a merge. PR #528 remains open and unmerged until separately approved.
+17. Use Git/version control discipline.
+18. Do not deploy until compile/import/runtime checks pass and user approves.
 
 ## BT38 inventory rules
 1. Warehouse is the source of truth.
@@ -47,4 +46,4 @@
 9. Saved mappings are user/source-specific and must not affect other users.
 
 ## Current priority
-Fix broken marketplace connection state first, especially eBay connection failures, before further application-shell layout work. Explicitly approved public Amazon/Appstore compliance work may proceed only in the isolated public-site scope and must not alter Warehouse/runtime authority.
+Fix broken marketplace connection state first, especially eBay connection failures, before further layout work.
