@@ -217,7 +217,7 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
                 ship_to_name=_text(ship_to.get("fullName")),
                 ship_to_address=", ".join(part for part in address_parts if part),
                 ship_to_city=_text(address.get("city")),
-                ship_to_postcode=_text(address.get("postalCode")).upper(),
+                ship_to_postcode=_text(address.get("postalCode")),
                 ship_to_country=_text(address.get("countryCode")).upper()[:2],
                 ship_to_email=_text(ship_to.get("email")),
                 ship_to_phone=(
@@ -290,10 +290,7 @@ def _recover_recent_missing_tracking(
                 MarketplaceOrder.tracking_number.is_(None),
                 MarketplaceOrder.tracking_number == "",
             ),
-            or_(
-                MarketplaceOrder.marketplace_created_at >= cutoff,
-                MarketplaceOrder.created_at >= cutoff,
-            ),
+            MarketplaceOrder.created_at >= cutoff,
         )
         .distinct()
         .order_by(MarketplaceOrder.marketplace_order_id)
