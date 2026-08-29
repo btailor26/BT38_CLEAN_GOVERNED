@@ -230,7 +230,7 @@
             window.alert('BT38 could not resolve the eBay order ID for this row.');
             return;
         }
-        window.open(`https://www.ebay.co.uk/mesh/ord/details?orderid=${encodeURIComponent(orderId)}`, '_blank', 'noopener,noreferrer');
+        window.location.assign(`https://www.ebay.co.uk/mesh/ord/details?orderid=${encodeURIComponent(orderId)}`);
     }
 
     function installManualShippingButton() {
