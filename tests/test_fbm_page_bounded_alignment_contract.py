@@ -42,6 +42,17 @@ def test_fbm_alignment_keeps_existing_endpoint_template_and_action_routes():
     assert '@governed_fbm_bp.post("/fbm/orders/<int:order_id>/packlink/rates")' in LEGACY_ROUTE
 
 
+def test_ebay_shipping_stays_inside_fbm_and_does_not_claim_native_label_capability():
+    assert "def _workspace_shipping_mode" in ALIGNMENT
+    assert 'platform.strip().lower() == "ebay"' in ALIGNMENT
+    assert '"marketplace_buy_shipping": False' in ALIGNMENT
+    assert '"recommended": "Packlink / connected carrier"' in ALIGNMENT
+    assert "def _neutralise_legacy_ebay_handoff" in ALIGNMENT
+    assert "eBay postage unavailable" in ALIGNMENT
+    assert "Native eBay label purchase is not enabled" in ALIGNMENT
+    assert "window.location.assign" not in ALIGNMENT
+
+
 def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_execution():
     assert "db.session.add" not in ALIGNMENT
     assert "db.session.commit" not in ALIGNMENT
