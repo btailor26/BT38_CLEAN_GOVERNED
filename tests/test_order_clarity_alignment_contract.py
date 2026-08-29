@@ -92,6 +92,13 @@ def test_marketplace_tracking_clicks_stay_inside_bt38_journey_modal_without_extr
     assert "fetch(" not in marketplace_branch
 
 
+def test_ebay_shipping_handoff_uses_same_tab_and_cannot_trigger_popup_blocking():
+    ebay_handoff = FBM_JOURNEY_JS.split("function openEbayShipping(button)", 1)[1].split("function installManualShippingButton", 1)[0]
+    assert "window.location.assign(" in ebay_handoff
+    assert "window.open(" not in ebay_handoff
+    assert "www.ebay.co.uk/mesh/ord/details?orderid=" in ebay_handoff
+
+
 def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
     assert "@app.after_request" in ALIGNMENT
     assert "db.session.add" not in ALIGNMENT
