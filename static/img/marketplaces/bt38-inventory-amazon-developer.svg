@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 220" role="img" aria-labelledby="title desc">
+  <title id="title">BT38 Inventory</title>
+  <desc id="desc">BT38 Inventory Amazon Developer and Appstore branding asset.</desc>
+  <rect width="960" height="220" rx="18" fill="#0b0f14"/>
+  <g transform="translate(46 42)" fill="none" stroke="#ffffff" stroke-width="12" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M18 42 76 8l58 34v70l-58 34-58-34z"/>
+    <path d="m18 42 58 34 58-34M76 76v70"/>
+    <path d="M43 27 101 61M67 13l58 34"/>
+  </g>
+  <text x="225" y="136" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="1">BT38 Inventory</text>
+</svg>
