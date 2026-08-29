@@ -1,9 +1,14 @@
 """Bound the existing FBM page read without introducing a second workflow.
 
 This alignment keeps the registered /fbm endpoint, existing template, shipping
-handlers and persisted authorities unchanged.  It only replaces the expensive
+handlers and persisted authorities unchanged. It only replaces the expensive
 page-read implementation so an ordinary refresh hydrates the latest 15 distinct
-FBM orders.  Older records are user-expanded in 15-order increments.
+FBM orders. Older records are user-expanded in 15-order increments.
+
+For eBay, the workspace exposes only capabilities BT38 can actually execute.
+The legacy Seller Hub redirect is neutralised: connected in-BT38 providers and
+manual governed dispatch remain available, while native eBay label purchase is
+shown as unavailable until a real governed adapter exists.
 
 No marketplace/provider calls, DB writes, reconciliation, scheduler or MCF path
 is introduced here.
@@ -14,7 +19,7 @@ from urllib.parse import urlencode
 
 from flask import request, render_template
 from flask_login import login_required
-from sqlalchemy import func, or_, tuple_
+from sqlalchemy import func, tuple_
 from sqlalchemy.orm import joinedload
 
 from extensions import db
@@ -40,8 +45,6 @@ def _requested_limit() -> int:
         requested = int(request.args.get("limit") or _FBM_PAGE_SIZE)
     except (TypeError, ValueError):
         requested = _FBM_PAGE_SIZE
-    # Expansion stays on the same bounded rule as the old page ceiling, but the
-    # default refresh never hydrates that historical ceiling.
     requested = max(_FBM_PAGE_SIZE, requested)
     return min(_FBM_MAX_EXPANDED, ((requested + _FBM_PAGE_SIZE - 1) // _FBM_PAGE_SIZE) * _FBM_PAGE_SIZE)
 
@@ -76,9 +79,6 @@ def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]
         ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
     )
 
-    # MarketplaceOrder can contain multiple rows for one marketplace order. Pick
-    # one representative row per persisted order before applying the page limit;
-    # limiting raw rows would not guarantee 15 actual orders.
     latest_ids = (
         db.session.query(func.max(MarketplaceOrder.id).label("id"))
         .filter(*eligible)
@@ -98,9 +98,6 @@ def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]
 
     platform_filter = str(request.args.get("platform") or "").strip().lower()
     status_filter = str(request.args.get("status") or "").strip().lower()
-
-    # Keep the existing filters, but perform them before downstream shipment and
-    # profile hydration whenever their persisted columns allow it.
     if platform_filter:
         query = query.filter(MarketplaceOrder.store.has(platform=platform_filter))
 
@@ -115,6 +112,45 @@ def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]
     rows = query.limit(limit + 1).all()
     has_more = len(rows) > limit
     return rows[:limit], has_more
+
+
+def _workspace_shipping_mode(row: MarketplaceOrder, platform: str, profile: FBMOrderProfile | None) -> dict:
+    """Expose only shipping routes that are executable from the BT38 workspace."""
+    mode = dict(_marketplace_shipping_mode(row, platform, profile))
+    if platform.strip().lower() == "ebay":
+        mode.update({
+            "recommended": "Packlink / connected carrier",
+            "marketplace_buy_shipping": False,
+            "external_provider": True,
+            "manual": True,
+            "prime_locked": False,
+            "profile_known": True,
+            "reason": "Use an in-BT38 connected provider or governed manual dispatch. Native eBay label purchase is not exposed until BT38 has a supported adapter.",
+        })
+    return mode
+
+
+def _neutralise_legacy_ebay_handoff(html: str) -> str:
+    """Keep eBay fulfilment in BT38 instead of redirecting the operator to Seller Hub."""
+    if not html or "</body>" not in html:
+        return html
+    script = r'''<script id="bt38EbayShippingWorkspaceAlignment">
+(function(){
+  'use strict';
+  function alignEbayShipping(){
+    document.querySelectorAll('.provider-action[data-provider="ebay_shipping"]').forEach(function(button){
+      button.disabled = true;
+      button.textContent = 'eBay postage unavailable';
+      button.title = 'Use Packlink / connected carrier or Manual / own carrier inside BT38. Native eBay label purchase is not enabled for this app/account.';
+      button.setAttribute('aria-disabled','true');
+    });
+  }
+  const root=document.getElementById('fbmShippingOrders');
+  if(root){new MutationObserver(alignEbayShipping).observe(root,{childList:true,subtree:true});}
+  alignEbayShipping();
+})();
+</script>'''
+    return html.replace("</body>", script + "\n</body>", 1)
 
 
 def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
@@ -150,7 +186,7 @@ def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
     control = (
         '<div class="card-footer d-flex justify-content-between align-items-center flex-wrap gap-2">'
         f'<span class="small text-muted">Showing the latest {visible_limit} FBM orders. Older orders load only when expanded.</span>'
-        f'<div class="d-flex gap-2">{"".join(actions)}</div>'
+        f'<div class="d-flex gap-2'>{"".join(actions)}</div>'
         '</div>'
     )
     marker = "</tbody></table></div>\n</div>"
@@ -199,7 +235,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "platform": platform,
                 "store_name": _store_name(row),
                 "route_state": route_state,
-                "shipping_mode": _marketplace_shipping_mode(row, platform, profile),
+                "shipping_mode": _workspace_shipping_mode(row, platform, profile),
                 "shipment": shipment,
                 "shipment_state": shipment_state,
                 "case": case,
@@ -228,10 +264,11 @@ def install_governed_fbm_page_alignment(app) -> None:
             platform_filter=platform_filter,
             status_filter=status_filter,
         )
+        html = _neutralise_legacy_ebay_handoff(html)
         return _expand_control(html, visible_limit=visible_limit, has_more=has_more)
 
     app.view_functions[endpoint] = bounded_fbm_page
     app._bt38_fbm_page_alignment_installed = True
     app.logger.info(
-        "BT38 FBM page alignment installed: 15-order bounded read with explicit expansion"
+        "BT38 FBM page alignment installed: 15-order bounded read with in-workspace eBay capability gating"
     )
