@@ -63,7 +63,7 @@ Backups are organized under:
 - _bt38_backups/TEMP_EXPERIMENTS/
 
 Rule:
-Do not restore random backup files. Only restore from a verified rollback point already present in GitHub.
+Do not restore random backup files. Only restore from a verified rollback point.
 
 ## Current recovery commits
 
@@ -74,22 +74,18 @@ Known stabilization commits:
 ## Current working rule
 
 Before any future route/template change:
-1. Prove the file is active from the governed GitHub branch.
-2. Prove the route is registered from the governed GitHub branch.
-3. Prove the production path responds where relevant.
-4. Patch the smallest possible scope on `fix/full-system-release-alignment` / PR #528.
-5. Verify the exact GitHub diff and required GitHub Actions checks.
-6. Do not deploy until the user explicitly approves the exact current PR #528 HEAD SHA.
-7. Deploy only through the governed GitHub Actions workflow using the exact PR #528 HEAD and Fly remote builder.
-8. Verify production after the approved test deployment.
-9. Do not merge PR #528 as part of testing.
-
-The operator PC is not a source, build, test, overlay, or deploy environment for BT38 application files.
+1. Prove the file is active.
+2. Prove the route is registered.
+3. Prove the production path responds.
+4. Patch the smallest possible scope.
+5. Commit locally.
+6. Deploy only after approval.
+7. Verify production after deploy.
 
 ## Protected areas
 
 Do not change without explicit approval:
-- application shell logo
+- logo
 - sidebar
 - top navigation
 - nav colours
@@ -97,11 +93,9 @@ Do not change without explicit approval:
 - active route architecture
 - marketplace connection flows
 
-Public Amazon/Appstore branding is a separate public-site concern. Explicitly approved public branding changes must remain isolated from the protected application shell and Warehouse controls.
-
 ## Current priority after stabilization
 
 Next priority:
 - fix marketplace connection state, starting with eBay connection failure.
 
-No further application-shell layout changes until marketplace connection state is stable. Explicitly approved public Amazon/Appstore compliance work may proceed only in its isolated public-site scope.
+No further layout changes until marketplace connection state is stable.
