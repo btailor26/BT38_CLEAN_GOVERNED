@@ -330,11 +330,15 @@ def install_governed_notification_read_alignment(app):
         "BT38 notification read alignment installed: batched persisted-event reads"
     )
 
-    # Install the companion UI-only clarity layer from the already-established
-    # notification UI installation point. This avoids service-package import
-    # side effects and does not touch marketplace execution, shipping, or MCF.
+    # Install companion UI/read alignments from the already-established
+    # notification UI installation point. Existing URLs and action handlers stay
+    # unchanged; these are bounded persisted-data reads only.
     from services.governed_order_clarity_alignment import (
         install_governed_order_clarity_alignment,
     )
+    from services.governed_fbm_page_alignment import (
+        install_governed_fbm_page_alignment,
+    )
 
     install_governed_order_clarity_alignment(app)
+    install_governed_fbm_page_alignment(app)
