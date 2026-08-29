@@ -1,42 +1,25 @@
 name: Governed Fly Deployment
 
-# HARD DEPLOYMENT RULE:
-# - GitHub is the only source of production application files.
-# - The operator's PC is never a source, build context, overlay, or deploy host.
-# - Fly builds remotely from the exact manually approved GitHub commit.
-# - Pushes, merges, tests, and audits never deploy automatically.
-# - This workflow does not merge branches.
-#
-# ACTIVE GOVERNED TESTING BRANCH CONTRACT (PR #528):
-# - Until PR #528 is explicitly approved for merge, every BT38 repair/update that
-#   is intended for live testing MUST be committed to:
-#       fix/full-system-release-alignment
-# - PR #528 is the ONE governed change number for this testing cycle.
-# - main MUST remain untouched by this testing cycle.
-# - Every deploy must use the CURRENT HEAD SHA of PR #528 / fix/full-system-release-alignment.
-# - A successful test does not merge PR #528.
-#
-# Operator dispatch remains GitHub-only; the PC never supplies app source.
-
 on:
   workflow_dispatch:
     inputs:
       confirm_production_deploy:
         description: 'Type DEPLOY_GITHUB_COMMIT_TO_BT38_PROD'
         required: true
-        type: string
       expected_commit:
-        description: 'Exact CURRENT PR #528 head SHA approved for bt38-prod'
+        description: 'Exact current PR #528 head SHA'
         required: true
-        type: string
-
-concurrency:
-  group: governed-production-deploy
-  cancel-in-progress: false
 
 permissions:
   contents: read
   pull-requests: read
+
+concurrency:
+  group: bt38-prod-governed-deploy
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
 
 jobs:
   source-deploy-guard:
@@ -45,47 +28,26 @@ jobs:
       - name: Require exact current PR 528 GitHub source approval
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          REQUIRED_TEST_BRANCH="fix/full-system-release-alignment"
-          REQUIRED_PR_NUMBER="528"
-          if [ "${{ inputs.confirm_production_deploy }}" != "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD" ]; then
-            echo "BLOCKED: explicit GitHub-to-Fly production approval is missing."
-            exit 1
-          fi
-          if [ "${{ github.ref_name }}" != "$REQUIRED_TEST_BRANCH" ]; then
-            echo "BLOCKED: selected branch is '${{ github.ref_name }}'; required branch is '$REQUIRED_TEST_BRANCH'."
-            exit 1
-          fi
-          PR_JSON="$(curl --fail --silent --show-error -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "${{ github.api_url }}/repos/${{ github.repository }}/pulls/$REQUIRED_PR_NUMBER")"
-          export PR_JSON
-          PR_STATE="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["state"])')"
-          PR_HEAD_REF="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["ref"])')"
-          PR_HEAD_SHA="$(python -c 'import json,os; print(json.loads(os.environ["PR_JSON"])["head"]["sha"])')"
-          PR_MERGED="$(python -c 'import json,os; print(str(json.loads(os.environ["PR_JSON"])["merged"]).lower())')"
-          if [ "$PR_STATE" != "open" ] || [ "$PR_MERGED" != "false" ]; then
-            echo "BLOCKED: PR #528 state=$PR_STATE merged=$PR_MERGED; it must remain open and unmerged."
-            exit 1
-          fi
-          if [ "$PR_HEAD_REF" != "$REQUIRED_TEST_BRANCH" ]; then
-            echo "BLOCKED: PR #528 head is '$PR_HEAD_REF'; required '$REQUIRED_TEST_BRANCH'."
-            exit 1
-          fi
-          if [ "${{ inputs.expected_commit }}" != "${{ github.sha }}" ]; then
-            echo "BLOCKED: approved SHA '${{ inputs.expected_commit }}' does not equal selected workflow SHA '${{ github.sha }}'."
-            exit 1
-          fi
-          if [ "${{ github.sha }}" != "$PR_HEAD_SHA" ]; then
-            echo "BLOCKED: selected SHA '${{ github.sha }}' is not current PR #528 head '$PR_HEAD_SHA'."
-            exit 1
-          fi
-          echo "PR_528_SINGLE_LINEAGE_OK branch=$PR_HEAD_REF commit=$PR_HEAD_SHA"
+          set -euo pipefail
+          test "${{ inputs.confirm_production_deploy }}" = "DEPLOY_GITHUB_COMMIT_TO_BT38_PROD"
+          test "${{ github.ref_name }}" = "fix/full-system-release-alignment"
+          test "${{ inputs.expected_commit }}" = "${{ github.sha }}"
+          PR_JSON="$(gh api repos/${{ github.repository }}/pulls/528)"
+          PR_STATE="$(printf '%s' "$PR_JSON" | jq -r '.state')"
+          PR_MERGED="$(printf '%s' "$PR_JSON" | jq -r '.merged')"
+          PR_HEAD="$(printf '%s' "$PR_JSON" | jq -r '.head.sha')"
+          PR_BRANCH="$(printf '%s' "$PR_JSON" | jq -r '.head.ref')"
+          test "$PR_STATE" = "open"
+          test "$PR_MERGED" = "false"
+          test "$PR_BRANCH" = "fix/full-system-release-alignment"
+          test "$PR_HEAD" = "${{ inputs.expected_commit }}"
+          echo "GOVERNED_SOURCE_APPROVED commit=$PR_HEAD"
 
   audit:
     needs: source-deploy-guard
     runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout exact governed commit
         uses: actions/checkout@v4
@@ -170,6 +132,18 @@ jobs:
           ref: ${{ github.sha }}
       - name: Set up Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Detect governed image restore mode
+        id: restore_mode
+        shell: bash
+        run: |
+          RESTORE_IMAGE="$(awk -F'"' '/^[[:space:]]*image[[:space:]]*=/ {print $2; exit}' fly.toml)"
+          if [ -n "$RESTORE_IMAGE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "image=$RESTORE_IMAGE" >> "$GITHUB_OUTPUT"
+            echo "GOVERNED_IMAGE_RESTORE=$RESTORE_IMAGE"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Deploy exact GitHub commit with Fly remote builder
         run: |
           test "${{ github.ref_name }}" = "fix/full-system-release-alignment"
@@ -178,6 +152,7 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Verify critical deployed source and state exact mismatch reason
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -225,7 +200,13 @@ jobs:
           echo "CRITICAL_DEPLOYED_SOURCE_OK commit=${{ inputs.expected_commit }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Confirm governed image restore
+        if: steps.restore_mode.outputs.enabled == 'true'
+        run: |
+          echo "RESTORED_KNOWN_GOOD_IMAGE=${{ steps.restore_mode.outputs.image }}"
+          echo "Source fingerprint comparison is intentionally skipped because this run restores a previously proven image rather than rebuilding current source."
       - name: Restore Packlink callback secret setting
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           CALLBACK_SECRET="$(flyctl ssh console --app bt38-prod --command "sh -lc 'cd /app && .venv/bin/python -c \"import hashlib,os; key=str(os.environ.get(\\\"PACKLINK_API_KEY\\\") or \\\"\\\").strip(); assert key, \\\"PACKLINK_API_KEY missing\\\"; print(hashlib.sha256((\\\"bt38-packlink-callback:\\\"+key).encode()).hexdigest())\"'" | tail -n 1)"
@@ -234,36 +215,42 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Restore Packlink callback registration
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'from app import app; from services.fbm_packlink_adapter import PacklinkAdapter; from governed_packlink_callback_routes import _register_callback; ctx=app.test_request_context(base_url=\\\"https://bt38-prod.fly.dev\\\"); ctx.push(); callback_url=_register_callback(PacklinkAdapter()); print(\\\"PACKLINK_CALLBACK_REGISTERED=\\\" + callback_url)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Recover recent known Packlink purchases once
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from datetime import datetime,timedelta; from app import app; from services.fbm_packlink_callback import recover_packlink_shipments_for_day; ctx=app.app_context(); ctx.push(); today=datetime.utcnow().date(); results=[recover_packlink_shipments_for_day(today-timedelta(days=offset)) for offset in range(7)]; print(json.dumps({\\\"success\\\": True, \\\"days_checked\\\": 7, \\\"results\\\": results}, default=str))'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Reconcile eBay webhook and recover missed changes once
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_ebay_post_deploy_alignment import align_ebay_notifications_and_recover_missed_changes; ctx=app.app_context(); ctx.push(); result=align_ebay_notifications_and_recover_missed_changes(store_id=23,max_days=7); print(json.dumps(result, default=str)); registration=result.get(\\\"registration\\\") or {}; order=result.get(\\\"order_catchup\\\") or {}; tracking=result.get(\\\"tracking_catchup\\\") or {}; listing=result.get(\\\"listing_catchup\\\") or {}; registration_error=str(registration.get(\\\"error\\\") or \\\"\\\"); registration_ok=bool(registration.get(\\\"success\\\") or registration.get(\\\"ok\\\")); oauth_reauth_pending=(not registration_ok and \\\"HTTP 403\\\" in registration_error and \\\"Insufficient permissions\\\" in registration_error); recovery_ok=bool(order.get(\\\"success\\\")) and bool(tracking.get(\\\"success\\\")) and bool(listing.get(\\\"success\\\", True)); print(\\\"EBAY_NOTIFICATION_REAUTH_PENDING\\\" if oauth_reauth_pending else (\\\"EBAY_NOTIFICATION_REGISTRATION_OK\\\" if registration_ok else \\\"EBAY_NOTIFICATION_REGISTRATION_FAILED\\\")); ok=recovery_ok and (registration_ok or oauth_reauth_pending); raise SystemExit(0 if ok else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Record Amazon listing subscription reconciliation
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_subscription_visibility import record_governed_amazon_listing_subscription_reconciliation; ctx=app.app_context(); ctx.push(); result=record_governed_amazon_listing_subscription_reconciliation(store_id=22, source=\\\"post_deploy_subscription_audit\\\"); print(json.dumps(result, default=str))'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Reconcile Amazon MCF status subscription
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_mcf_notification_alignment import align_governed_amazon_mcf_notification_to_existing_sqs; ctx=app.app_context(); ctx.push(); result=align_governed_amazon_mcf_notification_to_existing_sqs(store_id=22); print(json.dumps(result, default=str)); raise SystemExit(0 if result.get(\\\"success\\\") else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Recover missing Amazon listings once after deployment
+        if: steps.restore_mode.outputs.enabled != 'true'
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_amazon_listing_fulfillment_refresh import run_governed_amazon_listing_fulfillment_refresh; ctx=app.app_context(); ctx.push(); result=run_governed_amazon_listing_fulfillment_refresh(store_id=22); print(json.dumps(result, default=str)); rows=result.get(\\\"results\\\") or []; ok=bool(result.get(\\\"success\\\")) and bool(rows) and all(bool(row.get(\\\"success\\\")) for row in rows); raise SystemExit(0 if ok else 1)'\""
