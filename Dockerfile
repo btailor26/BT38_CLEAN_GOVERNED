@@ -27,6 +27,11 @@ COPY pyproject.toml uv.lock ./
 # Install ALL dependencies from uv.lock (deterministic, including prophet wheel)
 RUN uv sync --frozen --no-dev
 
+# Force one fresh governed source layer after the stale remote-builder cache
+# observed during the 2026-08-29 recovery. Dependencies remain cached.
+ARG BT38_SOURCE_RECOVERY=20260829-1
+RUN printf '%s\n' "$BT38_SOURCE_RECOVERY" > /tmp/bt38-source-recovery
+
 # Copy application code
 COPY . .
 
