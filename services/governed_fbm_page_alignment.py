@@ -186,7 +186,7 @@ def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
     control = (
         '<div class="card-footer d-flex justify-content-between align-items-center flex-wrap gap-2">'
         f'<span class="small text-muted">Showing the latest {visible_limit} FBM orders. Older orders load only when expanded.</span>'
-        f'<div class="d-flex gap-2'>{"".join(actions)}</div>'
+        f'<div class="d-flex gap-2">{"".join(actions)}</div>'
         '</div>'
     )
     marker = "</tbody></table></div>\n</div>"
