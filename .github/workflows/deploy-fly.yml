@@ -215,6 +215,7 @@ jobs:
             services/fbm_marketplace_confirmation.py \
             services/fbm_post_purchase.py \
             services/fbm_shipping_state.py \
+            services/governed_fbm_page_alignment.py \
             services/governed_amazon_tracking_readback.py \
             services/governed_exact_ebay_order_hydration.py \
             services/governed_ebay_oauth_scopes.py \
@@ -246,6 +247,7 @@ jobs:
             tests/test_ui_production_alignment_contract.py \
             tests/test_amazon_subscription_visibility_contract.py \
             tests/test_amazon_mcf_notification_alignment_contract.py \
+            tests/test_fbm_page_bounded_alignment_contract.py \
             tests/test_fbm_packlink_contract.py \
             tests/test_fbm_packlink_import_alignment_contract.py \
             tests/test_fbm_amazon_tracking_contract.py \
@@ -274,7 +276,32 @@ jobs:
             --app bt38-prod \
             --config fly.toml \
             --remote-only \
+            --no-cache \
             --strategy rolling
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Verify deployed source matches exact GitHub checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          HASH_CMD="find . -type f \\( -name '*.py' -o -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.toml' -o -name '*.svg' -o -name '*.json' -o -name 'Dockerfile' -o -name 'uv.lock' \\) -not -path './.git/*' -not -path './.github/*' -not -path './tests/*' -not -path './_retired_tests/*' -not -path './docs/*' -not -path './.venv/*' -not -path './static/uploads/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \\$1}'"
+          EXPECTED_SOURCE_HASH="$(bash -lc "$HASH_CMD")"
+          REMOTE_SOURCE_HASH="$(flyctl ssh console \
+            --app bt38-prod \
+            --command "sh -lc 'cd /app && $HASH_CMD'" \
+            | tail -n 1 \
+            | tr -d '\r' \
+            | awk '{print $1}')"
+          test -n "$EXPECTED_SOURCE_HASH"
+          test -n "$REMOTE_SOURCE_HASH"
+          if [ "$REMOTE_SOURCE_HASH" != "$EXPECTED_SOURCE_HASH" ]; then
+            echo "BLOCKED: deployed Fly source does not match the exact audited GitHub checkout."
+            echo "github_source_hash=$EXPECTED_SOURCE_HASH"
+            echo "fly_source_hash=$REMOTE_SOURCE_HASH"
+            exit 1
+          fi
+          echo "DEPLOYED_SOURCE_FINGERPRINT_OK hash=$EXPECTED_SOURCE_HASH commit=${{ inputs.expected_commit }}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
