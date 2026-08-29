@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BT38 — Marketplace Management System</title>
+  <title>BT38 Inventory — Marketplace Management System</title>
+  <meta name="description" content="BT38 Inventory is a multi-channel marketplace management system for Amazon and eBay inventory, orders, fulfilment, shipping and ecommerce marketplace connections." />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -12,12 +13,17 @@
 <body class="bg-white text-slate-950">
   <header class="border-b border-slate-200 bg-white/95 sticky top-0 z-10">
     <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-      <div>
-        <div class="text-2xl font-black tracking-tight">BT38</div>
-        <div class="text-xs text-slate-500">Marketplace Management System</div>
-      </div>
+      <a href="/" class="flex items-center" aria-label="BT38 Inventory home">
+        <img
+          src="{{ url_for('static', filename='img/marketplaces/bt38-inventory-amazon-developer.svg') }}"
+          alt="BT38 Inventory"
+          class="h-12 w-auto rounded-lg"
+          height="48"
+        >
+      </a>
       <nav class="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600">
         <a href="#features" class="hover:text-black">Features</a>
+        <a href="#connectors" class="hover:text-black">Connections</a>
         <a href="#amazon" class="hover:text-black">Amazon</a>
         <a href="#control" class="hover:text-black">How it works</a>
         <a href="#early-access" class="hover:text-black">Early Access</a>
@@ -33,19 +39,24 @@
   <main>
     <section class="px-6 py-20 md:py-28">
       <div class="max-w-6xl mx-auto text-center">
-        <div class="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-600">Amazon • eBay • Inventory • Orders • Fulfilment • Shipping</div>
-        <h1 class="mt-6 text-5xl md:text-7xl font-black tracking-tight leading-tight">Manage your marketplace business from one place.</h1>
-        <p class="mt-6 text-lg md:text-xl text-slate-600 max-w-4xl mx-auto leading-relaxed">BT38 is a multi-channel marketplace management system designed to help online sellers manage inventory, orders, fulfilment and day-to-day marketplace operations from one central platform.</p>
-        <p class="mt-4 text-base md:text-lg text-slate-500 max-w-3xl mx-auto">Connect supported sales channels, maintain central warehouse stock, manage marketplace orders and fulfilment, and keep operational activity visible across your business.</p>
+        <img
+          src="{{ url_for('static', filename='img/marketplaces/bt38-inventory-amazon-developer.svg') }}"
+          alt="BT38 Inventory"
+          class="mx-auto w-full max-w-xl rounded-2xl"
+        >
+        <div class="mt-8 inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-600">Amazon • eBay • Inventory • Orders • Fulfilment • Shipping</div>
+        <h1 class="mt-6 text-5xl md:text-7xl font-black tracking-tight leading-tight">Manage your marketplace inventory from one place.</h1>
+        <p class="mt-6 text-lg md:text-xl text-slate-600 max-w-4xl mx-auto leading-relaxed">BT38 Inventory is a multi-channel marketplace management system designed to help online sellers manage inventory, orders, fulfilment and day-to-day marketplace operations from one central platform.</p>
+        <p class="mt-4 text-base md:text-lg text-slate-500 max-w-3xl mx-auto">Connect supported ecommerce marketplaces, maintain central warehouse stock, manage marketplace orders and fulfilment, and keep operational activity visible across your business.</p>
         <div class="mt-9 flex flex-col sm:flex-row gap-3 justify-center">
-          <a href="#features" class="px-6 py-3 rounded-xl bg-black text-white font-semibold">Explore BT38</a>
+          <a href="#features" class="px-6 py-3 rounded-xl bg-black text-white font-semibold">Explore BT38 Inventory</a>
           <a href="/apply" class="px-6 py-3 rounded-xl border border-slate-300 font-semibold">Apply to Try</a>
         </div>
         <div class="mt-14 grid grid-cols-2 md:grid-cols-4 gap-4 text-left">
           <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Inventory</div><div class="mt-1 font-bold text-lg">Central stock control</div></div>
           <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Orders</div><div class="mt-1 font-bold text-lg">Operational visibility</div></div>
           <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Fulfilment</div><div class="mt-1 font-bold text-lg">FBA, FBM & MCF</div></div>
-          <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Marketplaces</div><div class="mt-1 font-bold text-lg">Connected management</div></div>
+          <div class="rounded-2xl border border-slate-200 p-5"><div class="text-sm text-slate-500">Marketplaces</div><div class="mt-1 font-bold text-lg">Amazon & eBay connections</div></div>
         </div>
       </div>
     </section>
@@ -55,7 +66,7 @@
         <div class="max-w-3xl">
           <p class="text-sm font-bold uppercase tracking-wider text-slate-500">Core management areas</p>
           <h2 class="mt-3 text-4xl font-black">Built around the work sellers do every day.</h2>
-          <p class="mt-4 text-slate-600 text-lg">BT38 brings marketplace operations together so stock, orders, fulfilment, shipping and team activity can be managed from one environment.</p>
+          <p class="mt-4 text-slate-600 text-lg">BT38 Inventory brings marketplace operations together so stock, orders, fulfilment, shipping and team activity can be managed from one environment.</p>
         </div>
         <div class="mt-10 grid md:grid-cols-2 lg:grid-cols-3 gap-5">
           <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Central Inventory & Warehouse Management</h3><p class="mt-2 text-slate-600">Manage stock from a central warehouse view and maintain controlled quantities across connected marketplace listings.</p></div>
@@ -63,22 +74,45 @@
           <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Amazon FBA, FBM & MCF</h3><p class="mt-2 text-slate-600">Support Amazon-fulfilled inventory, seller-fulfilled orders and Multi-Channel Fulfilment workflows from the same management environment.</p></div>
           <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Multi-Channel Stock Control</h3><p class="mt-2 text-slate-600">Link related marketplace listings to warehouse products and maintain a controlled stock relationship across supported channels.</p></div>
           <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Shipping & Dispatch Management</h3><p class="mt-2 text-slate-600">Manage seller-fulfilled shipping workflows, carrier services, tracking and marketplace dispatch confirmation.</p></div>
-          <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Team Access & Permissions</h3><p class="mt-2 text-slate-600">Give users controlled access to different management areas and operational actions inside BT38.</p></div>
+          <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="text-xl font-bold">Team Access & Permissions</h3><p class="mt-2 text-slate-600">Give users controlled access to different management areas and operational actions inside BT38 Inventory.</p></div>
         </div>
       </div>
     </section>
 
-    <section id="amazon" class="px-6 py-20">
+    <section id="connectors" class="px-6 py-20">
+      <div class="max-w-7xl mx-auto grid lg:grid-cols-2 gap-12 items-center">
+        <div>
+          <p class="text-sm font-bold uppercase tracking-wider text-slate-500">Ecommerce Solution Connectors</p>
+          <h2 class="mt-3 text-4xl font-black">Connect supported ecommerce marketplaces to BT38 Inventory.</h2>
+          <p class="mt-5 text-lg text-slate-600 leading-relaxed">BT38 Inventory connects supported seller accounts so marketplace inventory and order activity can be managed from one central operational workspace.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">Current supported marketplace connections include Amazon and eBay. Connected listings can be related to central warehouse stock and marketplace orders can be brought into the BT38 Inventory workflow for fulfilment and dispatch management.</p>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-5">
+          <div class="rounded-3xl border border-slate-200 bg-white p-8">
+            <img src="{{ url_for('static', filename='img/marketplaces/amazon.png') }}" alt="Amazon" class="h-12 w-auto object-contain">
+            <h3 class="mt-5 text-2xl font-black">Amazon connection</h3>
+            <p class="mt-3 text-slate-600">Inventory visibility, marketplace orders, FBM workflows, FBA visibility and Multi-Channel Fulfilment support.</p>
+          </div>
+          <div class="rounded-3xl border border-slate-200 bg-white p-8">
+            <img src="{{ url_for('static', filename='img/marketplaces/ebay.png') }}" alt="eBay" class="h-12 w-auto object-contain">
+            <h3 class="mt-5 text-2xl font-black">eBay connection</h3>
+            <p class="mt-3 text-slate-600">Connected listing stock, marketplace order visibility and seller-fulfilled dispatch workflows.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="amazon" class="bg-slate-50 px-6 py-20">
       <div class="max-w-7xl mx-auto grid lg:grid-cols-2 gap-12 items-center">
         <div>
           <p class="text-sm font-bold uppercase tracking-wider text-slate-500">For Amazon sellers</p>
           <h2 class="mt-3 text-4xl font-black">Built to support Amazon seller operations.</h2>
-          <p class="mt-5 text-lg text-slate-600 leading-relaxed">Connect your Amazon selling account to BT38 and bring Amazon operations into your central marketplace management workflow.</p>
-          <p class="mt-4 text-slate-600 leading-relaxed">BT38 helps sellers manage Amazon inventory, marketplace orders, FBM fulfilment and dispatch workflows, FBA inventory visibility and Amazon Multi-Channel Fulfilment alongside other supported sales channels.</p>
-          <p class="mt-4 text-slate-600 leading-relaxed">Amazon FBA inventory remains Amazon-controlled, while BT38 uses your warehouse and product relationships to support controlled multi-channel stock management.</p>
+          <p class="mt-5 text-lg text-slate-600 leading-relaxed">Connect your Amazon selling account to BT38 Inventory and bring Amazon operations into your central marketplace management workflow.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">BT38 Inventory helps sellers manage Amazon inventory, marketplace orders, FBM fulfilment and dispatch workflows, FBA inventory visibility and Amazon Multi-Channel Fulfilment alongside other supported sales channels.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">Amazon FBA inventory remains Amazon-controlled, while BT38 Inventory uses your warehouse and product relationships to support controlled multi-channel stock management.</p>
         </div>
         <div class="rounded-3xl bg-slate-950 text-white p-8 md:p-10">
-          <div class="text-sm text-slate-400">Amazon operations inside BT38</div>
+          <div class="text-sm text-slate-400">Amazon operations inside BT38 Inventory</div>
           <div class="mt-5 grid grid-cols-2 gap-4">
             <div class="rounded-2xl bg-white/10 p-5"><div class="text-xl font-black">FBA</div><div class="mt-1 text-sm text-slate-300">Inventory visibility</div></div>
             <div class="rounded-2xl bg-white/10 p-5"><div class="text-xl font-black">FBM</div><div class="mt-1 text-sm text-slate-300">Dispatch workflows</div></div>
@@ -89,35 +123,35 @@
       </div>
     </section>
 
-    <section id="control" class="bg-slate-50 px-6 py-20">
+    <section id="control" class="px-6 py-20">
       <div class="max-w-7xl mx-auto grid lg:grid-cols-2 gap-12">
         <div>
           <p class="text-sm font-bold uppercase tracking-wider text-slate-500">One system. Multiple marketplace operations.</p>
           <h2 class="mt-3 text-4xl font-black">A central management layer for multi-channel selling.</h2>
           <p class="mt-5 text-lg text-slate-600 leading-relaxed">Running a multi-channel business means managing stock, orders, fulfilment, shipping and marketplace connections across different platforms.</p>
-          <p class="mt-4 text-slate-600 leading-relaxed">BT38 brings those operational workflows together so sellers have a clearer view of what is happening and what requires attention.</p>
-          <p class="mt-4 text-slate-600 leading-relaxed">Instead of treating each marketplace as an isolated operation, BT38 provides a central management layer around your warehouse stock, connected stores and fulfilment workflows.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">BT38 Inventory brings those operational workflows together so sellers have a clearer view of what is happening and what requires attention.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">Instead of treating each marketplace as an isolated operation, BT38 Inventory provides a central management layer around your warehouse stock, connected stores and fulfilment workflows.</p>
         </div>
         <div class="bg-white border border-slate-200 rounded-3xl p-8">
           <p class="text-sm font-bold uppercase tracking-wider text-slate-500">Controlled marketplace management</p>
           <h3 class="mt-3 text-3xl font-black">Built around controlled operational workflows.</h3>
           <p class="mt-5 text-slate-600 leading-relaxed">Marketplace connections, stock movements and operational actions are handled through defined management workflows, with safeguards around synchronisation and marketplace updates.</p>
-          <p class="mt-4 text-slate-600 leading-relaxed">Sellers remain in control of their marketplace accounts while BT38 provides the management tools needed to coordinate day-to-day operations.</p>
+          <p class="mt-4 text-slate-600 leading-relaxed">Sellers remain in control of their marketplace accounts while BT38 Inventory provides the management tools needed to coordinate day-to-day operations.</p>
         </div>
       </div>
     </section>
 
-    <section id="early-access" class="px-6 py-20">
+    <section id="early-access" class="bg-slate-50 px-6 py-20">
       <div class="max-w-5xl mx-auto text-center">
         <p class="text-sm font-bold uppercase tracking-wider text-slate-500">Early Access</p>
         <h2 class="mt-3 text-4xl font-black">Free to approved users.</h2>
-        <p class="mt-4 text-slate-600 max-w-2xl mx-auto">BT38 is currently available free of charge during early access. We are gradually onboarding marketplace sellers while we continue developing and refining the management system.</p>
+        <p class="mt-4 text-slate-600 max-w-2xl mx-auto">BT38 Inventory is currently available free of charge during early access. We are gradually onboarding marketplace sellers while we continue developing and refining the management system.</p>
         <div class="mt-10 max-w-xl mx-auto bg-white border border-slate-200 rounded-3xl p-8 text-left shadow-sm">
-          <div class="text-sm font-bold text-slate-500">BT38 Marketplace Management</div>
+          <div class="text-sm font-bold text-slate-500">BT38 Inventory</div>
           <div class="mt-3 text-5xl font-black">Free</div>
-          <p class="mt-4 text-slate-600">Approved early-access users can use BT38 without a subscription fee.</p>
+          <p class="mt-4 text-slate-600">Approved early-access users can use BT38 Inventory without a subscription fee.</p>
           <ul class="mt-7 space-y-3 text-slate-700">
-            <li>✓ Supported marketplace connections</li>
+            <li>✓ Amazon and eBay marketplace connections</li>
             <li>✓ Central inventory and warehouse management</li>
             <li>✓ Marketplace order management</li>
             <li>✓ Amazon fulfilment workflows</li>
@@ -126,8 +160,8 @@
             <li>✓ Operational monitoring</li>
             <li>✓ Multi-user access</li>
           </ul>
-          <a href="/apply" class="mt-8 block w-full text-center bg-black text-white font-semibold rounded-xl px-5 py-3">Apply to Try BT38</a>
-          <p class="mt-4 text-center text-sm text-slate-500">Applications are reviewed before a BT38 account is created.</p>
+          <a href="/apply" class="mt-8 block w-full text-center bg-black text-white font-semibold rounded-xl px-5 py-3">Apply to Try BT38 Inventory</a>
+          <p class="mt-4 text-center text-sm text-slate-500">Applications are reviewed before a BT38 Inventory account is created.</p>
         </div>
       </div>
     </section>
@@ -136,8 +170,8 @@
       <div class="max-w-md mx-auto">
         <div class="text-center">
           <p class="text-sm font-bold uppercase tracking-wider text-slate-400">Approved users</p>
-          <h2 class="mt-3 text-3xl font-black">Sign in to BT38</h2>
-          <p class="mt-3 text-slate-300">Use the username or email address registered on your approved BT38 account.</p>
+          <h2 class="mt-3 text-3xl font-black">Sign in to BT38 Inventory</h2>
+          <p class="mt-3 text-slate-300">Use the username or email address registered on your approved BT38 Inventory account.</p>
         </div>
         <form method="POST" class="mt-8 bg-white text-slate-950 rounded-2xl p-6">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -148,23 +182,23 @@
           <label for="password" class="mt-5 block text-sm font-semibold">Password</label>
           <input id="password" name="password" type="password" required class="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="Enter password">
           <button type="submit" class="mt-6 w-full rounded-xl bg-black px-5 py-3 font-semibold text-white">Sign in</button>
-          <p class="mt-5 text-center text-sm text-slate-500">Not approved yet? <a href="/apply" class="font-semibold text-slate-900 underline">Apply to try BT38</a></p>
+          <p class="mt-5 text-center text-sm text-slate-500">Not approved yet? <a href="/apply" class="font-semibold text-slate-900 underline">Apply to try BT38 Inventory</a></p>
         </form>
       </div>
     </section>
 
     <section id="support" class="bg-slate-50 px-6 py-16">
       <div class="max-w-7xl mx-auto grid md:grid-cols-3 gap-6">
-        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Support</h3><p class="mt-2 text-sm text-slate-600">Help and support information for sellers using BT38.</p></div>
-        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Privacy</h3><p class="mt-2 text-sm text-slate-600">Public information explaining how BT38 handles seller and marketplace data.</p></div>
-        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Terms</h3><p class="mt-2 text-sm text-slate-600">Clear terms covering use of the BT38 marketplace management system.</p></div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Support</h3><p class="mt-2 text-sm text-slate-600">Help and support information for sellers using BT38 Inventory.</p></div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Privacy</h3><p class="mt-2 text-sm text-slate-600">Public information explaining how BT38 Inventory handles seller and marketplace data.</p></div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6"><h3 class="font-bold text-lg">Terms</h3><p class="mt-2 text-sm text-slate-600">Clear terms covering use of the BT38 Inventory marketplace management system.</p></div>
       </div>
     </section>
   </main>
 
   <footer class="border-t border-slate-200 px-6 py-8">
     <div class="max-w-7xl mx-auto flex flex-col md:flex-row gap-4 md:items-center md:justify-between text-sm text-slate-500">
-      <div>© 2026 BT38. All rights reserved.</div>
+      <div>© 2026 BT38 Inventory. All rights reserved.</div>
       <div class="flex gap-5"><a href="#support">Privacy</a><a href="#support">Terms</a><a href="#support">Support</a></div>
     </div>
   </footer>
