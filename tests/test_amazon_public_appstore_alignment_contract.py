@@ -9,7 +9,7 @@ SUPPORT = ROOT / "templates" / "support.html"
 APPLY = ROOT / "templates" / "early_access_apply.html"
 RECEIVED = ROOT / "templates" / "early_access_received.html"
 PUBLIC_ROUTES = ROOT / "services" / "public_early_access.py"
-AMAZON_LOGO = ROOT / "static" / "img" / "marketplaces" / "bt38-inventory-amazon-developer.png"
+CANONICAL_LOGO = ROOT / "static" / "img" / "marketplaces" / "bt38-inventory-amazon-developer.svg"
 
 
 def _text(path: Path) -> str:
@@ -39,11 +39,17 @@ def test_public_policy_and_support_destinations_are_real_routes():
         assert f'@app.get("{path}")' in routes, f"public route {path} is not registered"
 
 
-def test_exact_amazon_appstore_logo_is_github_source_and_used_by_landing():
-    assert AMAZON_LOGO.is_file(), (
-        "Amazon Appstore alignment blocked: exact submitted PNG is not present in the governed GitHub source at "
-        "static/img/marketplaces/bt38-inventory-amazon-developer.png"
-    )
+def test_canonical_amazon_appstore_brand_is_github_source_and_used_by_landing():
+    assert CANONICAL_LOGO.is_file(), "canonical BT38 Inventory Appstore logo missing from governed GitHub source"
+    logo = _text(CANONICAL_LOGO)
+    assert 'viewBox="0 0 1000 1000"' in logo, "canonical Appstore logo must remain square"
+    assert "BT38" in logo and "Inventory" in logo
     landing = _text(LANDING)
-    assert "img/marketplaces/bt38-inventory-amazon-developer.png" in landing
-    assert "bt38-inventory-amazon-developer.svg" not in landing
+    assert "img/marketplaces/bt38-inventory-amazon-developer.svg" in landing
+
+
+def test_public_claims_are_limited_to_current_supported_connections():
+    text = _text(LANDING)
+    assert "Current supported marketplace connections include Amazon and eBay" in text
+    for future_channel in ("TikTok Shop connection", "Shopify connection", "Etsy connection", "Facebook connection"):
+        assert future_channel not in text
