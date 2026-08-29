@@ -7,6 +7,7 @@ NOTIFICATION_ALIGNMENT = (
     ROOT / "services" / "governed_notification_read_alignment.py"
 ).read_text(encoding="utf-8")
 FBM = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
+FBM_JOURNEY_JS = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
 
 
 def test_journey_numbers_are_removed_at_render_without_changing_state_authority():
@@ -76,6 +77,19 @@ def test_recovered_tracking_is_inserted_into_shipment_column_not_order_column():
     assert 'data-no-row-click="1"' in ALIGNMENT
     # Preserve the structural fallback even if the template marker changes.
     assert "body = tracking_html + body" in ALIGNMENT
+
+
+def test_marketplace_tracking_clicks_stay_inside_bt38_journey_modal_without_extra_job():
+    assert 'a[href*="ebay.co.uk/mesh/ord/details"]' in FBM_JOURNEY_JS
+    assert 'a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]' in FBM_JOURNEY_JS
+    assert "link.removeAttribute('href')" in FBM_JOURNEY_JS
+    assert "link.removeAttribute('target')" in FBM_JOURNEY_JS
+    assert "link.dataset.journeySource = 'marketplace'" in FBM_JOURNEY_JS
+    assert "marketplaceJourneyHtml(button)" in FBM_JOURNEY_JS
+    assert "body.innerHTML = marketplaceJourneyHtml(button)" in FBM_JOURNEY_JS
+    assert "if (button.dataset.journeySource === 'marketplace' || !button.dataset.shipmentId)" in FBM_JOURNEY_JS
+    marketplace_branch = FBM_JOURNEY_JS.split("if (button.dataset.journeySource === 'marketplace' || !button.dataset.shipmentId)", 1)[1].split("body.innerHTML = '<div class=", 1)[0]
+    assert "fetch(" not in marketplace_branch
 
 
 def test_alignment_is_display_only_and_does_not_touch_mcf_execution():
