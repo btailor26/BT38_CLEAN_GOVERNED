@@ -13,10 +13,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
 from extensions import db
-from models import Store
+from models import MarketplaceOrder, Store
 from services.governed_ebay_notification_registration import (
     ensure_ebay_order_notification_registration,
 )
@@ -217,7 +217,7 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
                 ship_to_name=_text(ship_to.get("fullName")),
                 ship_to_address=", ".join(part for part in address_parts if part),
                 ship_to_city=_text(address.get("city")),
-                ship_to_postcode=_text(address.get("postalCode")),
+                ship_to_postcode=_text(address.get("postalCode")).upper(),
                 ship_to_country=_text(address.get("countryCode")).upper()[:2],
                 ship_to_email=_text(ship_to.get("email")),
                 ship_to_phone=(
@@ -256,6 +256,86 @@ def _catch_up_ebay_orders(store: Store, *, since: datetime) -> dict[str, Any]:
         "created": created,
         "skipped": skipped,
         "results": results[:100],
+        "polling_started": False,
+        "scheduler_started": False,
+    }
+
+
+def _recover_recent_missing_tracking(
+    store: Store,
+    *,
+    max_days: int,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read exact eBay fulfilments for recent BT38 orders still missing tracking.
+
+    This deliberately does not use the latest webhook timestamp. A newer order
+    confirmation must never hide an older recent order whose shipment tracking
+    was missed. The scan is bounded by age and count, selects existing FBM rows
+    only, and reuses the exact read-only hydration authority.
+    """
+    from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
+
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(max_days)))
+    ).replace(tzinfo=None)
+
+    candidates = (
+        db.session.query(MarketplaceOrder.marketplace_order_id)
+        .filter(
+            MarketplaceOrder.store_id == store.id,
+            MarketplaceOrder.fulfillment_type == "FBM",
+            MarketplaceOrder.marketplace_order_id.isnot(None),
+            or_(
+                MarketplaceOrder.tracking_number.is_(None),
+                MarketplaceOrder.tracking_number == "",
+            ),
+            or_(
+                MarketplaceOrder.marketplace_created_at >= cutoff,
+                MarketplaceOrder.created_at >= cutoff,
+            ),
+        )
+        .distinct()
+        .order_by(MarketplaceOrder.marketplace_order_id)
+        .limit(max(1, min(int(limit), 100)))
+        .all()
+    )
+
+    results: list[dict[str, Any]] = []
+    exceptions = 0
+    tracking_updates = 0
+    for (order_id,) in candidates:
+        clean_order_id = _text(order_id)
+        if not clean_order_id:
+            continue
+        try:
+            result = hydrate_exact_ebay_order(
+                store=store,
+                marketplace_order_id=clean_order_id,
+                source="ebay_post_deploy_missing_tracking_recovery",
+            )
+        except Exception as exc:
+            db.session.rollback()
+            exceptions += 1
+            result = {
+                "success": False,
+                "order_id": clean_order_id,
+                "reason": "exact_tracking_recovery_exception",
+                "error": str(exc),
+                "marketplace_write_started": False,
+            }
+        tracking_updates += int(result.get("tracking_updates") or 0)
+        results.append(result)
+
+    return {
+        "success": exceptions == 0,
+        "bounded": True,
+        "max_days": max(1, int(max_days)),
+        "candidate_orders": len(candidates),
+        "tracking_updates": tracking_updates,
+        "exceptions": exceptions,
+        "results": results,
+        "marketplace_write_started": False,
         "polling_started": False,
         "scheduler_started": False,
     }
@@ -337,6 +417,23 @@ def align_ebay_notifications_and_recover_missed_changes(
         }
 
     try:
+        tracking_recovery = _recover_recent_missing_tracking(
+            store,
+            max_days=max_days,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        tracking_recovery = {
+            "success": False,
+            "bounded": True,
+            "reason": "ebay_missing_tracking_recovery_failed",
+            "error": str(exc),
+            "marketplace_write_started": False,
+            "polling_started": False,
+            "scheduler_started": False,
+        }
+
+    try:
         from services.governed_ebay_missed_listing_recovery import recover_missed_ebay_listings
         listing_recovery = recover_missed_ebay_listings(store_id=store.id)
     except Exception as exc:
@@ -356,6 +453,7 @@ def align_ebay_notifications_and_recover_missed_changes(
         "registration": registration,
         "shipping_notification": shipping_notification,
         "order_catchup": orders,
+        "tracking_catchup": tracking_recovery,
         "listing_catchup": listing_recovery,
         "event_driven_primary": True,
         "recovery_ran_even_if_registration_unhealthy": True,
