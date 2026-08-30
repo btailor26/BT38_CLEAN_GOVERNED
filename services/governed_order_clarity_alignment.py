@@ -35,8 +35,12 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.governed_fbm_lifecycle_alignment import (
         install_governed_fbm_lifecycle_alignment,
     )
+    from services.governed_fbm_fulfillment_guard import (
+        install_governed_fbm_fulfillment_guard,
+    )
 
     install_governed_fbm_lifecycle_alignment(app)
+    install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
 
     @app.after_request
