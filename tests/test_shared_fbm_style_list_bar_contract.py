@@ -41,9 +41,9 @@ def test_mcf_reuses_loaded_rows_and_existing_page_size_control():
     assert "mcf-search" in PAGE
 
 
-def test_shared_bar_does_not_add_marketplace_or_provider_reads():
+def test_shared_bar_does_not_add_network_or_background_reads():
     block = PAGE.split('// Shared FBM-style bounded list bar', 1)[1]
     assert "fetch(" not in block
     assert "EventSource" not in block
     assert "setInterval" not in block
-    assert "marketplace" not in block.lower().replace("marketplace,", "") or "provider reads" in block
+    assert "setTimeout" not in block.replace("window.setTimeout(apply, 0)", "")
