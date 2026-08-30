@@ -54,9 +54,13 @@ def test_ebay_shipping_stays_inside_fbm_and_does_not_claim_native_label_capabili
     assert 'platform.strip().lower() == "ebay"' in ALIGNMENT
     assert '"marketplace_buy_shipping": False' in ALIGNMENT
     assert '"recommended": "Packlink / connected carrier"' in ALIGNMENT
+    assert "def _workspace_provider_options" in ALIGNMENT
+    assert '"available": True' in ALIGNMENT
+    assert "Open this exact order in eBay Seller Hub" in ALIGNMENT
+    assert "BT38 does not purchase native eBay labels through an API" in ALIGNMENT
     assert "def _neutralise_legacy_ebay_handoff" in ALIGNMENT
-    assert "eBay postage unavailable" in ALIGNMENT
-    assert "Native eBay label purchase is not enabled" in ALIGNMENT
+    assert "eBay postage unavailable" not in ALIGNMENT
+    assert "Native eBay label purchase is not enabled" not in ALIGNMENT
     assert "window.location.assign" not in ALIGNMENT
 
 
