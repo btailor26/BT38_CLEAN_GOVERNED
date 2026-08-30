@@ -32,4 +32,8 @@ def test_shipping_options_open_is_selected_order_persisted_read_only():
     assert "profiles = _profile_map(list(by_id.values()))" in ALIGNMENT
     assert "get_or_refresh_amazon_profile" not in ALIGNMENT
     assert "_amazon_profile(" not in ALIGNMENT
-    assert "Live provider reads remain deferred until an explicit shipping action." in ALIGNMENT
+    handler = ALIGNMENT.split("def bounded_shipping_options", 1)[1]
+    assert "parcel_from_db(" not in handler
+    assert "order_lines(" not in handler
+    assert '"parcel": _selected_row_parcel(row)' in handler
+    assert "Complete parcel/provider reads remain deferred until an explicit shipping action." in ALIGNMENT
