@@ -151,7 +151,7 @@
         });
 
         statuses.forEach(button => {
-            if (button.textContent !== 'Check label') button.textContent = 'Check label';
+            if (button.textContent !== 'Check payment / get label') button.textContent = 'Check payment / get label';
             const box = button.closest('.rate-results');
             if (!box || box.querySelector('.packlink-pay-link')) return;
             const pay = document.createElement('a');
@@ -162,6 +162,154 @@
             pay.textContent = 'Pay in Packlink';
             button.parentNode.insertBefore(pay, button);
         });
+    }
+
+    async function packlinkStatus(shipmentId) {
+        const response = await global.fetch(`/fbm/shipments/${encodeURIComponent(shipmentId)}/packlink/status`, {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {'Accept': 'application/json'}
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.success !== true) {
+            throw new Error(payload.message || `Packlink status check failed (HTTP ${response.status}).`);
+        }
+        return payload;
+    }
+
+    function selectedPacklinkShipments() {
+        const selected = [];
+        const seen = new Set();
+        document.querySelectorAll('.fbm-order-checkbox:checked').forEach(checkbox => {
+            const row = checkbox.closest('.fbm-order-row');
+            const statusButton = row && row.querySelector('.packlink-existing-status[data-shipment-id]');
+            const shipmentId = statusButton && String(statusButton.dataset.shipmentId || '').trim();
+            if (!row || !shipmentId || seen.has(shipmentId)) return;
+            seen.add(shipmentId);
+            selected.push({shipmentId, row});
+        });
+        return selected;
+    }
+
+    function downloadBase64Label(label) {
+        const raw = String(label && label.base64 || '');
+        if (!raw) return false;
+        const binary = global.atob(raw);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const format = String(label.format || 'pdf').toLowerCase();
+        const blobUrl = URL.createObjectURL(new Blob([bytes], {
+            type: format === 'pdf' ? 'application/pdf' : 'application/octet-stream'
+        }));
+        const anchor = document.createElement('a');
+        anchor.href = blobUrl;
+        anchor.download = `BT38-Packlink-label.${format}`;
+        anchor.click();
+        global.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        return true;
+    }
+
+    function ensureRowLabelFallback(row, label) {
+        if (!row || !label || !(label.url || label.base64)) return;
+        const actionCells = row.querySelectorAll('td[data-no-row-click="1"]');
+        const actionCell = actionCells.length ? actionCells[actionCells.length - 1] : row.lastElementChild;
+        if (!actionCell) return;
+        let button = actionCell.querySelector('.packlink-row-label-download');
+        if (!button) {
+            button = document.createElement(label.url ? 'a' : 'button');
+            button.className = 'btn btn-sm btn-outline-primary mt-1 packlink-row-label-download';
+            button.textContent = 'Download label';
+            button.setAttribute('data-no-row-click', '1');
+            actionCell.appendChild(button);
+        }
+        if (label.url) {
+            button.href = label.url;
+            button.target = '_blank';
+            button.rel = 'noopener';
+        } else {
+            button.type = 'button';
+            button.onclick = event => {
+                event.stopPropagation();
+                downloadBase64Label(label);
+            };
+        }
+    }
+
+    function updateBulkPacklinkAction() {
+        const button = document.getElementById('bulkPacklinkLabels');
+        if (!button) return;
+        const count = selectedPacklinkShipments().length;
+        button.disabled = count === 0;
+        button.textContent = count ? `Get ${count} Packlink label${count === 1 ? '' : 's'}` : 'Get Packlink labels';
+    }
+
+    async function checkSelectedPacklinkLabels(button) {
+        const rows = selectedPacklinkShipments();
+        if (!rows.length) return;
+        button.disabled = true;
+        const qzStatus = document.getElementById('qzStatus');
+        const autoPrint = document.getElementById('qzAutoPrint');
+        let ready = 0;
+        let printed = 0;
+        let pending = 0;
+        let fallback = 0;
+        let failed = 0;
+
+        for (const item of rows) {
+            try {
+                const payload = await packlinkStatus(item.shipmentId);
+                const label = payload.label || null;
+                if (!payload.label_ready || !label || !(label.url || label.base64 || label.data)) {
+                    pending += 1;
+                    continue;
+                }
+                ready += 1;
+                if (autoPrint && autoPrint.checked) {
+                    try {
+                        await printLabel(label);
+                        printed += 1;
+                    } catch (_) {
+                        ensureRowLabelFallback(item.row, label);
+                        fallback += 1;
+                    }
+                } else {
+                    ensureRowLabelFallback(item.row, label);
+                    fallback += 1;
+                }
+            } catch (_) {
+                failed += 1;
+            }
+        }
+
+        if (qzStatus) {
+            qzStatus.className = failed ? 'small text-warning mt-2' : 'small text-success mt-2';
+            qzStatus.textContent = `${ready} Packlink label${ready === 1 ? '' : 's'} ready · ${printed} printed · ${fallback} download fallback · ${pending} pending${failed ? ` · ${failed} check failed` : ''}.`;
+        }
+        button.disabled = false;
+        updateBulkPacklinkAction();
+    }
+
+    function installBulkPacklinkAction() {
+        const readyButton = document.getElementById('readyToShipSelected');
+        if (!readyButton || document.getElementById('bulkPacklinkLabels')) return;
+        const button = document.createElement('button');
+        button.id = 'bulkPacklinkLabels';
+        button.type = 'button';
+        button.className = 'btn btn-sm btn-outline-success';
+        button.textContent = 'Get Packlink labels';
+        button.disabled = true;
+        readyButton.parentNode.insertBefore(button, readyButton.nextSibling);
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            checkSelectedPacklinkLabels(button);
+        });
+        document.addEventListener('change', event => {
+            if (event.target && (event.target.matches('.fbm-order-checkbox') || event.target.matches('#selectAllOrders'))) {
+                global.setTimeout(updateBulkPacklinkAction, 0);
+            }
+        });
+        updateBulkPacklinkAction();
     }
 
     function alignAmazonManualMappingControls(root) {
@@ -358,6 +506,7 @@
         const start = () => {
             ensureDownloadFallback(document);
             alignPacklinkPaymentHandoff(document);
+            installBulkPacklinkAction();
             alignAmazonManualMappingControls(document);
             ensureAmazonReportShortcuts();
             document.addEventListener('click', markAmazonBuyShippingClick, true);
@@ -377,5 +526,5 @@
         else start();
     }
 
-    global.BT38FBMQZ = {connect, printers, savedPrinter, savePrinter, resolvePrinter, printLabel};
+    global.BT38FBMQZ = {connect, printers, savedPrinter, savePrinter, resolvePrinter, printLabel, packlinkStatus};
 })(window);
