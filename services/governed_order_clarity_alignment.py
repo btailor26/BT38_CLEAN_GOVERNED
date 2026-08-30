@@ -29,9 +29,9 @@ def install_governed_order_clarity_alignment(app) -> None:
     if getattr(app, "_bt38_order_clarity_alignment_installed", False):
         return
 
-    # Install before governed_fbm_page_alignment binds its view functions. The
-    # lifecycle module patches only existing governed authorities: canonical
-    # marketplace order state remains DB truth and FBMShipment stays supplemental.
+    # Install before the bounded FBM page wrapper binds its view functions.
+    # The lifecycle module patches only the existing governed authorities; this
+    # clarity module itself stays presentation-only and performs no data reads.
     from services.governed_fbm_lifecycle_alignment import (
         install_governed_fbm_lifecycle_alignment,
     )
