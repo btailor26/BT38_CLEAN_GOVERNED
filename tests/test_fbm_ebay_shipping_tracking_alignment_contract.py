@@ -24,7 +24,18 @@ def test_ebay_shipping_button_is_owned_by_native_bt38_rates_before_legacy_handof
     assert "}, true);" in ui
     assert "fbm_ebay_shipping_alignment.js" in bootstrap
     assert "fbm_tracking_journey_legacy.js" in bootstrap
-    assert bootstrap.index("fbm_ebay_shipping_alignment.js") < bootstrap.index("fbm_tracking_journey_legacy.js")
+
+    # Runtime ownership is determined by the bootstrap event chain, not by the
+    # textual position of the two file-name literals. The preserved tracking
+    # journey is loaded only after the native eBay script has loaded (or its
+    # load attempt has completed), so the native capture handler is installed
+    # before the legacy Seller Hub handler can register.
+    assert "nativeScript.onload = loadLegacy" in bootstrap
+    assert "nativeScript.onerror = loadLegacy" in bootstrap
+    assert "document.head.appendChild(nativeScript)" in bootstrap
+    native_append = bootstrap.index("document.head.appendChild(nativeScript)")
+    onload_bind = bootstrap.index("nativeScript.onload = loadLegacy")
+    assert onload_bind < native_append
 
 
 def test_ebay_shipping_backend_exposes_native_bt38_provider_capability():
