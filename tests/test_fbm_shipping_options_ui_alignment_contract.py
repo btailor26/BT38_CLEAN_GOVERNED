@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 SCRIPT = Path("static/js/fbm_tracking_journey.js").read_text(encoding="utf-8")
+QZ_SCRIPT = Path("static/js/fbm_qz_print.js").read_text(encoding="utf-8")
 ALIGNMENT = Path("services/governed_fbm_page_alignment.py").read_text(encoding="utf-8")
 
 
@@ -37,3 +38,14 @@ def test_shipping_options_open_is_selected_order_persisted_read_only():
     assert "order_lines(" not in handler
     assert '"parcel": _selected_row_parcel(row)' in handler
     assert "Complete parcel/provider reads remain deferred until an explicit shipping action." in ALIGNMENT
+    assert "app.view_functions[shipping_options_endpoint] = bounded_shipping_options" in ALIGNMENT
+
+
+def test_fbm_browser_requests_have_hard_timeout_and_clean_recovery():
+    assert "FBM_FETCH_TIMEOUT_MS = 15000" in QZ_SCRIPT
+    assert "new AbortController()" in QZ_SCRIPT
+    assert "controller.abort()" in QZ_SCRIPT
+    assert "parsed.pathname.startsWith('/fbm/')" in QZ_SCRIPT
+    assert "parsed.pathname.startsWith('/governed/fbm/')" in QZ_SCRIPT
+    assert "Shipping request timed out after 15 seconds. Please try again." in QZ_SCRIPT
+    assert "global.fetch = wrappedFetch" in QZ_SCRIPT
