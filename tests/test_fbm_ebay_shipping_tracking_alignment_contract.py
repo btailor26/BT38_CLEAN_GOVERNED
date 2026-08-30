@@ -12,13 +12,19 @@ def test_ebay_shipping_button_has_governed_marketplace_handoff():
     template = TEMPLATE.read_text(encoding="utf-8")
 
     assert 'data-provider="${p.provider}"' in template
+    assert 'data-marketplace-order-id="${esc(o.marketplace_order_id||\'\')}"' in template
     assert "p.provider==='ebay_shipping'?'Check eBay shipping'" in template
+    assert "if(p==='ebay_shipping'){event.stopPropagation();" in template
+    assert "providerButton.dataset.marketplaceOrderId" in template
+    assert "window.location.assign(`https://www.ebay.co.uk/mesh/ord/details?orderid=${encodeURIComponent(orderId)}`)" in template
+    assert "if(p==='ebay_shipping')return;" not in template
+
+    # Keep the existing journey JS alignment/fallback behaviour intact; the
+    # modal itself now owns the primary click action instead of dead-returning.
     assert "installEbayShippingHandoff" in js
     assert '.provider-action[data-provider="ebay_shipping"]' in js
     assert "button.disabled = false" in js
     assert "Open eBay shipping" in js
-    assert "ebay.co.uk/mesh/ord/details?orderid=" in js
-    assert "window.open" in js
 
 
 def test_tracking_journey_never_hides_persisted_state_on_packlink_failure():
@@ -33,9 +39,11 @@ def test_tracking_journey_never_hides_persisted_state_on_packlink_failure():
 
 def test_alignment_does_not_add_marketplace_write_or_mcf_path():
     js = JOURNEY_JS.read_text(encoding="utf-8")
+    template = TEMPLATE.read_text(encoding="utf-8")
     routes = ROUTES.read_text(encoding="utf-8")
 
     assert "ReviseInventoryStatus" not in js
+    assert "ReviseInventoryStatus" not in template
     assert "confirm_dispatch" not in js
     assert "MCF" not in js
     assert "fulfillment not in {\"FBA\", \"AFN\", \"MCF\"}" in routes
