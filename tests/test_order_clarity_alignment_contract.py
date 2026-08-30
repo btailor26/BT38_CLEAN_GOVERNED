@@ -7,7 +7,8 @@ NOTIFICATION_ALIGNMENT = (
     ROOT / "services" / "governed_notification_read_alignment.py"
 ).read_text(encoding="utf-8")
 FBM = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
-FBM_JOURNEY_JS = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
+FBM_JOURNEY_JS = (ROOT / "static" / "js" / "fbm_tracking_journey_legacy.js").read_text(encoding="utf-8")
+EBAY_UI_JS = (ROOT / "static" / "js" / "fbm_ebay_shipping_alignment.js").read_text(encoding="utf-8")
 
 
 def test_journey_numbers_are_removed_at_render_without_changing_state_authority():
@@ -59,11 +60,12 @@ def test_marketplace_tracking_clicks_stay_inside_bt38_journey_modal_without_extr
     assert "fetch(" not in marketplace_branch
 
 
-def test_ebay_shipping_handoff_uses_same_tab_and_cannot_trigger_popup_blocking():
-    ebay_handoff = FBM_JOURNEY_JS.split("function openEbayShipping(button)", 1)[1].split("function installManualShippingButton", 1)[0]
-    assert "window.location.assign(" in ebay_handoff
-    assert "window.open(" not in ebay_handoff
-    assert "www.ebay.co.uk/mesh/ord/details?orderid=" in ebay_handoff
+def test_ebay_shipping_rate_action_stays_inside_bt38_native_flow():
+    assert '.provider-action[data-provider="ebay_shipping"]' in EBAY_UI_JS
+    assert "Get eBay rates" in EBAY_UI_JS
+    assert "/ebay/rates" in EBAY_UI_JS
+    assert "window.location.assign" not in EBAY_UI_JS
+    assert "mesh/ord/details" not in EBAY_UI_JS
 
 
 def test_alignment_is_installed_through_existing_notification_ui_path():
