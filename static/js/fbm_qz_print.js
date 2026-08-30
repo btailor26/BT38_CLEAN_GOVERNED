@@ -10,6 +10,42 @@
     const AMAZON_UNSHIPPED_REPORT_URL = 'https://sellercentral.amazon.co.uk/order-reports-and-feeds/reports/fbmUnshippedOrders#';
     const BT38_AMAZON_REPORT_UPLOAD_URL = '/fbm/amazon-unshipped-report';
     const AMAZON_BUY_SHIPPING_PREFERENCES_URL = 'https://sellercentral.amazon.co.uk/sbr/buyShippingPreferences';
+    const FBM_FETCH_TIMEOUT_MS = 15000;
+
+    function installFbmFetchTimeout() {
+        if (!global.fetch || global.fetch.__bt38FbmTimeoutWrapped) return;
+        const nativeFetch = global.fetch.bind(global);
+        const wrappedFetch = async function (input, init = {}) {
+            const rawUrl = typeof input === 'string' ? input : String(input && input.url || '');
+            let isFbmRequest = false;
+            try {
+                const parsed = new URL(rawUrl, global.location.href);
+                isFbmRequest = parsed.origin === global.location.origin && (
+                    parsed.pathname.startsWith('/fbm/') || parsed.pathname.startsWith('/governed/fbm/')
+                );
+            } catch (_) {
+                isFbmRequest = false;
+            }
+            if (!isFbmRequest || init.signal) return nativeFetch(input, init);
+
+            const controller = new AbortController();
+            const timeoutId = global.setTimeout(function () { controller.abort(); }, FBM_FETCH_TIMEOUT_MS);
+            try {
+                return await nativeFetch(input, {...init, signal: controller.signal});
+            } catch (error) {
+                if (error && error.name === 'AbortError') {
+                    throw new Error('Shipping request timed out after 15 seconds. Please try again.');
+                }
+                throw error;
+            } finally {
+                global.clearTimeout(timeoutId);
+            }
+        };
+        wrappedFetch.__bt38FbmTimeoutWrapped = true;
+        global.fetch = wrappedFetch;
+    }
+
+    installFbmFetchTimeout();
 
     function requireQz() {
         if (!global.qz) throw new Error('QZ Tray browser library is not loaded.');
