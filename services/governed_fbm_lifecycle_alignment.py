@@ -348,7 +348,7 @@ def _patch_webhook_lifecycle() -> None:
         if inferred is None and business_event == "tracking":
             if any(token in flattened for token in ("out for delivery", "out_for_delivery")):
                 inferred = "out_for_delivery"
-            elif any(token in flattened for token for token in ("in transit", "in_transit")):
+            elif any(token in flattened for token in ("in transit", "in_transit")):
                 inferred = "in_transit"
             elif any(token in flattened for token in ("picked up", "picked_up", "collected", "carrier accepted", "received by carrier")):
                 inferred = "picked_up"
