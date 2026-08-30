@@ -30,10 +30,11 @@ def test_ebay_exact_readback_reads_shipping_fulfillment_tracking():
     assert 'MarketplaceOrder.marketplace_order_id == order_id' in EBAY_HYDRATION
 
 
-def test_ebay_tracking_readback_does_not_overwrite_stronger_truth_or_write_marketplace():
-    assert 'and not _text(row.tracking_number)' in EBAY_HYDRATION
-    assert 'and not _text(row.carrier)' in EBAY_HYDRATION
-    assert 'row.shipped_at is None' in EBAY_HYDRATION
+def test_ebay_tracking_readback_corrects_persisted_marketplace_truth_without_writing_marketplace():
+    assert '_text(row.tracking_number) != _text(shipment["tracking_number"])' in EBAY_HYDRATION
+    assert '_text(row.carrier) != _text(shipment["carrier"])' in EBAY_HYDRATION
+    assert 'row.shipped_at != shipment["shipped_at"]' in EBAY_HYDRATION
+    assert 'marketplace_status = _ebay_lifecycle_status(order)' in EBAY_HYDRATION
     assert '"marketplace_write_started": False' in EBAY_HYDRATION
     assert 'requests.post(' not in EBAY_HYDRATION
     assert 'requests.put(' not in EBAY_HYDRATION
@@ -81,12 +82,12 @@ def test_amazon_tracking_uses_current_orders_packages_dataset():
     assert 'x-amz-access-token' in AMAZON_TRACKING
 
 
-def test_amazon_tracking_is_fbm_only_and_fill_missing_only():
+def test_amazon_tracking_is_fbm_only_and_corrects_marketplace_owned_package_truth():
     assert '{"FBA", "AFN", "MCF"}' in AMAZON_TRACKING
     assert 'startswith("mcf_")' in AMAZON_TRACKING
-    assert 'not _text(getattr(row, "tracking_number", None))' in AMAZON_TRACKING
-    assert 'not _text(getattr(row, "carrier", None))' in AMAZON_TRACKING
-    assert 'getattr(row, "shipped_at", None) is None' in AMAZON_TRACKING
+    assert '_text(getattr(row, "tracking_number", None)) != _text(shipment["tracking_number"])' in AMAZON_TRACKING
+    assert '_text(getattr(row, "carrier", None)) != _text(shipment["carrier"])' in AMAZON_TRACKING
+    assert 'getattr(row, "shipped_at", None) != shipment["shipped_at"]' in AMAZON_TRACKING
     assert '"marketplace_write_started": False' in AMAZON_TRACKING
     assert 'requests.put(' not in AMAZON_TRACKING
     assert 'requests.patch(' not in AMAZON_TRACKING
