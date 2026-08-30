@@ -1,10 +1,10 @@
 """Read Amazon-owned FBM package tracking into existing MarketplaceOrder rows.
 
 Orders API v2026-01-01 exposes FBM package tracking through includedData=PACKAGES.
-This helper is read-only against Amazon and only fills missing carrier, tracking
-and shipped timestamps on existing merchant-fulfilled BT38 order rows. It does
-not create orders, mutate inventory, buy postage, confirm shipment, start a
-scheduler, or touch MCF.
+This helper is read-only against Amazon and updates carrier, tracking and shipped
+timestamps on existing merchant-fulfilled BT38 order rows from Amazon's current
+marketplace truth. It does not create orders, mutate inventory, buy postage,
+confirm shipment, start a scheduler, or touch MCF.
 """
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def hydrate_amazon_tracking_for_order(
     marketplace_order_id: str,
     source: str = "amazon_orders_2026_packages",
 ) -> dict[str, Any]:
-    """Fill missing tracking truth for one existing Amazon FBM order."""
+    """Persist current Amazon package truth for one existing Amazon FBM order."""
     order_id = _text(marketplace_order_id)
     if not order_id:
         return {"success": False, "skipped": True, "reason": "amazon_order_id_missing"}
@@ -186,13 +186,15 @@ def hydrate_amazon_tracking_for_order(
     updates = 0
     for row in eligible:
         changed = False
-        if shipment.get("carrier") and not _text(getattr(row, "carrier", None)):
+        # Amazon is the marketplace authority for Amazon-owned package truth.
+        # Correct stale persisted values as well as filling blanks.
+        if shipment.get("carrier") and _text(getattr(row, "carrier", None)) != _text(shipment["carrier"]):
             row.carrier = shipment["carrier"]
             changed = True
-        if shipment.get("tracking_number") and not _text(getattr(row, "tracking_number", None)):
+        if shipment.get("tracking_number") and _text(getattr(row, "tracking_number", None)) != _text(shipment["tracking_number"]):
             row.tracking_number = shipment["tracking_number"]
             changed = True
-        if shipment.get("shipped_at") is not None and getattr(row, "shipped_at", None) is None:
+        if shipment.get("shipped_at") is not None and getattr(row, "shipped_at", None) != shipment["shipped_at"]:
             row.shipped_at = shipment["shipped_at"]
             changed = True
         if changed:
