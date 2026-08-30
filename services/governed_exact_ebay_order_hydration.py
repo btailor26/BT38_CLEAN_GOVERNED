@@ -1,13 +1,14 @@
-"""Exact eBay order hydration for the governed webhook path.
+"""Exact eBay order hydration for the governed webhook/import path.
 
-The durable webhook already identifies and creates the MarketplaceOrder. This
-module reads only that exact eBay order and its exact shipping fulfillments,
-then fills missing delivery/timestamp/tracking fields on those existing rows.
-It does not create orders, mutate Warehouse stock, push marketplaces, or submit
-MCF.
+The durable marketplace path already identifies and creates MarketplaceOrder.
+This module reads only that exact eBay order and its exact shipping fulfillments,
+then updates marketplace-owned delivery/lifecycle/tracking fields on those same
+rows. It does not create orders, mutate Warehouse stock, push marketplaces, or
+submit MCF.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -104,6 +105,32 @@ def _best_fulfillment_for_row(
     return candidates[0]
 
 
+def _ebay_lifecycle_status(order_payload: dict[str, Any]) -> str | None:
+    payment = _text(order_payload.get("orderPaymentStatus")).upper()
+    fulfillment = _text(order_payload.get("orderFulfillmentStatus")).upper()
+    if payment and payment != "PAID":
+        return "pending"
+    if payment == "PAID" and fulfillment == "FULFILLED":
+        return "shipped"
+    if payment == "PAID":
+        return "unshipped"
+    return None
+
+
+def _can_apply_routine_status(current: str, incoming: str) -> bool:
+    current_value = _text(current).lower()
+    if current_value in {
+        "return_requested", "returned", "refund_requested", "refunded",
+        "replacement_requested", "replacement", "case_open", "dispute",
+        "chargeback", "cancel_requested", "cancelled", "delivered",
+        "picked_up", "accepted", "carrier_accepted", "collected",
+        "in_transit", "out_for_delivery",
+    }:
+        return False
+    rank = {"pending": 0, "order": 1, "confirmed": 1, "unshipped": 1, "partially_shipped": 2, "shipped": 3}
+    return rank.get(incoming, -1) >= rank.get(current_value, -1)
+
+
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
     order_id = _text(marketplace_order_id)
     if not order_id:
@@ -184,6 +211,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         or _text(ship_to.get("phoneNumber")),
     }
     marketplace_created_at = _parse_ebay_datetime(order.get("creationDate"))
+    marketplace_status = _ebay_lifecycle_status(order)
 
     item_by_line_id = {
         _text(item.get("lineItemId")): item
@@ -199,11 +227,14 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
     identity_updates = 0
     identity_conflicts = []
     tracking_updates = 0
+    lifecycle_updates = 0
 
     for row in rows:
+        row_changed = False
         for field, value in values.items():
-            if value:
+            if value and _text(getattr(row, field, None)) != _text(value):
                 setattr(row, field, value)
+                row_changed = True
 
         item = (
             item_by_line_id.get(_text(row.marketplace_order_item_id))
@@ -229,6 +260,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
                         row.marketplace_order_item_id = line_id
                         row.idempotency_key = canonical_key
                         identity_updates += 1
+                        row_changed = True
                 else:
                     identity_conflicts.append({
                         "row_id": row.id,
@@ -236,21 +268,31 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
                         "line_item_id": line_id,
                     })
 
+        if marketplace_status and _can_apply_routine_status(getattr(row, "status", ""), marketplace_status):
+            if _text(getattr(row, "status", "")).lower() != marketplace_status:
+                row.status = marketplace_status
+                lifecycle_updates += 1
+                row_changed = True
+
         fulfillment = _best_fulfillment_for_row(row=row, fulfillments=fulfillments)
         if fulfillment is not None:
             shipment = _fulfillment_values(fulfillment)
             changed = False
-            if shipment["carrier"] and not _text(row.carrier):
+            if shipment["carrier"] and _text(row.carrier) != _text(shipment["carrier"]):
                 row.carrier = shipment["carrier"]
                 changed = True
-            if shipment["tracking_number"] and not _text(row.tracking_number):
+            if shipment["tracking_number"] and _text(row.tracking_number) != _text(shipment["tracking_number"]):
                 row.tracking_number = shipment["tracking_number"]
                 changed = True
-            if shipment["shipped_at"] is not None and row.shipped_at is None:
+            if shipment["shipped_at"] is not None and row.shipped_at != shipment["shipped_at"]:
                 row.shipped_at = shipment["shipped_at"]
                 changed = True
             if changed:
                 tracking_updates += 1
+                row_changed = True
+
+        if row_changed:
+            row.updated_at = datetime.utcnow()
 
         db.session.execute(
             text(
@@ -287,12 +329,14 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         ),
         "order_id": order_id,
         "marketplace_created_at": marketplace_created_at.isoformat() if marketplace_created_at else None,
+        "marketplace_status": marketplace_status,
         "required_address_complete": required_address_complete,
         "rows_hydrated": len(rows),
         "identity_updates": identity_updates,
         "identity_conflicts": identity_conflicts,
         "fulfillments_seen": len(fulfillments),
         "tracking_updates": tracking_updates,
+        "lifecycle_updates": lifecycle_updates,
         "fulfillment_error": fulfillment_error,
         "marketplace_write_started": False,
     }
