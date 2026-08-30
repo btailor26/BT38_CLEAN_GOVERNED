@@ -7,10 +7,9 @@ clicked/selected order IDs from BT38 persistence. Live marketplace/provider
 reads stay deferred to the explicit provider actions that actually require them.
 Older records remain user-expanded in 15-order increments.
 
-For eBay, the workspace exposes only capabilities BT38 can actually execute.
-The legacy Seller Hub redirect is neutralised: connected in-BT38 providers and
-manual governed dispatch remain available, while native eBay label purchase is
-shown as unavailable until a real governed adapter exists.
+For eBay, the workspace exposes the existing Seller Hub order handoff as a
+clickable browser action while keeping native eBay label buying capability-gated.
+Connected in-BT38 providers and governed manual dispatch remain unchanged.
 
 No marketplace/provider calls, inventory writes, reconciliation, scheduler or
 MCF path is introduced here.
@@ -162,28 +161,36 @@ def _workspace_shipping_mode(row: MarketplaceOrder, platform: str, profile: FBMO
             "manual": True,
             "prime_locked": False,
             "profile_known": True,
-            "reason": "Use an in-BT38 connected provider or governed manual dispatch. Native eBay label purchase is not exposed until BT38 has a supported adapter.",
+            "reason": "Use an in-BT38 connected provider or governed manual dispatch. eBay Shipping opens the exact order in Seller Hub; BT38 does not buy native eBay labels through an API.",
         })
     return mode
 
 
-def _neutralise_legacy_ebay_handoff(html: str) -> str:
-    """Compatibility no-op: preserve the existing eBay shipping click handler.
+def _workspace_provider_options(row: MarketplaceOrder, profile: FBMOrderProfile | None) -> list[dict]:
+    """Keep eBay Seller Hub handoff clickable without claiming native label API support."""
+    options = [dict(option) for option in _shipping_provider_options(row, profile, None)]
+    if _platform(row).strip().lower() == "ebay":
+        for option in options:
+            if str(option.get("provider") or "") != "ebay_shipping":
+                continue
+            option.update({
+                "available": True,
+                "recommended": False,
+                "label_formats": [],
+                "auto_print_supported": False,
+                "requires_terms_acceptance": False,
+                "message": "Open this exact order in eBay Seller Hub to check or buy marketplace postage. BT38 does not purchase native eBay labels through an API.",
+            })
+    return options
 
-    The former overlay forced "eBay postage unavailable" and said
-    "Native eBay label purchase is not enabled", which disabled the button after
-    the existing FBM JavaScript had enabled it. Do not override that click path.
-    """
+
+def _neutralise_legacy_ebay_handoff(html: str) -> str:
+    """Compatibility no-op: preserve the existing eBay shipping click handler."""
     return html
 
 
 def _selected_row_parcel(row: MarketplaceOrder) -> dict:
-    """Return parcel facts already joined to the exact selected DB row.
-
-    Shipping-options open must not resolve sibling MarketplaceOrder rows or scan
-    ProductPackMapping. Full order composition and reusable parcel mapping stay
-    deferred to the explicit provider action, where those facts are required.
-    """
+    """Return parcel facts already joined to the exact selected DB row."""
     try:
         quantity = max(1, int(getattr(row, "quantity", 1) or 1))
     except (TypeError, ValueError):
@@ -323,14 +330,7 @@ def install_governed_fbm_page_alignment(app) -> None:
 
     @login_required
     def bounded_shipping_options():
-        """Open Shipping options from persisted facts for only selected orders.
-
-        This initial modal read deliberately does not hydrate Amazon/eBay, call
-        Packlink, resolve sibling order lines, or scan reusable parcel mappings.
-        Exact marketplace/provider and complete parcel reads remain in existing
-        rate, draft, purchase and dispatch actions where the user explicitly
-        asks for them.
-        """
+        """Open Shipping options from persisted facts for only selected orders."""
         order_ids = _selected_order_ids()
         if not order_ids:
             return jsonify({"success": False, "message": "Select at least one FBM order."}), 400
@@ -370,7 +370,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "is_prime": profile.is_prime if profile else None,
                 "prime_profile_error": None,
                 "parcel": _selected_row_parcel(row),
-                "providers": _shipping_provider_options(row, profile, None),
+                "providers": _workspace_provider_options(row, profile),
             })
 
         if not result:
@@ -393,5 +393,5 @@ def install_governed_fbm_page_alignment(app) -> None:
     app.view_functions[shipping_options_endpoint] = bounded_shipping_options
     app._bt38_fbm_page_alignment_installed = True
     app.logger.info(
-        "BT38 FBM alignment installed: bounded page discovery, selected-row Shipping options DB read, 15-order expansion and in-workspace eBay capability gating"
+        "BT38 FBM alignment installed: bounded page discovery, selected-row Shipping options DB read, 15-order expansion and eBay Seller Hub handoff"
     )
