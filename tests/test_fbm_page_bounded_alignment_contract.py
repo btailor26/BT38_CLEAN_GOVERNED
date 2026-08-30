@@ -84,6 +84,18 @@ def test_ebay_shipping_options_open_without_amazon_profile_or_warehouse_prefetch
     assert '"source": "selected_row_deferred_parcel"' in ALIGNMENT
 
 
+def test_fbm_workspace_requires_positive_merchant_fulfilled_truth_for_amazon():
+    assert "def _workspace_fbm_eligible" in ALIGNMENT
+    helper = ALIGNMENT.split("def _workspace_fbm_eligible", 1)[1].split("def _latest_distinct_fbm_rows", 1)[0]
+    assert 'profile_channel in {"AFN", "FBA", "MCF"}' in helper
+    assert 'profile_channel in {"MFN", "FBM"}' in helper
+    assert 'return fulfillment in {"MFN", "FBM"}' in helper
+    page_handler = ALIGNMENT.split("def bounded_fbm_page", 1)[1].split("def bounded_shipping_options", 1)[0]
+    shipping_handler = ALIGNMENT.split("def bounded_shipping_options", 1)[1]
+    assert "if not _workspace_fbm_eligible(row, profile):" in page_handler
+    assert "if _workspace_fbm_eligible(row, profile):" in shipping_handler
+
+
 def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_execution():
     assert "db.session.add" not in ALIGNMENT
     assert "db.session.commit" not in ALIGNMENT
