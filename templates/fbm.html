@@ -3,24 +3,31 @@
 {% block title %}FBM | BT38 Inventory{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
-    <div>
-        <h2 class="mb-1"><i data-feather="truck" class="me-2"></i>FBM</h2>
-    </div>
+<style>
+.fbm-top-grid{display:grid;grid-template-columns:minmax(280px,1.25fr) minmax(230px,.9fr);gap:.65rem;margin-bottom:.65rem}
+.fbm-ops-card .card-body{padding:.65rem .75rem}.fbm-ops-card .card-header{padding:.5rem .75rem}
+.fbm-overview-grid{display:grid;grid-template-columns:minmax(190px,.9fr) repeat(3,minmax(110px,1fr));gap:.5rem;margin-bottom:.8rem}
+.fbm-health-card{grid-row:span 2}.fbm-health-card .card-body{padding:.65rem .75rem;display:flex;align-items:center;gap:.75rem}
+.fbm-health-ring{--fbm-overdue:0%;width:78px;height:78px;min-width:78px;border-radius:50%;background:conic-gradient(#dc3545 0 var(--fbm-overdue),#198754 var(--fbm-overdue) 100%);display:grid;place-items:center;position:relative}.fbm-health-ring:after{content:"";width:56px;height:56px;border-radius:50%;background:var(--bs-body-bg,#fff);position:absolute}.fbm-health-ring-content{position:relative;z-index:1;text-align:center;line-height:1.05}.fbm-health-ring-content strong{display:block;font-size:1.05rem}.fbm-health-ring-content span{font-size:.6rem;color:var(--bs-secondary-color,#6c757d)}
+.fbm-health-copy strong{font-size:.88rem}.fbm-health-copy .small{font-size:.7rem;line-height:1.3}.fbm-stat-card .card-body{padding:.5rem .6rem}.fbm-stat-card .text-muted{font-size:.66rem}.fbm-stat-value{font-size:1.2rem;font-weight:700;line-height:1.1;margin-top:.08rem}
+@media(max-width:991.98px){.fbm-top-grid{grid-template-columns:1fr}.fbm-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.fbm-health-card{grid-row:auto;grid-column:1/-1}}
+</style>
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2"><div><h2 class="mb-0"><i data-feather="truck" class="me-2"></i>FBM</h2></div></div>
+
+<div class="fbm-top-grid">
+    <div class="card fbm-ops-card h-100"><div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2"><div><strong>Packlink PRO</strong><div class="small text-muted">Provider connection and paid-label handoff.</div></div><button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test connection</button></div><div class="card-body"><div id="packlinkConnectionStatus" class="small text-muted">Connection status appears here.</div></div></div>
+    <div class="card fbm-ops-card h-100"><div class="card-header"><strong>Label printer · QZ Tray</strong><div class="small text-muted">Purchased label is saved first; printing can never trigger another postage charge.</div></div><div class="card-body"><div class="d-flex flex-wrap gap-2 align-items-center"><button id="qzConnect" class="btn btn-sm btn-outline-primary" type="button">Connect QZ</button><select id="qzPrinter" class="form-select form-select-sm" style="max-width:220px"><option value="">Saved/default printer</option></select><button id="qzSavePrinter" class="btn btn-sm btn-outline-secondary" type="button">Save printer</button><div class="form-check"><input id="qzAutoPrint" class="form-check-input" type="checkbox" checked><label class="form-check-label small" for="qzAutoPrint">Auto-print after purchase</label></div></div><div id="qzStatus" class="small text-muted mt-2">QZ not connected.</div></div></div>
 </div>
 
-<div class="row g-3 mb-4">
-    <div class="col-lg-6"><div class="card h-100"><div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2"><div><strong>Packlink PRO</strong></div><button id="packlinkConnectionTest" class="btn btn-sm btn-outline-primary" type="button">Test connection</button></div><div class="card-body py-3"><div id="packlinkConnectionStatus" class="small text-muted"></div></div></div></div>
-    <div class="col-lg-6"><div class="card h-100"><div class="card-header"><strong>Label printer · QZ Tray</strong><div class="small text-muted">Purchased label is saved first; printing can never trigger another postage charge.</div></div><div class="card-body"><div class="d-flex flex-wrap gap-2 align-items-center"><button id="qzConnect" class="btn btn-sm btn-outline-primary" type="button">Connect QZ</button><select id="qzPrinter" class="form-select form-select-sm" style="max-width:300px"><option value="">Saved/default printer</option></select><button id="qzSavePrinter" class="btn btn-sm btn-outline-secondary" type="button">Save printer</button><div class="form-check ms-lg-auto"><input id="qzAutoPrint" class="form-check-input" type="checkbox" checked><label class="form-check-label" for="qzAutoPrint">Auto-print after purchase</label></div></div><div id="qzStatus" class="small text-muted mt-2">QZ not connected.</div></div></div></div>
-</div>
-
-<div class="row g-3 mb-4">
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Orders</div><div class="fs-3 fw-bold">{{ counts.total }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Ready</div><div class="fs-3 fw-bold">{{ counts.ready }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Marketplace shipping</div><div class="fs-3 fw-bold">{{ counts.marketplace_shipping }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Awaiting carrier</div><div class="fs-3 fw-bold">{{ counts.awaiting_acceptance }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Carrier overdue</div><div class="fs-3 fw-bold">{{ counts.overdue }}</div></div></div></div>
-    <div class="col-6 col-lg"><div class="card h-100"><div class="card-body"><div class="text-muted small">Mapping review</div><div class="fs-3 fw-bold">{{ counts.mapping_review or 0 }}</div></div></div></div>
+{% set overdue_pct = ((counts.overdue * 100 / counts.total) if counts.total else 0) %}
+<div class="fbm-overview-grid">
+    <div class="card fbm-health-card"><div class="card-body"><div class="fbm-health-ring" style="--fbm-overdue: {{ '%.1f'|format(overdue_pct) }}%;" role="img" aria-label="FBM health: {{ counts.overdue }} carrier overdue out of {{ counts.total }} orders"><div class="fbm-health-ring-content"><strong>{{ counts.overdue }}</strong><span>overdue</span></div></div><div class="fbm-health-copy"><strong>FBM Health</strong><div class="small text-muted">{{ counts.total }} loaded orders · {{ counts.overdue }} carrier overdue</div><div class="small mt-1"><span class="text-warning">{{ counts.awaiting_acceptance }} awaiting carrier</span> · <span class="text-muted">{{ counts.mapping_review or 0 }} mapping review</span></div></div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Orders</div><div class="fbm-stat-value">{{ counts.total }}</div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Ready</div><div class="fbm-stat-value">{{ counts.ready }}</div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Marketplace shipping</div><div class="fbm-stat-value">{{ counts.marketplace_shipping }}</div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Awaiting carrier</div><div class="fbm-stat-value">{{ counts.awaiting_acceptance }}</div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Carrier overdue</div><div class="fbm-stat-value">{{ counts.overdue }}</div></div></div>
+    <div class="card fbm-stat-card"><div class="card-body"><div class="text-muted">Mapping review</div><div class="fbm-stat-value">{{ counts.mapping_review or 0 }}</div></div></div>
 </div>
 
 <div class="card">
