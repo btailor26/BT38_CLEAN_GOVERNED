@@ -2,8 +2,8 @@
 
 The marketplace/provider handoff owns collection and persistence. Page GETs must
 not recover, reconcile, hydrate, or re-query historical order/shipment facts.
-This module is deliberately presentation-only: no DB access, marketplace calls,
-shipping execution, inventory/runtime work, or MCF handling.
+This module keeps presentation cleanup separate while installing the existing
+DB-first marketplace lifecycle alignment before the FBM page wrapper is bound.
 """
 from __future__ import annotations
 
@@ -28,6 +28,15 @@ def _clean_fbm_journey_html(html: str) -> str:
 def install_governed_order_clarity_alignment(app) -> None:
     if getattr(app, "_bt38_order_clarity_alignment_installed", False):
         return
+
+    # Install before governed_fbm_page_alignment binds its view functions. The
+    # lifecycle module patches only existing governed authorities: MarketplaceOrder
+    # remains DB truth, FBMShipment remains supplemental BT38-owned shipment state.
+    from services.governed_fbm_lifecycle_alignment import (
+        install_governed_fbm_lifecycle_alignment,
+    )
+
+    install_governed_fbm_lifecycle_alignment(app)
     app._bt38_order_clarity_alignment_installed = True
 
     @app.after_request
