@@ -80,8 +80,9 @@ def test_ebay_shipping_options_open_without_amazon_profile_or_warehouse_prefetch
     assert 'if _platform(row).strip().lower() == "amazon"' in shipping_handler
     assert "profiles = _profile_map(amazon_rows)" in shipping_handler
     assert 'profile = profiles.get(key) if platform == "amazon" else None' in shipping_handler
-    assert '"parcel": _selected_row_parcel(row) if platform == "amazon" else _empty_selected_parcel()' in shipping_handler
-    assert '"source": "selected_row_deferred_parcel"' in ALIGNMENT
+    assert '"parcel": _selected_row_parcel(row)' in shipping_handler
+    assert "def _persisted_pack_mapping_parcel" in ALIGNMENT
+    assert '"source": "pack_mapping"' in ALIGNMENT
 
 
 def test_fbm_workspace_requires_positive_merchant_fulfilled_truth_for_amazon():
