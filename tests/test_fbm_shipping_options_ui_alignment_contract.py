@@ -30,15 +30,27 @@ def test_packlink_handoff_remains_available_without_save_action():
 def test_shipping_options_open_is_selected_order_persisted_read_only():
     assert 'shipping_options_endpoint = "governed_fbm.fbm_shipping_options"' in ALIGNMENT
     assert "MarketplaceOrder.id.in_(order_ids)" in ALIGNMENT
-    assert "profiles = _profile_map(list(by_id.values()))" in ALIGNMENT
+    assert "profiles = _profile_map(amazon_rows)" in ALIGNMENT
     assert "get_or_refresh_amazon_profile" not in ALIGNMENT
     assert "_amazon_profile(" not in ALIGNMENT
     handler = ALIGNMENT.split("def bounded_shipping_options", 1)[1]
     assert "parcel_from_db(" not in handler
     assert "order_lines(" not in handler
     assert '"parcel": _selected_row_parcel(row)' in handler
-    assert "Complete parcel/provider reads remain deferred until an explicit shipping action." in ALIGNMENT
+    assert "Complete provider reads remain deferred until an explicit shipping action." in ALIGNMENT
     assert "app.view_functions[shipping_options_endpoint] = bounded_shipping_options" in ALIGNMENT
+
+
+def test_saved_pack_mapping_parcel_is_rehydrated_without_broad_order_hydration():
+    assert "ProductPackMapping" in ALIGNMENT
+    assert "def _persisted_pack_mapping_parcel" in ALIGNMENT
+    assert ".filter_by(single_sku=sku, is_active=True)" in ALIGNMENT
+    for field in ("carton_weight_kg", "carton_length_cm", "carton_width_cm", "carton_height_cm"):
+        assert field in ALIGNMENT
+    helper = ALIGNMENT.split("def _persisted_pack_mapping_parcel", 1)[1].split("def _selected_row_parcel", 1)[0]
+    assert "MarketplaceOrder.query" not in helper
+    assert "WarehouseStock.query" not in helper
+    assert "order_lines(" not in helper
 
 
 def test_fbm_browser_requests_have_hard_timeout_and_clean_recovery():
