@@ -36,7 +36,6 @@ from governed_fbm_routes import (
     _shipping_provider_options,
     _store_name,
 )
-from services.fbm_order_mapper import order_lines, parcel_from_db
 from services.fbm_shipping_state import provider_case_eligibility, shipment_confirmation_state
 
 
@@ -178,6 +177,33 @@ def _neutralise_legacy_ebay_handoff(html: str) -> str:
     return html
 
 
+def _selected_row_parcel(row: MarketplaceOrder) -> dict:
+    """Return parcel facts already joined to the exact selected DB row.
+
+    Shipping-options open must not resolve sibling MarketplaceOrder rows or scan
+    ProductPackMapping. Full order composition and reusable parcel mapping stay
+    deferred to the explicit provider action, where those facts are required.
+    """
+    try:
+        quantity = max(1, int(getattr(row, "quantity", 1) or 1))
+    except (TypeError, ValueError):
+        quantity = 1
+    warehouse = getattr(row, "warehouse_stock", None)
+    try:
+        unit_weight = float(getattr(warehouse, "product_weight_kg", 0) or 0) if warehouse is not None else 0.0
+    except (TypeError, ValueError):
+        unit_weight = 0.0
+    weight = unit_weight * quantity if unit_weight > 0 else None
+    return {
+        "weight_kg": weight,
+        "length_cm": None,
+        "width_cm": None,
+        "height_cm": None,
+        "source": "selected_row_persisted_weight" if weight else "selected_row_missing_parcel",
+        "complete": False,
+    }
+
+
 def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
     """Add the bounded expansion control to the existing FBM card only."""
     if not html:
@@ -299,10 +325,11 @@ def install_governed_fbm_page_alignment(app) -> None:
     def bounded_shipping_options():
         """Open Shipping options from persisted facts for only selected orders.
 
-        This initial modal read deliberately does not hydrate Amazon/eBay or call
-        Packlink. Exact marketplace/provider reads remain in the existing rate,
-        draft, purchase and dispatch actions where the user explicitly asks for
-        them.
+        This initial modal read deliberately does not hydrate Amazon/eBay, call
+        Packlink, resolve sibling order lines, or scan reusable parcel mappings.
+        Exact marketplace/provider and complete parcel reads remain in existing
+        rate, draft, purchase and dispatch actions where the user explicitly
+        asks for them.
         """
         order_ids = _selected_order_ids()
         if not order_ids:
@@ -327,11 +354,10 @@ def install_governed_fbm_page_alignment(app) -> None:
                 continue
             key = (int(row.store_id), str(row.marketplace_order_id))
             profile = profiles.get(key)
-            parcel = parcel_from_db(row)
-            quantity = sum(
-                max(1, int(getattr(line, "quantity", 1) or 1))
-                for line in order_lines(row)
-            )
+            try:
+                quantity = max(1, int(getattr(row, "quantity", 1) or 1))
+            except (TypeError, ValueError):
+                quantity = 1
             result.append({
                 "id": row.id,
                 "marketplace_order_id": row.marketplace_order_id,
@@ -343,7 +369,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "route_state": _route_state(row),
                 "is_prime": profile.is_prime if profile else None,
                 "prime_profile_error": None,
-                "parcel": parcel.to_dict(),
+                "parcel": _selected_row_parcel(row),
                 "providers": _shipping_provider_options(row, profile, None),
             })
 
@@ -360,12 +386,12 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "printer_preference_required": True,
                 "fallback": "download_label",
             },
-            "message": "Shipping routes and persisted DB parcel defaults prepared. Live provider reads remain deferred until an explicit shipping action.",
+            "message": "Shipping routes and selected-row persisted defaults prepared. Complete parcel/provider reads remain deferred until an explicit shipping action.",
         })
 
     app.view_functions[page_endpoint] = bounded_fbm_page
     app.view_functions[shipping_options_endpoint] = bounded_shipping_options
     app._bt38_fbm_page_alignment_installed = True
     app.logger.info(
-        "BT38 FBM alignment installed: bounded page discovery, selected-order Shipping options DB read, 15-order expansion and in-workspace eBay capability gating"
+        "BT38 FBM alignment installed: bounded page discovery, selected-row Shipping options DB read, 15-order expansion and in-workspace eBay capability gating"
     )
