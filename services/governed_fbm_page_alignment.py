@@ -185,8 +185,15 @@ def _workspace_provider_options(row: MarketplaceOrder, profile: FBMOrderProfile 
 
 
 def _neutralise_legacy_ebay_handoff(html: str) -> str:
-    """Compatibility no-op: preserve the existing eBay shipping click handler."""
-    return html
+    """Disable the obsolete DOM observer; the template owns the eBay handoff."""
+    marker = 'id="fbmShippingOrders"'
+    if marker not in html:
+        return html
+    return html.replace(
+        marker,
+        'id="fbmShippingOrders" data-ebay-shipping-handoff-installed="1"',
+        1,
+    )
 
 
 def _selected_row_parcel(row: MarketplaceOrder) -> dict:
