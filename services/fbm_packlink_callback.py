@@ -242,15 +242,17 @@ def _provider_identity(
 
 
 def _apply_lifecycle_state(shipment: FBMShipment, event_name: str, now: datetime) -> None:
+    # Packlink's carrier.success means the booked carrier/service was accepted by
+    # Packlink. It does not prove physical collection. Pickup can only be promoted
+    # by explicit carrier tracking history through reconcile_packlink_tracking_lifecycle.
     if event_name == "shipment.carrier.success":
-        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
         if shipment.delivered_at is None and shipment.first_movement_at is None:
-            shipment.status = "accepted"
+            shipment.status = "awaiting_carrier_acceptance"
     elif event_name == "shipment.tracking.update":
-        shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
-        shipment.first_movement_at = shipment.first_movement_at or now
-        if shipment.delivered_at is None:
-            shipment.status = "in_transit"
+        # The tracking-update callback itself is only a wake-up signal. The
+        # provider history read above owns whether the parcel was accepted/moving.
+        if shipment.delivered_at is None and shipment.first_movement_at is None:
+            shipment.status = "awaiting_carrier_acceptance"
     elif event_name == "shipment.delivered":
         shipment.carrier_accepted_at = shipment.carrier_accepted_at or now
         shipment.first_movement_at = shipment.first_movement_at or now
