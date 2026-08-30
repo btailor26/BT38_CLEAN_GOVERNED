@@ -25,7 +25,7 @@ from sqlalchemy.orm import joinedload
 
 from extensions import db
 from fbm_models import FBMOrderProfile
-from models import MarketplaceOrder
+from models import MarketplaceOrder, ProductPackMapping
 from governed_fbm_routes import (
     _is_fbm_eligible,
     _marketplace_shipping_mode,
@@ -221,8 +221,83 @@ def _neutralise_legacy_ebay_handoff(html: str) -> str:
     )
 
 
+def _positive_float(value) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _persisted_pack_mapping_parcel(row: MarketplaceOrder) -> dict:
+    """Rehydrate the parcel defaults already persisted by the FBM order mapper.
+
+    The explicit provider action remains the writer. Shipping-options only reads
+    the existing one-unit ProductPackMapping for the selected SKU, avoiding the
+    broader order/warehouse hydration that previously made the eBay modal slow.
+    """
+    try:
+        quantity = max(1, int(getattr(row, "quantity", 1) or 1))
+    except (TypeError, ValueError):
+        quantity = 1
+    sku = str(getattr(row, "sku", None) or "").strip()
+    if quantity != 1 or not sku:
+        return {
+            "weight_kg": None,
+            "length_cm": None,
+            "width_cm": None,
+            "height_cm": None,
+            "source": "selected_row_deferred_parcel",
+            "complete": False,
+        }
+
+    mapping = (
+        db.session.query(ProductPackMapping)
+        .filter_by(single_sku=sku, is_active=True)
+        .order_by(ProductPackMapping.updated_at.desc(), ProductPackMapping.id.desc())
+        .first()
+    )
+    if mapping is None:
+        return {
+            "weight_kg": None,
+            "length_cm": None,
+            "width_cm": None,
+            "height_cm": None,
+            "source": "selected_row_deferred_parcel",
+            "complete": False,
+        }
+
+    try:
+        units = int(getattr(mapping, "units_per_carton", None) or 1)
+    except (TypeError, ValueError):
+        units = 1
+    if units != 1:
+        return {
+            "weight_kg": None,
+            "length_cm": None,
+            "width_cm": None,
+            "height_cm": None,
+            "source": "selected_row_deferred_parcel",
+            "complete": False,
+        }
+
+    parcel = {
+        "weight_kg": _positive_float(getattr(mapping, "carton_weight_kg", None)),
+        "length_cm": _positive_float(getattr(mapping, "carton_length_cm", None)),
+        "width_cm": _positive_float(getattr(mapping, "carton_width_cm", None)),
+        "height_cm": _positive_float(getattr(mapping, "carton_height_cm", None)),
+        "source": "pack_mapping",
+    }
+    parcel["complete"] = all(parcel[name] is not None for name in ("weight_kg", "length_cm", "width_cm", "height_cm"))
+    return parcel
+
+
 def _selected_row_parcel(row: MarketplaceOrder) -> dict:
-    """Return parcel facts already joined to the exact selected DB row."""
+    """Return lightweight persisted parcel facts for the selected DB row."""
+    saved = _persisted_pack_mapping_parcel(row)
+    if any(saved.get(name) for name in ("weight_kg", "length_cm", "width_cm", "height_cm")):
+        return saved
+
     try:
         quantity = max(1, int(getattr(row, "quantity", 1) or 1))
     except (TypeError, ValueError):
@@ -239,18 +314,6 @@ def _selected_row_parcel(row: MarketplaceOrder) -> dict:
         "width_cm": None,
         "height_cm": None,
         "source": "selected_row_persisted_weight" if weight else "selected_row_missing_parcel",
-        "complete": False,
-    }
-
-
-def _empty_selected_parcel() -> dict:
-    """Keep eBay modal opening independent from Warehouse/profile reads."""
-    return {
-        "weight_kg": None,
-        "length_cm": None,
-        "width_cm": None,
-        "height_cm": None,
-        "source": "selected_row_deferred_parcel",
         "complete": False,
     }
 
@@ -420,7 +483,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "route_state": _route_state(row),
                 "is_prime": profile.is_prime if profile else None,
                 "prime_profile_error": None,
-                "parcel": _selected_row_parcel(row) if platform == "amazon" else _empty_selected_parcel(),
+                "parcel": _selected_row_parcel(row),
                 "providers": _workspace_provider_options(row, profile),
             })
 
@@ -437,7 +500,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "printer_preference_required": True,
                 "fallback": "download_label",
             },
-            "message": "Shipping routes and selected-row persisted defaults prepared. Complete parcel/provider reads remain deferred until an explicit shipping action.",
+            "message": "Shipping routes and selected-row persisted defaults prepared. Complete provider reads remain deferred until an explicit shipping action.",
         })
 
     app.view_functions[page_endpoint] = bounded_fbm_page
