@@ -64,6 +64,18 @@ def test_ebay_shipping_stays_inside_fbm_and_does_not_claim_native_label_capabili
     assert "window.location.assign" not in ALIGNMENT
 
 
+def test_ebay_shipping_options_open_without_amazon_profile_or_warehouse_prefetch():
+    shipping_handler = ALIGNMENT.split("def bounded_shipping_options", 1)[1]
+    assert ".options(joinedload(MarketplaceOrder.store))" in shipping_handler
+    assert "joinedload(MarketplaceOrder.warehouse_stock)" not in shipping_handler
+    assert "amazon_rows = [" in shipping_handler
+    assert 'if _platform(row).strip().lower() == "amazon"' in shipping_handler
+    assert "profiles = _profile_map(amazon_rows)" in shipping_handler
+    assert 'profile = profiles.get(key) if platform == "amazon" else None' in shipping_handler
+    assert '"parcel": _selected_row_parcel(row) if platform == "amazon" else _empty_selected_parcel()' in shipping_handler
+    assert '"source": "selected_row_deferred_parcel"' in ALIGNMENT
+
+
 def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_execution():
     assert "db.session.add" not in ALIGNMENT
     assert "db.session.commit" not in ALIGNMENT
