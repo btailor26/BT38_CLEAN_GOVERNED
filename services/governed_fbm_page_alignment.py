@@ -92,6 +92,31 @@ def _profile_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMOrder
     return result
 
 
+def _workspace_fbm_eligible(row: MarketplaceOrder, profile: FBMOrderProfile | None = None) -> bool:
+    """Require positive seller-fulfilled truth before Amazon enters the FBM desk.
+
+    The shared persisted fulfillment_type remains the first guard for every
+    marketplace. Amazon also has a persisted FBMOrderProfile populated from the
+    marketplace FulfillmentChannel. That marketplace fact wins when available,
+    so a stale/legacy MarketplaceOrder row can never expose an AFN/FBA order on
+    this page or through Shipping options.
+    """
+    if not _is_fbm_eligible(row):
+        return False
+
+    if _platform(row).strip().lower() != "amazon":
+        return True
+
+    fulfillment = str(getattr(row, "fulfillment_type", "") or "").strip().upper()
+    profile_channel = str(getattr(profile, "fulfillment_channel", "") or "").strip().upper() if profile else ""
+
+    if profile_channel in {"AFN", "FBA", "MCF"}:
+        return False
+    if profile_channel in {"MFN", "FBM"}:
+        return True
+    return fulfillment in {"MFN", "FBM"}
+
+
 def _latest_distinct_fbm_rows(limit: int) -> tuple[list[MarketplaceOrder], bool]:
     """Read the newest persisted FBM rows from a bounded candidate window.
 
@@ -263,7 +288,7 @@ def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
     control = (
         '<div class="card-footer d-flex justify-content-between align-items-center flex-wrap gap-2">'
         f'<span class="small text-muted">Showing the latest {visible_limit} FBM orders. Older orders load only when expanded.</span>'
-        f'<div class="d-flex gap-2">{"".join(actions)}</div>'
+        f'<div class="d-flex gap-2'>{"".join(actions)}</div>'
         '</div>'
     )
     marker = "</tbody></table></div>\n</div>"
@@ -296,12 +321,12 @@ def install_governed_fbm_page_alignment(app) -> None:
 
         orders = []
         for row in rows:
-            if not _is_fbm_eligible(row):
-                continue
             key = (int(row.store_id), str(row.marketplace_order_id))
+            profile = profiles.get(key)
+            if not _workspace_fbm_eligible(row, profile):
+                continue
             platform = _platform(row)
             route_state = _route_state(row)
-            profile = profiles.get(key)
             shipment = shipments.get(key)
             shipment_state = shipment_confirmation_state(shipment) if shipment else "not_started"
             case = (
@@ -360,12 +385,17 @@ def install_governed_fbm_page_alignment(app) -> None:
             .options(joinedload(MarketplaceOrder.store))
             .all()
         )
-        by_id = {row.id: row for row in rows if _is_fbm_eligible(row)}
         amazon_rows = [
-            row for row in by_id.values()
+            row for row in rows
             if _platform(row).strip().lower() == "amazon"
         ]
         profiles = _profile_map(amazon_rows)
+        by_id = {}
+        for row in rows:
+            key = (int(row.store_id), str(row.marketplace_order_id))
+            profile = profiles.get(key) if _platform(row).strip().lower() == "amazon" else None
+            if _workspace_fbm_eligible(row, profile):
+                by_id[row.id] = row
         result = []
 
         for order_id in order_ids:
