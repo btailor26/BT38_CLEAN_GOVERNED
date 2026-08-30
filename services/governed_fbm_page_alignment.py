@@ -1,23 +1,25 @@
-"""Bound the existing FBM page read without introducing a second workflow.
+"""Bound the existing FBM page and shipping-options reads without a second workflow.
 
-This alignment keeps the registered /fbm endpoint, existing template, shipping
-handlers and persisted authorities unchanged. It only replaces the expensive
-page-read implementation so an ordinary refresh hydrates the latest 15 distinct
-FBM orders. Older records are user-expanded in 15-order increments.
+This alignment keeps the registered /fbm workspace, existing template, shipping
+handlers and persisted authorities unchanged. An ordinary page refresh hydrates
+only the latest 15 distinct FBM orders, while Shipping options reads only the
+clicked/selected order IDs from BT38 persistence. Live marketplace/provider
+reads stay deferred to the explicit provider actions that actually require them.
+Older records remain user-expanded in 15-order increments.
 
 For eBay, the workspace exposes only capabilities BT38 can actually execute.
 The legacy Seller Hub redirect is neutralised: connected in-BT38 providers and
 manual governed dispatch remain available, while native eBay label purchase is
 shown as unavailable until a real governed adapter exists.
 
-No marketplace/provider calls, DB writes, reconciliation, scheduler or MCF path
-is introduced here.
+No marketplace/provider calls, inventory writes, reconciliation, scheduler or
+MCF path is introduced here.
 """
 from __future__ import annotations
 
 from urllib.parse import urlencode
 
-from flask import request, render_template
+from flask import jsonify, request, render_template
 from flask_login import login_required
 from sqlalchemy import func, tuple_
 from sqlalchemy.orm import joinedload
@@ -31,14 +33,17 @@ from governed_fbm_routes import (
     _platform,
     _route_state,
     _shipment_map,
+    _shipping_provider_options,
     _store_name,
 )
+from services.fbm_order_mapper import order_lines, parcel_from_db
 from services.fbm_shipping_state import provider_case_eligibility, shipment_confirmation_state
 
 
 _FBM_PAGE_SIZE = 15
 _FBM_MAX_EXPANDED = 300
 _FBM_DISCOVERY_MULTIPLIER = 4
+_FBM_MAX_SELECTED = 50
 
 
 def _requested_limit() -> int:
@@ -48,6 +53,22 @@ def _requested_limit() -> int:
         requested = _FBM_PAGE_SIZE
     requested = max(_FBM_PAGE_SIZE, requested)
     return min(_FBM_MAX_EXPANDED, ((requested + _FBM_PAGE_SIZE - 1) // _FBM_PAGE_SIZE) * _FBM_PAGE_SIZE)
+
+
+def _selected_order_ids() -> list[int]:
+    """Return only the explicit Shipping-options selection, capped defensively."""
+    raw_ids = str(request.args.get("order_ids") or "")
+    order_ids: list[int] = []
+    for value in raw_ids.split(","):
+        try:
+            order_id = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+        if order_id > 0 and order_id not in order_ids:
+            order_ids.append(order_id)
+        if len(order_ids) >= _FBM_MAX_SELECTED:
+            break
+    return order_ids
 
 
 def _profile_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMOrderProfile]:
@@ -200,13 +221,16 @@ def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
 
 
 def install_governed_fbm_page_alignment(app) -> None:
-    """Replace only the existing /fbm page read; all action endpoints stay put."""
+    """Bound the existing FBM page and Shipping-options read endpoints only."""
     if getattr(app, "_bt38_fbm_page_alignment_installed", False):
         return
 
-    endpoint = "governed_fbm.fbm_page"
-    if endpoint not in app.view_functions:
+    page_endpoint = "governed_fbm.fbm_page"
+    shipping_options_endpoint = "governed_fbm.fbm_shipping_options"
+    if page_endpoint not in app.view_functions:
         raise RuntimeError("governed FBM page endpoint is not registered")
+    if shipping_options_endpoint not in app.view_functions:
+        raise RuntimeError("governed FBM shipping-options endpoint is not registered")
 
     @login_required
     def bounded_fbm_page():
@@ -271,8 +295,77 @@ def install_governed_fbm_page_alignment(app) -> None:
         html = _neutralise_legacy_ebay_handoff(html)
         return _expand_control(html, visible_limit=visible_limit, has_more=has_more)
 
-    app.view_functions[endpoint] = bounded_fbm_page
+    @login_required
+    def bounded_shipping_options():
+        """Open Shipping options from persisted facts for only selected orders.
+
+        This initial modal read deliberately does not hydrate Amazon/eBay or call
+        Packlink. Exact marketplace/provider reads remain in the existing rate,
+        draft, purchase and dispatch actions where the user explicitly asks for
+        them.
+        """
+        order_ids = _selected_order_ids()
+        if not order_ids:
+            return jsonify({"success": False, "message": "Select at least one FBM order."}), 400
+
+        rows = (
+            db.session.query(MarketplaceOrder)
+            .filter(MarketplaceOrder.id.in_(order_ids))
+            .options(
+                joinedload(MarketplaceOrder.store),
+                joinedload(MarketplaceOrder.warehouse_stock),
+            )
+            .all()
+        )
+        by_id = {row.id: row for row in rows if _is_fbm_eligible(row)}
+        profiles = _profile_map(list(by_id.values()))
+        result = []
+
+        for order_id in order_ids:
+            row = by_id.get(order_id)
+            if row is None:
+                continue
+            key = (int(row.store_id), str(row.marketplace_order_id))
+            profile = profiles.get(key)
+            parcel = parcel_from_db(row)
+            quantity = sum(
+                max(1, int(getattr(line, "quantity", 1) or 1))
+                for line in order_lines(row)
+            )
+            result.append({
+                "id": row.id,
+                "marketplace_order_id": row.marketplace_order_id,
+                "platform": _platform(row),
+                "store_name": _store_name(row),
+                "sku": getattr(row, "sku", None),
+                "quantity": quantity,
+                "postcode": getattr(row, "ship_to_postcode", None),
+                "route_state": _route_state(row),
+                "is_prime": profile.is_prime if profile else None,
+                "prime_profile_error": None,
+                "parcel": parcel.to_dict(),
+                "providers": _shipping_provider_options(row, profile, None),
+            })
+
+        if not result:
+            return jsonify({"success": False, "message": "No selected orders are eligible for FBM shipping."}), 404
+
+        return jsonify({
+            "success": True,
+            "orders": result,
+            "selected_count": len(result),
+            "printing": {
+                "mode": "qz_tray",
+                "auto_print_after_purchase": True,
+                "printer_preference_required": True,
+                "fallback": "download_label",
+            },
+            "message": "Shipping routes and persisted DB parcel defaults prepared. Live provider reads remain deferred until an explicit shipping action.",
+        })
+
+    app.view_functions[page_endpoint] = bounded_fbm_page
+    app.view_functions[shipping_options_endpoint] = bounded_shipping_options
     app._bt38_fbm_page_alignment_installed = True
     app.logger.info(
-        "BT38 FBM page alignment installed: bounded latest-order discovery with 15-order expansion and in-workspace eBay capability gating"
+        "BT38 FBM alignment installed: bounded page discovery, selected-order Shipping options DB read, 15-order expansion and in-workspace eBay capability gating"
     )
