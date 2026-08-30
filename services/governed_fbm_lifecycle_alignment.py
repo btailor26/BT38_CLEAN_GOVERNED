@@ -84,13 +84,35 @@ def _amazon_buy_shipping_approved() -> bool:
 
 
 def bt38_owns_shipment(shipment) -> bool:
-    """Use the existing deterministic purchase key as shipment ownership proof."""
+    """Return whether BT38 has completed enough provider state to own shipment truth.
+
+    A Packlink draft is only preparation for provider payment. The deterministic
+    ``packlink_draft:`` key must not let an unpaid/unfinished draft override later
+    marketplace carrier/tracking truth. Once the existing post-purchase path has
+    persisted a paid label (or tracking), the same historical row can legitimately
+    become BT38-owned without creating or deleting another shipment record.
+    """
     if shipment is None:
         return False
     provider = _status(getattr(shipment, "provider", None))
     purchase_key = str(getattr(shipment, "purchase_key", None) or "").strip().lower()
+    purchase_status = _status(getattr(shipment, "purchase_status", None))
+    tracking = str(getattr(shipment, "tracking_number", None) or "").strip()
+    label_purchased_at = getattr(shipment, "label_purchased_at", None)
+
     if provider == "packlink":
-        return purchase_key.startswith("packlink_")
+        if not purchase_key.startswith("packlink_"):
+            return False
+        if purchase_key.startswith("packlink_draft:"):
+            return bool(
+                purchase_status in {"purchased", "label_ready_tracking_pending"}
+                and (label_purchased_at is not None or tracking)
+            )
+        return bool(
+            purchase_status in {"purchased", "label_ready_tracking_pending", "provider_event_received"}
+            or label_purchased_at is not None
+            or tracking
+        )
     if provider == "amazon_buy_shipping":
         return purchase_key.startswith("amazon_buy_shipping:")
     if provider == "manual":
@@ -326,7 +348,7 @@ def _patch_webhook_lifecycle() -> None:
         if inferred is None and business_event == "tracking":
             if any(token in flattened for token in ("out for delivery", "out_for_delivery")):
                 inferred = "out_for_delivery"
-            elif any(token in flattened for token in ("in transit", "in_transit")):
+            elif any(token in flattened for token for token in ("in transit", "in_transit")):
                 inferred = "in_transit"
             elif any(token in flattened for token in ("picked up", "picked_up", "collected", "carrier accepted", "received by carrier")):
                 inferred = "picked_up"
