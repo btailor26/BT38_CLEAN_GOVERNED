@@ -10,16 +10,26 @@ from typing import Any
 
 
 CONFIRMED_STATES = {"accepted", "in_transit", "out_for_delivery", "delivered"}
-_PACKLINK_PICKUP_PROOF = {
+_PACKLINK_ACCEPTED_PROOF = {
     "ACCEPTED",
     "CARRIER_ACCEPTED",
     "COLLECTED",
     "PICKED_UP",
     "PICKEDUP",
     "RECEIVED_BY_CARRIER",
+}
+_PACKLINK_MOVEMENT_PROOF = {
     "IN_TRANSIT",
     "OUT_FOR_DELIVERY",
+    "IN_DELIVERY",
+    "ON_ROUTE",
+}
+_PACKLINK_DELIVERY_PROOF = {
     "DELIVERED",
+    "DELIVERY_COMPLETE",
+    "DELIVERY_COMPLETED",
+    "SUCCESSFULLY_DELIVERED",
+    "COMPLETED_DELIVERY",
 }
 
 
@@ -35,32 +45,44 @@ def _normalise_provider_status(value: Any) -> str:
     )
 
 
-def _packlink_pickup_is_proven(shipment: Any) -> bool:
-    """Treat Packlink booking/label success as pre-pickup until a carrier scan exists.
+def _packlink_proven_state(shipment: Any) -> str | None:
+    """Return only a Packlink journey milestone proven by carrier scan state.
 
-    Packlink's ``shipment.carrier.success`` means the carrier/service handoff was
-    accepted by the platform; it is not proof that the physical parcel was
-    collected. Only an explicit persisted carrier journey state may turn Picked
-    up green.
+    Booking/label statuses such as ``shipment.carrier.success`` and presentation
+    text such as ``On track`` do not prove physical collection. This deliberately
+    ignores stale milestone timestamps unless the persisted provider status also
+    carries explicit carrier journey proof.
     """
-    provider = str(getattr(shipment, "provider", "") or "").strip().lower()
-    if provider != "packlink":
-        return bool(getattr(shipment, "carrier_accepted_at", None))
-
     status = _normalise_provider_status(getattr(shipment, "last_provider_status", None))
-    return status in _PACKLINK_PICKUP_PROOF
+    if status in _PACKLINK_DELIVERY_PROOF or status.endswith("_DELIVERED"):
+        return "delivered"
+    if status in _PACKLINK_MOVEMENT_PROOF or "IN_TRANSIT" in status:
+        return "in_transit"
+    if status in _PACKLINK_ACCEPTED_PROOF:
+        return "accepted"
+    return None
 
 
 def shipment_confirmation_state(shipment: Any, *, now: datetime | None = None) -> str:
     """Return a stable BT38 shipment confirmation state."""
     current = now or datetime.utcnow()
+    provider = str(getattr(shipment, "provider", "") or "").strip().lower()
 
-    if getattr(shipment, "delivered_at", None):
-        return "delivered"
-    if getattr(shipment, "first_movement_at", None):
-        return "in_transit"
-    if getattr(shipment, "carrier_accepted_at", None) and _packlink_pickup_is_proven(shipment):
-        return "accepted"
+    if provider == "packlink":
+        proven = _packlink_proven_state(shipment)
+        if proven == "delivered" and getattr(shipment, "delivered_at", None):
+            return "delivered"
+        if proven in {"in_transit", "delivered"} and getattr(shipment, "first_movement_at", None):
+            return "in_transit"
+        if proven in {"accepted", "in_transit", "delivered"} and getattr(shipment, "carrier_accepted_at", None):
+            return "accepted"
+    else:
+        if getattr(shipment, "delivered_at", None):
+            return "delivered"
+        if getattr(shipment, "first_movement_at", None):
+            return "in_transit"
+        if getattr(shipment, "carrier_accepted_at", None):
+            return "accepted"
 
     due = getattr(shipment, "handover_due_at", None)
     if due and current > due:
