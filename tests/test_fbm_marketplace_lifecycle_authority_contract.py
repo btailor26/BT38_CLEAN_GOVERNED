@@ -8,11 +8,27 @@ AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
 
 
-def test_existing_purchase_key_is_the_provider_ownership_discriminator():
+def test_existing_purchase_key_and_completed_provider_state_discriminate_ownership():
     assert 'purchase_key.startswith("packlink_")' in ALIGNMENT
+    assert 'purchase_key.startswith("packlink_draft:")' in ALIGNMENT
+    assert 'purchase_status in {"purchased", "label_ready_tracking_pending"}' in ALIGNMENT
+    assert 'label_purchased_at is not None or tracking' in ALIGNMENT
     assert 'purchase_key.startswith("amazon_buy_shipping:")' in ALIGNMENT
     assert 'purchase_key.startswith("manual:")' in ALIGNMENT
     assert 'if bt38_owns_shipment(shipment)' in ALIGNMENT
+
+
+def test_unpaid_packlink_draft_cannot_override_marketplace_tracking_truth():
+    ownership = ALIGNMENT.split('def bt38_owns_shipment(shipment) -> bool:', 1)[1].split('\ndef _marketplace_proxy(order):', 1)[0]
+    draft_rule = ownership.split('if purchase_key.startswith("packlink_draft:"):', 1)[1].split('\n        return bool(', 1)[0]
+    assert 'pending_provider_payment' not in draft_rule
+    assert 'purchase_status in {"purchased", "label_ready_tracking_pending"}' in draft_rule
+    assert 'label_purchased_at is not None or tracking' in draft_rule
+
+    shipment_map = ALIGNMENT.split('def aligned_shipment_map(rows):', 1)[1].split('\n    def aligned_shipping_mode(', 1)[0]
+    assert 'if bt38_owns_shipment(shipment):' in shipment_map
+    assert 'marketplace = _marketplace_proxy(row)' in shipment_map
+    assert 'result[key] = marketplace' in shipment_map
 
 
 def test_marketplace_owned_shipments_use_persisted_order_truth_not_provider_status():
