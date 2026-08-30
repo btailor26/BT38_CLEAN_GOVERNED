@@ -91,7 +91,7 @@
         form.className = 'p-3 border-bottom';
         form.setAttribute('role', 'search');
         form.innerHTML = '<div class="d-flex gap-2" style="max-width:760px">' +
-            '<input id="bt38FbmSearchInput" class="form-control" type="search" autocomplete="off" ' +
+            '<input id="bt38FbmSearchInput" class="form-control" name="q" type="search" autocomplete="off" ' +
             'placeholder="Search by order, SKU, product, marketplace, postcode, carrier or tracking..." aria-label="Search FBM orders">' +
             '<button class="btn btn-dark px-4" type="submit">Search</button>' +
             '</div><div id="bt38FbmSearchResult" class="small text-muted mt-2 d-none"></div>';
@@ -99,14 +99,28 @@
 
         const input = form.querySelector('#bt38FbmSearchInput');
         const result = form.querySelector('#bt38FbmSearchResult');
-        const rows = Array.from(table.querySelectorAll('.fbm-order-row'));
+
+        // Match Warehouse's local-filter model: cache server-rendered row text once,
+        // then search that bounded in-memory cache. No DB, marketplace, provider,
+        // shipment-status or network request is allowed from this search path.
+        const rows = Array.from(table.querySelectorAll('.fbm-order-row')).map(element => ({
+            el: element,
+            text: String(element.textContent || '').trim().toLowerCase(),
+            dataset: Object.assign({}, element.dataset)
+        }));
+
+        function rowMatches(row, query) {
+            if (!query) return true;
+            const haystack = `${row.text} ${Object.values(row.dataset).join(' ')}`.toLowerCase();
+            return haystack.includes(query);
+        }
 
         function applySearch() {
             const query = String(input.value || '').trim().toLowerCase();
             let visible = 0;
             rows.forEach(row => {
-                const match = !query || String(row.textContent || '').toLowerCase().includes(query);
-                row.classList.toggle('d-none', !match);
+                const match = rowMatches(row, query);
+                row.el.hidden = !match;
                 if (match) visible += 1;
             });
             result.classList.toggle('d-none', !query);
@@ -115,9 +129,11 @@
 
         form.addEventListener('submit', event => {
             event.preventDefault();
+            event.stopPropagation();
             applySearch();
         });
         input.addEventListener('input', applySearch);
+        input.addEventListener('change', applySearch);
     }
 
     function alignPersistedLifecycle() {
