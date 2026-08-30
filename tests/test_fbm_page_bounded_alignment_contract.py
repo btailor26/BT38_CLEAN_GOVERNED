@@ -64,6 +64,14 @@ def test_ebay_shipping_stays_inside_fbm_and_does_not_claim_native_label_capabili
     assert "window.location.assign" not in ALIGNMENT
 
 
+def test_ebay_shipping_observer_is_disabled_before_tracking_journey_script_runs():
+    neutraliser = ALIGNMENT.split("def _neutralise_legacy_ebay_handoff", 1)[1].split("def _selected_row_parcel", 1)[0]
+    assert 'marker = \'id="fbmShippingOrders"\'' in neutraliser
+    assert 'data-ebay-shipping-handoff-installed="1"' in neutraliser
+    assert "html.replace(" in neutraliser
+    assert "return html" in neutraliser
+
+
 def test_ebay_shipping_options_open_without_amazon_profile_or_warehouse_prefetch():
     shipping_handler = ALIGNMENT.split("def bounded_shipping_options", 1)[1]
     assert ".options(joinedload(MarketplaceOrder.store))" in shipping_handler
