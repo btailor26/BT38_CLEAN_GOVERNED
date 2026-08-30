@@ -30,8 +30,8 @@ def install_governed_order_clarity_alignment(app) -> None:
         return
 
     # Install before governed_fbm_page_alignment binds its view functions. The
-    # lifecycle module patches only existing governed authorities: MarketplaceOrder
-    # remains DB truth, FBMShipment remains supplemental BT38-owned shipment state.
+    # lifecycle module patches only existing governed authorities: canonical
+    # marketplace order state remains DB truth and FBMShipment stays supplemental.
     from services.governed_fbm_lifecycle_alignment import (
         install_governed_fbm_lifecycle_alignment,
     )
