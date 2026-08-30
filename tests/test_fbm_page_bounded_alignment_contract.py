@@ -39,9 +39,11 @@ def test_fbm_page_batches_profile_and_shipment_reads_instead_of_n_plus_one():
 
 
 def test_fbm_alignment_keeps_existing_endpoint_template_and_action_routes():
-    assert 'endpoint = "governed_fbm.fbm_page"' in ALIGNMENT
+    assert 'page_endpoint = "governed_fbm.fbm_page"' in ALIGNMENT
+    assert 'shipping_options_endpoint = "governed_fbm.fbm_shipping_options"' in ALIGNMENT
     assert 'render_template(\n            "fbm.html"' in ALIGNMENT
-    assert "app.view_functions[endpoint] = bounded_fbm_page" in ALIGNMENT
+    assert "app.view_functions[page_endpoint] = bounded_fbm_page" in ALIGNMENT
+    assert "app.view_functions[shipping_options_endpoint] = bounded_shipping_options" in ALIGNMENT
     assert "install_governed_fbm_page_alignment(app)" in INSTALLER
     assert '@governed_fbm_bp.get("/fbm/shipping-options")' in LEGACY_ROUTE
     assert '@governed_fbm_bp.post("/fbm/orders/<int:order_id>/packlink/rates")' in LEGACY_ROUTE
