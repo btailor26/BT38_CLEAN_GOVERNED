@@ -78,7 +78,50 @@
         String(stateClass || '').split(/\s+/).filter(Boolean).forEach(name => badge.classList.add(name));
     }
 
+    function installFbmSearch() {
+        if (document.getElementById('bt38FbmSearchForm')) return;
+        const table = document.querySelector('.fbm-order-row')?.closest('table');
+        if (!table) return;
+        const card = table.closest('.card');
+        const tableWrap = table.closest('.table-responsive');
+        if (!card || !tableWrap) return;
+
+        const form = document.createElement('form');
+        form.id = 'bt38FbmSearchForm';
+        form.className = 'p-3 border-bottom';
+        form.setAttribute('role', 'search');
+        form.innerHTML = '<div class="d-flex gap-2" style="max-width:760px">' +
+            '<input id="bt38FbmSearchInput" class="form-control" type="search" autocomplete="off" ' +
+            'placeholder="Search by order, SKU, product, marketplace, postcode, carrier or tracking..." aria-label="Search FBM orders">' +
+            '<button class="btn btn-dark px-4" type="submit">Search</button>' +
+            '</div><div id="bt38FbmSearchResult" class="small text-muted mt-2 d-none"></div>';
+        card.insertBefore(form, tableWrap);
+
+        const input = form.querySelector('#bt38FbmSearchInput');
+        const result = form.querySelector('#bt38FbmSearchResult');
+        const rows = Array.from(table.querySelectorAll('.fbm-order-row'));
+
+        function applySearch() {
+            const query = String(input.value || '').trim().toLowerCase();
+            let visible = 0;
+            rows.forEach(row => {
+                const match = !query || String(row.textContent || '').toLowerCase().includes(query);
+                row.classList.toggle('d-none', !match);
+                if (match) visible += 1;
+            });
+            result.classList.toggle('d-none', !query);
+            if (query) result.textContent = `${visible} matching order${visible === 1 ? '' : 's'} in the loaded FBM list`;
+        }
+
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            applySearch();
+        });
+        input.addEventListener('input', applySearch);
+    }
+
     function alignPersistedLifecycle() {
+        installFbmSearch();
         document.querySelectorAll('.fbm-order-row').forEach(row => {
             const status = String(row.dataset.lifecycleStatus || '').trim().toLowerCase();
             const orderCell = row.children && row.children[2];
