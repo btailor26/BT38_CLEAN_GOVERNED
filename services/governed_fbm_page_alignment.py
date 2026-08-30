@@ -211,6 +211,18 @@ def _selected_row_parcel(row: MarketplaceOrder) -> dict:
     }
 
 
+def _empty_selected_parcel() -> dict:
+    """Keep eBay modal opening independent from Warehouse/profile reads."""
+    return {
+        "weight_kg": None,
+        "length_cm": None,
+        "width_cm": None,
+        "height_cm": None,
+        "source": "selected_row_deferred_parcel",
+        "complete": False,
+    }
+
+
 def _expand_control(html: str, *, visible_limit: int, has_more: bool) -> str:
     """Add the bounded expansion control to the existing FBM card only."""
     if not html:
@@ -338,22 +350,24 @@ def install_governed_fbm_page_alignment(app) -> None:
         rows = (
             db.session.query(MarketplaceOrder)
             .filter(MarketplaceOrder.id.in_(order_ids))
-            .options(
-                joinedload(MarketplaceOrder.store),
-                joinedload(MarketplaceOrder.warehouse_stock),
-            )
+            .options(joinedload(MarketplaceOrder.store))
             .all()
         )
         by_id = {row.id: row for row in rows if _is_fbm_eligible(row)}
-        profiles = _profile_map(list(by_id.values()))
+        amazon_rows = [
+            row for row in by_id.values()
+            if _platform(row).strip().lower() == "amazon"
+        ]
+        profiles = _profile_map(amazon_rows)
         result = []
 
         for order_id in order_ids:
             row = by_id.get(order_id)
             if row is None:
                 continue
+            platform = _platform(row).strip().lower()
             key = (int(row.store_id), str(row.marketplace_order_id))
-            profile = profiles.get(key)
+            profile = profiles.get(key) if platform == "amazon" else None
             try:
                 quantity = max(1, int(getattr(row, "quantity", 1) or 1))
             except (TypeError, ValueError):
@@ -369,7 +383,7 @@ def install_governed_fbm_page_alignment(app) -> None:
                 "route_state": _route_state(row),
                 "is_prime": profile.is_prime if profile else None,
                 "prime_profile_error": None,
-                "parcel": _selected_row_parcel(row),
+                "parcel": _selected_row_parcel(row) if platform == "amazon" else _empty_selected_parcel(),
                 "providers": _workspace_provider_options(row, profile),
             })
 
