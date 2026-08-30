@@ -4,10 +4,10 @@
  * handler cannot run first.
  *
  * Journey colour rule:
- * - label/tracking exists but carrier pickup is not confirmed => Picked up RED
- * - carrier pickup/acceptance is persisted => Picked up GREEN
- * - no label/tracking yet => neutral
- * The browser never promotes pickup from a timer or from printing alone.
+ * - label/tracking stage reached but carrier pickup is not confirmed => RED
+ * - carrier pickup/acceptance is persisted from the journey => GREEN
+ * - no label/tracking stage yet => neutral
+ * A printed/ready label never proves carrier pickup by itself.
  */
 (function (document) {
     'use strict';
@@ -62,7 +62,8 @@
         return 'bg-light text-dark border';
     }
 
-    function hasTracking(row) {
+    function labelOrTrackingStageReached(row) {
+        if (String(row && row.dataset ? row.dataset.labelReady || '' : '') === '1') return true;
         const shipmentCell = row && row.children ? row.children[7] : null;
         if (!shipmentCell) return false;
         return Array.from(shipmentCell.querySelectorAll('code')).some(code => {
@@ -101,9 +102,10 @@
             const pickupAlreadyConfirmed = Boolean(pickedUp && pickedUp.classList.contains('bg-success'));
             if (pickupAlreadyConfirmed || pickupStates.has(status)) {
                 setBadgeState(pickedUp, 'bg-success');
-            } else if (hasTracking(row)) {
+                if (pickedUp) pickedUp.title = 'Carrier pickup confirmed by persisted journey state';
+            } else if (labelOrTrackingStageReached(row)) {
                 setBadgeState(pickedUp, 'bg-danger');
-                if (pickedUp) pickedUp.title = 'Label/tracking recorded · carrier pickup not yet confirmed';
+                if (pickedUp) pickedUp.title = 'Label/tracking ready · waiting for actual carrier pickup';
             }
 
             if (movementStates.has(status)) setBadgeState(inTransit, 'bg-success');
