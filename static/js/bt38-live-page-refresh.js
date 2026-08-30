@@ -698,3 +698,218 @@
     installFriendlyWording();
   }
 })();
+
+// Shared FBM-style bounded list bar for the main operational list pages.
+// This is presentation/paging alignment only. It never performs marketplace,
+// provider, shipment-status or background reads. Warehouse keeps its existing
+// server per_page path; other pages reveal only rows already present in the DOM.
+(function () {
+  'use strict';
+
+  if (window.bt38SharedListBarInstalled) return;
+  window.bt38SharedListBarInstalled = true;
+
+  const step = 15;
+  const localHiddenClass = 'bt38-shared-list-hidden';
+  const supportedPaths = new Set([
+    '/warehouse',
+    '/amazon-fba-stock',
+    '/product-linking',
+    '/stores',
+    '/listings',
+    '/groups',
+    '/admin/system-activity'
+  ]);
+
+  function injectStyles() {
+    if (document.getElementById('bt38SharedListBarStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'bt38SharedListBarStyles';
+    style.textContent = `
+      .bt38-shared-list-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:0 0 10px 10px;box-shadow:0 4px 10px rgba(15,23,42,.04);font-size:12px;color:#6b7280}
+      .bt38-shared-list-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+      .bt38-shared-list-bar .btn{white-space:nowrap}
+      .${localHiddenClass}{display:none!important}
+      @media(max-width:700px){.bt38-shared-list-bar{align-items:flex-start}.bt38-shared-list-actions{width:100%;justify-content:flex-end}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function cleanPath() {
+    const path = String(window.location.pathname || '').replace(/\/$/, '');
+    return path || '/';
+  }
+
+  function pageLabel() {
+    const path = cleanPath();
+    if (document.getElementById('mcf-orders-body')) return 'MCF orders';
+    if (path === '/warehouse') return 'warehouse items';
+    if (path === '/amazon-fba-stock') return 'FBA records';
+    if (path === '/product-linking') return 'product groups';
+    if (path === '/stores') return 'stores';
+    if (path === '/listings') return 'listings';
+    if (path === '/groups') return 'groups';
+    if (path === '/admin/system-activity') return 'activity records';
+    return 'records';
+  }
+
+  function directRows(table) {
+    if (!table || !table.tBodies || !table.tBodies.length) return [];
+    return Array.from(table.tBodies[0].rows).filter(function (row) {
+      if (row.id === 'mcf-empty-row' || row.id === 'mcf-no-match-row') return false;
+      if (row.querySelector('td[colspan]') && row.cells.length === 1) return false;
+      return true;
+    });
+  }
+
+  function primaryTable() {
+    if (document.querySelector('.fbm-order-row')) return null; // FBM owns its canonical bar.
+    const mcf = document.getElementById('mcf-orders-body');
+    if (mcf) return mcf.closest('table');
+    const warehouse = document.querySelector('[data-bt38-page="warehouse"] .bt38-stock-table');
+    if (warehouse) return warehouse;
+    const productLinking = document.querySelector('[data-bt38-page="productLinking"] #warehouseDataContainer table');
+    if (productLinking) return productLinking;
+    if (!supportedPaths.has(cleanPath())) return null;
+    const candidates = Array.from(document.querySelectorAll('main table')).filter(function (table) {
+      return !table.closest('.modal,.offcanvas') && directRows(table).length > 0;
+    });
+    candidates.sort(function (a, b) { return directRows(b).length - directRows(a).length; });
+    return candidates[0] || null;
+  }
+
+  function barHost(table) {
+    if (!table) return null;
+    const shell = table.closest('.bt38-table-shell,.card');
+    if (shell) return shell;
+    return table.closest('.table-responsive')?.parentElement || table.parentElement;
+  }
+
+  function stateKey() {
+    return `bt38:listbar:${cleanPath()}:limit`;
+  }
+
+  function readLocalLimit() {
+    try {
+      const value = Number.parseInt(window.sessionStorage.getItem(stateKey()) || String(step), 10);
+      return Math.max(step, Number.isFinite(value) ? value : step);
+    } catch (error) {
+      return step;
+    }
+  }
+
+  function saveLocalLimit(value) {
+    try { window.sessionStorage.setItem(stateKey(), String(value)); } catch (error) {}
+  }
+
+  function createBar(host) {
+    let bar = host.querySelector(':scope > .bt38-shared-list-bar');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.className = 'bt38-shared-list-bar';
+    bar.innerHTML = '<span class="bt38-shared-list-copy"></span><div class="bt38-shared-list-actions"><button class="btn btn-sm btn-outline-secondary bt38-list-latest" type="button">Show latest 15</button><button class="btn btn-sm btn-outline-primary bt38-list-more" type="button">Show 15 more</button></div>';
+    host.appendChild(bar);
+    return bar;
+  }
+
+  function renderCopy(bar, shown, total, label, hasMore) {
+    const copy = bar.querySelector('.bt38-shared-list-copy');
+    copy.textContent = hasMore
+      ? `Showing the latest ${shown} ${label}. Older ${label} show only when expanded.`
+      : `Showing ${shown} ${label}.`;
+    const more = bar.querySelector('.bt38-list-more');
+    more.disabled = !hasMore;
+  }
+
+  function installWarehouseBar(table, host, bar) {
+    if (bar.dataset.bt38Mode === 'warehouse') return;
+    bar.dataset.bt38Mode = 'warehouse';
+    const rows = directRows(table);
+    const params = new URLSearchParams(window.location.search);
+    const current = Math.max(step, Number.parseInt(params.get('per_page') || String(rows.length || step), 10) || step);
+    const countText = String(document.querySelector('.bt38-table-count')?.textContent || '');
+    const totalMatch = countText.match(/(\d[\d,]*)/);
+    const total = totalMatch ? Number.parseInt(totalMatch[1].replace(/,/g, ''), 10) : rows.length;
+    const shown = Math.min(current, total || rows.length);
+    renderCopy(bar, shown, total, pageLabel(), total > shown);
+
+    function go(limit) {
+      const next = new URLSearchParams(window.location.search);
+      next.set('per_page', String(limit));
+      next.set('page', '1');
+      window.location.assign(`${window.location.pathname}?${next.toString()}#bt38SharedListBar`);
+    }
+
+    bar.id = 'bt38SharedListBar';
+    bar.querySelector('.bt38-list-latest').addEventListener('click', function () { go(step); });
+    bar.querySelector('.bt38-list-more').addEventListener('click', function () { go(Math.min(total || current + step, current + step)); });
+  }
+
+  function installMcfBar(table, host, bar) {
+    if (bar.dataset.bt38Mode === 'mcf') return;
+    bar.dataset.bt38Mode = 'mcf';
+    const nativeSize = document.getElementById('mcf-page-size');
+    const nativeFooter = nativeSize?.closest('.card-footer');
+    if (nativeFooter) nativeFooter.classList.add('d-none');
+    if (nativeSize) {
+      nativeSize.value = '100';
+      nativeSize.dispatchEvent(new Event('input', {bubbles:true}));
+    }
+
+    function apply() {
+      const rows = directRows(table).filter(function (row) { return !row.classList.contains('d-none'); });
+      const limit = readLocalLimit();
+      rows.forEach(function (row, index) { row.classList.toggle(localHiddenClass, index >= limit); });
+      renderCopy(bar, Math.min(limit, rows.length), rows.length, pageLabel(), rows.length > limit);
+    }
+
+    bar.querySelector('.bt38-list-latest').addEventListener('click', function () { saveLocalLimit(step); apply(); });
+    bar.querySelector('.bt38-list-more').addEventListener('click', function () { saveLocalLimit(readLocalLimit() + step); apply(); });
+    ['mcf-status-filter', 'mcf-search'].forEach(function (id) {
+      const control = document.getElementById(id);
+      if (control) control.addEventListener('input', function () { window.setTimeout(apply, 0); });
+    });
+    apply();
+  }
+
+  function installLocalBar(table, host, bar) {
+    if (bar.dataset.bt38Mode === 'local') return;
+    bar.dataset.bt38Mode = 'local';
+
+    function apply() {
+      const rows = directRows(table);
+      const limit = readLocalLimit();
+      rows.forEach(function (row, index) { row.classList.toggle(localHiddenClass, index >= limit); });
+      renderCopy(bar, Math.min(limit, rows.length), rows.length, pageLabel(), rows.length > limit);
+    }
+
+    bar.querySelector('.bt38-list-latest').addEventListener('click', function () { saveLocalLimit(step); apply(); });
+    bar.querySelector('.bt38-list-more').addEventListener('click', function () { saveLocalLimit(readLocalLimit() + step); apply(); });
+    apply();
+  }
+
+  function install() {
+    const table = primaryTable();
+    if (!table || table.dataset.bt38SharedListBar === '1') return false;
+    const host = barHost(table);
+    if (!host) return false;
+    injectStyles();
+    table.dataset.bt38SharedListBar = '1';
+    const bar = createBar(host);
+    if (cleanPath() === '/warehouse') installWarehouseBar(table, host, bar);
+    else if (document.getElementById('mcf-orders-body')) installMcfBar(table, host, bar);
+    else installLocalBar(table, host, bar);
+    return true;
+  }
+
+  function installWithAsyncSupport() {
+    if (install()) return;
+    const observer = new MutationObserver(function () {
+      if (install()) observer.disconnect();
+    });
+    observer.observe(document.body, {childList:true, subtree:true});
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installWithAsyncSupport, {once:true});
+  else installWithAsyncSupport();
+})();
