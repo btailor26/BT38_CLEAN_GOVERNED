@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = ROOT / "services" / "governed_ebay_native_shipping_alignment.py"
 UI = ROOT / "static" / "js" / "fbm_ebay_shipping_alignment.js"
+BOOTSTRAP = ROOT / "static" / "js" / "fbm_tracking_journey.js"
+LEGACY_TRACKING = ROOT / "static" / "js" / "fbm_tracking_journey_legacy.js"
 MAIN = ROOT / "main.py"
 FBM = ROOT / "governed_fbm_routes.py"
 MODELS = ROOT / "fbm_models.py"
@@ -64,6 +66,18 @@ def test_ebay_ui_supersedes_seller_hub_handoff_in_capture_phase():
     assert "}, true);" in ui
     assert "mesh/ord/details" not in ui
     assert "window.location.assign" not in ui
+
+
+def test_native_ebay_handler_is_loaded_before_preserved_legacy_tracking_handlers():
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    legacy = LEGACY_TRACKING.read_text(encoding="utf-8")
+
+    assert "/static/js/fbm_ebay_shipping_alignment.js" in bootstrap
+    assert "/static/js/fbm_tracking_journey_legacy.js" in bootstrap
+    assert "nativeScript.onload = loadLegacy" in bootstrap
+    assert bootstrap.index("fbm_ebay_shipping_alignment.js") < bootstrap.index("fbm_tracking_journey_legacy.js")
+    assert "openEbayShipping" in legacy
+    assert "window.location.assign" in legacy
 
 
 def test_ebay_label_reuses_existing_qz_print_bridge_and_is_installed_after_fbm_alignment():
