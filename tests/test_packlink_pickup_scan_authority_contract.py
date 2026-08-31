@@ -59,7 +59,9 @@ def test_runtime_alignment_rejects_descriptive_delivery_text_as_carrier_proof():
     assert '"IN_TRANSIT" in value' not in authority
 
 
-def test_packlink_authority_patch_is_installed_on_existing_callback_path():
+def test_packlink_authority_patch_is_installed_on_existing_callback_path_without_parallel_runtime():
     install = ALIGNMENT.split("def install_governed_fbm_lifecycle_alignment(app) -> None:", 1)[1]
     assert "_patch_packlink_tracking_authority()" in install
-    assert "Thread(" not in authority if False else True
+    assert "Thread(" not in ALIGNMENT
+    assert "Queue(" not in ALIGNMENT
+    assert "setInterval(" not in ALIGNMENT
