@@ -2,8 +2,7 @@
 
 No second order import, shipment table, worker, poller or marketplace write path
 is created here. Marketplace order state stays canonical in the existing DB row.
-Provider shipment state may drive the journey only when the existing purchase key
-proves BT38 created that shipment.
+Provider shipment state may drive the journey only from persisted shipment facts.
 """
 from __future__ import annotations
 
@@ -70,10 +69,54 @@ _JOURNEY_STATUS_RANK = {
     "out_for_delivery": 3,
     "delivered": 4,
 }
+_PROVIDER_DELIVERED_STATES = {
+    "DELIVERED",
+    "DELIVERY_COMPLETE",
+    "DELIVERY_COMPLETED",
+    "SUCCESSFULLY_DELIVERED",
+    "COMPLETED_DELIVERY",
+}
+_PROVIDER_MOVEMENT_STATES = {
+    "IN_TRANSIT",
+    "OUT_FOR_DELIVERY",
+    "IN_DELIVERY",
+    "ON_ROUTE",
+}
+_PROVIDER_ACCEPTED_STATES = {
+    "ACCEPTED",
+    "CARRIER_ACCEPTED",
+    "COLLECTED",
+    "PICKED_UP",
+    "PICKEDUP",
+    "RECEIVED_BY_CARRIER",
+}
 
 
 def _status(value) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _provider_status(value) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .upper()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace("/", "_")
+    )
+
+
+def _canonical_provider_milestone(value) -> str | None:
+    normalized = _provider_status(value)
+    if normalized in _PROVIDER_DELIVERED_STATES or normalized.endswith("_DELIVERED"):
+        return "delivered"
+    if normalized in _PROVIDER_MOVEMENT_STATES:
+        return "in_transit"
+    if normalized in _PROVIDER_ACCEPTED_STATES:
+        return "accepted"
+    return None
 
 
 def _can_advance_routine_status(current, incoming) -> bool:
@@ -127,7 +170,7 @@ def bt38_owns_shipment(shipment) -> bool:
 
 
 def _marketplace_proxy(order):
-    """Expose persisted marketplace shipment facts through the existing view contract."""
+    """Expose marketplace tracking for display without inventing carrier milestones."""
     status = _status(getattr(order, "status", None))
     tracking = str(getattr(order, "tracking_number", None) or "").strip() or None
     carrier = str(getattr(order, "carrier", None) or "").strip() or None
@@ -136,7 +179,6 @@ def _marketplace_proxy(order):
     if not any((tracking, carrier, shipped_at, has_lifecycle)):
         return None
 
-    changed_at = getattr(order, "updated_at", None) or shipped_at or getattr(order, "created_at", None)
     return SimpleNamespace(
         id=None,
         provider="marketplace",
@@ -152,9 +194,9 @@ def _marketplace_proxy(order):
         label_format=None,
         label_purchased_at=None,
         handover_due_at=None,
-        carrier_accepted_at=changed_at if status in _PICKUP_STATES else None,
-        first_movement_at=changed_at if status in _MOVEMENT_STATES else None,
-        delivered_at=changed_at if status == "delivered" else None,
+        carrier_accepted_at=None,
+        first_movement_at=None,
+        delivered_at=None,
         status=status or "marketplace",
         marketplace_confirmed_at=shipped_at,
         marketplace_confirmation_status="marketplace_authoritative",
@@ -241,7 +283,10 @@ def _patch_fbm_page_module() -> None:
                 continue
             key = (int(row.store_id), str(row.marketplace_order_id))
             shipment = existing.get(key)
-            if bt38_owns_shipment(shipment):
+            # A persisted FBMShipment is DB truth for physical shipment facts.
+            # Ownership gates provider actions, not whether persisted journey
+            # evidence is allowed to render.
+            if shipment is not None:
                 result[key] = shipment
                 continue
             marketplace = _marketplace_proxy(row)
@@ -298,7 +343,7 @@ def _patch_fbm_page_module() -> None:
             shipment = item.get("shipment") if isinstance(item, dict) else None
             label_ready = bool(
                 shipment
-                and bt38_owns_shipment(shipment)
+                and _status(getattr(shipment, "provider", None)) != "marketplace"
                 and (
                     getattr(shipment, "label_url", None)
                     or getattr(shipment, "label_purchased_at", None)
@@ -480,6 +525,37 @@ def _patch_webhook_lifecycle() -> None:
     execution._bt38_marketplace_lifecycle_patched = True
 
 
+def _patch_provider_lifecycle_persistence() -> None:
+    """Persist only the provider milestone actually observed in the DB."""
+    import services.fbm_post_purchase as post_purchase
+    import services.fbm_packlink_callback as callback
+
+    if getattr(post_purchase, "_bt38_exact_lifecycle_patched", False):
+        return
+
+    def aligned_reconcile(shipment, *, observed_at=None):
+        observed = observed_at or getattr(shipment, "last_provider_checked_at", None) or datetime.utcnow()
+        milestone = _canonical_provider_milestone(getattr(shipment, "last_provider_status", None))
+
+        if milestone == "delivered":
+            shipment.delivered_at = getattr(shipment, "delivered_at", None) or observed
+            shipment.status = "delivered"
+        elif milestone == "in_transit":
+            shipment.first_movement_at = getattr(shipment, "first_movement_at", None) or observed
+            if getattr(shipment, "delivered_at", None) is None:
+                shipment.status = "in_transit"
+        elif milestone == "accepted":
+            shipment.carrier_accepted_at = getattr(shipment, "carrier_accepted_at", None) or observed
+            if getattr(shipment, "delivered_at", None) is None and getattr(shipment, "first_movement_at", None) is None:
+                shipment.status = "accepted"
+
+        return shipment.status
+
+    post_purchase.reconcile_provider_lifecycle_state = aligned_reconcile
+    callback.reconcile_provider_lifecycle_state = aligned_reconcile
+    post_purchase._bt38_exact_lifecycle_patched = True
+
+
 def _patch_packlink_tracking_authority() -> None:
     import services.fbm_packlink_callback as callback
 
@@ -493,48 +569,12 @@ def _patch_packlink_tracking_authority() -> None:
             for text in texts
             if text
         ]
-        delivered_states = {
-            "DELIVERED",
-            "DELIVERY_COMPLETE",
-            "DELIVERY_COMPLETED",
-            "SUCCESSFULLY_DELIVERED",
-            "COMPLETED_DELIVERY",
-        }
-        movement_states = {
-            "IN_TRANSIT",
-            "OUT_FOR_DELIVERY",
-            "IN_DELIVERY",
-            "ON_ROUTE",
-        }
-        accepted_states = {
-            "ACCEPTED",
-            "CARRIER_ACCEPTED",
-            "COLLECTED",
-            "PICKED_UP",
-            "PICKEDUP",
-            "RECEIVED_BY_CARRIER",
-        }
 
-        if any(value in delivered_states or value.endswith("_DELIVERED") for value in normalized):
+        if any(value in _PROVIDER_DELIVERED_STATES or value.endswith("_DELIVERED") for value in normalized):
             return "DELIVERED"
-        if any(
-            value in movement_states
-            or value.endswith("_IN_TRANSIT")
-            or value.endswith("_OUT_FOR_DELIVERY")
-            or value.endswith("_IN_DELIVERY")
-            or value.endswith("_ON_ROUTE")
-            for value in normalized
-        ):
+        if any(value in _PROVIDER_MOVEMENT_STATES for value in normalized):
             return "IN_TRANSIT"
-        if any(
-            value in accepted_states
-            or value.endswith("_CARRIER_ACCEPTED")
-            or value.endswith("_COLLECTED")
-            or value.endswith("_PICKED_UP")
-            or value.endswith("_PICKEDUP")
-            or value.endswith("_RECEIVED_BY_CARRIER")
-            for value in normalized
-        ):
+        if any(value in _PROVIDER_ACCEPTED_STATES for value in normalized):
             return "ACCEPTED"
         return None
 
@@ -721,6 +761,58 @@ def _wrap_provider_routes(app) -> None:
 
         app.view_functions[packlink_endpoint] = guarded_packlink_status
 
+    amazon_tracking_endpoint = "governed_fbm.amazon_tracking"
+    if amazon_tracking_endpoint in app.view_functions:
+        original_amazon_tracking = app.view_functions[amazon_tracking_endpoint]
+
+        @login_required
+        def aligned_amazon_tracking(shipment_id: int):
+            shipment = db.session.get(FBMShipment, shipment_id)
+            if shipment is None or _status(getattr(shipment, "provider", None)) != "amazon_buy_shipping":
+                return original_amazon_tracking(shipment_id)
+
+            previous = {
+                "status": shipment.status,
+                "carrier_accepted_at": shipment.carrier_accepted_at,
+                "first_movement_at": shipment.first_movement_at,
+                "delivered_at": shipment.delivered_at,
+            }
+            response = original_amazon_tracking(shipment_id)
+            if isinstance(response, tuple):
+                return response
+            payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+            if not isinstance(payload, dict) or payload.get("success") is not True:
+                return response
+
+            provider_status = payload.get("provider_status")
+            milestone = _canonical_provider_milestone(provider_status)
+            observed = shipment.last_provider_checked_at or datetime.utcnow()
+
+            # Undo broad route inference first, then persist only the explicit
+            # milestone observed in this provider readback.
+            shipment.status = previous["status"]
+            shipment.carrier_accepted_at = previous["carrier_accepted_at"]
+            shipment.first_movement_at = previous["first_movement_at"]
+            shipment.delivered_at = previous["delivered_at"]
+
+            if milestone == "delivered":
+                shipment.delivered_at = shipment.delivered_at or observed
+                shipment.status = "delivered"
+            elif milestone == "in_transit":
+                shipment.first_movement_at = shipment.first_movement_at or observed
+                if shipment.delivered_at is None:
+                    shipment.status = "in_transit"
+            elif milestone == "accepted":
+                shipment.carrier_accepted_at = shipment.carrier_accepted_at or observed
+                if shipment.delivered_at is None and shipment.first_movement_at is None:
+                    shipment.status = "accepted"
+
+            db.session.commit()
+            payload["state"] = __import__("services.fbm_shipping_state", fromlist=["shipment_confirmation_state"]).shipment_confirmation_state(shipment)
+            return jsonify(payload)
+
+        app.view_functions[amazon_tracking_endpoint] = aligned_amazon_tracking
+
     for endpoint in (
         "governed_fbm.amazon_rates",
         "governed_fbm.amazon_purchase",
@@ -836,6 +928,7 @@ def install_governed_fbm_lifecycle_alignment(app) -> None:
         return
 
     _patch_webhook_lifecycle()
+    _patch_provider_lifecycle_persistence()
     _patch_packlink_tracking_authority()
     _patch_amazon_profile_lifecycle()
     _patch_routine_marketplace_readback()
@@ -845,5 +938,5 @@ def install_governed_fbm_lifecycle_alignment(app) -> None:
 
     app._bt38_fbm_lifecycle_alignment_installed = True
     app.logger.info(
-        "BT38 FBM lifecycle alignment installed: canonical DB state -> FBM/bell, ownership-gated provider reads, pending/pickup/issue lifecycle gates"
+        "BT38 FBM lifecycle alignment installed: canonical DB state -> FBM/bell, persisted shipment journey authority, ownership-gated provider reads"
     )
