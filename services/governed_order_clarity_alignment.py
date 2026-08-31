@@ -78,7 +78,7 @@ def install_governed_order_clarity_alignment(app) -> None:
     install_governed_fbm_overdue_alert_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
     install_governed_fbm_marketplace_dispatch_authority_alignment()
-    install_governed_fbm_fulfillment_guard()
+    install_governed_fbm_fulfillment_guard(app)
     app._bt38_order_clarity_alignment_installed = True
 
     @app.after_request
