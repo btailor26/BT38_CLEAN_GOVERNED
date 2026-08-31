@@ -74,11 +74,17 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.fbm_db_delivery_promise_alignment import (
         install_fbm_db_delivery_promise_alignment,
     )
+    from services.governed_fbm_global_search_alignment import (
+        install_governed_fbm_global_search_alignment,
+    )
 
     # Reuse the existing persisted operational-state promise reader. This does
     # not add a marketplace/API read: it restores the DB -> FBM handoff for the
     # template's existing delivery_promise field.
     install_fbm_db_delivery_promise_alignment(app)
+    # FBM search must query persisted order history before the page-size limit;
+    # it never calls a marketplace/provider and does not create a second order path.
+    install_governed_fbm_global_search_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
     install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
@@ -105,5 +111,5 @@ def install_governed_order_clarity_alignment(app) -> None:
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
     )

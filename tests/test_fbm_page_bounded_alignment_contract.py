@@ -3,6 +3,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = (ROOT / "services" / "governed_fbm_page_alignment.py").read_text(encoding="utf-8")
+SEARCH = (ROOT / "services" / "governed_fbm_global_search_alignment.py").read_text(encoding="utf-8")
+CLARITY = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 INSTALLER = (ROOT / "services" / "governed_notification_read_alignment.py").read_text(encoding="utf-8")
 LEGACY_ROUTE = (ROOT / "governed_fbm_routes.py").read_text(encoding="utf-8")
 
@@ -27,6 +29,25 @@ def test_fbm_latest_order_discovery_is_bounded_before_distinct_identity_selectio
     assert "if len(rows) >= limit + 1:" in ALIGNMENT
     assert "group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" not in ALIGNMENT
     assert "func.max(MarketplaceOrder.id)" not in ALIGNMENT
+
+
+def test_fbm_global_search_filters_persisted_history_before_page_limit():
+    assert "install_governed_fbm_global_search_alignment" in CLARITY
+    assert 'request.args.get("search")' in SEARCH
+    assert "query = query.filter(or_(" in SEARCH
+    assert "MarketplaceOrder.marketplace_order_id.ilike" in SEARCH
+    assert "MarketplaceOrder.marketplace_order_item_id.ilike" in SEARCH
+    assert "MarketplaceOrder.sku.ilike" in SEARCH
+    assert "MarketplaceOrder.tracking_number.ilike" in SEARCH
+    assert "Store.name.ilike" in SEARCH
+    assert "WarehouseStock.product_name.ilike" in SEARCH
+    assert "Only matching rows are bounded afterwards" in SEARCH
+    assert "original_rows(limit)" in SEARCH
+    assert 'id="bt38FbmGlobalSearch"' in SEARCH
+    assert "Searches all persisted FBM history, not only loaded rows." in SEARCH
+    assert "requests." not in SEARCH
+    assert "db.session.add" not in SEARCH
+    assert "db.session.commit" not in SEARCH
 
 
 def test_fbm_page_batches_profile_and_shipment_reads_instead_of_n_plus_one():
