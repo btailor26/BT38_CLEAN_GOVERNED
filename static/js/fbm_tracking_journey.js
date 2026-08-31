@@ -8,9 +8,27 @@
  * - persisted carrier pickup/acceptance => Picked up GREEN
  * - persisted carrier movement => In transit GREEN
  * - delivery timing colour remains owned by the delivery-promise journey
+ *
+ * Asset rule:
+ * - every dynamically loaded FBM journey asset carries the deployed entry
+ *   asset version; when an older unversioned page is still open, a per-load
+ *   revision prevents stale child scripts surviving a browser refresh.
  */
 (function (document) {
     'use strict';
+
+    const bootstrapScript = document.currentScript;
+    const bootstrapUrl = bootstrapScript && bootstrapScript.src
+        ? new URL(bootstrapScript.src, window.location.href)
+        : null;
+    const assetRevision = bootstrapUrl && bootstrapUrl.searchParams.get('v')
+        ? bootstrapUrl.searchParams.get('v')
+        : String(Date.now());
+
+    function assetUrl(path) {
+        const separator = String(path || '').includes('?') ? '&' : '?';
+        return `${path}${separator}v=${encodeURIComponent(assetRevision)}`;
+    }
 
     const pickupStates = new Set([
         'accepted',
@@ -269,11 +287,24 @@
             return;
         }
         const legacy = document.createElement('script');
-        legacy.src = '/static/js/fbm_tracking_journey_legacy.js';
+        legacy.src = assetUrl('/static/js/fbm_tracking_journey_legacy.js');
         legacy.dataset.bt38FbmTrackingLegacy = '1';
         legacy.onload = alignPersistedLifecycle;
         legacy.onerror = alignPersistedLifecycle;
         document.head.appendChild(legacy);
+    }
+
+    function loadDeliveryPromiseAlignment() {
+        if (document.querySelector('script[data-bt38-fbm-delivery-promise-alignment="1"]')) {
+            loadLegacy();
+            return;
+        }
+        const alignment = document.createElement('script');
+        alignment.src = assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js');
+        alignment.dataset.bt38FbmDeliveryPromiseAlignment = '1';
+        alignment.onload = loadLegacy;
+        alignment.onerror = loadLegacy;
+        document.head.appendChild(alignment);
     }
 
     if (document.readyState === 'loading') {
@@ -283,14 +314,14 @@
     }
 
     if (document.querySelector('script[data-bt38-ebay-native-bootstrap="1"]')) {
-        loadLegacy();
+        loadDeliveryPromiseAlignment();
         return;
     }
 
     const nativeScript = document.createElement('script');
-    nativeScript.src = '/static/js/fbm_ebay_shipping_alignment.js';
+    nativeScript.src = assetUrl('/static/js/fbm_ebay_shipping_alignment.js');
     nativeScript.dataset.bt38EbayNativeBootstrap = '1';
-    nativeScript.onload = loadLegacy;
-    nativeScript.onerror = loadLegacy;
+    nativeScript.onload = loadDeliveryPromiseAlignment;
+    nativeScript.onerror = loadDeliveryPromiseAlignment;
     document.head.appendChild(nativeScript);
 })(document);
