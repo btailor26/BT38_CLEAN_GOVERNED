@@ -608,7 +608,7 @@ with app.app_context():
         elif backfill_result.get('total'):
             logging.info(f"System events backfill: Created {backfill_result['total']} events from historical data")
         elif backfill_result.get('error'):
-            logging.warning(f"System events backfill error: {str(e)}")
+            logging.warning(f"System events backfill error: {backfill_result['error']}")
     except Exception as e:
         logging.warning(f"System events backfill skipped: {str(e)}")
 
