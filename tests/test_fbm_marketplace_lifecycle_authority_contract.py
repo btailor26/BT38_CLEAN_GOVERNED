@@ -7,6 +7,7 @@ EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
 FBM_TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
+BASE_TEMPLATE = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
 
 
 def test_existing_purchase_key_and_completed_provider_state_discriminate_ownership():
@@ -114,6 +115,18 @@ def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_befor
     assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in JOURNEY
     assert "alignment.onload = loadLegacy" in JOURNEY
     assert "alignment.onerror = loadLegacy" in JOURNEY
+
+
+def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
+    assert 'const liveUrl = "/governed/ui/events/stream"' in BASE_TEMPLATE
+    assert 'new EventSource(' in BASE_TEMPLATE
+    assert '"bt38-marketplace-event"' in BASE_TEMPLATE
+    assert "window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent)" in JOURNEY
+    assert 'new EventSource(' not in JOURNEY
+    assert 'setInterval(' not in JOURNEY
+    assert '/governed/ui/events/stream' not in JOURNEY
+    assert 'window.location.reload()' in JOURNEY
+    assert "hidden.bs.modal" in JOURNEY
 
 
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
