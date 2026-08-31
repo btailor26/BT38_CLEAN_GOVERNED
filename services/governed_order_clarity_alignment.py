@@ -30,6 +30,10 @@ _MARKETPLACE_BADGE_STYLE = (
     'width:auto!important;height:auto!important;object-fit:contain!important;object-position:left center!important;image-rendering:auto}'
     '</style>'
 )
+_PROMISE_JOURNEY_SCRIPT = (
+    '<script id="bt38FbmPromiseJourneyAlignment" '
+    'src="/static/js/fbm_delivery_promise_journey_alignment.js"></script>'
+)
 
 
 def _clean_fbm_journey_html(html: str) -> str:
@@ -58,6 +62,21 @@ def _align_fbm_marketplace_badge_html(html: str) -> str:
     if "</head>" in value:
         return value.replace("</head>", _MARKETPLACE_BADGE_STYLE + "</head>", 1)
     return _MARKETPLACE_BADGE_STYLE + value
+
+
+def _align_fbm_promise_journey_html(html: str) -> str:
+    """Load one render-only journey alignment for every FBM marketplace order.
+
+    The journey modal must reuse the already-rendered DB-backed Ship by / Deliver by
+    values from the same order row. It must never substitute Packlink/provider
+    payload promise timestamps for marketplace promise truth.
+    """
+    value = str(html or "")
+    if 'id="bt38FbmPromiseJourneyAlignment"' in value:
+        return value
+    if "</body>" in value:
+        return value.replace("</body>", _PROMISE_JOURNEY_SCRIPT + "</body>", 1)
+    return value + _PROMISE_JOURNEY_SCRIPT
 
 
 def _align_fbm_buyer_messages_card(html: str) -> str:
@@ -149,10 +168,11 @@ def install_governed_order_clarity_alignment(app) -> None:
             html = _align_fbm_tracking_link_html(html)
             html = _align_fbm_marketplace_badge_html(html)
             html = _align_fbm_buyer_messages_card(html)
+            html = _align_fbm_promise_journey_html(html)
             response.set_data(html)
 
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + DB-row-authoritative promise journey + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
