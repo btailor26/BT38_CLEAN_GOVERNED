@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_text(encoding="utf-8")
 EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(encoding="utf-8")
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
+UI_SIGNAL = (ROOT / "services" / "governed_ui_event_signal.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
 LEGACY_JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey_legacy.js").read_text(encoding="utf-8")
 FBM_TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
@@ -142,6 +143,23 @@ def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
     assert '/governed/ui/events/stream' not in JOURNEY
     assert 'window.location.reload()' in JOURNEY
     assert "hidden.bs.modal" in JOURNEY
+
+
+def test_committed_marketplace_and_fbm_shipment_updates_wake_existing_ui_signal():
+    assert 'from fbm_models import FBMShipment' in UI_SIGNAL
+    assert 'canonical_rows = (MarketplaceListing, MarketplaceOrder, FBMShipment)' in UI_SIGNAL
+    assert 'for row in session_obj.dirty:' in UI_SIGNAL
+    assert 'session_obj.is_modified(row, include_collections=False)' in UI_SIGNAL
+    assert 'for row in session_obj.deleted:' in UI_SIGNAL
+    assert 'publish_governed_ui_event(' in UI_SIGNAL
+    assert 'new EventSource(' not in UI_SIGNAL
+
+
+def test_tracking_numbers_have_no_link_underline_before_or_after_journey_alignment():
+    assert '.fbm-tracking-journey,.fbm-tracking-journey:hover,.fbm-tracking-journey:focus' in FBM_TEMPLATE
+    assert 'a[href*="ebay.co.uk/mesh/ord/details"]' in FBM_TEMPLATE
+    assert 'a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]' in FBM_TEMPLATE
+    assert 'text-decoration:none!important' in FBM_TEMPLATE
 
 
 def test_fbm_search_stays_inside_the_current_browser_session():
