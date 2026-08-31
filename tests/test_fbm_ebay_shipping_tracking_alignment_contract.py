@@ -32,8 +32,8 @@ def test_ebay_shipping_button_is_owned_by_native_bt38_rates_before_legacy_handof
     # legacy tracking journey allowed to register.
     assert "nativeScript.onload = loadDeliveryPromiseAlignment" in bootstrap
     assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in bootstrap
-    assert "delivery.onload = loadLegacy" in bootstrap
-    assert "delivery.onerror = loadLegacy" in bootstrap
+    assert "alignment.onload = loadLegacy" in bootstrap
+    assert "alignment.onerror = loadLegacy" in bootstrap
     assert "document.head.appendChild(nativeScript)" in bootstrap
     native_append = bootstrap.index("document.head.appendChild(nativeScript)")
     onload_bind = bootstrap.index("nativeScript.onload = loadDeliveryPromiseAlignment")
