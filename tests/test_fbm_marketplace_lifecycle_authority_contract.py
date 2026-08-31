@@ -101,6 +101,18 @@ def test_picked_up_stays_red_after_label_stage_until_real_acceptance():
     assert 'label/tracking ready without carrier acceptance => Picked up RED' in JOURNEY
 
 
+def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_before_legacy():
+    assert "bootstrapUrl.searchParams.get('v')" in JOURNEY
+    assert 'String(Date.now())' in JOURNEY
+    assert "assetUrl('/static/js/fbm_ebay_shipping_alignment.js')" in JOURNEY
+    assert "assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js')" in JOURNEY
+    assert "assetUrl('/static/js/fbm_tracking_journey_legacy.js')" in JOURNEY
+    assert JOURNEY.index('loadDeliveryPromiseAlignment') < JOURNEY.index("assetUrl('/static/js/fbm_tracking_journey_legacy.js')")
+    native_load = JOURNEY.index("assetUrl('/static/js/fbm_ebay_shipping_alignment.js')")
+    delivery_load = JOURNEY.index("assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js')")
+    assert native_load < delivery_load
+
+
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
     for forbidden in ('Thread(', 'Queue(', 'setInterval('):
         assert forbidden not in ALIGNMENT
