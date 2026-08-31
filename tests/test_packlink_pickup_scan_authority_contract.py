@@ -65,3 +65,17 @@ def test_packlink_authority_patch_is_installed_on_existing_callback_path_without
     assert "Thread(" not in ALIGNMENT
     assert "Queue(" not in ALIGNMENT
     assert "setInterval(" not in ALIGNMENT
+
+
+def test_existing_packlink_status_read_persists_already_fetched_carrier_history():
+    wrapper = ALIGNMENT.split("def guarded_packlink_status(shipment_id: int):", 1)[1].split("app.view_functions[packlink_endpoint] = guarded_packlink_status", 1)[0]
+
+    assert "response = original_packlink_status(shipment_id)" in wrapper
+    assert 'tracking_history = payload.get("tracking_history")' in wrapper
+    assert "reconcile_packlink_tracking_lifecycle(" in wrapper
+    assert 'provider_state=payload.get("provider_status")' in wrapper
+    assert "tracking_history=tracking_history" in wrapper
+    assert "db.session.commit()" in wrapper
+    assert 'payload["shipment_status"] = shipment.status' in wrapper
+    assert "PacklinkAdapter(" not in wrapper
+    assert "requests." not in wrapper
