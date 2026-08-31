@@ -23,6 +23,18 @@ def test_tracking_number_remains_clickable_without_underlining_the_id():
     assert "target=\"_blank\"" in TEMPLATE
 
 
+def test_existing_marketplace_badges_are_enlarged_without_replacing_assets():
+    assert "bt38FbmMarketplaceBadgeAlignment" in CLARITY
+    assert "min-width:110px!important" in CLARITY
+    assert "max-width:82px!important" in CLARITY
+    assert "max-height:36px!important" in CLARITY
+    assert "width:auto!important;height:auto!important" in CLARITY
+    assert "img/marketplaces/amazon.png" in TEMPLATE
+    assert "img/marketplaces/ebay.png" in TEMPLATE
+    assert "img/marketplaces/shopify.png" in TEMPLATE
+    assert "img/marketplaces/tiktok.png" in TEMPLATE
+
+
 def test_alignment_is_presentation_only_after_render():
     response_section = CLARITY.split("def bt38_order_clarity_response", 1)[1]
     assert "db.session" not in response_section
