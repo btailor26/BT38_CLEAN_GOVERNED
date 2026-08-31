@@ -27,13 +27,26 @@ def test_existing_purchase_key_preserves_provider_source_ownership():
     assert 'tracking_number' not in ownership
 
 
-def test_packlink_owned_shipment_stays_source_before_marketplace_fallback():
+def test_persisted_shipment_stays_source_before_marketplace_fallback():
     shipment_map = ALIGNMENT.split('def aligned_shipment_map(rows):', 1)[1].split('\n    def aligned_shipping_mode(', 1)[0]
-    assert 'if bt38_owns_shipment(shipment):' in shipment_map
+    assert 'if shipment is not None:' in shipment_map
     assert 'result[key] = shipment' in shipment_map
     assert 'marketplace = _marketplace_proxy(row)' in shipment_map
     assert 'result[key] = marketplace' in shipment_map
+    assert 'if bt38_owns_shipment(shipment):' not in shipment_map
     assert shipment_map.index('result[key] = shipment') < shipment_map.index('marketplace = _marketplace_proxy(row)')
+
+
+def test_marketplace_fallback_does_not_invent_carrier_milestones():
+    proxy = ALIGNMENT.split('def _marketplace_proxy(order):', 1)[1].split('\ndef _lifecycle_label(', 1)[0]
+    assert 'provider="marketplace"' in proxy
+    assert 'carrier=carrier' in proxy
+    assert 'tracking_number=tracking' in proxy
+    assert 'marketplace_confirmation_status="marketplace_authoritative"' in proxy
+    assert 'carrier_accepted_at=None' in proxy
+    assert 'first_movement_at=None' in proxy
+    assert 'delivered_at=None' in proxy
+    assert 'changed_at' not in proxy
 
 
 def test_marketplace_owned_shipments_use_persisted_order_truth_not_provider_status():
