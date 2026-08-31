@@ -148,7 +148,7 @@ jobs:
         run: |
           test "${{ github.ref_name }}" = "fix/full-system-release-alignment"
           test "$(git rev-parse HEAD)" = "${{ inputs.expected_commit }}"
-          flyctl deploy --app bt38-prod --config fly.toml --remote-only --no-cache --strategy rolling
+          flyctl deploy --app bt38-prod --config fly.toml --remote-only --strategy rolling
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Verify critical deployed source and state exact mismatch reason
@@ -166,6 +166,7 @@ jobs:
             templates/fbm.html
             static/js/fbm_tracking_journey.js
             services/governed_fbm_page_alignment.py
+            services/governed_fbm_lifecycle_alignment.py
             services/fbm_marketplace_confirmation.py
             services/fbm_post_purchase.py
             services/governed_runtime_engine.py
