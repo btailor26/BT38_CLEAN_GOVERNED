@@ -38,11 +38,13 @@ _TERMINAL_ISSUE_STATES = {
     "dispute",
     "chargeback",
 }
-_PROTECTED_LIFECYCLE_STATES = _TERMINAL_ISSUE_STATES | {
+_ISSUE_LIFECYCLE_STATES = _TERMINAL_ISSUE_STATES | {
     "return_requested",
     "refund_requested",
     "replacement_requested",
     "replacement",
+}
+_PROTECTED_LIFECYCLE_STATES = _ISSUE_LIFECYCLE_STATES | {
     "picked_up",
     "accepted",
     "carrier_accepted",
@@ -59,6 +61,15 @@ _ROUTINE_STATUS_RANK = {
     "partially_shipped": 2,
     "shipped": 3,
 }
+_JOURNEY_STATUS_RANK = {
+    "accepted": 1,
+    "carrier_accepted": 1,
+    "collected": 1,
+    "picked_up": 1,
+    "in_transit": 2,
+    "out_for_delivery": 3,
+    "delivered": 4,
+}
 
 
 def _status(value) -> str:
@@ -71,6 +82,23 @@ def _can_advance_routine_status(current, incoming) -> bool:
     if current_value in _PROTECTED_LIFECYCLE_STATES:
         return False
     return _ROUTINE_STATUS_RANK.get(incoming_value, -1) >= _ROUTINE_STATUS_RANK.get(current_value, -1)
+
+
+def _can_apply_lifecycle_status(current, incoming) -> bool:
+    """Preserve forward marketplace lifecycle truth without blocking later issues."""
+    current_value = _status(current)
+    incoming_value = _status(incoming)
+    if not incoming_value or current_value == incoming_value:
+        return False
+    if incoming_value in _ROUTINE_STATUS_RANK:
+        return _can_advance_routine_status(current_value, incoming_value)
+    if current_value in _ISSUE_LIFECYCLE_STATES:
+        return incoming_value in _ISSUE_LIFECYCLE_STATES
+    if incoming_value in _ISSUE_LIFECYCLE_STATES:
+        return True
+    if current_value in _JOURNEY_STATUS_RANK and incoming_value in _JOURNEY_STATUS_RANK:
+        return _JOURNEY_STATUS_RANK[incoming_value] >= _JOURNEY_STATUS_RANK[current_value]
+    return True
 
 
 def _amazon_buy_shipping_approved() -> bool:
@@ -324,7 +352,9 @@ def _patch_webhook_lifecycle() -> None:
         }.get(raw)
 
         if inferred is None and business_event == "tracking":
-            if any(token in flattened for token in ("out for delivery", "out_for_delivery")):
+            if any(token in flattened for token in ("delivered", "delivery confirmed", "delivery complete")):
+                inferred = "delivered"
+            elif any(token in flattened for token in ("out for delivery", "out_for_delivery")):
                 inferred = "out_for_delivery"
             elif any(token in flattened for token in ("in transit", "in_transit")):
                 inferred = "in_transit"
@@ -358,7 +388,95 @@ def _patch_webhook_lifecycle() -> None:
                 values["shipped_at"] = values.get("shipped_at") or changed_at
         return values
 
+    def aligned_apply(*, marketplace, business_event, payload):
+        from extensions import db
+        from models import MarketplaceOrder, Store
+
+        order_id = execution._extract_marketplace_order_id(payload)
+        values = aligned_extract(payload, business_event=business_event)
+        if not order_id or not values.get("recognized"):
+            return {
+                "handled": False,
+                "changed": False,
+                "terminal": False,
+                "order_id": order_id,
+            }
+
+        query = MarketplaceOrder.query.filter(
+            MarketplaceOrder.marketplace_order_id == order_id
+        )
+
+        store_id = execution._deep_get(payload, "_bt38_store_id")
+        try:
+            store_id = int(store_id) if store_id is not None else None
+        except (TypeError, ValueError):
+            store_id = None
+
+        if store_id is not None:
+            query = query.filter(MarketplaceOrder.store_id == store_id)
+        elif marketplace:
+            query = query.join(
+                Store,
+                Store.id == MarketplaceOrder.store_id,
+            ).filter(Store.platform.ilike(f"%{marketplace}%"))
+
+        lines = query.order_by(MarketplaceOrder.id).all()
+        if not lines:
+            return {
+                "handled": False,
+                "changed": False,
+                "terminal": False,
+                "order_id": order_id,
+                **values,
+            }
+
+        changed = False
+        now = datetime.utcnow()
+        for line in lines:
+            line_changed = False
+            new_status = values.get("status")
+            if new_status and _can_apply_lifecycle_status(getattr(line, "status", None), new_status):
+                line.status = _status(new_status)
+                line_changed = True
+
+            shipped_at = values.get("shipped_at")
+            if shipped_at is not None and line.shipped_at is None:
+                line.shipped_at = shipped_at
+                line_changed = True
+
+            tracking_number = values.get("tracking_number")
+            if tracking_number and line.tracking_number != tracking_number:
+                line.tracking_number = tracking_number
+                line_changed = True
+
+            carrier = values.get("carrier")
+            if carrier and line.carrier != carrier:
+                line.carrier = carrier
+                line_changed = True
+
+            postcode = values.get("ship_to_postcode")
+            if postcode and line.ship_to_postcode != postcode:
+                line.ship_to_postcode = postcode
+                line_changed = True
+
+            if line_changed:
+                line.updated_at = now
+                changed = True
+
+        if changed:
+            db.session.commit()
+
+        return {
+            "handled": True,
+            "changed": changed,
+            "terminal": bool(values.get("terminal")),
+            "order_id": order_id,
+            "marketplace_order_row_ids": [line.id for line in lines],
+            **values,
+        }
+
     execution._extract_order_lifecycle_values = aligned_extract
+    execution._apply_marketplace_order_lifecycle_event = aligned_apply
     execution._bt38_marketplace_lifecycle_patched = True
 
 
