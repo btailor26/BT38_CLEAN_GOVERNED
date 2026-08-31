@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLARITY = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 PROMISE = (ROOT / "services" / "fbm_db_delivery_promise_alignment.py").read_text(encoding="utf-8")
+HEALTH = (ROOT / "services" / "fbm_current_queue_health_alignment.py").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
 
 
@@ -31,6 +32,22 @@ def test_persisted_promise_alignment_is_backward_compatible_and_db_only():
     assert "get_amazon_delivery_promise" not in PROMISE
 
 
+def test_current_fbm_health_uses_unresolved_persisted_queue_not_created_today_only():
+    assert "install_fbm_current_queue_health_alignment" in CLARITY
+    assert "original_health_summary" in HEALTH
+    assert "_TERMINAL_STATUSES" in HEALTH
+    assert "current_rows.append(row)" in HEALTH
+    assert 'route_state in {"Dispatched", "Tracking recorded"}' in HEALTH
+    assert '"total": len(current_rows)' in HEALTH
+    assert '"dispatched": dispatched' in HEALTH
+    assert '"awaiting_acceptance": awaiting' in HEALTH
+    assert '"overdue": overdue' in HEALTH
+    assert "MarketplaceOrder.created_at >=" not in HEALTH
+    assert "requests." not in HEALTH
+    assert "db.session.add" not in HEALTH
+    assert "db.session.commit" not in HEALTH
+
+
 def test_tracking_number_remains_clickable_without_underlining_the_id():
     assert "bt38FbmTrackingLinkAlignment" in CLARITY
     assert "a:has(code){text-decoration:none!important}" in CLARITY
@@ -56,6 +73,8 @@ def test_mapping_review_card_is_replaced_by_buyer_messages_without_fake_count():
     assert "No buyer messages are currently ingested into BT38." in CLARITY
     assert "<div class=\"fbm-period-value\">0</div>" in CLARITY
     assert "html = _align_fbm_buyer_messages_card(html)" in CLARITY
+    assert '"buyer_messages": 0' in HEALTH
+    assert '"mapping_review": 0' in HEALTH
 
 
 def test_alignment_is_presentation_only_after_render():
