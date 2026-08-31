@@ -106,6 +106,9 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.governed_fbm_global_search_alignment import (
         install_governed_fbm_global_search_alignment,
     )
+    from services.fbm_current_queue_health_alignment import (
+        install_fbm_current_queue_health_alignment,
+    )
 
     # Reuse the existing persisted operational-state promise reader. This does
     # not add a marketplace/API read: it restores the DB -> FBM handoff for the
@@ -114,6 +117,10 @@ def install_governed_order_clarity_alignment(app) -> None:
     # FBM search must query persisted order history before the page-size limit;
     # it never calls a marketplace/provider and does not create a second order path.
     install_governed_fbm_global_search_alignment(app)
+    # Operational health is a current persisted queue snapshot. The selected
+    # date/month still scopes lifecycle events such as returns/refunds, but an
+    # unresolved older order must not disappear from Ready/Dispatched/carrier health.
+    install_fbm_current_queue_health_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
     install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
@@ -141,5 +148,5 @@ def install_governed_order_clarity_alignment(app) -> None:
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + current persisted queue health + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
