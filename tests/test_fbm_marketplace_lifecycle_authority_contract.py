@@ -107,10 +107,10 @@ def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_befor
     assert "assetUrl('/static/js/fbm_ebay_shipping_alignment.js')" in JOURNEY
     assert "assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js')" in JOURNEY
     assert "assetUrl('/static/js/fbm_tracking_journey_legacy.js')" in JOURNEY
-    assert JOURNEY.index('loadDeliveryPromiseAlignment') < JOURNEY.index("assetUrl('/static/js/fbm_tracking_journey_legacy.js')")
-    native_load = JOURNEY.index("assetUrl('/static/js/fbm_ebay_shipping_alignment.js')")
-    delivery_load = JOURNEY.index("assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js')")
-    assert native_load < delivery_load
+    assert "nativeScript.onload = loadDeliveryPromiseAlignment" in JOURNEY
+    assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in JOURNEY
+    assert "delivery.onload = loadLegacy" in JOURNEY
+    assert "delivery.onerror = loadLegacy" in JOURNEY
 
 
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
