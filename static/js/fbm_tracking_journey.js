@@ -3,11 +3,10 @@
  * capture-phase native handler owns eBay Shipping and the legacy Seller Hub
  * handler cannot run first.
  *
- * Journey colour rule:
- * - label/tracking stage reached but carrier pickup is not confirmed => RED
- * - carrier pickup/acceptance is persisted from the journey => GREEN
- * - no label/tracking stage yet => neutral
- * A printed/ready label never proves carrier pickup by itself.
+ * Journey authority rule:
+ * - persisted carrier pickup/acceptance may promote confirmed milestones
+ * - unconfirmed milestones keep the original server/legacy journey state
+ * - tracking or label creation alone must not recolour the journey
  */
 (function (document) {
     'use strict';
@@ -251,9 +250,6 @@
             if (pickupAlreadyConfirmed || pickupStates.has(status)) {
                 setBadgeState(pickedUp, 'bg-success');
                 if (pickedUp) pickedUp.title = 'Carrier pickup confirmed by persisted journey state';
-            } else if (labelOrTrackingStageReached(row)) {
-                setBadgeState(pickedUp, 'bg-danger');
-                if (pickedUp) pickedUp.title = 'Label/tracking ready · waiting for actual carrier pickup';
             }
 
             if (movementStates.has(status)) setBadgeState(inTransit, 'bg-success');
