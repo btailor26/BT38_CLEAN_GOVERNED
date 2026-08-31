@@ -23,18 +23,20 @@ def test_ebay_shipping_button_is_owned_by_native_bt38_rates_before_legacy_handof
     assert "event.stopImmediatePropagation()" in ui
     assert "}, true);" in ui
     assert "fbm_ebay_shipping_alignment.js" in bootstrap
+    assert "fbm_delivery_promise_journey_alignment.js" in bootstrap
     assert "fbm_tracking_journey_legacy.js" in bootstrap
 
     # Runtime ownership is determined by the bootstrap event chain, not by the
-    # textual position of the two file-name literals. The preserved tracking
-    # journey is loaded only after the native eBay script has loaded (or its
-    # load attempt has completed), so the native capture handler is installed
-    # before the legacy Seller Hub handler can register.
-    assert "nativeScript.onload = loadLegacy" in bootstrap
-    assert "nativeScript.onerror = loadLegacy" in bootstrap
+    # textual position of file-name literals. Native eBay capture installs first,
+    # delivery-promise alignment is then installed, and only then is the preserved
+    # legacy tracking journey allowed to register.
+    assert "nativeScript.onload = loadDeliveryPromiseAlignment" in bootstrap
+    assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in bootstrap
+    assert "delivery.onload = loadLegacy" in bootstrap
+    assert "delivery.onerror = loadLegacy" in bootstrap
     assert "document.head.appendChild(nativeScript)" in bootstrap
     native_append = bootstrap.index("document.head.appendChild(nativeScript)")
-    onload_bind = bootstrap.index("nativeScript.onload = loadLegacy")
+    onload_bind = bootstrap.index("nativeScript.onload = loadDeliveryPromiseAlignment")
     assert onload_bind < native_append
 
 
