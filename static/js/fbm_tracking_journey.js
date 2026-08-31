@@ -281,6 +281,26 @@
         });
     }
 
+    let governedLiveRefreshPending = false;
+
+    function refreshFbmFromGovernedEvent() {
+        if (governedLiveRefreshPending) return;
+        governedLiveRefreshPending = true;
+
+        // Reuse the application shell's single governed SSE connection. Do not
+        // create a second EventSource, timer or marketplace read from FBM.
+        // If the operator is working inside a shipment modal, preserve that
+        // interaction and refresh from committed DB truth as soon as it closes.
+        const activeModal = document.querySelector('#fbmShippingModal.show, #fbmTrackingJourneyModal.show');
+        if (activeModal) {
+            activeModal.addEventListener('hidden.bs.modal', () => window.location.reload(), {once: true});
+            return;
+        }
+        window.location.reload();
+    }
+
+    window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent);
+
     function loadLegacy() {
         if (document.querySelector('script[data-bt38-fbm-tracking-legacy="1"]')) {
             alignPersistedLifecycle();
