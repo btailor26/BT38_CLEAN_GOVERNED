@@ -694,7 +694,30 @@ def _wrap_provider_routes(app) -> None:
                     "success": False,
                     "message": "This shipment is marketplace-authoritative; BT38 will not query the Packlink provider path for it.",
                 }), 409
-            return original_packlink_status(shipment_id)
+
+            response = original_packlink_status(shipment_id)
+            if isinstance(response, tuple):
+                return response
+            payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+            if not isinstance(payload, dict) or payload.get("success") is not True:
+                return response
+
+            tracking_history = payload.get("tracking_history")
+            if not isinstance(tracking_history, list):
+                return response
+
+            from services.fbm_packlink_callback import reconcile_packlink_tracking_lifecycle
+
+            reconcile_packlink_tracking_lifecycle(
+                shipment,
+                provider_state=payload.get("provider_status"),
+                tracking_history=tracking_history,
+                observed_at=datetime.utcnow(),
+            )
+            db.session.commit()
+            payload["provider_status"] = shipment.last_provider_status
+            payload["shipment_status"] = shipment.status
+            return jsonify(payload)
 
         app.view_functions[packlink_endpoint] = guarded_packlink_status
 
