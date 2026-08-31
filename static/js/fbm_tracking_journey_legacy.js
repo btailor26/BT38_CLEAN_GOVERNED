@@ -99,13 +99,21 @@
         }).join('');
     }
 
+    function marketplaceFromRow(row) {
+        if (!row || !row.children[1]) return '';
+        const marketplaceCell = row.children[1];
+        const logo = marketplaceCell.querySelector('.fbm-marketplace-logo');
+        if (logo) return String(logo.getAttribute('alt') || logo.getAttribute('title') || '').trim();
+        const label = marketplaceCell.querySelector('strong');
+        return String(label ? label.textContent : '').trim();
+    }
+
     function marketplaceOrderIdFromRow(row) {
         if (!row || !row.children[2]) return '';
         const orderCell = row.children[2];
-        const firstNode = Array.from(orderCell.childNodes).find(function (node) {
-            return node.nodeType === Node.TEXT_NODE && String(node.textContent || '').trim();
-        });
-        return String(firstNode ? firstNode.textContent : orderCell.textContent || '').trim().split(/\s+/)[0];
+        const exact = orderCell.querySelector('.fw-semibold');
+        if (exact) return String(exact.textContent || '').trim();
+        return String(orderCell.textContent || '').trim().split(/\s+/)[0];
     }
 
     function marketplaceTrackingLink(platform, orderId) {
@@ -123,7 +131,7 @@
     function marketplaceJourneyHtml(button, warning) {
         const row = button.closest('.fbm-order-row');
         const tracking = button.dataset.trackingNumber || String(button.textContent || '').trim() || '—';
-        const platform = button.dataset.platform || (row ? String(row.children[1]?.querySelector('strong')?.textContent || 'Marketplace').trim() : 'Marketplace');
+        const platform = button.dataset.platform || marketplaceFromRow(row) || 'Marketplace';
         const shipmentCell = row ? row.children[7] : null;
         const carrier = button.dataset.carrier || (shipmentCell ? String(shipmentCell.querySelector('strong')?.textContent || platform).trim() : platform);
         const journeyCell = row ? row.children[8] : null;
@@ -172,7 +180,7 @@
 
     function installMarketplaceJourneyLinks() {
         document.querySelectorAll('.fbm-order-row').forEach(function (row) {
-            const marketplace = String(row.children[1]?.querySelector('strong')?.textContent || '').trim();
+            const marketplace = marketplaceFromRow(row);
             const shipmentCell = row.children[7];
             if (!shipmentCell) return;
             const carrier = String(shipmentCell.querySelector('strong')?.textContent || marketplace).trim();
