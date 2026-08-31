@@ -50,6 +50,14 @@ def test_existing_marketplace_badges_are_enlarged_without_replacing_assets():
     assert "img/marketplaces/tiktok.png" in TEMPLATE
 
 
+def test_mapping_review_card_is_replaced_by_buyer_messages_without_fake_count():
+    assert "_align_fbm_buyer_messages_card" in CLARITY
+    assert "Buyer messages" in CLARITY
+    assert "No buyer messages are currently ingested into BT38." in CLARITY
+    assert "<div class=\"fbm-period-value\">0</div>" in CLARITY
+    assert "html = _align_fbm_buyer_messages_card(html)" in CLARITY
+
+
 def test_alignment_is_presentation_only_after_render():
     response_section = CLARITY.split("def bt38_order_clarity_response", 1)[1]
     assert "db.session" not in response_section
