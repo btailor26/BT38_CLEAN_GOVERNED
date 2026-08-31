@@ -121,6 +121,9 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.governed_fbm_lifecycle_alignment import (
         install_governed_fbm_lifecycle_alignment,
     )
+    from services.governed_fbm_marketplace_dispatch_authority_alignment import (
+        install_governed_fbm_marketplace_dispatch_authority_alignment,
+    )
     from services.governed_fbm_fulfillment_guard import (
         install_governed_fbm_fulfillment_guard,
     )
@@ -142,6 +145,10 @@ def install_governed_order_clarity_alignment(app) -> None:
     install_governed_fbm_all_orders_health_alignment(app)
     install_governed_fbm_overdue_alert_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
+    # Marketplace dispatch is a later lifecycle fact than route selection. Install
+    # after lifecycle authority so a persisted dispatch/readback supersedes stale
+    # Packlink/manual route presentation without changing the historical promise.
+    install_governed_fbm_marketplace_dispatch_authority_alignment()
     install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
 
@@ -164,5 +171,5 @@ def install_governed_order_clarity_alignment(app) -> None:
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking controls + sharper existing marketplace badges + DB-row-authoritative promise journey + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking controls + sharper existing marketplace badges + DB-row-authoritative promise journey + marketplace-dispatch shipment authority + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
