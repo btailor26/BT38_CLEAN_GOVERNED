@@ -4,7 +4,7 @@
  * handler cannot run first.
  *
  * Journey colour rule:
- * - label/tracking ready without carrier acceptance => Picked up RED
+ * - persisted label/postage created without carrier acceptance => Picked up RED
  * - persisted carrier pickup/acceptance => Picked up GREEN
  * - persisted carrier movement => In transit GREEN
  * - delivery timing colour remains owned by the delivery-promise journey
@@ -85,13 +85,7 @@
     }
 
     function labelOrTrackingStageReached(row) {
-        if (String(row && row.dataset ? row.dataset.labelReady || '' : '') === '1') return true;
-        const shipmentCell = row && row.children ? row.children[7] : null;
-        if (!shipmentCell) return false;
-        return Array.from(shipmentCell.querySelectorAll('code')).some(code => {
-            const value = String(code.textContent || '').trim();
-            return value && value !== 'Parcel ID pending';
-        });
+        return String(row && row.dataset ? row.dataset.labelReady || '' : '') === '1';
     }
 
     function setBadgeState(badge, stateClass) {
@@ -271,7 +265,7 @@
                 if (pickedUp) pickedUp.title = 'Carrier pickup confirmed by persisted journey state';
             } else if (labelOrTrackingStageReached(row)) {
                 setBadgeState(pickedUp, 'bg-danger');
-                if (pickedUp) pickedUp.title = 'Label printed / tracking ready · waiting for carrier collection';
+                if (pickedUp) pickedUp.title = 'Label / postage created · waiting for carrier collection';
             }
 
             if (movementStates.has(status)) setBadgeState(inTransit, 'bg-success');
