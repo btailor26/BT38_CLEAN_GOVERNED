@@ -7,10 +7,13 @@ from services.fbm_shipping_state import shipment_confirmation_state
 TEMPLATE = Path("templates/fbm.html").read_text(encoding="utf-8")
 
 
-def test_fbm_page_shows_three_step_journey_for_marketplace_shipments():
-    assert "1 · Picked up" in TEMPLATE
-    assert "2 · In transit" in TEMPLATE
-    assert "3 · Delivered" in TEMPLATE
+def test_fbm_page_shows_three_step_journey_for_marketplace_shipments_without_numbers():
+    assert ">Picked up</span>" in TEMPLATE
+    assert ">In transit</span>" in TEMPLATE
+    assert ">Delivered</span>" in TEMPLATE
+    assert "1 · Picked up" not in TEMPLATE
+    assert "2 · In transit" not in TEMPLATE
+    assert "3 · Delivered" not in TEMPLATE
     assert "sellercentral.amazon.co.uk/orders-v3/order/" in TEMPLATE
     assert "ebay.co.uk/mesh/ord/details?orderid=" in TEMPLATE
 
