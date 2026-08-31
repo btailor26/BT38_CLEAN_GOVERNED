@@ -126,6 +126,7 @@
             const text = String(badge.textContent || '').replace(/^\d+\s*·\s*/, '').trim();
             const isRed = badge.classList.contains('bg-danger');
             const isConfirmed = badge.classList.contains('bg-success') || badge.classList.contains('bg-primary');
+            const borderClass = isRed ? 'border-danger' : (isConfirmed ? 'border-success' : 'border-secondary');
             const statusClass = isRed ? 'bg-danger' : (isConfirmed ? 'bg-success' : 'bg-light text-muted border');
             let statusText = 'Pending';
             if (isRed) {
@@ -133,11 +134,12 @@
             } else if (isConfirmed) {
                 statusText = 'Confirmed';
             }
-            return `<div class="d-flex align-items-center justify-content-between border rounded px-3 py-2 mb-2"><span class="fw-semibold">${esc(text)}</span><span class="badge ${statusClass}">${esc(statusText)}</span></div>`;
+            return `<div class="border-start border-3 ${borderClass} ps-3 py-2 mb-2"><div class="d-flex align-items-center justify-content-between gap-3"><div class="fw-semibold">${esc(text)}</div><span class="badge ${statusClass}">${esc(statusText)}</span></div></div>`;
         }).join('');
         const warningHtml = warning ? `<div class="alert alert-warning py-2 mb-3"><strong>Live carrier history unavailable.</strong><div class="small">${esc(warning)} BT38 is showing persisted shipment state instead.</div></div>` : '';
         const promise = promiseFromRow(row);
-        return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(marketplace)} / persisted BT38 state</div></div></div><div class="border rounded p-3 mb-3">${promiseHtml(promise)}</div><div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
+        const promiseBlock = promise.shipBy || promise.deliverBy ? `<div class="border rounded p-3 mb-3">${promiseHtml(promise)}</div>` : '';
+        return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(marketplace)} / persisted BT38 state</div></div></div>${promiseBlock}<div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
     }
 
     async function openAlignedJourney(button) {
