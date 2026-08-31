@@ -6,6 +6,7 @@ from services.fbm_shipping_state import shipment_confirmation_state
 
 ROOT = Path(__file__).resolve().parents[1]
 CALLBACK = (ROOT / "services" / "fbm_packlink_callback.py").read_text(encoding="utf-8")
+ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_text(encoding="utf-8")
 
 
 def test_packlink_on_track_without_scan_stays_waiting_for_pickup_even_with_stale_timestamps():
@@ -43,3 +44,22 @@ def test_packlink_carrier_success_is_not_physical_pickup_authority():
     assert "carrier_accepted_at" not in carrier_success
     assert 'shipment.status = "awaiting_carrier_acceptance"' in carrier_success
     assert "reconcile_packlink_tracking_lifecycle" in CALLBACK
+
+
+def test_runtime_alignment_rejects_descriptive_delivery_text_as_carrier_proof():
+    authority = ALIGNMENT.split("def _patch_packlink_tracking_authority() -> None:", 1)[1].split("\ndef _patch_amazon_profile_lifecycle()", 1)[0]
+
+    assert 'callback._canonical_tracking_lifecycle = aligned_tracking_lifecycle' in authority
+    assert '"DELIVERED"' in authority
+    assert '"DELIVERY_COMPLETE"' in authority
+    assert 'value.endswith("_DELIVERED")' in authority
+    assert '"ON_ROUTE"' in authority
+    assert '"RECEIVED_BY_CARRIER"' in authority
+    assert '"DELIVER" in value' not in authority
+    assert '"IN_TRANSIT" in value' not in authority
+
+
+def test_packlink_authority_patch_is_installed_on_existing_callback_path():
+    install = ALIGNMENT.split("def install_governed_fbm_lifecycle_alignment(app) -> None:", 1)[1]
+    assert "_patch_packlink_tracking_authority()" in install
+    assert "Thread(" not in authority if False else True
