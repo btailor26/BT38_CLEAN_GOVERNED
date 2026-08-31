@@ -15,6 +15,7 @@ _TRACKING_LINK_STYLE = ('<style id="bt38FbmTrackingLinkAlignment">''.fbm-orders-
 _MARKETPLACE_BADGE_STYLE = ('<style id="bt38FbmMarketplaceBadgeAlignment">''.fbm-marketplace-cell{min-width:110px!important}.fbm-marketplace-logo{display:block!important;max-width:82px!important;max-height:36px!important;width:auto!important;height:auto!important;object-fit:contain!important;object-position:left center!important;image-rendering:auto}</style>')
 _PROMISE_JOURNEY_SCRIPT = '<script id="bt38FbmPromiseJourneyAlignment" src="/static/js/fbm_delivery_promise_journey_alignment.js"></script>'
 _EVENT_SESSION_REFRESH_SCRIPT = '<script id="bt38FbmEventSessionRefreshAlignment" src="/static/js/fbm_event_session_refresh_alignment.js"></script>'
+_SCROLL_POSITION_SCRIPT = '<script id="bt38FbmScrollPositionAlignment" src="/static/js/fbm_scroll_position_alignment.js"></script>'
 
 def _clean_fbm_journey_html(html: str) -> str:
     value = str(html or "")
@@ -38,6 +39,10 @@ def _align_fbm_promise_journey_html(html: str) -> str:
 def _align_fbm_event_session_refresh_html(html: str) -> str:
     """Reuse the existing shared marketplace event to refresh this FBM session from DB."""
     return _inject_once(html,'id="bt38FbmEventSessionRefreshAlignment"',_EVENT_SESSION_REFRESH_SCRIPT,'</body>')
+
+def _align_fbm_scroll_position_html(html: str) -> str:
+    """Prevent a stale pager anchor from forcing a browser reload to the page bottom."""
+    return _inject_once(html,'id="bt38FbmScrollPositionAlignment"',_SCROLL_POSITION_SCRIPT,'</body>')
 
 def _align_fbm_buyer_messages_card(html: str) -> str:
     value=str(html or "")
@@ -73,7 +78,8 @@ def install_governed_order_clarity_alignment(app) -> None:
             html=_align_fbm_buyer_messages_card(html)
             html=_align_fbm_promise_journey_html(html)
             html=_align_fbm_event_session_refresh_html(html)
+            html=_align_fbm_scroll_position_html(html)
             response.set_data(html)
         return response
 
-    app.logger.info("BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking controls + sharper existing marketplace badges + DB-row-authoritative promise journey + marketplace-dispatch shipment authority + existing-event FBM session refresh; event-persisted state remains authoritative")
+    app.logger.info("BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking controls + sharper existing marketplace badges + DB-row-authoritative promise journey + marketplace-dispatch shipment authority + existing-event FBM session refresh + stable reload scroll position; event-persisted state remains authoritative")
