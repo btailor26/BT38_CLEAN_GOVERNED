@@ -7,6 +7,8 @@ DB-first marketplace lifecycle alignment before the FBM page wrapper is bound.
 """
 from __future__ import annotations
 
+import re
+
 from flask import request
 
 
@@ -58,6 +60,33 @@ def _align_fbm_marketplace_badge_html(html: str) -> str:
     return _MARKETPLACE_BADGE_STYLE + value
 
 
+def _align_fbm_buyer_messages_card(html: str) -> str:
+    """Use the spare health-card slot for buyer messages instead of mapping review.
+
+    Buyer-message ingestion is not yet wired into BT38, so the card deliberately
+    shows zero rather than reusing the unrelated carrier-mapping count.
+    """
+    value = str(html or "")
+    pattern = re.compile(
+        r'<div class="fbm-period-card(?P<class_suffix>[^"]*)" tabindex="0">'
+        r'<div class="fbm-period-label">Mapping review</div>'
+        r'<div class="fbm-period-value">[^<]*</div>'
+        r'<div class="fbm-period-tip" role="tooltip">.*?</div>'
+        r'</div>',
+        re.DOTALL,
+    )
+    replacement = (
+        '<div class="fbm-period-card\\g<class_suffix>" tabindex="0">'
+        '<div class="fbm-period-label">Buyer messages</div>'
+        '<div class="fbm-period-value">0</div>'
+        '<div class="fbm-period-tip" role="tooltip">'
+        '<div>No buyer messages are currently ingested into BT38.</div>'
+        '</div>'
+        '</div>'
+    )
+    return pattern.sub(replacement, value, count=1)
+
+
 def install_governed_order_clarity_alignment(app) -> None:
     if getattr(app, "_bt38_order_clarity_alignment_installed", False):
         return
@@ -106,10 +135,11 @@ def install_governed_order_clarity_alignment(app) -> None:
             html = _clean_fbm_journey_html(response.get_data(as_text=True))
             html = _align_fbm_tracking_link_html(html)
             html = _align_fbm_marketplace_badge_html(html)
+            html = _align_fbm_buyer_messages_card(html)
             response.set_data(html)
 
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
