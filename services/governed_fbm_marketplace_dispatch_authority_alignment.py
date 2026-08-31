@@ -55,7 +55,15 @@ def _marketplace_has_dispatch_truth(row) -> bool:
 
 
 def _marketplace_shipment(row):
-    """Expose only persisted marketplace shipment facts through the existing view contract."""
+    """Expose only persisted marketplace shipment facts through the existing view contract.
+
+    A marketplace shipped/fulfilled result proves dispatch, not physical carrier
+    pickup. A persisted marketplace Delivered result is stronger terminal truth:
+    it completes the three-step lifecycle even when a low-scan service (for
+    example Royal Mail 2nd Class) did not expose every intermediate scan. We do
+    not invent intermediate timestamps; the marketplace delivery timestamp/state
+    is the terminal authority until a later marketplace exception supersedes it.
+    """
     if not _marketplace_has_dispatch_truth(row):
         return None
 
@@ -66,10 +74,18 @@ def _marketplace_shipment(row):
     changed_at = getattr(row, "updated_at", None) or shipped_at or getattr(row, "created_at", None)
     platform = _platform_label(row)
 
-    # Do not invent carrier or tracking. The service line explains that the
-    # marketplace has dispatched while tracking is still pending.
     carrier_display = carrier or f"{platform} marketplace shipment"
     service_display = "Marketplace dispatch" if tracking else "Tracking pending"
+
+    # Only actual persisted carrier lifecycle states prove pickup/movement.
+    # Delivered is terminal marketplace truth and therefore proves the package
+    # completed pickup + movement even if eBay/carrier omitted those scans.
+    delivered = status == "delivered"
+    pickup_proven = status in {
+        "accepted", "carrier_accepted", "collected", "picked_up",
+        "in_transit", "out_for_delivery", "delivered",
+    }
+    movement_proven = status in {"in_transit", "out_for_delivery", "delivered"}
 
     return SimpleNamespace(
         id=None,
@@ -86,15 +102,16 @@ def _marketplace_shipment(row):
         label_format=None,
         label_purchased_at=shipped_at or (changed_at if tracking else None),
         handover_due_at=None,
-        carrier_accepted_at=changed_at if status in _TERMINAL_DELIVERY_STATES else None,
-        first_movement_at=changed_at if status in {"in_transit", "out_for_delivery", "delivered"} else None,
-        delivered_at=changed_at if status == "delivered" else None,
+        carrier_accepted_at=changed_at if pickup_proven and not delivered else None,
+        first_movement_at=changed_at if movement_proven and not delivered else None,
+        delivered_at=changed_at if delivered else None,
         status=status or "dispatched",
         marketplace_confirmed_at=shipped_at,
         marketplace_confirmation_status="marketplace_authoritative",
         mapping_review=None,
         provider_cases=[],
         _bt38_marketplace_owned=True,
+        _bt38_terminal_delivery_proves_prior_milestones=delivered,
     )
 
 
@@ -118,12 +135,8 @@ def install_governed_fbm_marketplace_dispatch_authority_alignment() -> None:
             key = (int(row.store_id), str(row.marketplace_order_id))
             marketplace = _marketplace_shipment(row)
             if marketplace is not None:
-                # Marketplace dispatch/readback on the canonical order identity
-                # supersedes stale pre-dispatch provider presentation.
                 result[key] = marketplace
             elif not _marketplace_has_dispatch_truth(row):
-                # Before dispatch, keep only the existing governed provider state.
-                # Draft/non-owned rows are already rejected by lifecycle alignment.
                 result.pop(key, None) if key in result and getattr(result[key], "_bt38_marketplace_owned", False) else None
         return result
 
@@ -154,14 +167,15 @@ def install_governed_fbm_marketplace_dispatch_authority_alignment() -> None:
 
     def aligned_route_state(row):
         if _marketplace_has_dispatch_truth(row):
+            status = _status(getattr(row, "status", None))
+            if status == "delivered":
+                return "Delivered"
             if str(getattr(row, "tracking_number", None) or "").strip():
                 return "Tracking recorded"
             return "Marketplace dispatched"
         status = _status(getattr(row, "status", None))
         if status in {"pending"}:
             return "Pending"
-        # Processed/confirmed/unshipped marketplace orders have not yet produced
-        # dispatch truth. Keep that state explicit instead of implying shipment.
         if status in {"processed", "confirmed", "unshipped", "order", "ready"}:
             return "Awaiting dispatch"
         current = original_route_state(row)
