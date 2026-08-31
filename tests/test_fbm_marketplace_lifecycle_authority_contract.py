@@ -74,6 +74,18 @@ def test_webhook_lifecycle_extends_the_existing_order_status_path():
     assert 'execution._extract_order_lifecycle_values = aligned_extract' in ALIGNMENT
 
 
+def test_webhook_lifecycle_preserves_forward_truth_and_delivery_with_tracking():
+    assert '_JOURNEY_STATUS_RANK' in ALIGNMENT
+    assert '_ISSUE_LIFECYCLE_STATES' in ALIGNMENT
+    assert 'def _can_apply_lifecycle_status(current, incoming) -> bool:' in ALIGNMENT
+    assert 'return _can_advance_routine_status(current_value, incoming_value)' in ALIGNMENT
+    assert 'return _JOURNEY_STATUS_RANK[incoming_value] >= _JOURNEY_STATUS_RANK[current_value]' in ALIGNMENT
+    assert '("delivered", "delivery confirmed", "delivery complete")' in ALIGNMENT
+    assert 'if new_status and _can_apply_lifecycle_status(getattr(line, "status", None), new_status):' in ALIGNMENT
+    assert 'execution._apply_marketplace_order_lifecycle_event = aligned_apply' in ALIGNMENT
+    assert 'line_changed = False' in ALIGNMENT
+
+
 def test_bell_identity_changes_when_the_same_order_lifecycle_changes():
     assert 'record["status_label"] = label' in ALIGNMENT
     assert 'record["title"] = f"{label} · {product_title}"' in ALIGNMENT
