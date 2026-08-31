@@ -295,30 +295,32 @@
 
     window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent);
 
+    function loadDeliveryPromiseAlignment() {
+        if (document.querySelector('script[data-bt38-fbm-delivery-promise-alignment="1"]')) return;
+        const alignment = document.createElement('script');
+        alignment.src = assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js');
+        alignment.dataset.bt38FbmDeliveryPromiseAlignment = '1';
+        document.head.appendChild(alignment);
+    }
+
     function loadLegacy() {
         if (document.querySelector('script[data-bt38-fbm-tracking-legacy="1"]')) {
             alignPersistedLifecycle();
+            loadDeliveryPromiseAlignment();
             return;
         }
         const legacy = document.createElement('script');
         legacy.src = assetUrl('/static/js/fbm_tracking_journey_legacy.js');
         legacy.dataset.bt38FbmTrackingLegacy = '1';
-        legacy.onload = alignPersistedLifecycle;
-        legacy.onerror = alignPersistedLifecycle;
+        legacy.onload = function () {
+            alignPersistedLifecycle();
+            loadDeliveryPromiseAlignment();
+        };
+        legacy.onerror = function () {
+            alignPersistedLifecycle();
+            loadDeliveryPromiseAlignment();
+        };
         document.head.appendChild(legacy);
-    }
-
-    function loadDeliveryPromiseAlignment() {
-        if (document.querySelector('script[data-bt38-fbm-delivery-promise-alignment="1"]')) {
-            loadLegacy();
-            return;
-        }
-        const alignment = document.createElement('script');
-        alignment.src = assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js');
-        alignment.dataset.bt38FbmDeliveryPromiseAlignment = '1';
-        alignment.onload = loadLegacy;
-        alignment.onerror = loadLegacy;
-        document.head.appendChild(alignment);
     }
 
     if (document.readyState === 'loading') {
@@ -328,14 +330,14 @@
     }
 
     if (document.querySelector('script[data-bt38-ebay-native-bootstrap="1"]')) {
-        loadDeliveryPromiseAlignment();
+        loadLegacy();
         return;
     }
 
     const nativeScript = document.createElement('script');
     nativeScript.src = assetUrl('/static/js/fbm_ebay_shipping_alignment.js');
     nativeScript.dataset.bt38EbayNativeBootstrap = '1';
-    nativeScript.onload = loadDeliveryPromiseAlignment;
-    nativeScript.onerror = loadDeliveryPromiseAlignment;
+    nativeScript.onload = loadLegacy;
+    nativeScript.onerror = loadLegacy;
     document.head.appendChild(nativeScript);
 })(document);
