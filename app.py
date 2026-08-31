@@ -569,6 +569,18 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed Packlink callback routes: {exc}")
 
+# Install the already-built FBM lifecycle alignment only after the governed FBM
+# and Packlink routes exist, so the existing live Flask endpoints are the ones
+# wrapped. Fail startup rather than silently serving an unaligned journey.
+try:
+    from services.governed_fbm_lifecycle_alignment import (
+        install_governed_fbm_lifecycle_alignment,
+    )
+    install_governed_fbm_lifecycle_alignment(app)
+except Exception as exc:
+    logging.exception(f"Failed to install governed FBM lifecycle alignment: {exc}")
+    raise
+
 
 # Import and register admin reporting blueprint
 from admin_routes import admin_bp
@@ -596,7 +608,7 @@ with app.app_context():
         elif backfill_result.get('total'):
             logging.info(f"System events backfill: Created {backfill_result['total']} events from historical data")
         elif backfill_result.get('error'):
-            logging.warning(f"System events backfill error: {backfill_result['error']}")
+            logging.warning(f"System events backfill error: {str(e)}")
     except Exception as e:
         logging.warning(f"System events backfill skipped: {str(e)}")
 
