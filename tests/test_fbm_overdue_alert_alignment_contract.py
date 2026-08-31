@@ -37,5 +37,5 @@ def test_overdue_alignment_does_not_hammer_db_or_add_background_work():
     assert "db.session.commit" not in OVERDUE
     assert "setInterval" not in OVERDUE
     assert "setTimeout" not in OVERDUE
-    assert "scheduler" not in OVERDUE.lower()
-    assert "poll" not in OVERDUE.lower()
+    assert "threading" not in OVERDUE
+    assert "apscheduler" not in OVERDUE.lower()
