@@ -122,7 +122,7 @@ def _marketplace_proxy(order):
         tracking_number=tracking,
         label_url=None,
         label_format=None,
-        label_purchased_at=(shipped_at or changed_at) if (tracking or shipped_at) else None,
+        label_purchased_at=None,
         handover_due_at=None,
         carrier_accepted_at=changed_at if status in _PICKUP_STATES else None,
         first_movement_at=changed_at if status in _MOVEMENT_STATES else None,
@@ -270,10 +270,10 @@ def _patch_fbm_page_module() -> None:
             shipment = item.get("shipment") if isinstance(item, dict) else None
             label_ready = bool(
                 shipment
+                and bt38_owns_shipment(shipment)
                 and (
                     getattr(shipment, "label_url", None)
                     or getattr(shipment, "label_purchased_at", None)
-                    or getattr(shipment, "tracking_number", None)
                 )
             )
             marker = f'<tr class="fbm-order-row" data-order-id="{int(order.id)}">'
