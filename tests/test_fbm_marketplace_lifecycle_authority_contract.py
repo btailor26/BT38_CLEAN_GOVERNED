@@ -6,6 +6,7 @@ ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_tex
 EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(encoding="utf-8")
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
+FBM_TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
 
 
 def test_existing_purchase_key_and_completed_provider_state_discriminate_ownership():
@@ -102,6 +103,8 @@ def test_picked_up_stays_red_after_label_stage_until_real_acceptance():
 
 
 def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_before_legacy():
+    assert "config['BT38_ASSET_VERSION']" in FBM_TEMPLATE
+    assert "filename='js/fbm_tracking_journey.js', v=config['BT38_ASSET_VERSION']" in FBM_TEMPLATE
     assert "bootstrapUrl.searchParams.get('v')" in JOURNEY
     assert 'String(Date.now())' in JOURNEY
     assert "assetUrl('/static/js/fbm_ebay_shipping_alignment.js')" in JOURNEY
