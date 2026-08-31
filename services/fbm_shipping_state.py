@@ -31,6 +31,13 @@ _PACKLINK_DELIVERY_PROOF = {
     "SUCCESSFULLY_DELIVERED",
     "COMPLETED_DELIVERY",
 }
+_MARKETPLACE_ACCEPTED_PROOF = {
+    "ACCEPTED",
+    "CARRIER_ACCEPTED",
+    "COLLECTED",
+    "PICKED_UP",
+    "PICKEDUP",
+}
 
 
 def _normalise_provider_status(value: Any) -> str:
@@ -63,12 +70,35 @@ def _packlink_proven_state(shipment: Any) -> str | None:
     return None
 
 
+def _marketplace_proven_state(shipment: Any) -> str | None:
+    """Read only an explicitly persisted marketplace lifecycle milestone.
+
+    Marketplace proxy rows intentionally do not manufacture physical timestamps.
+    Their canonical status is already persisted marketplace truth, so expose that
+    status directly to the journey without treating shipped/tracking as pickup.
+    """
+    status = _normalise_provider_status(getattr(shipment, "status", None))
+    if status == "DELIVERED":
+        return "delivered"
+    if status == "OUT_FOR_DELIVERY":
+        return "out_for_delivery"
+    if status == "IN_TRANSIT":
+        return "in_transit"
+    if status in _MARKETPLACE_ACCEPTED_PROOF:
+        return "accepted"
+    return None
+
+
 def shipment_confirmation_state(shipment: Any, *, now: datetime | None = None) -> str:
     """Return a stable BT38 shipment confirmation state."""
     current = now or datetime.utcnow()
     provider = str(getattr(shipment, "provider", "") or "").strip().lower()
 
-    if provider == "packlink":
+    if provider == "marketplace":
+        proven = _marketplace_proven_state(shipment)
+        if proven is not None:
+            return proven
+    elif provider == "packlink":
         proven = _packlink_proven_state(shipment)
         if proven == "delivered" and getattr(shipment, "delivered_at", None):
             return "delivered"
