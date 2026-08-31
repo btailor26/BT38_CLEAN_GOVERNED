@@ -2,34 +2,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES_INIT = (ROOT / "services" / "__init__.py").read_text(encoding="utf-8")
-PACKLINK_JOURNEY = (ROOT / "services" / "governed_fbm_packlink_journey_authority.py").read_text(encoding="utf-8")
+LIFECYCLE = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_text(encoding="utf-8")
 WEBHOOK_ALIGNMENT = (ROOT / "services" / "governed_webhook_alignment.py").read_text(encoding="utf-8")
 
 
-def test_packlink_provider_identity_keeps_existing_journey_source():
-    assert "import services.governed_fbm_packlink_journey_authority" in SERVICES_INIT
-    assert "_original_bt38_owns_shipment(shipment)" in PACKLINK_JOURNEY
-    assert 'provider != "packlink"' in PACKLINK_JOURNEY
-    assert 'getattr(shipment, "provider_shipment_id", None)' in PACKLINK_JOURNEY
-    assert 'getattr(shipment, "tracking_number", None)' in PACKLINK_JOURNEY
-    assert "return bool(provider_shipment_id and tracking_number)" in PACKLINK_JOURNEY
-    assert "lifecycle.bt38_owns_shipment = _aligned_bt38_owns_shipment" in PACKLINK_JOURNEY
-
-
-def test_packlink_journey_authority_adds_no_parallel_runtime_or_marketplace_write():
-    for forbidden in (
-        "Thread(",
-        "Queue(",
-        "setInterval(",
-        "EventSource(",
-        "requests.get(",
-        "requests.post(",
-        "submit_governed_marketplace_action(",
-        "MarketplaceOrder(",
-        "FBMShipment(",
-    ):
-        assert forbidden not in PACKLINK_JOURNEY
+def test_packlink_journey_source_requires_deterministic_purchase_authority():
+    assert 'provider == "packlink"' in LIFECYCLE
+    assert 'purchase_key.startswith("packlink_")' in LIFECYCLE
+    assert "provider_shipment_id and tracking_number" not in LIFECYCLE
 
 
 def test_unchanged_persisted_marketplace_quantity_is_alignment_success():
