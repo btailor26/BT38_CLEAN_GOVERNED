@@ -109,6 +109,9 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.governed_fbm_all_orders_health_alignment import (
         install_governed_fbm_all_orders_health_alignment,
     )
+    from services.governed_fbm_overdue_alert_alignment import (
+        install_governed_fbm_overdue_alert_alignment,
+    )
 
     # Reuse the existing persisted operational-state promise reader. This does
     # not add a marketplace/API read: it restores the DB -> FBM handoff for the
@@ -120,6 +123,10 @@ def install_governed_order_clarity_alignment(app) -> None:
     # Health is an operational safety view across every persisted FBM order.
     # A day/month filter must never hide an older order that still needs attention.
     install_governed_fbm_all_orders_health_alignment(app)
+    # Overdue warning reuses the persisted health authority. Repeated ordinary
+    # page refreshes are cached briefly; the overdue-only DB query runs only when
+    # the user explicitly clicks the warning.
+    install_governed_fbm_overdue_alert_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
     install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
@@ -147,5 +154,5 @@ def install_governed_order_clarity_alignment(app) -> None:
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + global persisted FBM search + all-orders persisted FBM health + low-pressure overdue alert/filter + buyer-messages health slot + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
