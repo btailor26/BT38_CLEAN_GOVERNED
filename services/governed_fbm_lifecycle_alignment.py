@@ -480,6 +480,68 @@ def _patch_webhook_lifecycle() -> None:
     execution._bt38_marketplace_lifecycle_patched = True
 
 
+def _patch_packlink_tracking_authority() -> None:
+    import services.fbm_packlink_callback as callback
+
+    if getattr(callback, "_bt38_tracking_authority_patched", False):
+        return
+
+    def aligned_tracking_lifecycle(provider_state, tracking_history):
+        texts = [str(provider_state or "").strip(), *callback._status_texts(tracking_history or [])]
+        normalized = [
+            text.upper().replace(" ", "_").replace("-", "_").replace(".", "_").replace("/", "_")
+            for text in texts
+            if text
+        ]
+        delivered_states = {
+            "DELIVERED",
+            "DELIVERY_COMPLETE",
+            "DELIVERY_COMPLETED",
+            "SUCCESSFULLY_DELIVERED",
+            "COMPLETED_DELIVERY",
+        }
+        movement_states = {
+            "IN_TRANSIT",
+            "OUT_FOR_DELIVERY",
+            "IN_DELIVERY",
+            "ON_ROUTE",
+        }
+        accepted_states = {
+            "ACCEPTED",
+            "CARRIER_ACCEPTED",
+            "COLLECTED",
+            "PICKED_UP",
+            "PICKEDUP",
+            "RECEIVED_BY_CARRIER",
+        }
+
+        if any(value in delivered_states or value.endswith("_DELIVERED") for value in normalized):
+            return "DELIVERED"
+        if any(
+            value in movement_states
+            or value.endswith("_IN_TRANSIT")
+            or value.endswith("_OUT_FOR_DELIVERY")
+            or value.endswith("_IN_DELIVERY")
+            or value.endswith("_ON_ROUTE")
+            for value in normalized
+        ):
+            return "IN_TRANSIT"
+        if any(
+            value in accepted_states
+            or value.endswith("_CARRIER_ACCEPTED")
+            or value.endswith("_COLLECTED")
+            or value.endswith("_PICKED_UP")
+            or value.endswith("_PICKEDUP")
+            or value.endswith("_RECEIVED_BY_CARRIER")
+            for value in normalized
+        ):
+            return "ACCEPTED"
+        return None
+
+    callback._canonical_tracking_lifecycle = aligned_tracking_lifecycle
+    callback._bt38_tracking_authority_patched = True
+
+
 def _patch_amazon_profile_lifecycle() -> None:
     import services.fbm_amazon_order_profile as profile
 
@@ -751,6 +813,7 @@ def install_governed_fbm_lifecycle_alignment(app) -> None:
         return
 
     _patch_webhook_lifecycle()
+    _patch_packlink_tracking_authority()
     _patch_amazon_profile_lifecycle()
     _patch_routine_marketplace_readback()
     _patch_fbm_page_module()
