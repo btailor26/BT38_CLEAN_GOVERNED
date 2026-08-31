@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+APP = (ROOT / "app.py").read_text(encoding="utf-8")
 ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_text(encoding="utf-8")
 EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(encoding="utf-8")
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
@@ -84,6 +85,22 @@ def test_webhook_lifecycle_preserves_forward_truth_and_delivery_with_tracking():
     assert 'if new_status and _can_apply_lifecycle_status(getattr(line, "status", None), new_status):' in ALIGNMENT
     assert 'execution._apply_marketplace_order_lifecycle_event = aligned_apply' in ALIGNMENT
     assert 'line_changed = False' in ALIGNMENT
+
+
+def test_fbm_lifecycle_alignment_is_installed_after_governed_routes_exist():
+    fbm_register = 'app.register_blueprint(governed_fbm_bp)'
+    packlink_register = 'app.register_blueprint(governed_packlink_callback_bp)'
+    installer_import = 'from services.governed_fbm_lifecycle_alignment import ('
+    installer_call = 'install_governed_fbm_lifecycle_alignment(app)'
+    assert fbm_register in APP
+    assert packlink_register in APP
+    assert installer_import in APP
+    assert installer_call in APP
+    assert APP.index(fbm_register) < APP.index(installer_call)
+    assert APP.index(packlink_register) < APP.index(installer_call)
+    install_block = APP.split('# Install the already-built FBM lifecycle alignment', 1)[1].split('# Import and register admin reporting blueprint', 1)[0]
+    assert 'logging.exception' in install_block
+    assert 'raise' in install_block
 
 
 def test_bell_identity_changes_when_the_same_order_lifecycle_changes():
