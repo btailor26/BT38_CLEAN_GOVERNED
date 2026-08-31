@@ -21,6 +21,13 @@ _TRACKING_LINK_STYLE = (
     '.fbm-orders-table td a:has(code) code{text-decoration:none!important}'
     '</style>'
 )
+_MARKETPLACE_BADGE_STYLE = (
+    '<style id="bt38FbmMarketplaceBadgeAlignment">'
+    '.fbm-marketplace-cell{min-width:110px!important}'
+    '.fbm-marketplace-logo{display:block!important;max-width:82px!important;max-height:36px!important;'
+    'width:auto!important;height:auto!important;object-fit:contain!important;object-position:left center!important;image-rendering:auto}'
+    '</style>'
+)
 
 
 def _clean_fbm_journey_html(html: str) -> str:
@@ -39,6 +46,16 @@ def _align_fbm_tracking_link_html(html: str) -> str:
     if "</head>" in value:
         return value.replace("</head>", _TRACKING_LINK_STYLE + "</head>", 1)
     return _TRACKING_LINK_STYLE + value
+
+
+def _align_fbm_marketplace_badge_html(html: str) -> str:
+    """Enlarge the existing marketplace assets without replacing or redrawing them."""
+    value = str(html or "")
+    if 'id="bt38FbmMarketplaceBadgeAlignment"' in value:
+        return value
+    if "</head>" in value:
+        return value.replace("</head>", _MARKETPLACE_BADGE_STYLE + "</head>", 1)
+    return _MARKETPLACE_BADGE_STYLE + value
 
 
 def install_governed_order_clarity_alignment(app) -> None:
@@ -82,10 +99,11 @@ def install_governed_order_clarity_alignment(app) -> None:
         ):
             html = _clean_fbm_journey_html(response.get_data(as_text=True))
             html = _align_fbm_tracking_link_html(html)
+            html = _align_fbm_marketplace_badge_html(html)
             response.set_data(html)
 
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: persisted delivery promises + clean tracking links + render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + clean tracking links + sharper existing marketplace badges + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
