@@ -10,10 +10,25 @@ TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
 def test_fbm_clarity_installs_existing_db_delivery_promise_alignment():
     assert "install_fbm_db_delivery_promise_alignment" in CLARITY
     assert "fbm_order_operational_state" in PROMISE
+    assert "FBMOrderProfile" in PROMISE
+    assert "shipment_service_level" in PROMISE
+    assert "latest_ship_at" in PROMISE
+    assert "information_schema.columns" in PROMISE
+    assert "NULL AS" in PROMISE
     assert "promise.ship_by_at" in TEMPLATE
     assert "promise.latest_delivery_at" in TEMPLATE
     assert "get_amazon_delivery_promise" not in CLARITY
     assert "requests." not in CLARITY
+
+
+def test_persisted_promise_alignment_is_backward_compatible_and_db_only():
+    assert "_profile_promises" in PROMISE
+    assert "_operational_promises" in PROMISE
+    assert "_merge_promise" in PROMISE
+    assert '"source": "fbm_order_profiles"' in PROMISE
+    assert '"source": "fbm_order_operational_state"' in PROMISE
+    assert "requests." not in PROMISE
+    assert "get_amazon_delivery_promise" not in PROMISE
 
 
 def test_tracking_number_remains_clickable_without_underlining_the_id():
