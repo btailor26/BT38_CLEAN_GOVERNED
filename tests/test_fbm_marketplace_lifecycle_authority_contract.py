@@ -97,8 +97,8 @@ def test_picked_up_stays_red_after_label_stage_until_real_acceptance():
     assert "setBadgeState(pickedUp, 'bg-danger')" in JOURNEY
     assert "setBadgeState(pickedUp, 'bg-success')" in JOURNEY
     assert 'pickupStates.has(status)' in JOURNEY
-    assert 'Label/tracking ready · waiting for actual carrier pickup' in JOURNEY
-    assert 'A printed/ready label never proves carrier pickup by itself.' in JOURNEY
+    assert 'Label printed / tracking ready · waiting for carrier collection' in JOURNEY
+    assert 'label/tracking ready without carrier acceptance => Picked up RED' in JOURNEY
 
 
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
