@@ -110,12 +110,21 @@ def verify_existing_webhook_alignment(event: dict[str, Any]) -> dict[str, Any]:
                 == int(expected_group_id)
             )
 
-        quantity_ok = (
-            getattr(listing, "last_push_quantity", None) is not None
-            and _safe_int(getattr(listing, "last_push_quantity", None))
-            == expected_quantity
+        last_push_quantity = getattr(listing, "last_push_quantity", None)
+        last_marketplace_qty = getattr(listing, "last_marketplace_qty", None)
+        pushed_quantity_ok = (
+            last_push_quantity is not None
+            and _safe_int(last_push_quantity) == expected_quantity
         )
-        status_ok = _text(getattr(listing, "last_push_status", None)).lower() == "success"
+        marketplace_quantity_ok = (
+            last_marketplace_qty is not None
+            and _safe_int(last_marketplace_qty) == expected_quantity
+        )
+        quantity_ok = pushed_quantity_ok or marketplace_quantity_ok
+        status_ok = (
+            marketplace_quantity_ok
+            or _text(getattr(listing, "last_push_status", None)).lower() == "success"
+        )
 
         if relationship_ok and quantity_ok and status_ok:
             aligned_ids.append(listing.id)
