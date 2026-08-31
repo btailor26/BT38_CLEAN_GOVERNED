@@ -144,6 +144,19 @@ def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
     assert "hidden.bs.modal" in JOURNEY
 
 
+def test_fbm_search_stays_inside_the_current_browser_session():
+    search = JOURNEY.split('function installFbmSearch() {', 1)[1].split('\n    function alignPersistedLifecycle()', 1)[0]
+    assert "const fbmSearchSessionKey = 'bt38:fbm:search';" in JOURNEY
+    assert 'window.sessionStorage.setItem(fbmSearchSessionKey' in search
+    assert 'window.sessionStorage.getItem(fbmSearchSessionKey)' in search
+    assert "Array.from(table.querySelectorAll('.fbm-order-row')).map" in search
+    assert 'No DB, marketplace, provider,' in search
+    assert 'fetch(' not in search
+    assert 'XMLHttpRequest' not in search
+    assert 'new EventSource(' not in search
+    assert 'setInterval(' not in search
+
+
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
     for forbidden in ('Thread(', 'Queue(', 'setInterval('):
         assert forbidden not in ALIGNMENT
