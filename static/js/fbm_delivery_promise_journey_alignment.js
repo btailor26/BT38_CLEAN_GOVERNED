@@ -99,7 +99,8 @@
             return `<span class="badge bg-danger">Delivered late · ${days} day${days === 1 ? '' : 's'}</span>`;
         }
         if (providerSaysDelivered) return '<span class="badge bg-secondary">Delivered · delivery time unavailable</span>';
-        return '';
+        if (Date.now() > promisedAt.getTime()) return '<span class="badge bg-danger">Late · not delivered</span>';
+        return '<span class="badge bg-success">On track</span>';
     }
 
     function historyHtml(history) {
@@ -123,9 +124,16 @@
         const badges = journeyCell ? Array.from(journeyCell.querySelectorAll('.badge')) : [];
         const milestoneHtml = badges.slice(0, 4).map(function (badge) {
             const text = String(badge.textContent || '').replace(/^\d+\s*·\s*/, '').trim();
-            const active = badge.classList.contains('bg-success') || badge.classList.contains('bg-danger') || badge.classList.contains('bg-primary');
-            const statusClass = badge.classList.contains('bg-danger') ? 'bg-danger' : (active ? 'bg-success' : 'bg-light text-muted border');
-            return `<div class="d-flex align-items-center justify-content-between border rounded px-3 py-2 mb-2"><span class="fw-semibold">${esc(text)}</span><span class="badge ${statusClass}">${active ? 'Confirmed' : 'Pending'}</span></div>`;
+            const isRed = badge.classList.contains('bg-danger');
+            const isConfirmed = badge.classList.contains('bg-success') || badge.classList.contains('bg-primary');
+            const statusClass = isRed ? 'bg-danger' : (isConfirmed ? 'bg-success' : 'bg-light text-muted border');
+            let statusText = 'Pending';
+            if (isRed) {
+                statusText = /picked up/i.test(text) ? 'Waiting collection' : (/delivered/i.test(text) ? 'Late' : 'Attention');
+            } else if (isConfirmed) {
+                statusText = 'Confirmed';
+            }
+            return `<div class="d-flex align-items-center justify-content-between border rounded px-3 py-2 mb-2"><span class="fw-semibold">${esc(text)}</span><span class="badge ${statusClass}">${esc(statusText)}</span></div>`;
         }).join('');
         const warningHtml = warning ? `<div class="alert alert-warning py-2 mb-3"><strong>Live carrier history unavailable.</strong><div class="small">${esc(warning)} BT38 is showing persisted shipment state instead.</div></div>` : '';
         const promise = promiseFromRow(row);
