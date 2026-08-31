@@ -6,6 +6,7 @@ ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_tex
 EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(encoding="utf-8")
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
+LEGACY_JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey_legacy.js").read_text(encoding="utf-8")
 FBM_TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
 BASE_TEMPLATE = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
 
@@ -103,6 +104,17 @@ def test_picked_up_stays_red_after_label_stage_until_real_acceptance():
     assert 'Label / postage created · waiting for carrier collection' in JOURNEY
     assert 'persisted label/postage created without carrier acceptance => Picked up RED' in JOURNEY
     assert "querySelectorAll('code')" not in JOURNEY.split('function labelOrTrackingStageReached(row) {', 1)[1].split('\n    }', 1)[0]
+
+
+def test_marketplace_journey_uses_exact_row_identity_instead_of_generic_cell_guessing():
+    assert 'function marketplaceFromRow(row)' in LEGACY_JOURNEY
+    assert "marketplaceCell.querySelector('.fbm-marketplace-logo')" in LEGACY_JOURNEY
+    assert "logo.getAttribute('alt') || logo.getAttribute('title')" in LEGACY_JOURNEY
+    assert "orderCell.querySelector('.fw-semibold')" in LEGACY_JOURNEY
+    assert "button.dataset.platform || marketplaceFromRow(row) || 'Marketplace'" in LEGACY_JOURNEY
+    install = LEGACY_JOURNEY.split('function installMarketplaceJourneyLinks() {', 1)[1].split('\n    function installEbayShippingHandoff()', 1)[0]
+    assert 'const marketplace = marketplaceFromRow(row);' in install
+    assert "row.children[1]?.querySelector('strong')" not in install
 
 
 def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_before_legacy():
