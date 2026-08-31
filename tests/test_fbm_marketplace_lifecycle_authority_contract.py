@@ -109,8 +109,8 @@ def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_befor
     assert "assetUrl('/static/js/fbm_tracking_journey_legacy.js')" in JOURNEY
     assert "nativeScript.onload = loadDeliveryPromiseAlignment" in JOURNEY
     assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in JOURNEY
-    assert "delivery.onload = loadLegacy" in JOURNEY
-    assert "delivery.onerror = loadLegacy" in JOURNEY
+    assert "alignment.onload = loadLegacy" in JOURNEY
+    assert "alignment.onerror = loadLegacy" in JOURNEY
 
 
 def test_alignment_does_not_create_parallel_runtime_or_browser_polling():
