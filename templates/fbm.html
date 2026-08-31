@@ -45,7 +45,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.6/qz-tray.js"></script><script src="{{ url_for('static', filename='js/fbm_qz_print.js') }}"></script><script src="{{ url_for('static', filename='js/fbm_tracking_journey.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.6/qz-tray.js"></script><script src="{{ url_for('static', filename='js/fbm_qz_print.js') }}"></script><script src="{{ url_for('static', filename='js/fbm_tracking_journey.js', v=config['BT38_ASSET_VERSION']) }}"></script>
 <script>
 (function(){
 const packlinkProUrl='https://pro.packlink.com/';
