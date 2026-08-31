@@ -117,7 +117,7 @@ def test_marketplace_journey_uses_exact_row_identity_instead_of_generic_cell_gue
     assert "row.children[1]?.querySelector('strong')" not in install
 
 
-def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_before_legacy():
+def test_browser_journey_assets_are_fresh_and_core_journey_is_not_gated_by_delivery_alignment():
     assert "config['BT38_ASSET_VERSION']" in FBM_TEMPLATE
     assert "filename='js/fbm_tracking_journey.js', v=config['BT38_ASSET_VERSION']" in FBM_TEMPLATE
     assert "bootstrapUrl.searchParams.get('v')" in JOURNEY
@@ -125,10 +125,11 @@ def test_browser_journey_assets_are_fresh_and_delivery_alignment_is_loaded_befor
     assert "assetUrl('/static/js/fbm_ebay_shipping_alignment.js')" in JOURNEY
     assert "assetUrl('/static/js/fbm_delivery_promise_journey_alignment.js')" in JOURNEY
     assert "assetUrl('/static/js/fbm_tracking_journey_legacy.js')" in JOURNEY
-    assert "nativeScript.onload = loadDeliveryPromiseAlignment" in JOURNEY
-    assert "nativeScript.onerror = loadDeliveryPromiseAlignment" in JOURNEY
-    assert "alignment.onload = loadLegacy" in JOURNEY
-    assert "alignment.onerror = loadLegacy" in JOURNEY
+    assert "nativeScript.onload = loadLegacy" in JOURNEY
+    assert "nativeScript.onerror = loadLegacy" in JOURNEY
+    assert "legacy.onload = function ()" in JOURNEY
+    assert "loadDeliveryPromiseAlignment();" in JOURNEY
+    assert "nativeScript.onload = loadDeliveryPromiseAlignment" not in JOURNEY
 
 
 def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
