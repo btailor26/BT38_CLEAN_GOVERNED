@@ -15,6 +15,12 @@ _JOURNEY_LABEL_REPLACEMENTS = (
     ("2 · In transit", "In transit"),
     ("3 · Delivered", "Delivered"),
 )
+_TRACKING_LINK_STYLE = (
+    '<style id="bt38FbmTrackingLinkAlignment">'
+    '.fbm-orders-table td a:has(code){text-decoration:none!important}'
+    '.fbm-orders-table td a:has(code) code{text-decoration:none!important}'
+    '</style>'
+)
 
 
 def _clean_fbm_journey_html(html: str) -> str:
@@ -23,6 +29,16 @@ def _clean_fbm_journey_html(html: str) -> str:
     for old, new in _JOURNEY_LABEL_REPLACEMENTS:
         value = value.replace(old, new)
     return value
+
+
+def _align_fbm_tracking_link_html(html: str) -> str:
+    """Keep marketplace tracking clickable without an underline below the ID."""
+    value = str(html or "")
+    if 'id="bt38FbmTrackingLinkAlignment"' in value:
+        return value
+    if "</head>" in value:
+        return value.replace("</head>", _TRACKING_LINK_STYLE + "</head>", 1)
+    return _TRACKING_LINK_STYLE + value
 
 
 def install_governed_order_clarity_alignment(app) -> None:
@@ -38,7 +54,14 @@ def install_governed_order_clarity_alignment(app) -> None:
     from services.governed_fbm_fulfillment_guard import (
         install_governed_fbm_fulfillment_guard,
     )
+    from services.fbm_db_delivery_promise_alignment import (
+        install_fbm_db_delivery_promise_alignment,
+    )
 
+    # Reuse the existing persisted operational-state promise reader. This does
+    # not add a marketplace/API read: it restores the DB -> FBM handoff for the
+    # template's existing delivery_promise field.
+    install_fbm_db_delivery_promise_alignment(app)
     install_governed_fbm_lifecycle_alignment(app)
     install_governed_fbm_fulfillment_guard()
     app._bt38_order_clarity_alignment_installed = True
@@ -57,10 +80,12 @@ def install_governed_order_clarity_alignment(app) -> None:
             and response.content_type
             and "text/html" in response.content_type
         ):
-            response.set_data(_clean_fbm_journey_html(response.get_data(as_text=True)))
+            html = _clean_fbm_journey_html(response.get_data(as_text=True))
+            html = _align_fbm_tracking_link_html(html)
+            response.set_data(html)
 
         return response
 
     app.logger.info(
-        "BT38 order clarity alignment installed: render-only FBM Journey labels; event-persisted state remains authoritative"
+        "BT38 order clarity alignment installed: persisted delivery promises + clean tracking links + render-only FBM Journey labels; event-persisted state remains authoritative"
     )
