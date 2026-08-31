@@ -14,3 +14,10 @@ import services.governed_fba_settlement_ui_alignment  # noqa: F401,E402
 # including multi-package tracking that arrives after a Fly sleep/restart.
 # This reuses the existing MCF refresh and marketplace enrichment path.
 import services.governed_mcf_tracking_startup_alignment  # noqa: F401,E402
+
+# Preserve the existing FBM journey path for historical/current Packlink rows.
+# A persisted Packlink provider shipment id plus tracking is provider identity
+# proof even when an older row predates the deterministic purchase-key field.
+# This changes source selection only; it creates no provider call, poller,
+# shipment record, marketplace write, or second journey renderer.
+import services.governed_fbm_packlink_journey_authority  # noqa: F401,E402
