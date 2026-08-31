@@ -330,18 +330,22 @@ def _bt38_existing_ui_signal_before_flush(
     flush_context,
     instances,
 ):
-    """Wake the existing UI signal for canonical marketplace commits.
+    """Wake the existing UI signal for canonical committed state changes.
 
     Product Linking and webhook routes already publish through this module.
-    These model checks cover DB-originating sales/listings and persisted pushes.
+    These model checks cover DB-originating marketplace rows, persisted pushes,
+    and FBM shipment lifecycle/tracking changes without adding another event path.
     """
     if session_obj.info.get("_bt38_ui_commit_wake"):
         return
 
+    from fbm_models import FBMShipment
     from models import MarketplaceListing, MarketplaceOrder, SyncLog
 
+    canonical_rows = (MarketplaceListing, MarketplaceOrder, FBMShipment)
+
     for row in session_obj.new:
-        if isinstance(row, (MarketplaceListing, MarketplaceOrder)):
+        if isinstance(row, canonical_rows):
             session_obj.info["_bt38_ui_commit_wake"] = True
             return
 
@@ -353,6 +357,19 @@ def _bt38_existing_ui_signal_before_flush(
             ):
                 session_obj.info["_bt38_ui_commit_wake"] = True
                 return
+
+    for row in session_obj.dirty:
+        if (
+            isinstance(row, canonical_rows)
+            and session_obj.is_modified(row, include_collections=False)
+        ):
+            session_obj.info["_bt38_ui_commit_wake"] = True
+            return
+
+    for row in session_obj.deleted:
+        if isinstance(row, canonical_rows):
+            session_obj.info["_bt38_ui_commit_wake"] = True
+            return
 
 
 @event.listens_for(Session, "after_commit")
