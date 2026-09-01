@@ -64,7 +64,7 @@ def _persist_spend(shipment, *, amount, currency, source):
     row.source = source
     row.source_reference = shipment.provider_shipment_id
     row.confirmed = True
-    row.recorded_at = shipment.label_purchased_at or datetime.utcnow()
+    row.recorded_at = datetime.utcnow()
     return row
 
 
@@ -125,7 +125,6 @@ def install_governed_sds_dispatch_alignment(app) -> None:
                 "message": "SDS was already selected for this order. No second dispatch was created.",
             })
 
-        now = datetime.utcnow()
         shipment = FBMShipment(
             store_id=order.store_id,
             marketplace_order_id=order.marketplace_order_id,
@@ -162,7 +161,6 @@ def install_governed_sds_dispatch_alignment(app) -> None:
             db.session.rollback()
             return jsonify({"success": False, "message": "SDS dispatch cost could not be resolved from the configured cost mode."}), 409
 
-        shipment.label_purchased_at = now
         _persist_spend(
             shipment,
             amount=amount,
