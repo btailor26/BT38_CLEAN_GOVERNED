@@ -16,10 +16,14 @@ from services.governed_product_linking_unlink_alignment import (
 from services.governed_ebay_native_shipping_alignment import (
     install_governed_ebay_native_shipping_alignment,
 )
+from services.governed_fbm_db_authority_alignment import (
+    install_governed_fbm_db_authority_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 install_product_linking_unlink_alignment(app)
 install_governed_ebay_native_shipping_alignment(app)
+install_governed_fbm_db_authority_alignment()
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
