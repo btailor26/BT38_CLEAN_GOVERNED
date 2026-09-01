@@ -10,6 +10,17 @@ def test_fbm_journey_uses_rendered_db_promise_not_provider_payload():
     assert "performanceBlock(promise, history, payload.provider_status)" in source
 
 
+def test_fbm_promise_alignment_owns_every_tracking_journey_click():
+    source = Path("static/js/fbm_delivery_promise_journey_alignment.js").read_text(encoding="utf-8")
+
+    # Provider-backed and marketplace-backed journeys must use the same rendered
+    # DB promise. A provider button must not fall through to the legacy handler,
+    # which can expose a second promise payload and create conflicting dates.
+    assert "event.target.closest('.fbm-tracking-journey')" in source
+    assert ".fbm-tracking-journey[data-journey-source=\"marketplace\"]" not in source
+    assert "event.stopImmediatePropagation()" in source
+
+
 def test_fbm_journey_alignment_is_loaded_for_the_single_fbm_page():
     source = Path("services/governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 
