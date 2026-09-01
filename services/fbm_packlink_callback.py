@@ -146,6 +146,41 @@ def _status_texts(payload: Any) -> list[str]:
     return values
 
 
+def _provider_state_lifecycle(provider_state: Any) -> str | None:
+    """Return only the lifecycle explicitly stated by Packlink's current state."""
+    normalized = (
+        str(provider_state or "")
+        .strip()
+        .upper()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace("/", "_")
+    )
+    if not normalized:
+        return None
+    if normalized in {
+        "DELIVERED",
+        "DELIVERY_COMPLETE",
+        "DELIVERY_COMPLETED",
+        "SUCCESSFULLY_DELIVERED",
+        "COMPLETED_DELIVERY",
+    } or normalized.endswith("_DELIVERED"):
+        return "DELIVERED"
+    if normalized in {"IN_TRANSIT", "OUT_FOR_DELIVERY", "IN_DELIVERY", "ON_ROUTE"}:
+        return "IN_TRANSIT"
+    if normalized in {
+        "ACCEPTED",
+        "CARRIER_ACCEPTED",
+        "COLLECTED",
+        "PICKED_UP",
+        "PICKEDUP",
+        "RECEIVED_BY_CARRIER",
+    }:
+        return "ACCEPTED"
+    return None
+
+
 def _canonical_tracking_lifecycle(
     provider_state: Any,
     tracking_history: list[dict[str, Any]] | None,
@@ -182,12 +217,27 @@ def reconcile_packlink_tracking_lifecycle(
     observed_at: datetime | None = None,
 ) -> str:
     """Project exact Packlink shipment/history truth onto BT38 Journey milestones."""
-    canonical = _canonical_tracking_lifecycle(provider_state, tracking_history)
+    current = _provider_state_lifecycle(provider_state)
+    canonical = current or _canonical_tracking_lifecycle(None, tracking_history)
+    checked_at = observed_at or datetime.utcnow()
+
+    # Packlink's current shipment state is newer authority than older history or
+    # stale BT38 terminal fields. This only removes milestones that the current
+    # provider state explicitly disproves; tracking/label presence never promotes
+    # a physical carrier milestone by itself.
+    if current == "IN_TRANSIT":
+        shipment.delivered_at = None
+        shipment.status = "in_transit"
+    elif current == "ACCEPTED":
+        shipment.delivered_at = None
+        shipment.first_movement_at = None
+        shipment.status = "accepted"
+
     if canonical:
         shipment.last_provider_status = canonical
     elif str(provider_state or "").strip():
         shipment.last_provider_status = str(provider_state).strip()
-    shipment.last_provider_checked_at = observed_at or datetime.utcnow()
+    shipment.last_provider_checked_at = checked_at
     return reconcile_provider_lifecycle_state(
         shipment,
         observed_at=shipment.last_provider_checked_at,
@@ -476,7 +526,7 @@ def process_packlink_callback(
     _apply_lifecycle_state(shipment, event_name, now)
     reconcile_packlink_tracking_lifecycle(
         shipment,
-        provider_state=shipment.last_provider_status,
+        provider_state=provider_state,
         tracking_history=tracking_history,
         observed_at=now,
     )
@@ -506,30 +556,45 @@ def recover_packlink_shipments_for_day(
 ) -> dict[str, Any]:
     """One-shot recovery for exact Packlink shipments already known to BT38.
 
-    This is deliberately not a polling loop. It hydrates only Packlink shipment
-    references created on the requested day. Already-confirmed marketplace rows
-    are lifecycle-refreshed only and can never trigger another marketplace write.
-    Unconfirmed paid labels keep using the existing confirmation path.
+    The requested day keeps the existing recovery behaviour. When today's pass
+    runs, Packlink records older than the normal seven-day deploy window are also
+    read once for lifecycle recovery only. Historical recovery never confirms a
+    marketplace shipment and never purchases or changes postage.
     """
     start = datetime.combine(target_day, time.min)
     end = start + timedelta(days=1)
+    query = FBMShipment.query.filter(
+        FBMShipment.provider == "packlink",
+        FBMShipment.provider_shipment_id.isnot(None),
+    )
     shipments = (
-        FBMShipment.query
-        .filter(
-            FBMShipment.provider == "packlink",
-            FBMShipment.provider_shipment_id.isnot(None),
-            FBMShipment.created_at >= start,
-            FBMShipment.created_at < end,
-        )
+        query
+        .filter(FBMShipment.created_at >= start, FBMShipment.created_at < end)
         .order_by(FBMShipment.id.asc())
         .all()
     )
+
+    historical_cutoff = start - timedelta(days=6)
+    if target_day == datetime.utcnow().date():
+        historical = (
+            query
+            .filter(FBMShipment.created_at < historical_cutoff)
+            .order_by(FBMShipment.id.asc())
+            .all()
+        )
+        existing_ids = {shipment.id for shipment in shipments}
+        shipments = historical + [shipment for shipment in shipments if shipment.id not in existing_ids or shipment not in historical]
 
     adapter = adapter or PacklinkAdapter()
     results: list[dict[str, Any]] = []
     for shipment in shipments:
         try:
-            if shipment.marketplace_confirmed_at is not None:
+            historical_lifecycle_only = bool(
+                target_day == datetime.utcnow().date()
+                and shipment.created_at is not None
+                and shipment.created_at < historical_cutoff
+            )
+            if historical_lifecycle_only or shipment.marketplace_confirmed_at is not None:
                 now = datetime.utcnow()
                 provider_payload = adapter.get_shipment(shipment.provider_shipment_id)
                 tracking_history = adapter.get_tracking_status(reference=shipment.provider_shipment_id)
@@ -556,6 +621,7 @@ def recover_packlink_shipments_for_day(
                     "marketplace_order_id": shipment.marketplace_order_id,
                     "provider_reference": shipment.provider_shipment_id,
                     "lifecycle_only": True,
+                    "historical_recovery": historical_lifecycle_only,
                     "marketplace_write_attempted": False,
                     "provider_status": shipment.last_provider_status,
                     "shipment_status": shipment.status,

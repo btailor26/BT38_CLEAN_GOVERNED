@@ -15,12 +15,29 @@ def test_tracking_history_can_promote_terminal_delivery_truth():
     assert "reconcile_provider_lifecycle_state" in CALLBACK
 
 
+def test_current_packlink_state_beats_stale_terminal_history():
+    assert "def _provider_state_lifecycle" in CALLBACK
+    lifecycle = CALLBACK.split("def reconcile_packlink_tracking_lifecycle", 1)[1].split("def _first_label_url", 1)[0]
+    assert "current = _provider_state_lifecycle(provider_state)" in lifecycle
+    assert "current or _canonical_tracking_lifecycle(None, tracking_history)" in lifecycle
+    assert 'shipment.delivered_at = None' in lifecycle
+    assert 'shipment.status = "in_transit"' in lifecycle
+
+
 def test_confirmed_historical_packlink_rows_refresh_lifecycle_without_marketplace_write():
     assert "marketplace_confirmed_at is not None" in CALLBACK
     assert '"lifecycle_only": True' in CALLBACK
     assert '"marketplace_write_attempted": False' in CALLBACK
     recovery = CALLBACK.split("def recover_packlink_shipments_for_day", 1)[1]
     assert "FBMShipment.marketplace_confirmed_at.is_(None)" not in recovery
+
+
+def test_previously_known_packlink_rows_get_one_shot_lifecycle_recovery_only():
+    recovery = CALLBACK.split("def recover_packlink_shipments_for_day", 1)[1]
+    assert "historical_cutoff = start - timedelta(days=6)" in recovery
+    assert "historical_lifecycle_only" in recovery
+    assert '"historical_recovery": historical_lifecycle_only' in recovery
+    assert "historical_lifecycle_only or shipment.marketplace_confirmed_at is not None" in recovery
 
 
 def test_shared_journey_remains_timestamp_authority():
