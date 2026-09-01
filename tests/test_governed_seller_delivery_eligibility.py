@@ -9,7 +9,7 @@ def test_postcodes_are_normalised_before_matching():
     assert normalise_postcode("LE13WU") == "LE1 3WU"
 
 
-def test_within_radius_is_eligible():
+def test_within_radius_is_eligible_and_named_sds():
     result = evaluate_seller_delivery(
         enabled=True,
         prime_sfp=False,
@@ -22,6 +22,7 @@ def test_within_radius_is_eligible():
     assert result.eligible is True
     assert result.reason == "within_delivery_radius"
     assert result.distance_miles is not None
+    assert result.service == "SDS"
 
 
 def test_outside_radius_is_not_eligible():
@@ -36,6 +37,7 @@ def test_outside_radius_is_not_eligible():
     )
     assert result.eligible is False
     assert result.reason == "outside_delivery_radius"
+    assert result.service == "SDS"
 
 
 def test_prime_sfp_is_always_blocked():
