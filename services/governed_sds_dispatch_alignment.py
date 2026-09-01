@@ -119,6 +119,7 @@ def install_governed_sds_dispatch_alignment(app) -> None:
                 "success": True,
                 "already_selected": True,
                 "shipment_id": shipment.id,
+                "sds_reference": shipment.provider_shipment_id,
                 "provider": "sds",
                 "status": shipment.status,
                 "message": "SDS was already selected for this order. No second dispatch was created.",
@@ -136,7 +137,6 @@ def install_governed_sds_dispatch_alignment(app) -> None:
             purchase_status="selected",
             status="awaiting_seller_handover",
             label_source="sds",
-            label_storage_ref=f"SDS-{order.store_id}-{order.marketplace_order_id}",
         )
         db.session.add(shipment)
         try:
@@ -145,8 +145,14 @@ def install_governed_sds_dispatch_alignment(app) -> None:
             db.session.rollback()
             existing = FBMShipment.query.filter_by(purchase_key=purchase_key).first()
             if existing is not None:
-                return jsonify({"success": True, "already_selected": True, "shipment_id": existing.id, "provider": "sds", "status": existing.status})
+                return jsonify({"success": True, "already_selected": True, "shipment_id": existing.id, "sds_reference": existing.provider_shipment_id, "provider": "sds", "status": existing.status})
             return jsonify({"success": False, "message": "SDS selection state changed; reload the order before retrying."}), 409
+
+        # The physical parcel identity is derived only after the canonical DB
+        # shipment has an id. Marketplace order numbers are not scan authority.
+        sds_reference = f"SDS-{shipment.id:010d}"
+        shipment.provider_shipment_id = sds_reference
+        shipment.label_storage_ref = sds_reference
 
         amount, source = _actual_dispatch_cost(config, eligibility.get("distance_miles"), body)
         if str(getattr(config, "cost_mode", "manual") or "manual").lower() == "manual" and amount is None:
@@ -168,6 +174,7 @@ def install_governed_sds_dispatch_alignment(app) -> None:
             "success": True,
             "already_selected": False,
             "shipment_id": shipment.id,
+            "sds_reference": sds_reference,
             "provider": "sds",
             "status": shipment.status,
             "distance_miles": eligibility.get("distance_miles"),
