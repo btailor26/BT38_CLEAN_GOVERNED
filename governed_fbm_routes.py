@@ -217,21 +217,20 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         .all()
     )
 
-    def purchased_provider(shipment: FBMShipment) -> bool:
+    def purchase_authority_rank(shipment: FBMShipment) -> int:
         provider = str(getattr(shipment, "provider", "") or "").strip().lower()
+        if provider in {"", "marketplace"}:
+            return 0
         purchase_status = str(getattr(shipment, "purchase_status", "") or "").strip().lower()
         purchase_key = str(getattr(shipment, "purchase_key", "") or "").strip().lower()
         tracking_number = str(getattr(shipment, "tracking_number", "") or "").strip()
-        packlink_completed = (
-            provider == "packlink"
-            and purchase_key.startswith("packlink_")
-            and bool(tracking_number)
-        )
-        return provider not in {"", "marketplace"} and (
-            getattr(shipment, "label_purchased_at", None) is not None
-            or purchase_status == "purchased"
-            or packlink_completed
-        )
+        if getattr(shipment, "label_purchased_at", None) is not None:
+            return 3
+        if purchase_status == "purchased":
+            return 2
+        if provider == "packlink" and purchase_key.startswith("packlink_") and tracking_number:
+            return 1
+        return 0
 
     result = {}
     for shipment in shipments:
@@ -239,7 +238,7 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         if key not in keys:
             continue
         current = result.get(key)
-        if current is None or (purchased_provider(shipment) and not purchased_provider(current)):
+        if current is None or purchase_authority_rank(shipment) > purchase_authority_rank(current):
             result[key] = shipment
     return result
 
