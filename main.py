@@ -25,6 +25,9 @@ from services.governed_shipping_spend_alignment import (
 from services.governed_shipping_spend_reporting import (
     install_governed_shipping_spend_reporting,
 )
+from services.governed_seller_delivery_config import (
+    install_governed_seller_delivery_config,
+)
 
 install_governed_notification_read_alignment(app)
 install_product_linking_unlink_alignment(app)
@@ -32,6 +35,7 @@ install_governed_ebay_native_shipping_alignment(app)
 install_governed_fbm_db_authority_alignment()
 install_governed_shipping_spend_alignment(app)
 install_governed_shipping_spend_reporting(app)
+install_governed_seller_delivery_config(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
