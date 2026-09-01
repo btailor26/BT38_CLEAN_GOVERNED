@@ -151,6 +151,23 @@
         return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(source)} / persisted BT38 state</div>${marketplaceButton}</div></div>${promiseText ? `<div class="border rounded p-3 mb-3"><div class="small"><strong>${esc(promiseText)}</strong></div></div>` : ''}<div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
     }
 
+    function providerFallbackHtml(button, warning) {
+        const row = button.closest('.fbm-order-row');
+        const tracking = button.dataset.trackingNumber || String(button.textContent || '').trim() || '—';
+        const shipmentCell = row ? row.children[7] : null;
+        const carrier = button.dataset.carrier || (shipmentCell ? String(shipmentCell.querySelector('strong')?.textContent || 'Packlink/carrier').trim() : 'Packlink/carrier');
+        const journeyCell = row ? row.children[8] : null;
+        const badges = journeyCell ? Array.from(journeyCell.querySelectorAll('.badge')) : [];
+        const milestoneHtml = badges.slice(0, 4).map(function (badge) {
+            const text = String(badge.textContent || '').replace(/^\d+\s*·\s*/, '').trim();
+            const active = badge.classList.contains('bg-success') || badge.classList.contains('bg-danger') || badge.classList.contains('bg-primary');
+            const statusClass = badge.classList.contains('bg-danger') ? 'bg-danger' : (active ? 'bg-success' : 'bg-light text-muted border');
+            return `<div class="d-flex align-items-center justify-content-between border rounded px-3 py-2 mb-2"><span class="fw-semibold">${esc(text)}</span><span class="badge ${statusClass}">${active ? 'Confirmed' : 'Pending'}</span></div>`;
+        }).join('');
+        const warningHtml = warning ? `<div class="alert alert-warning py-2 mb-3"><strong>Live Packlink/carrier history unavailable.</strong><div class="small">${esc(warning)} BT38 is retaining the purchased-provider authority and showing persisted shipment state instead.</div></div>` : '';
+        return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: Packlink / carrier platform</div></div></div><div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
+    }
+
     async function openJourney(button) {
         const modalElement = document.getElementById('fbmTrackingJourneyModal');
         const body = document.getElementById('fbmTrackingJourneyBody');
@@ -174,7 +191,7 @@
             const tracking = payload.tracking_number || payload.tracking || button.dataset.trackingNumber || '—';
             body.innerHTML = `<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(payload.carrier || 'Packlink/carrier')} · ${esc(payload.service || '')}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: Packlink / carrier platform</div></div><div>${performanceBlock(payload, history)}</div></div><div class="border rounded p-3 mb-3">${promiseHtml(payload.marketplace_promise)}</div><div class="fw-semibold mb-2">Platform journey</div>${historyHtml(history)}`;
         } catch (error) {
-            body.innerHTML = marketplaceJourneyHtml(button, error.message);
+            body.innerHTML = providerFallbackHtml(button, error.message);
         }
     }
 
@@ -184,6 +201,8 @@
             const shipmentCell = row.children[7];
             if (!shipmentCell) return;
             const carrier = String(shipmentCell.querySelector('strong')?.textContent || marketplace).trim();
+            const packlinkStatus = row.querySelector('.packlink-existing-status[data-shipment-id]');
+            const purchasedProviderShipmentId = packlinkStatus ? String(packlinkStatus.dataset.shipmentId || '').trim() : '';
 
             shipmentCell.querySelectorAll('a[href*="ebay.co.uk/mesh/ord/details"], a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]').forEach(function (link) {
                 const tracking = String(link.textContent || '').trim();
@@ -193,10 +212,16 @@
                 link.setAttribute('role', 'button');
                 link.setAttribute('tabindex', '0');
                 link.classList.add('fbm-tracking-journey');
-                link.dataset.journeySource = 'marketplace';
                 link.dataset.trackingNumber = tracking;
-                link.dataset.platform = marketplace;
                 link.dataset.carrier = carrier;
+                if (purchasedProviderShipmentId) {
+                    link.dataset.journeySource = 'packlink';
+                    link.dataset.shipmentId = purchasedProviderShipmentId;
+                    delete link.dataset.platform;
+                } else {
+                    link.dataset.journeySource = 'marketplace';
+                    link.dataset.platform = marketplace;
+                }
             });
 
             shipmentCell.querySelectorAll('.bt38-db-tracking code').forEach(function (code) {
@@ -205,10 +230,15 @@
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'btn btn-link btn-sm p-0 align-baseline fbm-tracking-journey';
-                button.dataset.journeySource = 'marketplace';
                 button.dataset.trackingNumber = tracking;
-                button.dataset.platform = marketplace;
                 button.dataset.carrier = carrier;
+                if (purchasedProviderShipmentId) {
+                    button.dataset.journeySource = 'packlink';
+                    button.dataset.shipmentId = purchasedProviderShipmentId;
+                } else {
+                    button.dataset.journeySource = 'marketplace';
+                    button.dataset.platform = marketplace;
+                }
                 code.replaceWith(button);
                 button.appendChild(code);
             });
