@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SDS {{ label.sds_reference }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; background: #f5f5f5; font-family: Arial, sans-serif; color: #111; }
+    .toolbar { max-width: 100mm; margin: 0 auto 12px; display: flex; justify-content: flex-end; }
+    .toolbar button { padding: 8px 14px; cursor: pointer; }
+    .label { width: 100mm; min-height: 150mm; margin: 0 auto; padding: 8mm; background: white; border: 1px solid #111; }
+    .brand { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 4mm; }
+    .brand h1 { margin: 0; font-size: 22px; }
+    .brand p { margin: 3px 0 0; font-size: 11px; }
+    .ref { font-weight: 700; font-size: 17px; letter-spacing: .5px; text-align: right; }
+    .qr { text-align: center; padding: 7mm 0 4mm; }
+    .qr img { width: 48mm; height: 48mm; image-rendering: pixelated; }
+    .scan-value { text-align: center; font-size: 18px; font-weight: 700; letter-spacing: 1px; margin-bottom: 6mm; }
+    .section { border-top: 1px solid #111; padding-top: 4mm; margin-top: 4mm; }
+    .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 2mm; }
+    .address { font-size: 15px; line-height: 1.45; }
+    .postcode { font-size: 20px; font-weight: 700; margin-top: 2mm; }
+    .items { font-size: 11px; }
+    .item { display: flex; justify-content: space-between; gap: 8px; padding: 2mm 0; border-bottom: 1px dotted #bbb; }
+    .footer { margin-top: 7mm; font-size: 9px; text-align: center; }
+    @media print {
+      @page { size: 100mm 150mm; margin: 0; }
+      body { padding: 0; background: white; }
+      .toolbar { display: none; }
+      .label { border: 0; margin: 0; width: 100mm; min-height: 150mm; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar"><button type="button" onclick="window.print()">Print SDS label</button></div>
+  <main class="label">
+    <div class="brand">
+      <div>
+        <h1>SDS</h1>
+        <p>Seller's Delivery Service · Powered by BT38</p>
+      </div>
+      <div class="ref">{{ label.sds_reference }}</div>
+    </div>
+
+    <div class="qr">
+      <img src="{{ url_for('bt38_sds_label_qr', shipment_id=shipment.id) }}" alt="SDS parcel QR">
+    </div>
+    <div class="scan-value">{{ label.scan_value }}</div>
+
+    <section class="section">
+      <div class="section-title">Deliver to</div>
+      <div class="address">
+        {% if label.recipient.name %}<div><strong>{{ label.recipient.name }}</strong></div>{% endif %}
+        {% if label.recipient.address1 %}<div>{{ label.recipient.address1 }}</div>{% endif %}
+        {% if label.recipient.address2 %}<div>{{ label.recipient.address2 }}</div>{% endif %}
+        {% if label.recipient.city %}<div>{{ label.recipient.city }}</div>{% endif %}
+        {% if label.recipient.region %}<div>{{ label.recipient.region }}</div>{% endif %}
+        {% if label.recipient.postcode %}<div class="postcode">{{ label.recipient.postcode }}</div>{% endif %}
+        {% if label.recipient.country %}<div>{{ label.recipient.country }}</div>{% endif %}
+      </div>
+    </section>
+
+    {% if label.items %}
+    <section class="section items">
+      <div class="section-title">Parcel contents</div>
+      {% for item in label.items %}
+      <div class="item">
+        <span>{{ item.sku or item.title or 'Item' }}</span>
+        <strong>× {{ item.quantity }}</strong>
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <div class="footer">Scan authority: {{ label.sds_reference }} · This label does not itself mark the parcel dispatched or delivered.</div>
+  </main>
+</body>
+</html>
