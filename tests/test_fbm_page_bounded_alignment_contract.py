@@ -3,10 +3,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = (ROOT / "services" / "governed_fbm_page_alignment.py").read_text(encoding="utf-8")
+DISPATCH_QUEUE = (ROOT / "services" / "governed_fbm_dispatch_queue_alignment.py").read_text(encoding="utf-8")
 SEARCH = (ROOT / "services" / "governed_fbm_global_search_alignment.py").read_text(encoding="utf-8")
 CLARITY = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 INSTALLER = (ROOT / "services" / "governed_notification_read_alignment.py").read_text(encoding="utf-8")
 LEGACY_ROUTE = (ROOT / "governed_fbm_routes.py").read_text(encoding="utf-8")
+MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 
 
 def test_fbm_default_page_is_exactly_fifteen_orders_and_expands_in_fifteens():
@@ -126,3 +128,30 @@ def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_executi
     assert "process_marketplace_notification" not in ALIGNMENT
     assert "MCFOrder" not in ALIGNMENT
     assert '"FBA", "AFN", "MCF"' in ALIGNMENT
+
+
+def test_dispatch_split_preserves_original_active_workspace_and_excludes_cancelled_orders():
+    assert 'queue = "excluded"' in DISPATCH_QUEUE
+    assert 'status.startswith("cancel")' in DISPATCH_QUEUE
+    assert "card.remove()" not in DISPATCH_QUEUE
+    assert "title.textContent='Needs dispatch'" in DISPATCH_QUEUE
+    assert "readyToShipSelected" in DISPATCH_QUEUE
+    assert "selectAllOrders" in DISPATCH_QUEUE
+    assert "fbm-dispatch-history" in DISPATCH_QUEUE
+    assert "fbm-shipping-options" in DISPATCH_QUEUE
+
+
+def test_dispatch_split_reuses_confirmed_shipping_spend_and_never_invents_zero_cost():
+    assert "ShippingSpendLedger.confirmed.is_(True)" in DISPATCH_QUEUE
+    assert "ShippingSpendLedger.shipment_id.in_(shipment_ids)" in DISPATCH_QUEUE
+    assert '"shipping_cost": float(spend.amount) if spend is not None else None' in DISPATCH_QUEUE
+    assert "Pending / unavailable" in DISPATCH_QUEUE
+    assert "£0.00" not in DISPATCH_QUEUE
+    assert "db.session.add" not in DISPATCH_QUEUE
+    assert "db.session.commit" not in DISPATCH_QUEUE
+
+
+def test_dispatch_split_is_registered_after_existing_fbm_page_alignment():
+    assert "install_governed_notification_read_alignment(app)" in MAIN
+    assert "install_governed_fbm_dispatch_queue_alignment(app)" in MAIN
+    assert MAIN.index("install_governed_notification_read_alignment(app)") < MAIN.index("install_governed_fbm_dispatch_queue_alignment(app)")
