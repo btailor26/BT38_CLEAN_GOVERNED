@@ -1,4 +1,4 @@
-"""Governed warehouse configuration for Seller's Delivery Service.
+"""Governed warehouse configuration for SDS (Seller's Delivery Service).
 
 This is configuration only: it does not select orders, create shipments,
 manufacture tracking scans, or write to a marketplace.
@@ -13,6 +13,10 @@ from flask_login import login_required
 from extensions import db
 from models import Warehouse
 from seller_delivery_models import WarehouseSellerDeliveryConfig
+
+
+SDS_NAME = "SDS"
+SDS_FULL_NAME = "Seller's Delivery Service"
 
 
 def _decimal(value, *, positive=False):
@@ -35,7 +39,8 @@ def _payload(row):
         "enabled": bool(row.enabled),
         "origin_postcode": row.origin_postcode,
         "radius_miles": float(row.radius_miles) if row.radius_miles is not None else None,
-        "service_name": row.service_name,
+        "service_name": SDS_NAME,
+        "service_full_name": SDS_FULL_NAME,
         "cost_mode": row.cost_mode,
         "flat_cost": float(row.flat_cost) if row.flat_cost is not None else None,
         "per_mile_cost": float(row.per_mile_cost) if row.per_mile_cost is not None else None,
@@ -75,13 +80,13 @@ def install_governed_seller_delivery_config(app) -> None:
             return jsonify({"success": False, "message": str(exc)}), 400
         cost_mode = str(data.get("cost_mode") or "manual").strip().lower()
         if cost_mode not in {"manual", "flat", "per_mile"}:
-            return jsonify({"success": False, "message": "Unsupported seller delivery cost mode."}), 400
+            return jsonify({"success": False, "message": "Unsupported SDS cost mode."}), 400
         if enabled and (not origin_postcode or radius is None):
-            return jsonify({"success": False, "message": "Origin postcode and delivery radius are required before enabling seller delivery."}), 400
+            return jsonify({"success": False, "message": "Origin postcode and delivery radius are required before enabling SDS."}), 400
         if cost_mode == "flat" and flat_cost is None:
-            return jsonify({"success": False, "message": "Flat delivery cost is required for flat cost mode."}), 400
+            return jsonify({"success": False, "message": "Flat delivery cost is required for SDS flat cost mode."}), 400
         if cost_mode == "per_mile" and per_mile_cost is None:
-            return jsonify({"success": False, "message": "Per-mile delivery cost is required for per-mile cost mode."}), 400
+            return jsonify({"success": False, "message": "Per-mile delivery cost is required for SDS per-mile cost mode."}), 400
 
         if row is None:
             row = WarehouseSellerDeliveryConfig(warehouse_id=warehouse.id)
@@ -89,7 +94,7 @@ def install_governed_seller_delivery_config(app) -> None:
         row.enabled = enabled
         row.origin_postcode = origin_postcode
         row.radius_miles = radius
-        row.service_name = str(data.get("service_name") or "Seller's Delivery Service").strip() or "Seller's Delivery Service"
+        row.service_name = SDS_NAME
         row.cost_mode = cost_mode
         row.flat_cost = flat_cost
         row.per_mile_cost = per_mile_cost
