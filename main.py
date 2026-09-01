@@ -31,6 +31,9 @@ from services.governed_seller_delivery_config import (
 from services.governed_sds_fbm_read_alignment import (
     install_governed_sds_fbm_read_alignment,
 )
+from services.governed_sds_dispatch_alignment import (
+    install_governed_sds_dispatch_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 install_product_linking_unlink_alignment(app)
@@ -40,6 +43,7 @@ install_governed_shipping_spend_alignment(app)
 install_governed_shipping_spend_reporting(app)
 install_governed_seller_delivery_config(app)
 install_governed_sds_fbm_read_alignment()
+install_governed_sds_dispatch_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
