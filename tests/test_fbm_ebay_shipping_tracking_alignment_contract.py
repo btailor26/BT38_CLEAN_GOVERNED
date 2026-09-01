@@ -61,13 +61,14 @@ def test_native_ebay_shipping_never_routes_rate_action_to_seller_hub():
     assert "mesh/ord/details" not in native
 
 
-def test_tracking_journey_never_hides_persisted_state_on_packlink_failure():
+def test_tracking_journey_preserves_purchased_provider_authority_on_packlink_failure():
     js = JOURNEY_JS.read_text(encoding="utf-8")
 
-    assert "marketplaceJourneyHtml(button, error.message)" in js
-    assert "BT38 is showing the persisted tracking and journey state instead." in js
-    assert "Journey source:" in js
-    assert "Open ${esc(source)} tracking" in js
+    assert "purchasedProviderJourneyHtml(button, error.message)" in js
+    assert "Journey source: Packlink / persisted BT38 state" in js
+    assert "providerShipmentFromRow" in js
+    assert "button.dataset.journeySource = 'packlink'" in js
+    assert "button.dataset.shipmentId = providerShipment.shipmentId" in js
     assert "marketplaceTrackingLink" in js
 
 
