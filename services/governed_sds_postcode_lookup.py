@@ -1,9 +1,12 @@
 """Bounded postcode-coordinate lookup for SDS auto eligibility.
 
-Postcodes.io is used only to resolve a UK postcode to coordinates. Results are
-request-local cached by the caller; lookup failure never makes an order eligible.
+Postcodes.io is used only to resolve a UK postcode to coordinates. Successful
+and unavailable results are cached per process; lookup failure never makes an
+order eligible.
 """
 from __future__ import annotations
+
+from functools import lru_cache
 
 import requests
 
@@ -14,6 +17,7 @@ POSTCODES_IO_URL = "https://api.postcodes.io/postcodes/{postcode}"
 LOOKUP_TIMEOUT_SECONDS = 3
 
 
+@lru_cache(maxsize=2048)
 def lookup_postcode_coordinates(postcode):
     normalised = normalise_postcode(postcode)
     if not normalised:
