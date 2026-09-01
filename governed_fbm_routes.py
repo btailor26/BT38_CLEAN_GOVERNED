@@ -27,6 +27,7 @@ from services.fbm_amazon_shipping_adapter import AmazonShippingAdapter, AmazonSh
 from services.fbm_carrier_mapping import mapping_payload, verify_mapping
 from services.fbm_order_mapper import apply_parcel_overrides, order_lines, parcel_from_db, provider_parcel, ship_to
 from services.fbm_packlink_adapter import PacklinkAdapter, PacklinkConfigurationError, PacklinkRequestError
+from services.fbm_packlink_callback import extract_packlink_tracking, reconcile_packlink_tracking_lifecycle
 from services.fbm_post_purchase import persist_external_label
 from services.fbm_shipping_state import provider_case_eligibility, shipment_confirmation_state
 
@@ -219,9 +220,17 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
     def purchased_provider(shipment: FBMShipment) -> bool:
         provider = str(getattr(shipment, "provider", "") or "").strip().lower()
         purchase_status = str(getattr(shipment, "purchase_status", "") or "").strip().lower()
+        purchase_key = str(getattr(shipment, "purchase_key", "") or "").strip().lower()
+        tracking_number = str(getattr(shipment, "tracking_number", "") or "").strip()
+        packlink_completed = (
+            provider == "packlink"
+            and purchase_key.startswith("packlink_")
+            and bool(tracking_number)
+        )
         return provider not in {"", "marketplace"} and (
             getattr(shipment, "label_purchased_at", None) is not None
             or purchase_status == "purchased"
+            or packlink_completed
         )
 
     result = {}
@@ -669,20 +678,27 @@ def packlink_shipment_status(shipment_id: int):
     except (PacklinkConfigurationError, PacklinkRequestError) as exc:
         return jsonify({"success": False, "message": str(exc)}), getattr(exc, "status_code", None) or 502
     provider_state = str(provider_payload.get("state") or provider_payload.get("status") or "").strip()
+    observed_at = datetime.utcnow()
+    reconcile_packlink_tracking_lifecycle(
+        shipment,
+        provider_state=provider_state,
+        tracking_history=tracking_history,
+        observed_at=observed_at,
+    )
     blockers = adapter.draft_blockers(provider_payload)
     normalized_state = provider_state.upper().replace(" ", "_").replace("-", "_")
     ready_to_ship = bool(provider_state) and not blockers and normalized_state not in {"AWAITING_COMPLETION", "INCOMPLETE", "DRAFT", "DRAFT_INCOMPLETE"}
     blocking_reason = blockers[0]["label"] if blockers else None
-    shipment.last_provider_status = provider_state or shipment.last_provider_status
-    shipment.last_provider_checked_at = datetime.utcnow()
     carrier = str(provider_payload.get("carrier") or shipment.carrier or "").strip() or None
     service = str(provider_payload.get("service") or shipment.service or "").strip() or None
-    tracking = _tracking_code(provider_payload) or shipment.tracking_number
+    tracking = extract_packlink_tracking(provider_payload, tracking_history, shipment.tracking_number)
+    if tracking:
+        shipment.tracking_number = tracking
     if labels:
         first_label = labels[0]
         label_url = first_label if isinstance(first_label, str) else (first_label.get("url") if isinstance(first_label, dict) else None)
         result = persist_external_label(shipment=shipment, marketplace=_platform(order), provider="packlink", provider_shipment_id=shipment.provider_shipment_id, carrier=carrier, service=service, tracking_number=tracking, provider_service_id=str(provider_payload.get("service_id") or shipment.provider_service_id or "") or None, label={"type": "LABEL", "format": "PDF", "url": label_url, "storage_ref": shipment.provider_shipment_id})
-        return jsonify({"success": True, "payment_complete": True, "label_ready": True, "ready_to_ship": True, "blockers": [], "blocking_reason": None, "label": {"format": "PDF", "url": label_url}, "provider_status": provider_state, "tracking": tracking, "tracking_history": tracking_history, **result})
+        return jsonify({"success": True, "payment_complete": True, "label_ready": True, "ready_to_ship": True, "blockers": [], "blocking_reason": None, "label": {"format": "PDF", "url": label_url}, "provider_status": shipment.last_provider_status, "tracking": tracking, "tracking_history": tracking_history, **result})
     db.session.commit()
     return jsonify({
         "success": True,
@@ -690,11 +706,13 @@ def packlink_shipment_status(shipment_id: int):
         "label_ready": False,
         "shipment_id": shipment.id,
         "provider_reference": shipment.provider_shipment_id,
-        "provider_status": provider_state,
+        "provider_status": shipment.last_provider_status,
         "payment_status": shipment.purchase_status,
         "ready_to_ship": ready_to_ship,
         "blockers": blockers,
         "blocking_reason": blocking_reason,
+        "tracking": tracking,
+        "tracking_history": tracking_history,
         "message": "Packlink draft status read from the provider.",
     })
 
