@@ -1,4 +1,4 @@
-"""Deterministic Seller Delivery eligibility scanning.
+"""Deterministic SDS (Seller's Delivery Service) eligibility scanning.
 
 This module only evaluates persisted order/warehouse data. It does not create
 shipments, write marketplaces, or manufacture location/tracking information.
@@ -12,6 +12,7 @@ import re
 
 
 POSTCODE_RE = re.compile(r"^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$", re.I)
+SDS_NAME = "SDS"
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class SellerDeliveryEligibility:
     eligible: bool
     reason: str
     distance_miles: Decimal | None = None
+    service: str = SDS_NAME
 
 
 def normalise_postcode(value) -> str | None:
@@ -40,9 +42,9 @@ def distance_miles(origin_lat, origin_lng, destination_lat, destination_lng) -> 
 
 def evaluate_seller_delivery(*, enabled, prime_sfp, origin_postcode, destination_postcode,
                              radius_miles, origin_coordinates=None, destination_coordinates=None):
-    """Return one explicit eligibility result; uncertainty is never eligible."""
+    """Return one explicit SDS eligibility result; uncertainty is never eligible."""
     if not enabled:
-        return SellerDeliveryEligibility(False, "seller_delivery_disabled")
+        return SellerDeliveryEligibility(False, "sds_disabled")
     if prime_sfp:
         return SellerDeliveryEligibility(False, "prime_sfp_blocked")
     if normalise_postcode(origin_postcode) is None:
@@ -67,7 +69,7 @@ def evaluate_seller_delivery(*, enabled, prime_sfp, origin_postcode, destination
 
 
 def scan_orders(orders, *, config, coordinate_lookup, prime_sfp_resolver, postcode_resolver):
-    """Auto-scan every supplied FBM order and return deterministic results.
+    """Auto-scan every supplied FBM order and return deterministic SDS results.
 
     The caller supplies persisted-data resolvers. No browser location, carrier
     guessing, marketplace write, or silent fallback is allowed here.
