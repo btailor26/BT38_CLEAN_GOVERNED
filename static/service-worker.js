@@ -1,12 +1,12 @@
-const CACHE_NAME = 'bt38-scanner-v1';
+const CACHE_NAME = 'bt38-scanner-v2';
 const urlsToCache = [
   '/mobile/scan',
   '/static/manifest.json',
   '/static/css/mobile-scanner.css',
   '/static/js/mobile-scanner.js',
+  '/static/js/mobile-sds-scanner-alignment.js',
   'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css',
-  'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js',
-  'https://unpkg.com/@pwa/qr-code-scanner@1.0.0/dist/qr-code-scanner.min.js'
+  'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js'
 ];
 
 self.addEventListener('install', event => {
