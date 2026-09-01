@@ -1,6 +1,7 @@
 """Persist real SDS seller scans into the existing FBM shipment lifecycle.
 
 Only explicit scan events advance SDS. No marketplace write is performed here.
+The scanned parcel reference must match the exact persisted SDS shipment.
 """
 from __future__ import annotations
 
@@ -56,6 +57,14 @@ def install_governed_sds_scan_alignment(app) -> None:
             return jsonify({"success": False, "message": "SDS shipment not found."}), 404
 
         body = request.get_json(silent=True) or {}
+        scanned_reference = str(body.get("sds_reference") or "").strip().upper()
+        persisted_reference = str(shipment.provider_shipment_id or "").strip().upper()
+        if not persisted_reference or scanned_reference != persisted_reference:
+            return jsonify({
+                "success": False,
+                "message": "Scanned SDS parcel reference does not match this shipment.",
+            }), 409
+
         event_type = str(body.get("event_type") or "").strip().lower()
         rule = EVENTS.get(event_type)
         if rule is None:
@@ -81,6 +90,7 @@ def install_governed_sds_scan_alignment(app) -> None:
                 "success": True,
                 "already_recorded": True,
                 "shipment_id": shipment.id,
+                "sds_reference": shipment.provider_shipment_id,
                 "event_type": existing.event_type,
                 "occurred_at": existing.occurred_at.isoformat(),
                 "status": shipment.status,
@@ -111,6 +121,7 @@ def install_governed_sds_scan_alignment(app) -> None:
                     "success": True,
                     "already_recorded": True,
                     "shipment_id": shipment.id,
+                    "sds_reference": shipment.provider_shipment_id,
                     "event_type": existing.event_type,
                     "occurred_at": existing.occurred_at.isoformat(),
                     "status": refreshed.status if refreshed else None,
@@ -121,6 +132,7 @@ def install_governed_sds_scan_alignment(app) -> None:
             "success": True,
             "already_recorded": False,
             "shipment_id": shipment.id,
+            "sds_reference": shipment.provider_shipment_id,
             "event_type": event_type,
             "occurred_at": now.isoformat(),
             "status": shipment.status,
