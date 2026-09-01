@@ -64,11 +64,13 @@ def test_native_ebay_shipping_never_routes_rate_action_to_seller_hub():
 def test_tracking_journey_preserves_purchased_provider_authority_on_packlink_failure():
     js = JOURNEY_JS.read_text(encoding="utf-8")
 
-    assert "purchasedProviderJourneyHtml(button, error.message)" in js
-    assert "Journey source: Packlink / persisted BT38 state" in js
-    assert "providerShipmentFromRow" in js
+    assert "providerFallbackHtml(button, error.message)" in js
+    assert "Journey source: Packlink / carrier platform" in js
+    assert "packlink-existing-status[data-shipment-id]" in js
+    assert "link.dataset.journeySource = 'packlink'" in js
+    assert "link.dataset.shipmentId = purchasedProviderShipmentId" in js
     assert "button.dataset.journeySource = 'packlink'" in js
-    assert "button.dataset.shipmentId = providerShipment.shipmentId" in js
+    assert "button.dataset.shipmentId = purchasedProviderShipmentId" in js
     assert "marketplaceTrackingLink" in js
 
 
