@@ -41,7 +41,7 @@
 
             <div id="no-product" class="no-product">
                 <i data-feather="box"></i>
-                <p>Scan a barcode or enter SKU manually</p>
+                <p>Scan a barcode, SDS QR or enter SKU manually</p>
             </div>
 
             <div class="action-buttons">
@@ -66,7 +66,7 @@
             <div id="bulk-queue" class="bulk-queue" style="display: none;"></div>
 
             <div class="manual-entry">
-                <input type="text" id="manual-sku" class="manual-input" placeholder="Enter SKU or barcode manually">
+                <input type="text" id="manual-sku" class="manual-input" placeholder="Enter SKU, barcode or SDS reference manually">
                 <button id="manual-lookup-btn" class="confirm-btn" style="background: var(--primary);">
                     <i data-feather="search"></i> Lookup
                 </button>
@@ -86,6 +86,7 @@
     </div>
 
     <script src="/static/js/mobile-scanner.js"></script>
+    <script src="/static/js/mobile-sds-scanner-alignment.js"></script>
     <script>
         feather.replace();
     </script>
