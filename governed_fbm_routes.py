@@ -215,10 +215,22 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
         .all()
     )
+
+    def purchased_provider(shipment: FBMShipment) -> bool:
+        provider = str(getattr(shipment, "provider", "") or "").strip().lower()
+        purchase_status = str(getattr(shipment, "purchase_status", "") or "").strip().lower()
+        return provider not in {"", "marketplace"} and (
+            getattr(shipment, "label_purchased_at", None) is not None
+            or purchase_status == "purchased"
+        )
+
     result = {}
     for shipment in shipments:
         key = (shipment.store_id, shipment.marketplace_order_id)
-        if key in keys and key not in result:
+        if key not in keys:
+            continue
+        current = result.get(key)
+        if current is None or (purchased_provider(shipment) and not purchased_provider(current)):
             result[key] = shipment
     return result
 
