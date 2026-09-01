@@ -130,18 +130,25 @@ def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_executi
     assert '"FBA", "AFN", "MCF"' in ALIGNMENT
 
 
-def test_dispatch_split_preserves_original_active_workspace_and_excludes_cancelled_orders():
+def test_fbm_lifecycle_tabs_preserve_one_existing_workspace_and_reason_navigation():
+    assert "cloneNode" not in DISPATCH_QUEUE
+    assert "card.remove()" not in DISPATCH_QUEUE
+    assert "fbm-dispatch-history" not in DISPATCH_QUEUE
+    assert "var table=document.querySelector('.fbm-orders-table')" in DISPATCH_QUEUE
+    assert "Needs dispatch" in DISPATCH_QUEUE
+    assert "Dispatched" in DISPATCH_QUEUE
+    assert "Carrier overdue" in DISPATCH_QUEUE
+    assert "Returns" in DISPATCH_QUEUE
+    assert "Replacements" in DISPATCH_QUEUE
+    assert "Refunds / Issues" in DISPATCH_QUEUE
+    assert "Mapping review" in DISPATCH_QUEUE
+    assert "readyToShipSelected" in DISPATCH_QUEUE
+    assert "fbm-shipping-options" in DISPATCH_QUEUE
     assert 'queue = "excluded"' in DISPATCH_QUEUE
     assert 'status.startswith("cancel")' in DISPATCH_QUEUE
-    assert "card.remove()" not in DISPATCH_QUEUE
-    assert "title.textContent='Needs dispatch'" in DISPATCH_QUEUE
-    assert "readyToShipSelected" in DISPATCH_QUEUE
-    assert "selectAllOrders" in DISPATCH_QUEUE
-    assert "fbm-dispatch-history" in DISPATCH_QUEUE
-    assert "fbm-shipping-options" in DISPATCH_QUEUE
 
 
-def test_dispatch_split_reuses_confirmed_shipping_spend_and_never_invents_zero_cost():
+def test_fbm_lifecycle_tabs_reuse_confirmed_shipping_spend_and_never_invent_zero_cost():
     assert "ShippingSpendLedger.confirmed.is_(True)" in DISPATCH_QUEUE
     assert "ShippingSpendLedger.shipment_id.in_(shipment_ids)" in DISPATCH_QUEUE
     assert '"shipping_cost": float(spend.amount) if spend is not None else None' in DISPATCH_QUEUE
