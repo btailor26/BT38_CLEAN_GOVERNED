@@ -204,9 +204,30 @@ def _shipping_provider_options(order: MarketplaceOrder, profile: FBMOrderProfile
 
 
 def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShipment]:
+    """Return one canonical persisted shipment per marketplace order.
+
+    The database is the only authority exposed to the FBM page.  When the
+    marketplace order already has a persisted tracking number, the persisted
+    physical shipment carrying that same tracking identity wins.  Otherwise the
+    original outbound shipment wins ahead of any later return/replacement, then
+    purchase evidence breaks the remaining tie.  Provider/live data is never
+    consulted here.
+    """
     keys = {(row.store_id, row.marketplace_order_id) for row in rows}
     if not keys:
         return {}
+
+    order_tracking_by_key: dict[tuple[int, str], str] = {}
+    for row in rows:
+        if row.store_id is None or not row.marketplace_order_id:
+            continue
+        tracking = str(getattr(row, "tracking_number", "") or "").strip().upper()
+        if tracking:
+            order_tracking_by_key.setdefault(
+                (row.store_id, row.marketplace_order_id),
+                tracking,
+            )
+
     store_ids = sorted({key[0] for key in keys if key[0] is not None})
     order_ids = sorted({key[1] for key in keys if key[1]})
     shipments = (
@@ -217,20 +238,33 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         .all()
     )
 
-    def purchase_authority_rank(shipment: FBMShipment) -> int:
+    def canonical_authority_rank(shipment: FBMShipment) -> tuple[int, ...]:
+        key = (shipment.store_id, shipment.marketplace_order_id)
         provider = str(getattr(shipment, "provider", "") or "").strip().lower()
-        if provider in {"", "marketplace"}:
-            return 0
         purchase_status = str(getattr(shipment, "purchase_status", "") or "").strip().lower()
         purchase_key = str(getattr(shipment, "purchase_key", "") or "").strip().lower()
-        tracking_number = str(getattr(shipment, "tracking_number", "") or "").strip()
-        if getattr(shipment, "label_purchased_at", None) is not None:
-            return 3
-        if purchase_status == "purchased":
-            return 2
-        if provider == "packlink" and purchase_key.startswith("packlink_") and tracking_number:
-            return 1
-        return 0
+        tracking_number = str(getattr(shipment, "tracking_number", "") or "").strip().upper()
+        persisted_order_tracking = order_tracking_by_key.get(key, "")
+        exact_tracking_match = bool(
+            persisted_order_tracking
+            and tracking_number
+            and tracking_number == persisted_order_tracking
+        )
+        additional_shipment = purchase_key.startswith((
+            "packlink_return:",
+            "packlink_replacement:",
+        ))
+        physical_provider = provider not in {"", "marketplace"}
+
+        return (
+            1 if exact_tracking_match else 0,
+            1 if not additional_shipment else 0,
+            1 if physical_provider else 0,
+            1 if getattr(shipment, "label_purchased_at", None) is not None else 0,
+            1 if purchase_status == "purchased" else 0,
+            1 if getattr(shipment, "provider_shipment_id", None) else 0,
+            1 if tracking_number else 0,
+        )
 
     result = {}
     for shipment in shipments:
@@ -238,7 +272,7 @@ def _shipment_map(rows: list[MarketplaceOrder]) -> dict[tuple[int, str], FBMShip
         if key not in keys:
             continue
         current = result.get(key)
-        if current is None or purchase_authority_rank(shipment) > purchase_authority_rank(current):
+        if current is None or canonical_authority_rank(shipment) > canonical_authority_rank(current):
             result[key] = shipment
     return result
 
