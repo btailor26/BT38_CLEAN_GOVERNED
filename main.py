@@ -40,6 +40,9 @@ from services.governed_sds_label_alignment import (
 from services.governed_sds_scan_alignment import (
     install_governed_sds_scan_alignment,
 )
+from services.governed_sds_scanner_lookup_alignment import (
+    install_governed_sds_scanner_lookup_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 install_product_linking_unlink_alignment(app)
@@ -52,6 +55,7 @@ install_governed_sds_fbm_read_alignment()
 install_governed_sds_dispatch_alignment(app)
 install_governed_sds_label_alignment(app)
 install_governed_sds_scan_alignment(app)
+install_governed_sds_scanner_lookup_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
