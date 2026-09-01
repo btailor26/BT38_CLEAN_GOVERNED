@@ -66,3 +66,43 @@ from services.governed_ebay_notification_challenge import (
 )
 
 install_ebay_notification_challenge_handler(app)
+
+
+@app.after_request
+def acknowledge_captured_ebay_webhook(response):
+    """Acknowledge eBay once its notification is durably captured.
+
+    The governed webhook route deliberately records the immutable raw eBay
+    notification before any downstream order, Warehouse, group or runtime work.
+    If that later governed processing fails, the captured notification remains
+    available for audit/recovery and eBay must not be asked to redeliver the
+    same commercial event merely because BT38's downstream processing failed.
+
+    Capture failures are NOT acknowledged here: they remain non-2xx so eBay can
+    retry because BT38 does not yet hold the immutable notification.
+    """
+    from flask import request
+
+    if request.method != "POST":
+        return response
+
+    if request.path.rstrip("/") != "/governed/webhooks/ebay":
+        return response
+
+    if response.status_code < 500:
+        return response
+
+    payload = response.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return response
+
+    if payload.get("status") != "processing_failed":
+        return response
+
+    if payload.get("notification_record_id") is None:
+        return response
+
+    response.status_code = 200
+    response.headers["X-BT38-Webhook-Capture"] = "stored"
+    response.headers["X-BT38-Webhook-Processing"] = "failed-after-capture"
+    return response
