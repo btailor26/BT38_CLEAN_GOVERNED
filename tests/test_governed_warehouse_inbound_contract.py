@@ -3,7 +3,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = ROOT / "services" / "governed_warehouse_inbound_alignment.py"
-APP = ROOT / "app.py"
+INSTALLER = ROOT / "services" / "governed_warehouse_inbound_installer.py"
+MAIN = ROOT / "main.py"
 
 
 def test_warehouse_inbound_alignment_is_read_only_and_governed():
@@ -33,11 +34,10 @@ def test_scan_resolution_keeps_identity_separate_from_quantity_mutation():
     assert "No stock has been changed" in source
 
 
-def test_alignment_not_silently_claimed_installed_before_app_registration():
-    source = APP.read_text(encoding="utf-8")
+def test_alignment_is_registered_through_existing_main_startup_path():
+    installer = INSTALLER.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
 
-    # Until app.py explicitly installs this module, deployment must not claim
-    # the new Warehouse endpoints are live. This contract makes the remaining
-    # registration boundary visible instead of falling back to legacy mobile
-    # or retired PO routes.
-    assert "install_governed_warehouse_inbound_alignment(app)" not in source
+    assert "install_governed_warehouse_inbound_alignment(app)" in installer
+    assert "from services.governed_warehouse_inbound_installer import" in main
+    assert "install_governed_warehouse_inbound(app)" in main
