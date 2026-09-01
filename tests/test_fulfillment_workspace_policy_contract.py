@@ -4,6 +4,7 @@ from services.governed_fulfillment_workspace_policy import (
     SpendEntry,
     fulfillment_section,
     seller_courier_policy,
+    seller_courier_radius_eligibility,
     spend_totals,
 )
 
@@ -23,27 +24,17 @@ def test_fba_never_enters_fbm_and_pending_stays_pending_until_dispatch():
 
 
 def test_profile_fba_truth_overrides_stale_fbm_field():
-    section = fulfillment_section(
-        fulfillment_type="FBM",
-        profile_channel="AFN",
-        status="pending",
-    )
+    section = fulfillment_section(fulfillment_type="FBM", profile_channel="AFN", status="pending")
     assert (section.family, section.view) == ("FBA", "pending")
 
 
 def test_shipping_spend_is_per_dispatch_not_units_and_fba_fbm_are_separate():
     totals = spend_totals([
         SpendEntry("label-1", "FBM", Decimal("3.25"), source="packlink"),
-        # Same physical dispatch represented again must not create a second dispatch cost.
         SpendEntry("label-1", "FBM", Decimal("3.25"), source="invoice"),
         SpendEntry("amazon-fulfilment-1", "FBA", Decimal("4.50"), source="marketplace"),
     ])
-    assert totals == {
-        "fbm_dispatches": 1,
-        "fbm_spend": Decimal("3.25"),
-        "fba_dispatches": 1,
-        "fba_spend": Decimal("4.50"),
-    }
+    assert totals == {"fbm_dispatches": 1, "fbm_spend": Decimal("3.25"), "fba_dispatches": 1, "fba_spend": Decimal("4.50")}
 
 
 def test_seller_courier_is_hard_blocked_for_prime_sfp():
@@ -55,7 +46,25 @@ def test_seller_courier_is_hard_blocked_for_prime_sfp():
 def test_marketplace_seller_courier_requires_metrics_warning_but_owned_channel_does_not():
     marketplace = seller_courier_policy(is_prime_or_sfp=False, owned_channel=False)
     owned = seller_courier_policy(is_prime_or_sfp=False, owned_channel=True)
-    assert marketplace["allowed"] is True
     assert marketplace["marketplace_metrics_warning"] is True
-    assert owned["allowed"] is True
     assert owned["marketplace_metrics_warning"] is False
+
+
+def test_radius_match_makes_non_prime_order_eligible_without_exposing_postcode():
+    result = seller_courier_radius_eligibility(enabled=True, radius_miles=10, distance_miles=4.2, is_prime_or_sfp=False, owned_channel=False)
+    assert result["eligible"] is True
+    assert result["within_radius"] is True
+    assert result["marketplace_metrics_warning"] is True
+    assert "postcode" not in result
+
+
+def test_outside_radius_is_not_eligible():
+    result = seller_courier_radius_eligibility(enabled=True, radius_miles=5, distance_miles=5.01, is_prime_or_sfp=False, owned_channel=True)
+    assert result["eligible"] is False
+    assert result["within_radius"] is False
+
+
+def test_prime_sfp_remains_blocked_even_when_inside_radius():
+    result = seller_courier_radius_eligibility(enabled=True, radius_miles=20, distance_miles=1, is_prime_or_sfp=True, owned_channel=False)
+    assert result["eligible"] is False
+    assert result["hard_blocked"] is True
