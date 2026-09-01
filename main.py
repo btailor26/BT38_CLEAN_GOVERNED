@@ -1,5 +1,14 @@
 from app import app
 
+# Register the existing governed MCF blueprint before templates render. The
+# shared base navigation links to governed_mcf.orders_mcf_page, so the endpoint
+# must exist in the live Flask URL map even when the current request is for a
+# different page such as Warehouse.
+from governed_mcf_routes import governed_mcf_bp
+
+if "governed_mcf" not in app.blueprints:
+    app.register_blueprint(governed_mcf_bp)
+
 # Load the existing MCF compatibility binding. This keeps MCFService UI/fee
 # compatibility while all live Amazon execution remains on
 # services.governed_mcf_execution.
