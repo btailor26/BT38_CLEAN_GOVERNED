@@ -176,7 +176,7 @@
         if (document.documentElement.dataset.bt38PromiseJourneyAligned === '1') return;
         document.documentElement.dataset.bt38PromiseJourneyAligned = '1';
         document.addEventListener('click', function (event) {
-            const button = event.target.closest('.fbm-tracking-journey[data-journey-source="marketplace"]');
+            const button = event.target.closest('.fbm-tracking-journey');
             if (!button) return;
             event.preventDefault();
             event.stopPropagation();
@@ -185,7 +185,7 @@
         }, true);
         document.addEventListener('keydown', function (event) {
             if (event.key !== 'Enter' && event.key !== ' ') return;
-            const button = event.target.closest('.fbm-tracking-journey[data-journey-source="marketplace"]');
+            const button = event.target.closest('.fbm-tracking-journey');
             if (!button) return;
             event.preventDefault();
             event.stopPropagation();
