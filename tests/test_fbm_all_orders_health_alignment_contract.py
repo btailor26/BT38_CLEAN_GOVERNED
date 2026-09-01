@@ -6,16 +6,12 @@ HEALTH = (ROOT / "services" / "governed_fbm_all_orders_health_alignment.py").rea
 CLARITY = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 
 
-def test_fbm_health_is_all_orders_not_date_scoped():
+def test_fbm_health_uses_operational_dispatch_scope_not_historical_action_count():
     assert "install_governed_fbm_all_orders_health_alignment" in CLARITY
-    assert '"period_mode": "all"' in HEALTH
-    assert '"period_label": "All FBM orders"' in HEALTH
-    assert "No date filter hides actionable orders." in HEALTH
-    assert "MarketplaceOrder.created_at >=" not in HEALTH
-    assert "MarketplaceOrder.updated_at >=" not in HEALTH
-    assert "health_period" not in HEALTH
-    assert "health_date" not in HEALTH
-    assert "health_month" not in HEALTH
+    assert '"period_mode": "operational"' in HEALTH
+    assert '"period_label": "Current FBM work"' in HEALTH
+    assert "dispatch_due" in HEALTH
+    assert "dispatched orders remain in history" in HEALTH.lower()
 
 
 def test_fbm_health_reads_latest_persisted_row_for_every_order_identity():
@@ -23,17 +19,22 @@ def test_fbm_health_reads_latest_persisted_row_for_every_order_identity():
     assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in HEALTH
     assert ".join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)" in HEALTH
     assert ".all()" in HEALTH
-    assert ".limit(" not in HEALTH
-    assert "Ready for FBM routing" in HEALTH
-    assert 'route_state in {"Dispatched", "Tracking recorded"}' in HEALTH
+    assert "fulfillment_section" in HEALTH
+    assert 'section.view == "dispatch_due"' in HEALTH
+    assert 'section.view == "dispatched"' in HEALTH
     assert "awaiting_carrier_acceptance" in HEALTH
     assert "acceptance_overdue" in HEALTH
 
 
-def test_all_orders_health_remains_db_only_and_preserves_fbm_guards():
+def test_operational_health_remains_db_only_and_preserves_fbm_guards():
     assert "_workspace_fbm_eligible" in HEALTH
     assert '"FBA", "AFN", "MCF"' in HEALTH
     assert "requests." not in HEALTH
     assert "db.session.add" not in HEALTH
     assert "db.session.commit" not in HEALTH
     assert "get_or_refresh_amazon_profile" not in HEALTH
+
+
+def test_dispatched_history_does_not_inflate_shipping_action_count():
+    assert '"shipping_actions": dispatch_due + overdue + mapping_review' in HEALTH
+    assert '"dispatched": dispatched' in HEALTH
