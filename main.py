@@ -19,6 +19,9 @@ import services.public_early_access  # noqa: F401
 from services.governed_notification_read_alignment import (
     install_governed_notification_read_alignment,
 )
+from services.governed_fbm_dispatch_queue_alignment import (
+    install_governed_fbm_dispatch_queue_alignment,
+)
 from services.governed_product_linking_unlink_alignment import (
     install_product_linking_unlink_alignment,
 )
@@ -57,6 +60,7 @@ from services.governed_warehouse_inbound_installer import (
 )
 
 install_governed_notification_read_alignment(app)
+install_governed_fbm_dispatch_queue_alignment(app)
 install_product_linking_unlink_alignment(app)
 install_governed_ebay_native_shipping_alignment(app)
 install_governed_fbm_db_authority_alignment()
