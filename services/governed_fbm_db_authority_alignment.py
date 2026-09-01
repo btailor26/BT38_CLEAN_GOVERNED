@@ -89,11 +89,19 @@ def _canonical_persisted_shipment_map(rows):
 
 
 def install_governed_fbm_db_authority_alignment() -> None:
-    """Replace only the FBM page shipment selector with DB-persisted authority."""
+    """Install the existing DB shipment authority plus its financial alignment."""
     import services.governed_fbm_page_alignment as page
 
-    if getattr(page, "_bt38_single_db_shipment_authority_installed", False):
-        return
+    if not getattr(page, "_bt38_single_db_shipment_authority_installed", False):
+        page._shipment_map = _canonical_persisted_shipment_map
+        page._bt38_single_db_shipment_authority_installed = True
 
-    page._shipment_map = _canonical_persisted_shipment_map
-    page._bt38_single_db_shipment_authority_installed = True
+    # This installer is already the single startup hook for the canonical FBM
+    # DB authority. Attach the spend ledger here rather than creating another
+    # startup/deployment path.
+    from app import app as flask_app
+    from services.governed_shipping_spend_alignment import (
+        install_governed_shipping_spend_alignment,
+    )
+
+    install_governed_shipping_spend_alignment(flask_app)
