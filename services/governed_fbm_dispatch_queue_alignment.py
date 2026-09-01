@@ -2,8 +2,8 @@
 
 This alignment is presentation/read-only. It reuses the registered governed FBM
 page, MarketplaceOrder/FBMShipment truth, and confirmed ShippingSpendLedger
-records. It does not create another fulfilment path and never writes order,
-shipment, inventory, marketplace, or spend state.
+records. It preserves the existing FBM order card and its controls; only rows are
+separated so completed dispatch history cannot clutter active shipping work.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from governed_fbm_routes import _shipment_map
 
 
 _ORDER_ID_RE = re.compile(r'data-order-id="(\d+)"')
+_CANCELLED_STATUSES = {"cancelled", "canceled", "cancelled_by_buyer", "cancelled_by_seller"}
 
 
 def _visible_order_ids(html: str) -> list[int]:
@@ -56,9 +57,17 @@ def _presentation(rows: list[MarketplaceOrder]) -> dict[str, dict]:
             or getattr(row, "shipped_at", None)
             or (shipment and getattr(shipment, "tracking_number", None))
         )
+        status = str(getattr(row, "status", "") or "").strip().lower()
+        if dispatched:
+            queue = "dispatched"
+        elif status in _CANCELLED_STATUSES or status.startswith("cancel"):
+            queue = "excluded"
+        else:
+            queue = "needs_dispatch"
+
         spend = spend_by_shipment.get(int(shipment.id)) if shipment and shipment.id else None
         payload[str(row.id)] = {
-            "queue": "dispatched" if dispatched else "needs_dispatch",
+            "queue": queue,
             "shipping_cost": float(spend.amount) if spend is not None else None,
             "shipping_currency": str(spend.currency or "GBP").upper() if spend is not None else None,
             "shipping_cost_confirmed": spend is not None,
@@ -70,7 +79,7 @@ def _inject(html: str, payload: dict[str, dict]) -> str:
     data = json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
     marker = "</body>"
     block = f'''<style id="bt38FbmDispatchQueueAlignment">
-.fbm-queue-section{{margin-top:.8rem}}.fbm-queue-head{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:.65rem .8rem;border:1px solid #e1e5eb;border-bottom:0;border-radius:9px 9px 0 0;background:#f8fafc}}.fbm-queue-head strong{{font-size:.92rem}}.fbm-queue-head span{{font-size:.72rem;color:#667085}}.fbm-queue-section .table-responsive{{border:1px solid #e1e5eb;border-radius:0 0 9px 9px}}.fbm-shipping-cost{{white-space:nowrap;font-weight:650}}.fbm-shipping-cost-pending{{font-size:.72rem;color:#667085;white-space:nowrap}}.fbm-dispatched-queue .fbm-order-checkbox{{display:none}}.fbm-dispatched-queue th:first-child{{color:transparent}}.fbm-dispatched-queue .fbm-action-cell .fbm-shipping-options{{display:none}}
+.fbm-queue-caption{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:.55rem .75rem;border-top:1px solid #e1e5eb;background:#f8fafc}}.fbm-queue-caption strong{{font-size:.9rem}}.fbm-queue-caption span{{font-size:.72rem;color:#667085}}.fbm-dispatch-history{{margin-top:.8rem}}.fbm-dispatch-history .card-header{{padding:.55rem .75rem}}.fbm-dispatch-history .table-responsive{{border-radius:0 0 .375rem .375rem}}.fbm-shipping-cost{{white-space:nowrap;font-weight:650}}.fbm-shipping-cost-pending{{font-size:.72rem;color:#667085;white-space:nowrap}}
 </style>
 <script id="bt38FbmDispatchQueueAlignmentData" type="application/json">{data}</script>
 <script id="bt38FbmDispatchQueueAlignmentScript">
@@ -80,14 +89,49 @@ def _inject(html: str, payload: dict[str, dict]) -> str:
   if(!source||!dataNode) return;
   var data={{}}; try{{data=JSON.parse(dataNode.textContent||'{{}}')}}catch(e){{return;}}
   var card=source.closest('.card'); if(!card) return;
-  var rows=Array.from(source.querySelectorAll('tbody tr.fbm-order-row'));
+  var sourceBody=source.querySelector('tbody');
+  var rows=Array.from(sourceBody.querySelectorAll('tr.fbm-order-row'));
   var headerRow=source.querySelector('thead tr');
-  if(headerRow&&!Array.from(headerRow.children).some(function(th){{return th.dataset&&th.dataset.fbmShippingCost==='1';}})){{var th=document.createElement('th');th.textContent='Shipping cost';th.dataset.fbmShippingCost='1';headerRow.insertBefore(th,headerRow.lastElementChild);}}
-  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{}};var td=document.createElement('td');td.dataset.fbmShippingCost='1';if(info.shipping_cost_confirmed){{td.className='fbm-shipping-cost';try{{td.textContent=new Intl.NumberFormat('en-GB',{{style:'currency',currency:info.shipping_currency||'GBP'}}).format(info.shipping_cost);}}catch(e){{td.textContent=(info.shipping_currency||'GBP')+' '+Number(info.shipping_cost).toFixed(2);}}}}else{{td.className='fbm-shipping-cost-pending';td.textContent='Pending / unavailable';}}row.insertBefore(td,row.lastElementChild);row.dataset.fbmQueue=info.queue||'needs_dispatch';}});
-  function section(title,copy,klass,queue){{var wrap=document.createElement('section');wrap.className='fbm-queue-section '+klass;var head=document.createElement('div');head.className='fbm-queue-head';var strong=document.createElement('strong');strong.textContent=title;var meta=document.createElement('span');var matching=rows.filter(function(r){{return r.dataset.fbmQueue===queue;}});meta.textContent=matching.length+' orders · '+copy;head.appendChild(strong);head.appendChild(meta);var responsive=document.createElement('div');responsive.className='table-responsive';var table=source.cloneNode(true);table.removeAttribute('id');var body=table.querySelector('tbody');body.innerHTML='';matching.forEach(function(r){{body.appendChild(r);}});responsive.appendChild(table);wrap.appendChild(head);wrap.appendChild(responsive);return wrap;}}
-  var needs=section('Needs dispatch','shipping action required','fbm-needs-dispatch-queue','needs_dispatch');
-  var done=section('Dispatched','tracking / dispatch recorded','fbm-dispatched-queue','dispatched');
-  card.parentNode.insertBefore(needs,card);card.parentNode.insertBefore(done,card);card.remove();
+  function ensureCostHeader(table){{var head=table.querySelector('thead tr');if(!head) return;if(Array.from(head.children).some(function(th){{return th.dataset&&th.dataset.fbmShippingCost==='1';}})) return;var th=document.createElement('th');th.textContent='Shipping cost';th.dataset.fbmShippingCost='1';head.insertBefore(th,head.lastElementChild);}}
+  function addCostCell(row,info){{if(row.querySelector('[data-fbm-shipping-cost="1"]')) return;var td=document.createElement('td');td.dataset.fbmShippingCost='1';if(info.shipping_cost_confirmed){{td.className='fbm-shipping-cost';try{{td.textContent=new Intl.NumberFormat('en-GB',{{style:'currency',currency:info.shipping_currency||'GBP'}}).format(info.shipping_cost);}}catch(e){{td.textContent=(info.shipping_currency||'GBP')+' '+Number(info.shipping_cost).toFixed(2);}}}}else{{td.className='fbm-shipping-cost-pending';td.textContent='Pending / unavailable';}}row.insertBefore(td,row.lastElementChild);}}
+  ensureCostHeader(source);
+  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{queue:'needs_dispatch'}};row.dataset.fbmQueue=info.queue;addCostCell(row,info);}});
+
+  var dispatchedRows=rows.filter(function(row){{return row.dataset.fbmQueue==='dispatched';}});
+  var activeRows=rows.filter(function(row){{return row.dataset.fbmQueue==='needs_dispatch';}});
+  rows.filter(function(row){{return row.dataset.fbmQueue!=='needs_dispatch';}}).forEach(function(row){{row.remove();}});
+
+  var title=card.querySelector('.card-header .fw-semibold');
+  if(title) title.textContent='Needs dispatch';
+  var selectedBadge=document.getElementById('selectedOrderCount');
+  if(selectedBadge) selectedBadge.insertAdjacentHTML('afterend','<span class="text-muted small ms-2" id="bt38NeedsDispatchCount"></span>');
+  var activeCount=document.getElementById('bt38NeedsDispatchCount');
+  if(activeCount) activeCount.textContent=activeRows.length+' loaded orders requiring shipping action';
+
+  if(dispatchedRows.length){{
+    var history=document.createElement('div');history.className='card fbm-dispatch-history';
+    var historyHeader=document.createElement('div');historyHeader.className='card-header d-flex justify-content-between align-items-center flex-wrap gap-2';
+    var historyTitle=document.createElement('span');historyTitle.className='fw-semibold';historyTitle.textContent='Dispatched';
+    var historyMeta=document.createElement('span');historyMeta.className='text-muted small';historyMeta.textContent=dispatchedRows.length+' loaded orders · tracking / dispatch recorded';
+    historyHeader.appendChild(historyTitle);historyHeader.appendChild(historyMeta);
+    var responsive=document.createElement('div');responsive.className='table-responsive';
+    var historyTable=source.cloneNode(true);historyTable.removeAttribute('id');
+    historyTable.querySelectorAll('[id]').forEach(function(node){{node.removeAttribute('id');}});
+    var historyHead=historyTable.querySelector('thead tr');
+    var historyBody=historyTable.querySelector('tbody');historyBody.innerHTML='';
+    dispatchedRows.forEach(function(row){{var clone=row.cloneNode(true);clone.querySelectorAll('.fbm-order-checkbox,.fbm-shipping-options,.packlink-existing-status').forEach(function(node){{node.remove();}});historyBody.appendChild(clone);}});
+    if(historyHead&&historyHead.children.length) historyHead.children[0].remove();
+    Array.from(historyBody.children).forEach(function(row){{if(row.children.length) row.children[0].remove();}});
+    if(historyHead&&historyHead.lastElementChild) historyHead.lastElementChild.remove();
+    Array.from(historyBody.children).forEach(function(row){{if(row.lastElementChild) row.lastElementChild.remove();}});
+    responsive.appendChild(historyTable);history.appendChild(historyHeader);history.appendChild(responsive);
+    card.insertAdjacentElement('afterend',history);
+  }}
+
+  var selectAll=document.getElementById('selectAllOrders');
+  if(selectAll) selectAll.checked=false;
+  var selectedCount=document.getElementById('selectedOrderCount');if(selectedCount) selectedCount.textContent='0 selected';
+  var readyButton=document.getElementById('readyToShipSelected');if(readyButton) readyButton.disabled=true;
 }})();
 </script>'''
     return html.replace(marker, block + marker, 1) if marker in html else html + block
@@ -124,4 +168,4 @@ def install_governed_fbm_dispatch_queue_alignment(app) -> None:
 
     app.view_functions[endpoint] = aligned_fbm_page
     app._bt38_fbm_dispatch_queue_alignment_installed = True
-    app.logger.info("BT38 FBM dispatch queue alignment installed: needs-dispatch/dispatched split with confirmed shipping spend")
+    app.logger.info("BT38 FBM dispatch queue alignment installed: original active workspace preserved, dispatched history separated, confirmed shipping spend reused")
