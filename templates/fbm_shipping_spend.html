@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Shipping Spend | BT38 Inventory{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div><h2 class="mb-0">Shipping Spend</h2><div class="text-muted small">Actual confirmed dispatch spend from the BT38 database.</div></div>
+  <a class="btn btn-sm btn-outline-secondary" href="/fbm">Back to FBM</a>
+</div>
+<div class="row g-2 mb-3">
+  <div class="col-md-4"><div class="card h-100"><div class="card-body"><div class="text-muted small">Confirmed dispatches</div><div class="fs-3 fw-bold">{{ report.dispatch_count }}</div></div></div></div>
+  <div class="col-md-4"><div class="card h-100"><div class="card-body"><div class="text-muted small">Recorded spend</div>{% if report.totals %}{% for currency, amount in report.totals.items() %}<div class="fs-3 fw-bold">{{ '£' if currency == 'GBP' else currency ~ ' ' }}{{ '%.2f'|format(amount) }}</div>{% endfor %}{% else %}<div class="fs-3 fw-bold">—</div><div class="small text-muted">No confirmed spend recorded.</div>{% endif %}</div></div></div>
+  <div class="col-md-4"><div class="card h-100"><div class="card-body"><div class="text-muted small">Authority</div><div class="fw-semibold">DB spend ledger</div><div class="small text-muted">Missing provider cost is unavailable, never £0.</div></div></div></div>
+</div>
+<div class="card mb-3"><div class="card-header fw-semibold">Spend by provider</div><div class="card-body p-0"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Provider</th><th>Confirmed spend</th></tr></thead><tbody>{% for provider, currencies in report.provider_totals.items() %}<tr><td>{{ provider|replace('_',' ')|title }}</td><td>{% for currency, amount in currencies.items() %}{{ '£' if currency == 'GBP' else currency ~ ' ' }}{{ '%.2f'|format(amount) }}{% if not loop.last %} · {% endif %}{% endfor %}</td></tr>{% else %}<tr><td colspan="2" class="text-muted text-center py-4">No confirmed shipping spend yet.</td></tr>{% endfor %}</tbody></table></div></div></div>
+<div class="card"><div class="card-header fw-semibold">Dispatch ledger</div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Date</th><th>Order</th><th>Family</th><th>Provider</th><th>Source</th><th class="text-end">Actual cost</th></tr></thead><tbody>{% for entry in report.entries %}<tr><td>{{ entry.recorded_at[:10] if entry.recorded_at else '—' }}</td><td>{{ entry.marketplace_order_id or '—' }}</td><td>{{ entry.fulfillment_family }}</td><td>{{ (entry.provider or '—')|replace('_',' ')|title }}</td><td>{{ (entry.source or '—')|replace('_',' ')|title }}</td><td class="text-end fw-semibold">{{ '£' if entry.currency == 'GBP' else entry.currency ~ ' ' }}{{ '%.2f'|format(entry.amount) }}</td></tr>{% else %}<tr><td colspan="6" class="text-muted text-center py-5">No confirmed dispatch spend is available.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}
