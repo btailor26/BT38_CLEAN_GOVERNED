@@ -20,15 +20,30 @@ def _warehouse_config_for_order(order):
     return configs[0] if len(configs) == 1 else None
 
 
+def _unavailable(reason):
+    return {
+        "service": "SDS",
+        "eligible": False,
+        "reason": reason,
+        "distance_miles": None,
+    }
+
+
 def sds_for_fbm_order(order, *, prime_sfp=False, coordinate_lookup=lookup_postcode_coordinates):
+    # SDS is an outbound dispatch choice, so completed/dispatched work is never
+    # re-routed and does not trigger postcode network lookups.
+    if getattr(order, "tracking_number", None) or getattr(order, "shipped_at", None):
+        return _unavailable("order_already_dispatched")
+    if prime_sfp:
+        return _unavailable("prime_sfp_blocked")
+
+    country = str(getattr(order, "ship_to_country", "") or "").strip().upper()
+    if country not in {"GB", "UK", "UNITED KINGDOM"}:
+        return _unavailable("destination_outside_uk")
+
     config = _warehouse_config_for_order(order)
     if config is None:
-        return {
-            "service": "SDS",
-            "eligible": False,
-            "reason": "sds_warehouse_unresolved",
-            "distance_miles": None,
-        }
+        return _unavailable("sds_warehouse_unresolved")
 
     origin = normalise_postcode(config.origin_postcode)
     destination = normalise_postcode(getattr(order, "ship_to_postcode", None))
@@ -36,7 +51,7 @@ def sds_for_fbm_order(order, *, prime_sfp=False, coordinate_lookup=lookup_postco
     destination_coordinates = coordinate_lookup(destination) if destination else None
     result = evaluate_seller_delivery(
         enabled=config.enabled,
-        prime_sfp=prime_sfp,
+        prime_sfp=False,
         origin_postcode=origin,
         destination_postcode=destination,
         radius_miles=config.radius_miles,
