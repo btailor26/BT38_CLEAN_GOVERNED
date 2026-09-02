@@ -1,36 +1,31 @@
-"""Server-side FBM search and workflow tabs over persisted order history.
+"""Align FBM reads to the existing BT38 browser-session architecture.
 
-The FBM page normally loads only a bounded window. Search and workflow tabs filter
-persisted MarketplaceOrder/FBMShipment truth before the visible limit is applied,
-so the browser never becomes the authority for Ready, Dispatched, SDS,
-Replacements or Refunds. This module is read-only: no marketplace/provider calls,
-no hydration, no inventory mutation and no order/shipment writes.
+Warehouse is the reference model: load one bounded governed snapshot, eager/bulk
+its relationships once, then let the browser session own search, workflow tabs
+and pagination.  This module never calls a marketplace/provider and never writes
+orders, shipments or inventory.
 
-MarketplaceOrder history can contain more than one persisted row for the same
-marketplace order. The FBM workspace therefore resolves exactly one canonical row
-per (store_id, marketplace_order_id) before queue classification. Shipment truth,
-marketplace lifecycle truth and an already processed canonical row outrank a later
-pending/import fallback row. Database row recency is only the final tie-breaker.
+MarketplaceOrder history can contain more than one row for the same marketplace
+order.  The session snapshot therefore keeps the existing business-truth
+canonical ranking: issue/cancellation truth, dispatch truth and processed truth
+all outrank database row recency.
 """
 from __future__ import annotations
 
-import re
 from html import escape
-from urllib.parse import quote_plus, urlencode
 
 from flask import g, request
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from extensions import db
-from fbm_models import FBMShipment
-from models import MarketplaceOrder, Store, WarehouseStock
-from governed_fbm_routes import _platform, _shipment_map
+from models import MarketplaceOrder
+from governed_fbm_routes import _platform
 
 
 _MAX_SEARCH_LENGTH = 200
-_WORKFLOW_MAX_ROWS = 5000
-_WORKFLOW_CANDIDATE_MULTIPLIER = 4
+_SESSION_MAX_ROWS = 300
+_SESSION_CANDIDATE_MULTIPLIER = 4
 _CANCELLED_STATUSES = {"cancelled", "canceled", "cancelled_by_buyer", "cancelled_by_seller"}
 _REPLACEMENT_TERMS = ("replacement", "replaced")
 _REFUND_TERMS = ("refund", "refunded", "return", "returned", "inr", "case", "claim", "dispute", "issue")
@@ -45,10 +40,6 @@ def _search_term() -> str:
 def _workflow_tab() -> str:
     value = str(request.args.get("fbm_tab") or "").strip().lower()
     return value if value in _WORKFLOW_TABS else ""
-
-
-def _escaped_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _status_reason(status: str) -> str | None:
@@ -75,13 +66,7 @@ def _sds_committed(shipment) -> bool:
 
 
 def _canonical_order_rank(row: MarketplaceOrder) -> tuple[int, ...]:
-    """Choose one persisted MarketplaceOrder authority for one marketplace order.
-
-    A later duplicate row must never erase stronger marketplace/shipment truth.
-    Issue/cancellation truth wins first, then dispatch truth, then a row already
-    processed by the canonical order path. The numeric row id is only a final
-    tie-breaker after business truth has been compared.
-    """
+    """Choose one persisted MarketplaceOrder authority for one marketplace order."""
     status = str(getattr(row, "status", "") or "").strip().lower()
     issue_or_cancel = bool(
         _status_reason(status)
@@ -93,10 +78,7 @@ def _canonical_order_rank(row: MarketplaceOrder) -> tuple[int, ...]:
         or getattr(row, "tracking_number", None)
         or getattr(row, "shipped_at", None)
     )
-    processed_truth = bool(
-        getattr(row, "processed_at", None)
-        or status == "processed"
-    )
+    processed_truth = bool(getattr(row, "processed_at", None) or status == "processed")
     return (
         1 if issue_or_cancel else 0,
         1 if dispatch_truth else 0,
@@ -119,7 +101,7 @@ def _canonical_order_rows(rows: list[MarketplaceOrder]) -> list[MarketplaceOrder
 
 
 def workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
-    """Classify one canonical persisted order using marketplace + physical shipment truth."""
+    """Classify one canonical persisted order using persisted marketplace/shipment truth."""
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = _status_reason(status)
     if status in _CANCELLED_STATUSES or status.startswith("cancel"):
@@ -129,7 +111,8 @@ def workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
     if _sds_committed(shipment):
         return "sds"
     dispatched = bool(
-        getattr(row, "tracking_number", None)
+        any(term in status for term in _DISPATCHED_STATUS_TERMS)
+        or getattr(row, "tracking_number", None)
         or getattr(row, "shipped_at", None)
         or (shipment and getattr(shipment, "tracking_number", None))
         or (shipment and getattr(shipment, "carrier_accepted_at", None))
@@ -159,15 +142,11 @@ def _row_matches_term(row: MarketplaceOrder, term: str) -> bool:
     return any(needle in str(value or "").casefold() for value in values)
 
 
-def _persisted_workflow_snapshot() -> dict:
-    """Return canonical persisted FBM rows grouped by workflow tab for this request.
-
-    The read remains bounded, but duplicate DB rows are resolved by business truth
-    rather than MAX(id). The snapshot is cached only for the current Flask request.
-    """
-    cached = getattr(g, "_bt38_fbm_workflow_snapshot", None)
+def _session_snapshot_rows() -> tuple[list[MarketplaceOrder], bool]:
+    """Load the FBM operational dataset once for the current browser page request."""
+    cached = getattr(g, "_bt38_fbm_session_rows", None)
     if cached is not None:
-        return cached
+        return list(cached), bool(getattr(g, "_bt38_fbm_session_truncated", False))
 
     from services import governed_fbm_page_alignment as page_alignment
 
@@ -175,40 +154,48 @@ def _persisted_workflow_snapshot() -> dict:
         func.upper(func.coalesce(MarketplaceOrder.fulfillment_type, "")).notin_(("FBA", "AFN", "MCF")),
         ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
     )
-    query = (
+    candidate_limit = (_SESSION_MAX_ROWS * _SESSION_CANDIDATE_MULTIPLIER) + 1
+    candidates = (
         db.session.query(MarketplaceOrder)
         .filter(*eligible)
         .filter(MarketplaceOrder.store_id.isnot(None), MarketplaceOrder.marketplace_order_id.isnot(None))
         .options(joinedload(MarketplaceOrder.store), joinedload(MarketplaceOrder.warehouse_stock))
         .order_by(MarketplaceOrder.id.desc())
+        .limit(candidate_limit)
+        .all()
     )
-    platform_filter = str(request.args.get("platform") or "").strip().lower()
-    if platform_filter:
-        query = query.filter(MarketplaceOrder.store.has(Store.platform.ilike(platform_filter)))
-
-    candidate_limit = (_WORKFLOW_MAX_ROWS * _WORKFLOW_CANDIDATE_MULTIPLIER) + 1
-    candidates = query.limit(candidate_limit).all()
     candidate_truncated = len(candidates) >= candidate_limit
-    rows = _canonical_order_rows(candidates)
-    truncated = candidate_truncated or len(rows) > _WORKFLOW_MAX_ROWS
-    rows = rows[:_WORKFLOW_MAX_ROWS]
+    canonical = _canonical_order_rows(candidates)
+    truncated = candidate_truncated or len(canonical) > _SESSION_MAX_ROWS
+    canonical = canonical[:_SESSION_MAX_ROWS]
 
     profiles = page_alignment._profile_map([
-        row for row in rows if _platform(row).strip().lower() == "amazon"
+        row for row in canonical if _platform(row).strip().lower() == "amazon"
     ])
-    eligible_rows: list[MarketplaceOrder] = []
-    for row in rows:
+    rows: list[MarketplaceOrder] = []
+    for row in canonical:
         key = (int(row.store_id), str(row.marketplace_order_id))
         profile = profiles.get(key) if _platform(row).strip().lower() == "amazon" else None
         if page_alignment._workspace_fbm_eligible(row, profile):
-            eligible_rows.append(row)
+            rows.append(row)
 
-    shipments = _shipment_map(eligible_rows)
+    g._bt38_fbm_session_rows = rows
+    g._bt38_fbm_session_truncated = truncated
+    return list(rows), truncated
+
+
+def _persisted_workflow_snapshot() -> dict:
+    """Classify the already-loaded request/session rows without another order scan."""
+    cached = getattr(g, "_bt38_fbm_workflow_snapshot", None)
+    if cached is not None:
+        return cached
+
+    from services import governed_fbm_page_alignment as page_alignment
+
+    rows, truncated = _session_snapshot_rows()
+    shipments = page_alignment._shipment_map(rows)
     grouped = {name: [] for name in _WORKFLOW_TABS}
-    term = _search_term()
-    for row in eligible_rows:
-        if not _row_matches_term(row, term):
-            continue
+    for row in rows:
         shipment = shipments.get((int(row.store_id), str(row.marketplace_order_id)))
         queue = workflow_queue_for(row, shipment)
         if queue in grouped:
@@ -224,7 +211,6 @@ def _persisted_workflow_snapshot() -> dict:
 
 
 def workflow_counts() -> dict[str, int]:
-    """Persisted DB-backed counts for the current FBM platform/search scope."""
     return dict(_persisted_workflow_snapshot()["counts"])
 
 
@@ -234,99 +220,28 @@ def _workflow_rows(limit: int):
         return None
     snapshot = _persisted_workflow_snapshot()
     rows = list(snapshot["rows"].get(tab) or [])
-    has_more = len(rows) > limit or bool(snapshot["truncated"])
-    return rows[:limit], has_more
+    return rows[:limit], len(rows) > limit or bool(snapshot["truncated"])
 
 
 def _search_rows(limit: int):
-    """Search persisted FBM candidates, then resolve one canonical row per order."""
     term = _search_term()
     if not term:
         return None
-
-    pattern = f"%{_escaped_like(term)}%"
-    eligible = (
-        func.upper(func.coalesce(MarketplaceOrder.fulfillment_type, "")).notin_(("FBA", "AFN", "MCF")),
-        ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
-    )
-    query = db.session.query(MarketplaceOrder).filter(*eligible)
-
-    platform_filter = str(request.args.get("platform") or "").strip().lower()
-    status_filter = str(request.args.get("status") or "").strip().lower()
-    if platform_filter:
-        query = query.filter(MarketplaceOrder.store.has(Store.platform.ilike(platform_filter)))
-
-    query = query.filter(or_(
-        MarketplaceOrder.marketplace_order_id.ilike(pattern, escape="\\"),
-        MarketplaceOrder.marketplace_order_item_id.ilike(pattern, escape="\\"),
-        MarketplaceOrder.sku.ilike(pattern, escape="\\"),
-        MarketplaceOrder.tracking_number.ilike(pattern, escape="\\"),
-        MarketplaceOrder.carrier.ilike(pattern, escape="\\"),
-        MarketplaceOrder.status.ilike(pattern, escape="\\"),
-        MarketplaceOrder.store.has(or_(
-            Store.name.ilike(pattern, escape="\\"),
-            Store.platform.ilike(pattern, escape="\\"),
-        )),
-        MarketplaceOrder.warehouse_stock.has(
-            WarehouseStock.product_name.ilike(pattern, escape="\\")
-        ),
-    ))
-
-    candidate_limit = min(1200, max((limit + 1) * 8, limit + 1))
-    candidates = (
-        query
-        .options(joinedload(MarketplaceOrder.store), joinedload(MarketplaceOrder.warehouse_stock))
-        .order_by(MarketplaceOrder.id.desc())
-        .limit(candidate_limit)
-        .all()
-    )
-
-    rows = _canonical_order_rows(candidates)
-    if status_filter:
-        filtered = []
-        for row in rows:
-            tracking_present = bool(str(getattr(row, "tracking_number", "") or "").strip())
-            shipped_at_present = getattr(row, "shipped_at", None) is not None
-            if status_filter == "tracking recorded" and not tracking_present:
-                continue
-            if status_filter == "dispatched" and (tracking_present or not shipped_at_present):
-                continue
-            if status_filter == "ready for fbm routing" and (tracking_present or shipped_at_present):
-                continue
-            filtered.append(row)
-        rows = filtered
-
-    has_more = len(rows) > limit or len(candidates) == candidate_limit
-    return rows[:limit], has_more
+    rows, truncated = _session_snapshot_rows()
+    matched = [row for row in rows if _row_matches_term(row, term)]
+    return matched[:limit], len(matched) > limit or truncated
 
 
 def _search_form_html() -> str:
-    term = _search_term()
-    preserved = {}
-    for name in ("platform", "status", "health_period", "health_date", "health_month", "fbm_tab"):
-        value = str(request.args.get(name) or "").strip()
-        if value:
-            preserved[name] = value
-    hidden = "".join(
-        f'<input type="hidden" name="{escape(name)}" value="{escape(value)}">'
-        for name, value in preserved.items()
-    )
-    clear_preserved = {key: value for key, value in preserved.items() if key != "fbm_tab"}
-    clear_url = f"{request.path}?{urlencode(clear_preserved)}" if clear_preserved else request.path
-    clear = (
-        f'<a class="btn btn-sm btn-outline-secondary" href="{escape(clear_url)}">Clear</a>'
-        if term else ""
-    )
     return (
-        '<form id="bt38FbmGlobalSearch" class="d-flex gap-2 align-items-center flex-wrap" method="get" action="/fbm">'
-        f'{hidden}'
+        '<form id="bt38FbmGlobalSearch" class="d-flex gap-2 align-items-center flex-wrap" '
+        'method="get" action="/fbm" onsubmit="event.preventDefault();return false;">'
         '<input id="bt38FbmGlobalSearchInput" class="form-control form-control-sm" style="width:min(360px,70vw)" '
         'type="search" name="search" autocomplete="off" '
-        'placeholder="Search all FBM orders, SKU, tracking or product" '
-        f'value="{escape(term)}">'
+        'placeholder="Search loaded FBM orders, SKU, tracking or product">'
         '<button class="btn btn-sm btn-outline-primary" type="submit">Search</button>'
-        f'{clear}'
-        '<span class="small text-muted">Searches persisted FBM truth, not only loaded rows.</span>'
+        '<button id="bt38FbmGlobalSearchClear" class="btn btn-sm btn-outline-secondary" type="button">Clear</button>'
+        '<span class="small text-muted">Search stays in this browser session.</span>'
         '</form>'
     )
 
@@ -345,56 +260,75 @@ def _inject_search_form(html: str) -> str:
     return html[:card_start] + '<div class="card">\n' + search_bar + html[card_start + len('<div class="card">'):]
 
 
-def _preserve_scope_in_expand_links(html: str) -> str:
-    values = {}
-    term = _search_term()
-    tab = _workflow_tab()
-    if term:
-        values["search"] = term
-    if tab:
-        values["fbm_tab"] = tab
-    if not values:
-        return html
-
-    def repl(match):
-        href = match.group(1)
-        additions = []
-        for key, value in values.items():
-            if f"{key}=" not in href:
-                additions.append(f"{key}={quote_plus(value)}")
-        if not additions:
-            return match.group(0)
-        separator = "&" if "?" in href else "?"
-        return f'href="{href}{separator}{"&".join(additions)}"'
-
-    return re.sub(r'href="([^\"]*?/fbm\?[^\"]*)"', repl, html)
-
-
 def install_governed_fbm_global_search_alignment(app) -> None:
     if getattr(app, "_bt38_fbm_global_search_alignment_installed", False):
         return
 
     from services import governed_fbm_page_alignment as page_alignment
 
-    original_rows = page_alignment._latest_distinct_fbm_rows
-    original_expand = page_alignment._expand_control
+    original_profile_map = page_alignment._profile_map
+    original_shipment_map = page_alignment._shipment_map
 
-    def search_and_tab_aware_rows(limit: int):
-        workflow = _workflow_rows(limit)
-        if workflow is not None:
-            return workflow
-        searched = _search_rows(limit)
-        return searched if searched is not None else original_rows(limit)
+    def request_cached_profile_map(rows):
+        cache = getattr(g, "_bt38_fbm_profile_cache", None)
+        if cache is None:
+            cache = {}
+            g._bt38_fbm_profile_cache = cache
+        missing = []
+        for row in rows:
+            if row.store_id is None or not row.marketplace_order_id:
+                continue
+            key = (int(row.store_id), str(row.marketplace_order_id))
+            if key not in cache:
+                missing.append(row)
+        if missing:
+            cache.update(original_profile_map(missing))
+        return {
+            (int(row.store_id), str(row.marketplace_order_id)): cache.get((int(row.store_id), str(row.marketplace_order_id)))
+            for row in rows
+            if row.store_id is not None and row.marketplace_order_id
+            and cache.get((int(row.store_id), str(row.marketplace_order_id))) is not None
+        }
 
-    def scope_aware_expand(html: str, *, visible_limit: int, has_more: bool) -> str:
-        rendered = original_expand(html, visible_limit=visible_limit, has_more=has_more)
-        return _preserve_scope_in_expand_links(rendered)
+    def request_cached_shipment_map(rows):
+        cache = getattr(g, "_bt38_fbm_shipment_cache", None)
+        loaded = getattr(g, "_bt38_fbm_shipment_keys_loaded", None)
+        if cache is None:
+            cache = {}
+            g._bt38_fbm_shipment_cache = cache
+        if loaded is None:
+            loaded = set()
+            g._bt38_fbm_shipment_keys_loaded = loaded
+        keys = {
+            (int(row.store_id), str(row.marketplace_order_id))
+            for row in rows
+            if row.store_id is not None and row.marketplace_order_id
+        }
+        missing_keys = keys - loaded
+        if missing_keys:
+            missing_rows = [
+                row for row in rows
+                if row.store_id is not None and row.marketplace_order_id
+                and (int(row.store_id), str(row.marketplace_order_id)) in missing_keys
+            ]
+            cache.update(original_shipment_map(missing_rows))
+            loaded.update(missing_keys)
+        return {key: cache.get(key) for key in keys if cache.get(key) is not None}
 
-    page_alignment._latest_distinct_fbm_rows = search_and_tab_aware_rows
-    page_alignment._expand_control = scope_aware_expand
+    def session_rows(_limit: int):
+        rows, truncated = _session_snapshot_rows()
+        return rows, truncated
+
+    def no_server_expand(html: str, *, visible_limit: int, has_more: bool) -> str:
+        return html
+
+    page_alignment._profile_map = request_cached_profile_map
+    page_alignment._shipment_map = request_cached_shipment_map
+    page_alignment._latest_distinct_fbm_rows = session_rows
+    page_alignment._expand_control = no_server_expand
 
     @app.after_request
-    def bt38_fbm_global_search_response(response):
+    def bt38_fbm_session_search_response(response):
         path = request.path.rstrip("/") or "/"
         if (
             path == "/fbm"
@@ -407,5 +341,5 @@ def install_governed_fbm_global_search_alignment(app) -> None:
 
     app._bt38_fbm_global_search_alignment_installed = True
     app.logger.info(
-        "BT38 FBM persisted scope aligned: one canonical MarketplaceOrder per marketplace order; search and workflow tabs use business truth before row recency; no marketplace/provider reads"
+        "BT38 FBM browser session aligned: one canonical DB snapshot; local search/tabs/page; request-cached profiles and shipments; no marketplace/provider reads"
     )
