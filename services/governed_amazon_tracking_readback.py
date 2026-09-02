@@ -25,6 +25,8 @@ SP_API_EU_ENDPOINT = "https://sellingpartnerapi-eu.amazon.com"
 _PACKAGE_LIFECYCLE = {
     "PARTIALLYSHIPPED": "partially_shipped",
     "SHIPPED": "shipped",
+    "FULFILLED": "shipped",
+    "DISPATCHED": "shipped",
     "PICKEDUPBYCARRIER": "picked_up",
     "CHECKEDINTOCARRIERHUB": "in_transit",
     "INTRANSIT": "in_transit",
@@ -147,6 +149,50 @@ def _lwa_access_token(store: Any) -> str:
     return token
 
 
+def _request_headers(access_token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "x-amz-access-token": access_token,
+        "x-amz-date": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        "user-agent": "BT38/1.0 (Language=Python)",
+    }
+
+
+def _legacy_exact_order_lifecycle(
+    *,
+    access_token: str,
+    order_id: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Fallback to Amazon's exact v0 OrderStatus when v2026 package truth is absent.
+
+    This remains an exact marketplace read. It never derives lifecycle from a
+    carrier, tracking number, label purchase, local processed state, or age.
+    """
+    response = requests.get(
+        f"{SP_API_EU_ENDPOINT}/orders/v0/orders/{quote(order_id, safe='')}",
+        headers=_request_headers(access_token),
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        return None, None, f"amazon_legacy_exact_order_read_failed:{response.status_code}:{response.text[:500]}"
+
+    body = response.json() or {}
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else body
+    if not isinstance(payload, dict):
+        return None, None, "amazon_legacy_exact_order_payload_invalid"
+
+    returned_id = _text(payload.get("AmazonOrderId") or payload.get("orderId"))
+    if returned_id and returned_id != order_id:
+        return None, None, f"amazon_legacy_exact_order_identity_mismatch:{returned_id}"
+
+    raw_status = _text(
+        payload.get("OrderStatus")
+        or payload.get("orderStatus")
+        or payload.get("fulfillmentStatus")
+    ) or None
+    return _PACKAGE_LIFECYCLE.get(_status_key(raw_status)), raw_status, None
+
+
 def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """Return lifecycle truth even when tracking is absent or multi-package."""
     packages = [row for row in (order_payload.get("packages") or []) if isinstance(row, dict)]
@@ -205,6 +251,7 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
         "package_detailed_status": detailed_status,
         "lifecycle_status": lifecycle_status,
         "order_status": _order_fulfillment_status(order_payload),
+        "truth_source": "orders_2026",
     }, ambiguity
 
 
@@ -243,16 +290,10 @@ def hydrate_amazon_tracking_for_order(
         }
 
     access_token = _lwa_access_token(store)
-    now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     response = requests.get(
         f"{SP_API_EU_ENDPOINT}/orders/2026-01-01/orders/{quote(order_id, safe='')}",
         params={"includedData": "PACKAGES"},
-        headers={
-            "Accept": "application/json",
-            "x-amz-access-token": access_token,
-            "x-amz-date": now,
-            "user-agent": "BT38/1.0 (Language=Python)",
-        },
+        headers=_request_headers(access_token),
         timeout=30,
     )
     if response.status_code >= 400:
@@ -288,7 +329,29 @@ def hydrate_amazon_tracking_for_order(
             "marketplace_write_started": False,
         }
 
+    observed_v2026_status = _order_fulfillment_status(order_payload)
     shipment, ambiguity = _package_truth(order_payload)
+    legacy_status = None
+    legacy_error = None
+
+    if shipment is None:
+        legacy_lifecycle, legacy_status, legacy_error = _legacy_exact_order_lifecycle(
+            access_token=access_token,
+            order_id=order_id,
+        )
+        if legacy_lifecycle:
+            shipment = {
+                "carrier": None,
+                "tracking_number": None,
+                "shipped_at": None,
+                "package_reference_id": None,
+                "package_status": None,
+                "package_detailed_status": None,
+                "lifecycle_status": legacy_lifecycle,
+                "order_status": legacy_status,
+                "truth_source": "orders_v0_exact_order_status",
+            }
+
     if shipment is None:
         return {
             "success": True,
@@ -297,6 +360,9 @@ def hydrate_amazon_tracking_for_order(
             "order_id": order_id,
             "rows_considered": len(eligible),
             "tracking_ambiguity": ambiguity,
+            "observed_v2026_status": observed_v2026_status,
+            "legacy_order_status": legacy_status,
+            "legacy_read_error": legacy_error,
             "marketplace_write_started": False,
         }
 
@@ -345,7 +411,11 @@ def hydrate_amazon_tracking_for_order(
         "package_detailed_status": shipment.get("package_detailed_status"),
         "order_status": shipment.get("order_status"),
         "lifecycle_status": shipment.get("lifecycle_status"),
+        "truth_source": shipment.get("truth_source"),
         "tracking_ambiguity": ambiguity,
+        "observed_v2026_status": observed_v2026_status,
+        "legacy_order_status": legacy_status,
+        "legacy_read_error": legacy_error,
         "source": source,
         "marketplace_write_started": False,
     }
