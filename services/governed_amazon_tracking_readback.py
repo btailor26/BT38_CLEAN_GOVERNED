@@ -86,14 +86,26 @@ def _package_lifecycle(package: dict[str, Any]) -> tuple[str | None, str | None]
     return _PACKAGE_LIFECYCLE.get(_status_key(raw_status)), detailed_status
 
 
-def _order_lifecycle(order_payload: dict[str, Any]) -> str | None:
-    """Use Amazon's explicit order status as dispatch authority when available."""
-    raw_status = (
+def _order_fulfillment_status(order_payload: dict[str, Any]) -> str | None:
+    """Read v2026 fulfillment.status first, with legacy keys only as compatibility fallback."""
+    fulfillment = order_payload.get("fulfillment")
+    if isinstance(fulfillment, dict):
+        raw_status = (
+            fulfillment.get("status")
+            or fulfillment.get("fulfillmentStatus")
+        )
+        if _text(raw_status):
+            return _text(raw_status)
+    return _text(
         order_payload.get("orderStatus")
         or order_payload.get("OrderStatus")
         or order_payload.get("fulfillmentStatus")
-    )
-    return _PACKAGE_LIFECYCLE.get(_status_key(raw_status))
+    ) or None
+
+
+def _order_lifecycle(order_payload: dict[str, Any]) -> str | None:
+    """Use Amazon's explicit fulfillment status as dispatch authority when available."""
+    return _PACKAGE_LIFECYCLE.get(_status_key(_order_fulfillment_status(order_payload)))
 
 
 def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
@@ -192,7 +204,7 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
         "package_status": raw_package_status,
         "package_detailed_status": detailed_status,
         "lifecycle_status": lifecycle_status,
-        "order_status": _text(order_payload.get("orderStatus") or order_payload.get("OrderStatus")) or None,
+        "order_status": _order_fulfillment_status(order_payload),
     }, ambiguity
 
 
