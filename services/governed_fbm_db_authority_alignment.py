@@ -13,6 +13,23 @@ from extensions import db
 from fbm_models import FBMShipment
 
 
+_MARKETPLACE_DISPATCH_STATES = {
+    "shipped",
+    "dispatched",
+    "partially_shipped",
+    "partiallydispatched",
+    "fulfilled",
+    "completed",
+    "accepted",
+    "carrier_accepted",
+    "collected",
+    "picked_up",
+    "in_transit",
+    "out_for_delivery",
+    "delivered",
+}
+
+
 def _normal(value) -> str:
     return str(value or "").strip()
 
@@ -21,11 +38,16 @@ def _tracking(value) -> str:
     return _normal(value).upper()
 
 
+def _status(value) -> str:
+    return _normal(value).lower().replace("-", "_").replace(" ", "_")
+
+
 def _canonical_rank(shipment: FBMShipment, persisted_tracking: str) -> tuple[int, ...]:
     provider = _normal(getattr(shipment, "provider", None)).lower()
     purchase_key = _normal(getattr(shipment, "purchase_key", None)).lower()
     purchase_status = _normal(getattr(shipment, "purchase_status", None)).lower()
     shipment_tracking = _tracking(getattr(shipment, "tracking_number", None))
+    shipment_status = _status(getattr(shipment, "status", None))
 
     exact_tracking_match = bool(
         persisted_tracking
@@ -37,13 +59,25 @@ def _canonical_rank(shipment: FBMShipment, persisted_tracking: str) -> tuple[int
         "packlink_replacement:",
     ))
     physical_provider = provider not in {"", "marketplace"}
+    purchased_provider = bool(
+        getattr(shipment, "label_purchased_at", None) is not None
+        or purchase_status == "purchased"
+    )
+    marketplace_dispatch = bool(
+        provider == "marketplace"
+        and shipment_status in _MARKETPLACE_DISPATCH_STATES
+    )
 
+    # Purchase authority remains stronger than a marketplace proxy. But a
+    # persisted marketplace dispatch result must outrank an abandoned/draft
+    # provider row; otherwise historical shipped orders are rendered unshipped
+    # even though the dispatch truth already exists in this same DB.
     return (
         1 if exact_tracking_match else 0,
         1 if not additional_shipment else 0,
+        1 if purchased_provider else 0,
+        1 if marketplace_dispatch else 0,
         1 if physical_provider else 0,
-        1 if getattr(shipment, "label_purchased_at", None) is not None else 0,
-        1 if purchase_status == "purchased" else 0,
         1 if getattr(shipment, "provider_shipment_id", None) else 0,
         1 if shipment_tracking else 0,
     )
@@ -89,12 +123,20 @@ def _canonical_persisted_shipment_map(rows):
 
 
 def install_governed_fbm_db_authority_alignment() -> None:
-    """Install the existing DB shipment authority plus its financial alignment."""
+    """Install one persisted shipment authority for every existing FBM consumer."""
     import services.governed_fbm_page_alignment as page
+    import services.governed_fbm_global_search_alignment as global_search
+    import services.governed_fbm_dispatch_queue_alignment as dispatch_queue
 
     if not getattr(page, "_bt38_single_db_shipment_authority_installed", False):
         page._shipment_map = _canonical_persisted_shipment_map
         page._bt38_single_db_shipment_authority_installed = True
+
+    # These modules imported the old function directly during startup. Point
+    # their existing read paths at the same DB authority instead of allowing the
+    # page, workflow counts and Cofi tabs to disagree about the same order.
+    global_search._shipment_map = _canonical_persisted_shipment_map
+    dispatch_queue._shipment_map = _canonical_persisted_shipment_map
 
     # This installer is already the single startup hook for the canonical FBM
     # DB authority. Attach the spend ledger here rather than creating another
