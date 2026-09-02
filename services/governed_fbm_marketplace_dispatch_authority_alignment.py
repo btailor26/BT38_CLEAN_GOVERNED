@@ -18,6 +18,8 @@ _DISPATCHED_STATES = {
     "dispatched",
     "partially_shipped",
     "partiallydispatched",
+    "fulfilled",
+    "completed",
 }
 _TERMINAL_DELIVERY_STATES = {
     "accepted",
@@ -45,6 +47,12 @@ def _platform_label(row) -> str:
 
 
 def _marketplace_has_dispatch_truth(row) -> bool:
+    """Read the dispatch facts already persisted on MarketplaceOrder.
+
+    This is deliberately marketplace-neutral. It does not care where postage was
+    bought and it performs no marketplace/provider read or DB write. Historical,
+    current and future rows therefore use the same persisted dispatch authority.
+    """
     status = _status(getattr(row, "status", None))
     return bool(
         status in _DISPATCHED_STATES
