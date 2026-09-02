@@ -1,19 +1,13 @@
-"""Align FBM health to the same persisted workflow truth used by the order tabs.
+"""Align FBM health to the same browser-session snapshot used by the workspace.
 
-Every persisted FBM order remains classified, but the action count is driven only
-by orders that still require dispatch plus unresolved carrier exceptions. Carrier
-mapping review is Amazon-specific and is not a general FBM/eBay work category.
-Dispatched orders remain visible as history and can be filtered independently.
-No marketplace/provider calls or writes occur here.
+Warehouse is the reference model: the page reads its governed operational dataset
+once and every presentation layer works from that same in-memory request snapshot.
+FBM health therefore never performs an independent all-history MarketplaceOrder
+scan.  No marketplace/provider calls or writes occur here.
 """
 from __future__ import annotations
 
-from sqlalchemy import func
-from sqlalchemy.orm import joinedload
-
-from extensions import db
-from models import MarketplaceOrder
-from governed_fbm_routes import _platform, _shipment_map
+from governed_fbm_routes import _platform
 from services.fbm_shipping_state import shipment_confirmation_state
 
 
@@ -27,47 +21,27 @@ def install_governed_fbm_all_orders_health_alignment(app) -> None:
     original_health_html = page_alignment._health_html
     original_guide_html = page_alignment._guide_html
 
-    def all_orders_health_summary() -> dict:
-        eligible = (
-            func.upper(func.coalesce(MarketplaceOrder.fulfillment_type, "")).notin_(("FBA", "AFN", "MCF")),
-            ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
-        )
-        latest_ids = (
-            db.session.query(func.max(MarketplaceOrder.id).label("id"))
-            .filter(*eligible)
-            .filter(MarketplaceOrder.store_id.isnot(None), MarketplaceOrder.marketplace_order_id.isnot(None))
-            .group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)
-            .subquery()
-        )
-        latest = (
-            db.session.query(MarketplaceOrder)
-            .join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)
-            .options(joinedload(MarketplaceOrder.store), joinedload(MarketplaceOrder.warehouse_stock))
-            .order_by(MarketplaceOrder.id.desc())
-            .all()
-        )
+    def session_health_summary() -> dict:
+        rows, truncated = global_search._session_snapshot_rows()
         profiles = page_alignment._profile_map([
-            row for row in latest if _platform(row).strip().lower() == "amazon"
+            row for row in rows if _platform(row).strip().lower() == "amazon"
         ])
         order_rows = []
-        for row in latest:
+        for row in rows:
             key = (int(row.store_id), str(row.marketplace_order_id))
             profile = profiles.get(key) if _platform(row).strip().lower() == "amazon" else None
             if page_alignment._workspace_fbm_eligible(row, profile):
                 order_rows.append((row, profile))
 
-        shipments = _shipment_map([row for row, _ in order_rows])
+        shipments = page_alignment._shipment_map([row for row, _ in order_rows])
         dispatch_due = dispatched = awaiting = overdue = mapping_review = 0
         returns = replacements = refund_issues = 0
         platform_counts = {}
+
         for row, _profile in order_rows:
             platform = _platform(row).strip() or "Other"
             platform_counts[platform] = platform_counts.get(platform, 0) + 1
             shipment = shipments.get((int(row.store_id), str(row.marketplace_order_id)))
-
-            # Use the exact same persisted classifier as the workflow tabs. The
-            # dispatch alignment patches this function at runtime, so lookup is
-            # deliberately through the module rather than a copied import.
             queue = global_search.workflow_queue_for(row, shipment)
             if queue == "ready_dispatch":
                 dispatch_due += 1
@@ -85,8 +59,6 @@ def install_governed_fbm_all_orders_health_alignment(app) -> None:
                 elif state == "acceptance_overdue":
                     overdue += 1
 
-                # Amazon alone keeps the carrier/service mapping gate. eBay's
-                # existing carrier/tracking path must never become a mapping task.
                 if platform.casefold() == "amazon":
                     review = getattr(shipment, "mapping_review", None)
                     if review is not None and getattr(review, "status", None) == "under_review":
@@ -119,14 +91,19 @@ def install_governed_fbm_all_orders_health_alignment(app) -> None:
             "health_score": health_score,
             "risk_actions": risk_actions,
             "shipping_actions": dispatch_due + overdue,
-            "truncated": False,
+            "truncated": bool(truncated),
         }
 
     def operational_controls(health: dict) -> str:
+        scope_note = (
+            "Loaded FBM session snapshot; refresh the page to take a new governed snapshot."
+            if health.get("truncated")
+            else "Ready to dispatch is active work; dispatched orders remain in history."
+        )
         return (
             '<div class="fbm-period-controls" aria-label="FBM work scope">'
             '<span class="badge bg-light text-dark border">Current FBM work</span>'
-            '<span class="small text-muted">Ready to dispatch is active work; dispatched orders remain in history.</span>'
+            f'<span class="small text-muted">{scope_note}</span>'
             '</div>'
         )
 
@@ -145,9 +122,9 @@ def install_governed_fbm_all_orders_health_alignment(app) -> None:
             "Ready-to-dispatch and overdue carrier actions drive this number.",
         )
 
-    page_alignment._health_summary = all_orders_health_summary
+    page_alignment._health_summary = session_health_summary
     page_alignment._period_controls = operational_controls
     page_alignment._health_html = operational_health_html
     page_alignment._guide_html = operational_guide_html
     app._bt38_fbm_all_orders_health_alignment_installed = True
-    app.logger.info("BT38 FBM health aligned: canonical Ready/Dispatched truth; Amazon-only mapping; DB only")
+    app.logger.info("BT38 FBM health aligned: same request/session snapshot; no independent order-history scan")
