@@ -19,17 +19,19 @@ from extensions import db
 from models import MarketplaceOrder
 from shipping_spend_models import ShippingSpendLedger
 from governed_fbm_routes import _shipment_map
-from services.governed_fbm_global_search_alignment import workflow_counts, workflow_queue_for
+from services import governed_fbm_global_search_alignment as global_search
 
 
 _ORDER_ID_RE = re.compile(r'data-order-id="(\d+)"')
 _WORKFLOW_LABELS = {
     "ready_dispatch": "Ready to dispatch",
     "dispatched": "Dispatched",
-    "sds": "SDS",
-    "replacements": "Replacements",
+    "replacements": "Replacement",
     "refunds": "Refunds",
 }
+_DISPATCHED_STATUS_TERMS = (
+    "shipped", "dispatched", "delivered", "fulfilled", "completed",
+)
 
 
 def _visible_order_ids(html: str) -> list[int]:
@@ -39,6 +41,36 @@ def _visible_order_ids(html: str) -> list[int]:
         if order_id not in result:
             result.append(order_id)
     return result
+
+
+def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
+    """Use persisted marketplace/shipment truth; missing tracking alone never proves Ready."""
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    reason = global_search._status_reason(status)
+    if status in global_search._CANCELLED_STATUSES or status.startswith("cancel"):
+        return "excluded"
+    if reason:
+        return reason
+    if global_search._sds_committed(shipment):
+        return "dispatched"
+    dispatched = bool(
+        any(term in status for term in _DISPATCHED_STATUS_TERMS)
+        or getattr(row, "tracking_number", None)
+        or getattr(row, "shipped_at", None)
+        or (shipment and getattr(shipment, "tracking_number", None))
+        or (shipment and getattr(shipment, "label_purchased_at", None))
+        or (shipment and getattr(shipment, "carrier_accepted_at", None))
+        or (shipment and getattr(shipment, "first_movement_at", None))
+        or (shipment and getattr(shipment, "delivered_at", None))
+    )
+    return "dispatched" if dispatched else "ready_dispatch"
+
+
+# Keep the existing persisted search/tab layer as the single authority, but correct
+# its classifier before any request snapshot is built.
+global_search.workflow_queue_for = _aligned_workflow_queue_for
+workflow_counts = global_search.workflow_counts
+workflow_queue_for = global_search.workflow_queue_for
 
 
 def _presentation(rows: list[MarketplaceOrder]) -> dict[str, dict]:
@@ -82,20 +114,33 @@ def _authoritative_counts() -> dict[str, int]:
     return {name: int(counts.get(name, 0) or 0) for name in _WORKFLOW_LABELS}
 
 
+def _fba_count() -> int:
+    """Read-only FBA/AFN order count for the badge; FBA remains outside FBM actions."""
+    try:
+        return int(
+            db.session.query(MarketplaceOrder.id)
+            .filter(db.func.upper(db.func.coalesce(MarketplaceOrder.fulfillment_type, "")).in_(("FBA", "AFN")))
+            .count()
+        )
+    except Exception:
+        return 0
+
+
 def _align_cofi_ui(html: str) -> str:
-    """Cofi owns user-facing guidance; Sentinel and operational authority stay untouched."""
     replacements = {
         'alt="BT38 shipping guide"': 'alt="Cofi"',
         "BT38 will keep the queue visible.": "Cofi will keep the queue visible.",
         "Everything that needs a shipping action is clear for this period.": "Everything that needs a shipping action is clear. Cofi will keep watching the work queue.",
         "Work through the important shipping actions first.": "Cofi has put the important shipping actions first.",
+        ">Ready to Ship<": ">Ready to dispatch<",
+        "Ready to Ship or Shipping options.": "Ready to dispatch or Shipping options.",
     }
     for old, new in replacements.items():
         html = html.replace(old, new)
     return html
 
 
-def _inject(html: str, payload: dict[str, dict], counts: dict[str, int]) -> str:
+def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_count: int) -> str:
     html = _align_cofi_ui(html)
     data = json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
     count_data = json.dumps(counts, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
@@ -117,7 +162,17 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int]) -> str:
   var rows=Array.from(body.querySelectorAll('tr.fbm-order-row'));
   var params=new URLSearchParams(window.location.search);
   var active=params.get('fbm_tab')||'';
-  var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',sds:'SDS',replacements:'Replacements',refunds:'Refunds'}};
+  var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',replacements:'Replacement',refunds:'Refunds'}};
+
+  /* One search authority only: persisted server-side search. */
+  var globalSearch=document.getElementById('bt38FbmGlobalSearch');
+  document.querySelectorAll('input[type="search"]').forEach(function(input){{
+    if(globalSearch && !globalSearch.contains(input)){{var host=input.closest('form')||input.parentElement;if(host) host.style.display='none';}}
+  }});
+
+  /* Remove legacy summary wording that conflicts with the workflow badges. */
+  document.querySelectorAll('.fbm-overview-grid .fbm-stat-card').forEach(function(node){{node.style.display='none';}});
+  document.querySelectorAll('.fbm-health-copy .small').forEach(function(node){{if(/mapping review/i.test(node.textContent||'')) node.style.display='none';}});
 
   function ensureCostHeader(){{var head=table.querySelector('thead tr');if(!head) return;if(head.querySelector('[data-fbm-shipping-cost="1"]')) return;var th=document.createElement('th');th.textContent='Shipping cost';th.dataset.fbmShippingCost='1';head.insertBefore(th,head.lastElementChild);}}
   function addCostCell(row,info){{if(row.querySelector('[data-fbm-shipping-cost="1"]')) return;var td=document.createElement('td');td.dataset.fbmShippingCost='1';if(info.shipping_cost_confirmed){{td.className='fbm-shipping-cost';try{{td.textContent=new Intl.NumberFormat('en-GB',{{style:'currency',currency:info.shipping_currency||'GBP'}}).format(info.shipping_cost);}}catch(e){{td.textContent=(info.shipping_currency||'GBP')+' '+Number(info.shipping_cost).toFixed(2);}}}}else{{td.className='fbm-shipping-cost-pending';td.textContent='Pending / unavailable';}}row.insertBefore(td,row.lastElementChild);}}
@@ -126,15 +181,13 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int]) -> str:
 
   function workflowHref(name){{var next=new URLSearchParams(window.location.search);next.set('fbm_tab',name);next.delete('status');next.delete('limit');return '/fbm?'+next.toString();}}
   function addWorkflowLink(bar,name,label){{var link=document.createElement('a');link.className='fbm-lifecycle-tab'+(active===name?' active':'');link.href=workflowHref(name);link.setAttribute('role','tab');link.setAttribute('aria-selected',active===name?'true':'false');link.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(counts[name]||0)+'</span>';bar.appendChild(link);}}
-  function addTruthLink(bar,label,href){{var link=document.createElement('a');link.className='fbm-lifecycle-tab';link.href=href;link.textContent=label;link.title=label+' truth';bar.appendChild(link);}}
+  function addTruthLink(bar,label,href,count){{var link=document.createElement('a');link.className='fbm-lifecycle-tab';link.href=href;link.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(count||0)+'</span>';link.title=label+' truth';bar.appendChild(link);}}
 
-  var tabBar=document.createElement('div');tabBar.className='fbm-lifecycle-tabs';tabBar.setAttribute('role','tablist');tabBar.setAttribute('aria-label','FBM workflow');
+  var tabBar=document.createElement('div');tabBar.className='fbm-lifecycle-tabs';tabBar.setAttribute('role','tablist');tabBar.setAttribute('aria-label','Order workflow');
   addWorkflowLink(tabBar,'ready_dispatch','Ready to dispatch');
   addWorkflowLink(tabBar,'dispatched','Dispatched');
-  addTruthLink(tabBar,'FBA','/governed/amazon-fba-stock');
-  addTruthLink(tabBar,'MCF','/orders-mcf');
-  addWorkflowLink(tabBar,'sds','SDS');
-  addWorkflowLink(tabBar,'replacements','Replacements');
+  addTruthLink(tabBar,'FBA','/governed/amazon-fba-stock',{int(fba_count)});
+  addWorkflowLink(tabBar,'replacements','Replacement');
   addWorkflowLink(tabBar,'refunds','Refunds');
   var header=card.querySelector('.card-header');if(header) header.insertAdjacentElement('afterend',tabBar);else card.insertBefore(tabBar,card.firstChild);
 
@@ -151,7 +204,6 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int]) -> str:
 
 
 def _default_ready_redirect():
-    """Make Ready to dispatch the default persisted server scope, not a DOM filter."""
     if request.args.get("fbm_tab") or request.args.get("search") or request.args.get("q") or request.args.get("status"):
         return None
     args = request.args.to_dict(flat=True)
@@ -160,7 +212,6 @@ def _default_ready_redirect():
 
 
 def install_governed_fbm_dispatch_queue_alignment(app) -> None:
-    """Wrap the existing governed FBM page with Cofi-led persisted workflow tabs."""
     if getattr(app, "_bt38_fbm_dispatch_queue_alignment_installed", False):
         return
     endpoint = "governed_fbm.fbm_page"
@@ -185,9 +236,9 @@ def install_governed_fbm_dispatch_queue_alignment(app) -> None:
             found = db.session.query(MarketplaceOrder).filter(MarketplaceOrder.id.in_(order_ids)).all()
             by_id = {row.id: row for row in found}
             rows = [by_id[order_id] for order_id in order_ids if order_id in by_id]
-        response.set_data(_inject(html, _presentation(rows), _authoritative_counts()))
+        response.set_data(_inject(html, _presentation(rows), _authoritative_counts(), _fba_count()))
         return response
 
     app.view_functions[endpoint] = aligned_fbm_page
     app._bt38_fbm_dispatch_queue_alignment_installed = True
-    app.logger.info("BT38 FBM workflow aligned: Cofi UI; persisted server-side Ready/Dispatched/SDS/Replacements/Refunds; FBA/MCF truth shortcuts; no parallel workflow")
+    app.logger.info("BT38 FBM aligned: Ready/Dispatched/FBA/Replacement/Refunds; persisted truth; one search; manual shipping preserved; no parallel workflow")
