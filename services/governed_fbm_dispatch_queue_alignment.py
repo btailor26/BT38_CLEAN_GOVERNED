@@ -2,9 +2,9 @@
 
 The registered /fbm page remains the one workspace and existing order table.
 Warehouse is the reference model: one governed DB snapshot is rendered, then
-workflow tabs, search and pagination stay browser-local for that session. Existing
-FBA and MCF pages remain their truth surfaces. No marketplace/provider/DB write is
-introduced here.
+workflow tabs and search stay browser-local for that session. Existing page
+pagination remains the sole pagination authority. Existing FBA and MCF pages
+remain their truth surfaces. No marketplace/provider/DB write is introduced here.
 """
 from __future__ import annotations
 
@@ -137,10 +137,9 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
     html = _align_cofi_ui(html)
     data = json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
     count_data = json.dumps(counts, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
-    truncated_flag = "true" if truncated else "false"
     marker = "</body>"
     block = f'''<style id="bt38FbmLifecycleTabsAlignment">
-.fbm-lifecycle-tabs{{display:flex;gap:.35rem;overflow-x:auto;padding:.45rem .5rem;border-bottom:1px solid #dee2e6;background:var(--bs-body-bg,#fff);scrollbar-width:thin}}.fbm-lifecycle-tab{{white-space:nowrap;border:1px solid #d0d5dd;background:transparent;border-radius:.375rem;padding:.38rem .62rem;font-size:.78rem;font-weight:650;color:inherit;text-decoration:none}}.fbm-lifecycle-tab:hover{{color:inherit}}.fbm-lifecycle-tab.active{{background:#212529;color:#fff;border-color:#212529}}.fbm-lifecycle-tab .badge{{margin-left:.3rem;font-size:.62rem}}.fbm-shipping-cost{{white-space:nowrap;font-weight:650}}.fbm-shipping-cost-pending{{font-size:.72rem;color:#667085;white-space:nowrap}}.bt38-fbm-session-page{{display:flex;align-items:center;gap:.45rem;padding:.5rem;font-size:.75rem;color:#667085}}.bt38-fbm-session-page button{{border:1px solid #d0d5dd;background:#fff;border-radius:.35rem;padding:.25rem .5rem}}@media(max-width:767.98px){{.fbm-lifecycle-tabs{{padding:.4rem}}.fbm-lifecycle-tab{{padding:.34rem .5rem}}}}
+.fbm-lifecycle-tabs{{display:flex;gap:.35rem;overflow-x:auto;padding:.45rem .5rem;border-bottom:1px solid #dee2e6;background:var(--bs-body-bg,#fff);scrollbar-width:thin}}.fbm-lifecycle-tab{{white-space:nowrap;border:1px solid #d0d5dd;background:transparent;border-radius:.375rem;padding:.38rem .62rem;font-size:.78rem;font-weight:650;color:inherit;text-decoration:none}}.fbm-lifecycle-tab:hover{{color:inherit}}.fbm-lifecycle-tab.active{{background:#212529;color:#fff;border-color:#212529}}.fbm-lifecycle-tab .badge{{margin-left:.3rem;font-size:.62rem}}.fbm-shipping-cost{{white-space:nowrap;font-weight:650}}.fbm-shipping-cost-pending{{font-size:.72rem;color:#667085;white-space:nowrap}}@media(max-width:767.98px){{.fbm-lifecycle-tabs{{padding:.4rem}}.fbm-lifecycle-tab{{padding:.34rem .5rem}}}}
 </style>
 <script id="bt38FbmLifecycleTabsData" type="application/json">{data}</script>
 <script id="bt38FbmLifecycleCountsData" type="application/json">{count_data}</script>
@@ -155,18 +154,16 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   var body=table.querySelector('tbody');
   var rows=Array.from(body.querySelectorAll('tr.fbm-order-row'));
   var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',replacements:'Replacement',refunds:'Refunds'}};
-  var sessionDefaults={{tab:'ready_dispatch',search:'',page:1,perPage:15,dirty:false}};
+  var sessionDefaults={{tab:'ready_dispatch',search:'',dirty:false}};
   var saved=(window.BT38&&typeof window.BT38.getPageSession==='function')?window.BT38.getPageSession('fbm',sessionDefaults):sessionDefaults;
   var params=new URLSearchParams(window.location.search);
   var legacyTab=params.get('fbm_tab');
   var legacySearch=params.get('search')||params.get('q');
   var active=(legacyTab&&labels[legacyTab])?legacyTab:(saved.tab&&labels[saved.tab]?saved.tab:'ready_dispatch');
   var search=String(legacySearch!=null?legacySearch:(saved.search||'')).trim().toLowerCase();
-  var page=Math.max(1,Number(saved.page||1));
-  var perPage=[15,25,50,100].indexOf(Number(saved.perPage))>=0?Number(saved.perPage):15;
 
   function saveSession(extra){{
-    var next=Object.assign({{tab:active,search:search,page:page,perPage:perPage,dirty:false}},extra||{{}});
+    var next=Object.assign({{tab:active,search:search,dirty:false}},extra||{{}});
     if(window.BT38&&typeof window.BT38.setPageSession==='function') window.BT38.setPageSession('fbm',next);
     return next;
   }}
@@ -185,9 +182,9 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   function ensureCostHeader(){{var head=table.querySelector('thead tr');if(!head) return;if(head.querySelector('[data-fbm-shipping-cost="1"]')) return;var th=document.createElement('th');th.textContent='Shipping cost';th.dataset.fbmShippingCost='1';head.insertBefore(th,head.lastElementChild);}}
   function addCostCell(row,info){{if(row.querySelector('[data-fbm-shipping-cost="1"]')) return;var td=document.createElement('td');td.dataset.fbmShippingCost='1';if(info.shipping_cost_confirmed){{td.className='fbm-shipping-cost';try{{td.textContent=new Intl.NumberFormat('en-GB',{{style:'currency',currency:info.shipping_currency||'GBP'}}).format(info.shipping_cost);}}catch(e){{td.textContent=(info.shipping_currency||'GBP')+' '+Number(info.shipping_cost).toFixed(2);}}}}else{{td.className='fbm-shipping-cost-pending';td.textContent='Pending / unavailable';}}row.insertBefore(td,row.lastElementChild);}}
   ensureCostHeader();
-  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{queue:'ready_dispatch'}};row.dataset.fbmQueue=info.queue;row.dataset.fbmSearch=(row.textContent||'').toLowerCase();addCostCell(row,info);}});
+  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{queue:'unclassified',shipping_cost_confirmed:false}};row.dataset.fbmQueue=info.queue;row.dataset.fbmSearch=(row.textContent||'').toLowerCase();addCostCell(row,info);}});
 
-  function addWorkflowButton(bar,name,label){{var button=document.createElement('button');button.type='button';button.dataset.fbmTab=name;button.className='fbm-lifecycle-tab'+(active===name?' active':'');button.setAttribute('role','tab');button.setAttribute('aria-selected',active===name?'true':'false');button.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(counts[name]||0)+'</span>';button.addEventListener('click',function(){{active=name;page=1;saveSession();render();}});bar.appendChild(button);}}
+  function addWorkflowButton(bar,name,label){{var button=document.createElement('button');button.type='button';button.dataset.fbmTab=name;button.className='fbm-lifecycle-tab'+(active===name?' active':'');button.setAttribute('role','tab');button.setAttribute('aria-selected',active===name?'true':'false');button.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(counts[name]||0)+'</span>';button.addEventListener('click',function(){{active=name;saveSession();render();}});bar.appendChild(button);}}
   function addTruthLink(bar,label,href,count){{var link=document.createElement('a');link.className='fbm-lifecycle-tab';link.href=href;link.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(count||0)+'</span>';link.title=label+' truth';bar.appendChild(link);}}
 
   var tabBar=document.createElement('div');tabBar.className='fbm-lifecycle-tabs';tabBar.setAttribute('role','tablist');tabBar.setAttribute('aria-label','Order workflow');
@@ -198,32 +195,36 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   addWorkflowButton(tabBar,'refunds','Refunds');
   var header=card.querySelector('.card-header');if(header) header.insertAdjacentElement('afterend',tabBar);else card.insertBefore(tabBar,card.firstChild);
 
-  var pager=document.createElement('div');pager.className='bt38-fbm-session-page';
-  pager.innerHTML='<button type="button" data-dir="prev">Previous</button><span data-page-status></span><button type="button" data-dir="next">Next</button><select aria-label="Orders per page"><option>15</option><option>25</option><option>50</option><option>100</option></select>';
-  var select=pager.querySelector('select');select.value=String(perPage);select.addEventListener('change',function(){{perPage=Number(select.value)||15;page=1;saveSession();render();}});
-  pager.querySelector('[data-dir="prev"]').addEventListener('click',function(){{if(page>1){{page-=1;saveSession();render();}}}});
-  pager.querySelector('[data-dir="next"]').addEventListener('click',function(){{page+=1;saveSession();render();}});
-  card.appendChild(pager);
+  function handoffToExistingPager(matched){{
+    var controller=window.BT38&&window.BT38.PageController;
+    var pages=window.BT38&&window.BT38.pages;
+    var state=pages&&(pages.fbm||pages.FBM);
+    if(!controller||!state||!Array.isArray(state.rows)||typeof controller.renderPage!=='function') return false;
+    var matchedElements=new Set(matched);
+    state.filteredRows=state.rows.filter(function(entry){{return entry&&matchedElements.has(entry.el);}});
+    state.currentPage=1;
+    controller.renderPage(state.name);
+    return true;
+  }}
 
   function render(){{
     var matched=rows.filter(function(row){{return row.dataset.fbmQueue===active&&(!search||String(row.dataset.fbmSearch||'').indexOf(search)>=0);}});
-    var pages=Math.max(1,Math.ceil(matched.length/perPage));page=Math.min(Math.max(page,1),pages);
-    var start=(page-1)*perPage,end=start+perPage,visible=new Set(matched.slice(start,end));
-    rows.forEach(function(row){{row.hidden=!visible.has(row);}});
+    if(!handoffToExistingPager(matched)){{
+      var visible=new Set(matched);
+      rows.forEach(function(row){{row.hidden=!visible.has(row);}});
+    }}
     tabBar.querySelectorAll('[data-fbm-tab]').forEach(function(button){{var selected=button.dataset.fbmTab===active;button.classList.toggle('active',selected);button.setAttribute('aria-selected',selected?'true':'false');}});
     var title=card.querySelector('.card-header .fw-semibold');if(title&&labels[active]) title.textContent=labels[active];
     var actionable=active==='ready_dispatch';
     var actionArea=document.getElementById('readyToShipSelected');var selectAll=document.getElementById('selectAllOrders');
     if(actionArea) actionArea.classList.toggle('d-none',!actionable);if(selectAll) selectAll.disabled=!actionable;
     rows.forEach(function(row){{var cb=row.querySelector('.fbm-order-checkbox');if(cb){{cb.checked=false;cb.closest('td').classList.toggle('invisible',!actionable);}}var option=row.querySelector('.fbm-shipping-options');if(option) option.classList.toggle('d-none',!actionable);}});
-    var status=pager.querySelector('[data-page-status]');if(status)status.textContent=(matched.length?('Showing '+(start+1)+'-'+Math.min(end,matched.length)+' of '+matched.length):'Showing 0 of 0')+' loaded FBM orders · Page '+page+({truncated_flag}?' · session snapshot bounded':'');
-    pager.querySelector('[data-dir="prev"]').disabled=page<=1;pager.querySelector('[data-dir="next"]').disabled=page>=pages;
     saveSession();
   }}
 
-  if(globalSearch) globalSearch.addEventListener('submit',function(event){{event.preventDefault();search=String(searchInput&&searchInput.value||'').trim().toLowerCase();page=1;saveSession();render();}});
-  if(searchInput) searchInput.addEventListener('input',function(){{search=String(searchInput.value||'').trim().toLowerCase();page=1;saveSession();render();}});
-  if(clearSearch) clearSearch.addEventListener('click',function(){{if(searchInput)searchInput.value='';search='';page=1;saveSession();render();}});
+  if(globalSearch) globalSearch.addEventListener('submit',function(event){{event.preventDefault();search=String(searchInput&&searchInput.value||'').trim().toLowerCase();saveSession();render();}});
+  if(searchInput) searchInput.addEventListener('input',function(){{search=String(searchInput.value||'').trim().toLowerCase();saveSession();render();}});
+  if(clearSearch) clearSearch.addEventListener('click',function(){{if(searchInput)searchInput.value='';search='';saveSession();render();}});
 
   render();
 }})();
@@ -262,4 +263,4 @@ def install_governed_fbm_dispatch_queue_alignment(app) -> None:
 
     app.view_functions[endpoint] = aligned_fbm_page
     app._bt38_fbm_dispatch_queue_alignment_installed = True
-    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Dispatched/search/page; manual shipping preserved")
+    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Dispatched/search; existing page pagination preserved; manual shipping preserved")
