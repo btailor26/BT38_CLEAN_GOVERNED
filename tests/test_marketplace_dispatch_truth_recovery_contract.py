@@ -15,7 +15,8 @@ def test_recovery_selects_stale_lifecycle_not_missing_tracking():
         "def _recover_store(", 1
     )[0]
     assert 'MarketplaceOrder.fulfillment_type == "FBM"' in selector
-    assert "MarketplaceOrder.created_at >= cutoff" in selector
+    assert "MarketplaceOrder.created_at >= cutoff" not in selector
+    assert "historical age must not exclude" in selector
     assert "_DISPATCHED_STATUSES" in RECOVERY
     assert "_PROTECTED_ISSUE_STATUSES" in RECOVERY
     assert "tracking_number" not in selector
