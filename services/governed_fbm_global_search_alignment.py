@@ -5,6 +5,12 @@ persisted MarketplaceOrder/FBMShipment truth before the visible limit is applied
 so the browser never becomes the authority for Ready, Dispatched, SDS,
 Replacements or Refunds. This module is read-only: no marketplace/provider calls,
 no hydration, no inventory mutation and no order/shipment writes.
+
+MarketplaceOrder history can contain more than one persisted row for the same
+marketplace order. The FBM workspace therefore resolves exactly one canonical row
+per (store_id, marketplace_order_id) before queue classification. Shipment truth,
+marketplace lifecycle truth and an already processed canonical row outrank a later
+pending/import fallback row. Database row recency is only the final tie-breaker.
 """
 from __future__ import annotations
 
@@ -24,9 +30,11 @@ from governed_fbm_routes import _platform, _shipment_map
 
 _MAX_SEARCH_LENGTH = 200
 _WORKFLOW_MAX_ROWS = 5000
+_WORKFLOW_CANDIDATE_MULTIPLIER = 4
 _CANCELLED_STATUSES = {"cancelled", "canceled", "cancelled_by_buyer", "cancelled_by_seller"}
 _REPLACEMENT_TERMS = ("replacement", "replaced")
 _REFUND_TERMS = ("refund", "refunded", "return", "returned", "inr", "case", "claim", "dispute", "issue")
+_DISPATCHED_STATUS_TERMS = ("shipped", "dispatched", "delivered", "fulfilled", "completed")
 _WORKFLOW_TABS = {"ready_dispatch", "dispatched", "sds", "replacements", "refunds"}
 
 
@@ -66,8 +74,52 @@ def _sds_committed(shipment) -> bool:
     )
 
 
+def _canonical_order_rank(row: MarketplaceOrder) -> tuple[int, ...]:
+    """Choose one persisted MarketplaceOrder authority for one marketplace order.
+
+    A later duplicate row must never erase stronger marketplace/shipment truth.
+    Issue/cancellation truth wins first, then dispatch truth, then a row already
+    processed by the canonical order path. The numeric row id is only a final
+    tie-breaker after business truth has been compared.
+    """
+    status = str(getattr(row, "status", "") or "").strip().lower()
+    issue_or_cancel = bool(
+        _status_reason(status)
+        or status in _CANCELLED_STATUSES
+        or status.startswith("cancel")
+    )
+    dispatch_truth = bool(
+        any(term in status for term in _DISPATCHED_STATUS_TERMS)
+        or getattr(row, "tracking_number", None)
+        or getattr(row, "shipped_at", None)
+    )
+    processed_truth = bool(
+        getattr(row, "processed_at", None)
+        or status == "processed"
+    )
+    return (
+        1 if issue_or_cancel else 0,
+        1 if dispatch_truth else 0,
+        1 if processed_truth else 0,
+        int(getattr(row, "id", 0) or 0),
+    )
+
+
+def _canonical_order_rows(rows: list[MarketplaceOrder]) -> list[MarketplaceOrder]:
+    """Collapse duplicate DB rows to one business-truth row per marketplace order."""
+    selected: dict[tuple[int, str], MarketplaceOrder] = {}
+    for row in rows:
+        if row.store_id is None or not row.marketplace_order_id:
+            continue
+        key = (int(row.store_id), str(row.marketplace_order_id))
+        current = selected.get(key)
+        if current is None or _canonical_order_rank(row) > _canonical_order_rank(current):
+            selected[key] = row
+    return sorted(selected.values(), key=lambda row: int(row.id or 0), reverse=True)
+
+
 def workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
-    """Classify one latest persisted order using marketplace + physical shipment truth."""
+    """Classify one canonical persisted order using marketplace + physical shipment truth."""
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = _status_reason(status)
     if status in _CANCELLED_STATUSES or status.startswith("cancel"):
@@ -108,10 +160,10 @@ def _row_matches_term(row: MarketplaceOrder, term: str) -> bool:
 
 
 def _persisted_workflow_snapshot() -> dict:
-    """Return latest persisted FBM rows grouped by workflow tab for this request.
+    """Return canonical persisted FBM rows grouped by workflow tab for this request.
 
-    The 5,000-row cap matches the established FBM health safety boundary. The
-    snapshot is cached only for the current Flask request.
+    The read remains bounded, but duplicate DB rows are resolved by business truth
+    rather than MAX(id). The snapshot is cached only for the current Flask request.
     """
     cached = getattr(g, "_bt38_fbm_workflow_snapshot", None)
     if cached is not None:
@@ -123,16 +175,10 @@ def _persisted_workflow_snapshot() -> dict:
         func.upper(func.coalesce(MarketplaceOrder.fulfillment_type, "")).notin_(("FBA", "AFN", "MCF")),
         ~func.lower(func.coalesce(MarketplaceOrder.status, "")).like("mcf_%"),
     )
-    latest_ids = (
-        db.session.query(func.max(MarketplaceOrder.id).label("id"))
-        .filter(*eligible)
-        .filter(MarketplaceOrder.store_id.isnot(None), MarketplaceOrder.marketplace_order_id.isnot(None))
-        .group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)
-        .subquery()
-    )
     query = (
         db.session.query(MarketplaceOrder)
-        .join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)
+        .filter(*eligible)
+        .filter(MarketplaceOrder.store_id.isnot(None), MarketplaceOrder.marketplace_order_id.isnot(None))
         .options(joinedload(MarketplaceOrder.store), joinedload(MarketplaceOrder.warehouse_stock))
         .order_by(MarketplaceOrder.id.desc())
     )
@@ -140,9 +186,13 @@ def _persisted_workflow_snapshot() -> dict:
     if platform_filter:
         query = query.filter(MarketplaceOrder.store.has(Store.platform.ilike(platform_filter)))
 
-    rows = query.limit(_WORKFLOW_MAX_ROWS + 1).all()
-    truncated = len(rows) > _WORKFLOW_MAX_ROWS
+    candidate_limit = (_WORKFLOW_MAX_ROWS * _WORKFLOW_CANDIDATE_MULTIPLIER) + 1
+    candidates = query.limit(candidate_limit).all()
+    candidate_truncated = len(candidates) >= candidate_limit
+    rows = _canonical_order_rows(candidates)
+    truncated = candidate_truncated or len(rows) > _WORKFLOW_MAX_ROWS
     rows = rows[:_WORKFLOW_MAX_ROWS]
+
     profiles = page_alignment._profile_map([
         row for row in rows if _platform(row).strip().lower() == "amazon"
     ])
@@ -189,7 +239,7 @@ def _workflow_rows(limit: int):
 
 
 def _search_rows(limit: int):
-    """Search persisted FBM candidates before applying the visible-row limit."""
+    """Search persisted FBM candidates, then resolve one canonical row per order."""
     term = _search_term()
     if not term:
         return None
@@ -205,14 +255,6 @@ def _search_rows(limit: int):
     status_filter = str(request.args.get("status") or "").strip().lower()
     if platform_filter:
         query = query.filter(MarketplaceOrder.store.has(Store.platform.ilike(platform_filter)))
-
-    tracking_present = MarketplaceOrder.tracking_number.isnot(None) & (MarketplaceOrder.tracking_number != "")
-    if status_filter == "tracking recorded":
-        query = query.filter(tracking_present)
-    elif status_filter == "dispatched":
-        query = query.filter(~tracking_present, MarketplaceOrder.shipped_at.isnot(None))
-    elif status_filter == "ready for fbm routing":
-        query = query.filter(~tracking_present, MarketplaceOrder.shipped_at.is_(None))
 
     query = query.filter(or_(
         MarketplaceOrder.marketplace_order_id.ilike(pattern, escape="\\"),
@@ -230,7 +272,7 @@ def _search_rows(limit: int):
         ),
     ))
 
-    candidate_limit = min(1200, max((limit + 1) * 4, limit + 1))
+    candidate_limit = min(1200, max((limit + 1) * 8, limit + 1))
     candidates = (
         query
         .options(joinedload(MarketplaceOrder.store), joinedload(MarketplaceOrder.warehouse_stock))
@@ -239,20 +281,21 @@ def _search_rows(limit: int):
         .all()
     )
 
-    rows = []
-    seen = set()
-    for row in candidates:
-        if row.store_id is None or not row.marketplace_order_id:
-            continue
-        key = (int(row.store_id), str(row.marketplace_order_id))
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(row)
-        if len(rows) >= limit + 1:
-            break
+    rows = _canonical_order_rows(candidates)
+    if status_filter:
+        filtered = []
+        for row in rows:
+            tracking_present = bool(str(getattr(row, "tracking_number", "") or "").strip())
+            shipped_at_present = getattr(row, "shipped_at", None) is not None
+            if status_filter == "tracking recorded" and not tracking_present:
+                continue
+            if status_filter == "dispatched" and (tracking_present or not shipped_at_present):
+                continue
+            if status_filter == "ready for fbm routing" and (tracking_present or shipped_at_present):
+                continue
+            filtered.append(row)
+        rows = filtered
 
-    rows.sort(key=lambda row: (row.created_at is not None, row.created_at, row.id), reverse=True)
     has_more = len(rows) > limit or len(candidates) == candidate_limit
     return rows[:limit], has_more
 
@@ -364,5 +407,5 @@ def install_governed_fbm_global_search_alignment(app) -> None:
 
     app._bt38_fbm_global_search_alignment_installed = True
     app.logger.info(
-        "BT38 FBM persisted scope aligned: search and workflow tabs filter DB truth before the visible page limit; no marketplace/provider reads"
+        "BT38 FBM persisted scope aligned: one canonical MarketplaceOrder per marketplace order; search and workflow tabs use business truth before row recency; no marketplace/provider reads"
     )
