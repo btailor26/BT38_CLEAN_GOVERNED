@@ -21,6 +21,24 @@ def test_amazon_exact_readback_has_legacy_order_status_fallback():
     assert '"marketplace_write_started": False' in source
 
 
+def test_amazon_exact_marketplace_cancellation_is_terminal_truth():
+    source = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text()
+    assert '"CANCELED": "cancelled"' in source
+    assert '"CANCELLED": "cancelled"' in source
+    assert 'if incoming_value == "cancelled":' in source
+    assert 'return current_value != "delivered"' in source
+
+
+def test_amazon_exact_recovery_blueprint_is_registered_from_app():
+    app_source = (ROOT / "app.py").read_text()
+    route_source = (
+        ROOT / "services" / "governed_amazon_exact_order_recovery_route.py"
+    ).read_text()
+    assert "governed_amazon_exact_order_recovery_bp" in app_source
+    assert "app.register_blueprint(governed_amazon_exact_order_recovery_bp)" in app_source
+    assert '"/governed/actions/amazon/exact-order-recovery"' in route_source
+
+
 def test_exact_dispatch_repair_does_not_use_label_or_tracking_as_lifecycle_authority():
     amazon = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text()
     ebay = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text()
