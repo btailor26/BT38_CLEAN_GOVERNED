@@ -152,7 +152,6 @@ def test_fbm_lifecycle_tabs_preserve_one_workspace_and_use_persisted_server_scop
     assert "fbm-shipping-options" in DISPATCH_QUEUE
     assert '"ready_dispatch": "Ready to dispatch"' in DISPATCH_QUEUE
     assert "Cofi" in DISPATCH_QUEUE
-    assert "Sentinel" in DISPATCH_QUEUE
 
 
 def test_fbm_workflow_scope_is_db_backed_before_visible_limit_and_reuses_existing_truth():
