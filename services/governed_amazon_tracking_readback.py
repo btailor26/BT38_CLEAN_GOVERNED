@@ -1,10 +1,10 @@
-"""Read Amazon-owned FBM package tracking into existing MarketplaceOrder rows.
+"""Read Amazon-owned FBM package lifecycle/tracking into existing MarketplaceOrder rows.
 
-Orders API v2026-01-01 exposes FBM package tracking through includedData=PACKAGES.
+Orders API v2026-01-01 exposes FBM order/package truth through includedData=PACKAGES.
 This helper is read-only against Amazon and updates existing merchant-fulfilled
-BT38 order rows from Amazon's current marketplace package truth. It does not
-create orders, mutate inventory, buy postage, confirm shipment, start a scheduler,
-or touch MCF.
+BT38 order rows from Amazon's current marketplace lifecycle/tracking truth. It
+does not create orders, mutate inventory, buy postage, confirm shipment, start
+a scheduler, or touch MCF.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 SP_API_EU_ENDPOINT = "https://sellingpartnerapi-eu.amazon.com"
 
 _PACKAGE_LIFECYCLE = {
+    "PARTIALLYSHIPPED": "partially_shipped",
     "SHIPPED": "shipped",
     "PICKEDUPBYCARRIER": "picked_up",
     "CHECKEDINTOCARRIERHUB": "in_transit",
@@ -31,14 +32,15 @@ _PACKAGE_LIFECYCLE = {
     "DELIVERED": "delivered",
 }
 _JOURNEY_RANK = {
-    "shipped": 0,
-    "picked_up": 1,
-    "accepted": 1,
-    "carrier_accepted": 1,
-    "collected": 1,
-    "in_transit": 2,
-    "out_for_delivery": 3,
-    "delivered": 4,
+    "partially_shipped": 0,
+    "shipped": 1,
+    "picked_up": 2,
+    "accepted": 2,
+    "carrier_accepted": 2,
+    "collected": 2,
+    "in_transit": 3,
+    "out_for_delivery": 4,
+    "delivered": 5,
 }
 _PROTECTED_ISSUE_STATES = {
     "cancel_requested",
@@ -84,6 +86,16 @@ def _package_lifecycle(package: dict[str, Any]) -> tuple[str | None, str | None]
     return _PACKAGE_LIFECYCLE.get(_status_key(raw_status)), detailed_status
 
 
+def _order_lifecycle(order_payload: dict[str, Any]) -> str | None:
+    """Use Amazon's explicit order status as dispatch authority when available."""
+    raw_status = (
+        order_payload.get("orderStatus")
+        or order_payload.get("OrderStatus")
+        or order_payload.get("fulfillmentStatus")
+    )
+    return _PACKAGE_LIFECYCLE.get(_status_key(raw_status))
+
+
 def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
     incoming_value = _text(incoming).lower()
     current_value = _text(current).lower().replace("-", "_").replace(" ", "_")
@@ -124,34 +136,64 @@ def _lwa_access_token(store: Any) -> str:
 
 
 def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Return lifecycle truth even when tracking is absent or multi-package."""
     packages = [row for row in (order_payload.get("packages") or []) if isinstance(row, dict)]
+    order_lifecycle = _order_lifecycle(order_payload)
+
+    package_lifecycles = []
+    for package in packages:
+        lifecycle, _ = _package_lifecycle(package)
+        if lifecycle:
+            package_lifecycles.append(lifecycle)
+
+    lifecycle_status = order_lifecycle
+    if lifecycle_status is None and package_lifecycles:
+        lifecycle_status = max(
+            package_lifecycles,
+            key=lambda value: _JOURNEY_RANK.get(value, -1),
+        )
+
     tracked = [row for row in packages if _text(row.get("trackingNumber"))]
-    if not tracked:
-        return None, None
-
     unique_tracking = {_text(row.get("trackingNumber")) for row in tracked}
-    if len(unique_tracking) != 1:
-        # MarketplaceOrder currently has one scalar tracking field. Do not lose
-        # package identity by collapsing a genuine multi-package Amazon order.
-        return None, "multiple_amazon_packages_require_multi_tracking_storage"
+    ambiguity = None
+    package = None
+    if len(unique_tracking) == 1:
+        package = tracked[0]
+    elif len(unique_tracking) > 1:
+        ambiguity = "multiple_amazon_packages_require_multi_tracking_storage"
+    elif len(packages) == 1:
+        # One package can still carry lifecycle, carrier and shipTime when Amazon
+        # has not supplied a tracking number.
+        package = packages[0]
 
-    package = tracked[0]
-    lifecycle_status, detailed_status = _package_lifecycle(package)
-    package_status = package.get("packageStatus")
-    raw_package_status = (
-        _text(package_status.get("status"))
-        if isinstance(package_status, dict)
-        else _text(package_status)
-    )
+    if package is None and not lifecycle_status:
+        return None, ambiguity
+
+    detailed_status = None
+    raw_package_status = None
+    if package is not None:
+        package_lifecycle, detailed_status = _package_lifecycle(package)
+        if lifecycle_status is None:
+            lifecycle_status = package_lifecycle
+        package_status = package.get("packageStatus")
+        raw_package_status = (
+            _text(package_status.get("status"))
+            if isinstance(package_status, dict)
+            else _text(package_status)
+        ) or None
+
     return {
-        "carrier": _text(package.get("carrier")) or None,
-        "tracking_number": _text(package.get("trackingNumber")) or None,
-        "shipped_at": _parse_iso(package.get("shipTime") or package.get("createdTime")),
-        "package_reference_id": _text(package.get("packageReferenceId")) or None,
-        "package_status": raw_package_status or None,
+        "carrier": _text(package.get("carrier")) or None if package is not None else None,
+        "tracking_number": _text(package.get("trackingNumber")) or None if package is not None else None,
+        # shipTime is shipment truth. package createdTime must never be invented
+        # as a shipment timestamp.
+        "shipped_at": _parse_iso(package.get("shipTime")) if package is not None else None,
+        "package_reference_id": _text(package.get("packageReferenceId")) or None if package is not None else None,
+        "package_status": raw_package_status,
         "package_detailed_status": detailed_status,
         "lifecycle_status": lifecycle_status,
-    }, None
+        "order_status": _text(order_payload.get("orderStatus") or order_payload.get("OrderStatus")) or None,
+    }, ambiguity
 
 
 def hydrate_amazon_tracking_for_order(
@@ -160,7 +202,7 @@ def hydrate_amazon_tracking_for_order(
     marketplace_order_id: str,
     source: str = "amazon_orders_2026_packages",
 ) -> dict[str, Any]:
-    """Persist current Amazon package truth for one existing Amazon FBM order."""
+    """Persist current Amazon lifecycle/tracking truth for one existing Amazon FBM order."""
     order_id = _text(marketplace_order_id)
     if not order_id:
         return {"success": False, "skipped": True, "reason": "amazon_order_id_missing"}
@@ -235,22 +277,14 @@ def hydrate_amazon_tracking_for_order(
         }
 
     shipment, ambiguity = _package_truth(order_payload)
-    if ambiguity:
-        return {
-            "success": True,
-            "skipped": True,
-            "reason": ambiguity,
-            "order_id": order_id,
-            "rows_considered": len(eligible),
-            "marketplace_write_started": False,
-        }
     if shipment is None:
         return {
             "success": True,
             "skipped": True,
-            "reason": "amazon_tracking_not_available",
+            "reason": "amazon_dispatch_truth_not_available",
             "order_id": order_id,
             "rows_considered": len(eligible),
+            "tracking_ambiguity": ambiguity,
             "marketplace_write_started": False,
         }
 
@@ -258,10 +292,8 @@ def hydrate_amazon_tracking_for_order(
     lifecycle_updates = 0
     for row in eligible:
         changed = False
-        # Amazon is the marketplace authority for Amazon-owned package truth.
-        # Correct stale persisted values as well as filling blanks. Journey state
-        # advances only from Amazon's explicit packageStatus, never tracking or
-        # shipped_at alone.
+        # Amazon is the authority for Amazon-owned lifecycle truth. Carrier and
+        # tracking are optional enrichment; lifecycle never depends on them.
         if shipment.get("carrier") and _text(getattr(row, "carrier", None)) != _text(shipment["carrier"]):
             row.carrier = shipment["carrier"]
             changed = True
@@ -299,7 +331,9 @@ def hydrate_amazon_tracking_for_order(
         "package_reference_id": shipment.get("package_reference_id"),
         "package_status": shipment.get("package_status"),
         "package_detailed_status": shipment.get("package_detailed_status"),
+        "order_status": shipment.get("order_status"),
         "lifecycle_status": shipment.get("lifecycle_status"),
+        "tracking_ambiguity": ambiguity,
         "source": source,
         "marketplace_write_started": False,
     }
