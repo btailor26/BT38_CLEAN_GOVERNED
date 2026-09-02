@@ -19,9 +19,9 @@ def test_fbm_health_reads_latest_persisted_row_for_every_order_identity():
     assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in HEALTH
     assert ".join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)" in HEALTH
     assert ".all()" in HEALTH
-    assert "fulfillment_section" in HEALTH
-    assert 'section.view == "dispatch_due"' in HEALTH
-    assert 'section.view == "dispatched"' in HEALTH
+    assert "global_search.workflow_queue_for(row, shipment)" in HEALTH
+    assert 'queue == "ready_dispatch"' in HEALTH
+    assert 'queue == "dispatched"' in HEALTH
     assert "awaiting_carrier_acceptance" in HEALTH
     assert "acceptance_overdue" in HEALTH
 
@@ -36,5 +36,8 @@ def test_operational_health_remains_db_only_and_preserves_fbm_guards():
 
 
 def test_dispatched_history_does_not_inflate_shipping_action_count():
-    assert '"shipping_actions": dispatch_due + overdue + mapping_review' in HEALTH
+    assert '"shipping_actions": dispatch_due + overdue' in HEALTH
     assert '"dispatched": dispatched' in HEALTH
+    assert 'platform.casefold() == "amazon"' in HEALTH
+    assert 'page_alignment._health_html = operational_health_html' in HEALTH
+    assert 'html.replace(mapping_card, "")' in HEALTH
