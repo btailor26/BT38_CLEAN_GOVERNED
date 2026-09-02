@@ -1,27 +1,28 @@
-"""Immediate exact recovery after a failed governed webhook.
+"""Immediate exact recovery after a governed webhook.
 
 Contract:
-- Successful webhooks normally do nothing here.
 - Failed webhooks recover only the durable notification that failed.
+- Explicit successful marketplace dispatch/lifecycle notifications hand the
+  same exact durable notification to the existing exact recovery path.
 - Recovery checks canonical MarketplaceOrder first.
 - Existing orders are never replayed, preventing duplicate rows and duplicate
   stock mutation.
-- Missing orders replay only the captured exact notification through the
-  existing governed webhook executor.
+- Missing orders replay only the captured exact notification except shipment
+  lifecycle events, which never recreate a sale/order.
 - A restart performs one bounded DB-only selector for failed/stranded webhook
   IDs, legacy completed order orphans, and Amazon FBA order notifications whose
   exact Seller-SKU settlement verification was not completed after 90 seconds.
 - FBA settlement recovery re-reads only that Seller SKU from Amazon; it does
   not replay the order or scan marketplace inventory.
 - eBay ORDER_CONFIRMATION failures that were durably captured are handed to
-  this exact recovery path before BT38 returns HTTP 200 to eBay. Other eBay
-  topics, including LISTING, keep their existing response behaviour.
+  this exact recovery path before BT38 returns HTTP 200 to eBay.
 - No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
   marketplace-wide recovery is started.
 """
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from flask import g, jsonify, request
 from sqlalchemy import text
@@ -62,6 +63,26 @@ def _response_failed(response) -> bool:
     }
 
 
+def _deep_get(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        for current_key, nested in value.items():
+            if str(current_key).lower() == str(key).lower() and nested not in (None, ""):
+                return nested
+            found = _deep_get(nested, key)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _deep_get(nested, key)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _status_key(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
 def _ebay_request_topic() -> str:
     """Return the exact eBay topic without normalising one topic into another."""
     payload = request.get_json(silent=True)
@@ -79,6 +100,59 @@ def _ebay_request_topic() -> str:
             topic = metadata.get("topic")
 
     return str(topic or "").strip().upper()
+
+
+def _request_is_dispatch_lifecycle(platform: str) -> bool:
+    """Recognize explicit marketplace dispatch truth, never carrier guesses."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return False
+
+    platform = str(platform or "").strip().lower()
+    topic = _status_key(
+        _deep_get(payload, "topic")
+        or _deep_get(payload, "notificationType")
+        or _deep_get(payload, "eventType")
+        or _deep_get(payload, "event_type")
+    )
+    if platform == "ebay" and topic == "ITEMMARKEDSHIPPED":
+        return True
+
+    for key in (
+        "OrderStatus",
+        "orderStatus",
+        "orderFulfillmentStatus",
+        "fulfillmentStatus",
+        "packageStatus",
+    ):
+        raw = _deep_get(payload, key)
+        if isinstance(raw, dict):
+            raw = raw.get("status")
+        if _status_key(raw) in {
+            "PARTIALLYSHIPPED",
+            "SHIPPED",
+            "FULFILLED",
+            "PICKEDUPBYCARRIER",
+            "CHECKEDINTOCARRIERHUB",
+            "INTRANSIT",
+            "OUTFORDELIVERY",
+            "DELIVERED",
+        }:
+            return True
+    return False
+
+
+def _notification_record_id_from_response(response) -> int | None:
+    notification_record_id = getattr(g, "bt38_notification_record_id", None)
+    if notification_record_id is None:
+        payload = response.get_json(silent=True)
+        if isinstance(payload, dict):
+            notification_record_id = payload.get("notification_record_id")
+    try:
+        value = int(notification_record_id)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _run_pending_recoveries():
@@ -123,12 +197,13 @@ def _run_pending_recoveries():
                             "BT38 exact webhook recovery platform=%s "
                             "notification_record_id=%s order_id=%s "
                             "recovered=%s duplicate_skipped=%s "
-                            "fba_verified=%s",
+                            "dispatch_lifecycle=%s fba_verified=%s",
                             platform,
                             notification_record_id,
                             result.get("order_id"),
                             result.get("recovered"),
                             result.get("duplicate_skipped"),
+                            result.get("dispatch_lifecycle"),
                             bool(result.get("fba_verification")),
                         )
                     else:
@@ -155,7 +230,7 @@ def request_rejected_webhook_recovery(
     platform: str,
     notification_record_id: int | None = None,
 ) -> bool:
-    """Schedule exact recovery for one durable failed notification."""
+    """Schedule exact recovery for one durable notification."""
     global _recovery_running
 
     platform = str(platform or "").strip().lower()
@@ -424,11 +499,33 @@ def recover_exact_ebay_order_manually():
             "marketplace_write_started": False,
         }), 404
 
-    result = hydrate_exact_ebay_order(
-        store=store,
-        marketplace_order_id=order_id,
-        source="manual_exact_ebay_recovery",
-    )
+    try:
+        result = hydrate_exact_ebay_order(
+            store=store,
+            marketplace_order_id=order_id,
+            source="manual_exact_ebay_recovery",
+        )
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception(
+            "BT38 manual exact eBay recovery failed store_id=%s order_id=%s",
+            store_id,
+            order_id,
+        )
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "exact_ebay_recovery_exception",
+            "error": str(exc)[:500],
+            "store_id": store_id,
+            "order_id": order_id,
+            "exact_order_only": True,
+            "broad_scan_started": False,
+            "order_replayed": False,
+            "stock_mutation_started": False,
+            "marketplace_write_started": False,
+        }), 502
 
     db.session.expire_all()
     rows = (
@@ -447,13 +544,14 @@ def recover_exact_ebay_order_manually():
             "carrier": row.carrier,
             "tracking_number": row.tracking_number,
             "shipped_at": row.shipped_at.isoformat() if row.shipped_at else None,
-            "import_source": row.import_source,
+            "import_source": getattr(row, "import_source", None),
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
         for row in rows
     ]
 
     return jsonify({
+        "success": bool(result.get("success")),
         "ok": bool(result.get("success")),
         "governed": True,
         "exact_order_only": True,
@@ -476,20 +574,25 @@ def recover_when_marketplace_webhook_is_rejected(response):
     if request.method != "POST" or platform is None:
         return response
 
-    if not _response_failed(response):
+    notification_record_id = _notification_record_id_from_response(response)
+    failed = _response_failed(response)
+    dispatch_lifecycle = _request_is_dispatch_lifecycle(platform)
+
+    # Successful marketplace shipment/lifecycle notifications are accelerators:
+    # hand the exact durable notification into the existing exact recovery path.
+    # The recovery path checks canonical order first and never replays stock for
+    # dispatch lifecycle truth. Carrier/tracking are not required for this handoff.
+    if not failed and dispatch_lifecycle:
+        scheduled = request_rejected_webhook_recovery(
+            platform,
+            notification_record_id,
+        )
+        if scheduled:
+            response.headers["X-BT38-Exact-Lifecycle-Handoff"] = "scheduled"
         return response
 
-    notification_record_id = getattr(
-        g,
-        "bt38_notification_record_id",
-        None,
-    )
-    if notification_record_id is None:
-        payload = response.get_json(silent=True)
-        if isinstance(payload, dict):
-            notification_record_id = payload.get(
-                "notification_record_id"
-            )
+    if not failed:
+        return response
 
     scheduled = False
     if not getattr(g, "bt38_rejected_webhook_recovery_requested", False):
