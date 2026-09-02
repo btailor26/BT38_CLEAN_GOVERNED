@@ -137,6 +137,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
     html = _align_cofi_ui(html)
     data = json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
     count_data = json.dumps(counts, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
+    truncated_flag = "true" if truncated else "false"
     marker = "</body>"
     block = f'''<style id="bt38FbmLifecycleTabsAlignment">
 .fbm-lifecycle-tabs{{display:flex;gap:.35rem;overflow-x:auto;padding:.45rem .5rem;border-bottom:1px solid #dee2e6;background:var(--bs-body-bg,#fff);scrollbar-width:thin}}.fbm-lifecycle-tab{{white-space:nowrap;border:1px solid #d0d5dd;background:transparent;border-radius:.375rem;padding:.38rem .62rem;font-size:.78rem;font-weight:650;color:inherit;text-decoration:none}}.fbm-lifecycle-tab:hover{{color:inherit}}.fbm-lifecycle-tab.active{{background:#212529;color:#fff;border-color:#212529}}.fbm-lifecycle-tab .badge{{margin-left:.3rem;font-size:.62rem}}.fbm-shipping-cost{{white-space:nowrap;font-weight:650}}.fbm-shipping-cost-pending{{font-size:.72rem;color:#667085;white-space:nowrap}}.bt38-fbm-session-page{{display:flex;align-items:center;gap:.45rem;padding:.5rem;font-size:.75rem;color:#667085}}.bt38-fbm-session-page button{{border:1px solid #d0d5dd;background:#fff;border-radius:.35rem;padding:.25rem .5rem}}@media(max-width:767.98px){{.fbm-lifecycle-tabs{{padding:.4rem}}.fbm-lifecycle-tab{{padding:.34rem .5rem}}}}
@@ -215,7 +216,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
     var actionArea=document.getElementById('readyToShipSelected');var selectAll=document.getElementById('selectAllOrders');
     if(actionArea) actionArea.classList.toggle('d-none',!actionable);if(selectAll) selectAll.disabled=!actionable;
     rows.forEach(function(row){{var cb=row.querySelector('.fbm-order-checkbox');if(cb){{cb.checked=false;cb.closest('td').classList.toggle('invisible',!actionable);}}var option=row.querySelector('.fbm-shipping-options');if(option) option.classList.toggle('d-none',!actionable);}});
-    var status=pager.querySelector('[data-page-status]');if(status)status.textContent=(matched.length?('Showing '+(start+1)+'-'+Math.min(end,matched.length)+' of '+matched.length):'Showing 0 of 0')+' loaded FBM orders · Page '+page+( {str(bool(truncated)).lower()}==='true'?' · session snapshot bounded':'');
+    var status=pager.querySelector('[data-page-status]');if(status)status.textContent=(matched.length?('Showing '+(start+1)+'-'+Math.min(end,matched.length)+' of '+matched.length):'Showing 0 of 0')+' loaded FBM orders · Page '+page+({truncated_flag}?' · session snapshot bounded':'');
     pager.querySelector('[data-dir="prev"]').disabled=page<=1;pager.querySelector('[data-dir="next"]').disabled=page>=pages;
     saveSession();
   }}
