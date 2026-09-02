@@ -138,12 +138,13 @@ def test_successful_marketplace_dispatch_notifications_enter_exact_handoff():
     assert 'if not failed and dispatch_lifecycle:' in WEBHOOK_HANDOFF
     assert 'request_rejected_webhook_recovery(' in WEBHOOK_HANDOFF
     assert 'X-BT38-Exact-Lifecycle-Handoff' in WEBHOOK_HANDOFF
-    assert 'tracking_number' not in WEBHOOK_HANDOFF.split(
+    lifecycle_detector = WEBHOOK_HANDOFF.split(
         'def _request_is_dispatch_lifecycle(', 1
     )[1].split('def _notification_record_id_from_response(', 1)[0]
-    assert 'carrier' not in WEBHOOK_HANDOFF.split(
-        'def _request_is_dispatch_lifecycle(', 1
-    )[1].split('def _notification_record_id_from_response(', 1)[0]
+    assert '_deep_get(payload, "tracking_number")' not in lifecycle_detector
+    assert '_deep_get(payload, "trackingNumber")' not in lifecycle_detector
+    assert '_deep_get(payload, "carrier")' not in lifecycle_detector
+    assert '_deep_get(payload, "carrierName")' not in lifecycle_detector
 
 
 def test_manual_exact_ebay_recovery_readback_cannot_500_on_unmapped_import_source():
