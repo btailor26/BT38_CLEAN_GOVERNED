@@ -19,6 +19,12 @@ AMAZON_TRACKING = Path(
 AMAZON_PROFILE = Path(
     "services/fbm_amazon_order_profile.py"
 ).read_text(encoding="utf-8")
+EXACT_RECOVERY = Path(
+    "services/governed_exact_webhook_recovery.py"
+).read_text(encoding="utf-8")
+WEBHOOK_HANDOFF = Path(
+    "services/governed_webhook_rejection_recovery.py"
+).read_text(encoding="utf-8")
 
 
 def test_ebay_exact_readback_reads_shipping_fulfillment_tracking():
@@ -35,6 +41,8 @@ def test_ebay_tracking_readback_corrects_persisted_marketplace_truth_without_wri
     assert '_text(row.carrier) != _text(shipment["carrier"])' in EBAY_HYDRATION
     assert 'row.shipped_at != shipment["shipped_at"]' in EBAY_HYDRATION
     assert 'marketplace_status = _ebay_lifecycle_status(order)' in EBAY_HYDRATION
+    assert 'payment == "PAID" and fulfillment == "FULFILLED"' in EBAY_HYDRATION
+    assert 'return "shipped"' in EBAY_HYDRATION
     assert '"marketplace_write_started": False' in EBAY_HYDRATION
     assert 'requests.post(' not in EBAY_HYDRATION
     assert 'requests.put(' not in EBAY_HYDRATION
@@ -82,15 +90,66 @@ def test_amazon_tracking_uses_current_orders_packages_dataset():
     assert 'x-amz-access-token' in AMAZON_TRACKING
 
 
+def test_amazon_dispatch_status_is_authority_without_tracking_dependency():
+    assert 'def _order_lifecycle(' in AMAZON_TRACKING
+    assert 'order_payload.get("orderStatus")' in AMAZON_TRACKING
+    assert '"SHIPPED": "shipped"' in AMAZON_TRACKING
+    assert '"DELIVERED": "delivered"' in AMAZON_TRACKING
+    assert 'lifecycle_status = order_lifecycle' in AMAZON_TRACKING
+    assert 'tracked = [row for row in packages if _text(row.get("trackingNumber"))]' in AMAZON_TRACKING
+    assert 'if not tracked:\n        return None, None' not in AMAZON_TRACKING
+    assert 'package.get("shipTime")' in AMAZON_TRACKING
+    assert 'package.get("createdTime")' not in AMAZON_TRACKING
+    assert 'Carrier and\n        # tracking are optional enrichment; lifecycle never depends on them.' in AMAZON_TRACKING
+
+
 def test_amazon_tracking_is_fbm_only_and_corrects_marketplace_owned_package_truth():
     assert '{"FBA", "AFN", "MCF"}' in AMAZON_TRACKING
     assert 'startswith("mcf_")' in AMAZON_TRACKING
     assert '_text(getattr(row, "tracking_number", None)) != _text(shipment["tracking_number"])' in AMAZON_TRACKING
     assert '_text(getattr(row, "carrier", None)) != _text(shipment["carrier"])' in AMAZON_TRACKING
     assert 'getattr(row, "shipped_at", None) != shipment["shipped_at"]' in AMAZON_TRACKING
+    assert '_can_advance_lifecycle(getattr(row, "status", None), lifecycle_status)' in AMAZON_TRACKING
     assert '"marketplace_write_started": False' in AMAZON_TRACKING
     assert 'requests.put(' not in AMAZON_TRACKING
     assert 'requests.patch(' not in AMAZON_TRACKING
+
+
+def test_exact_recovery_uses_same_existing_order_handoff_for_ebay_and_amazon():
+    assert 'def _hydrate_existing_ebay_order(' in EXACT_RECOVERY
+    assert 'hydrate_exact_ebay_order(' in EXACT_RECOVERY
+    assert 'def _hydrate_existing_amazon_order(' in EXACT_RECOVERY
+    assert 'hydrate_amazon_tracking_for_order(' in EXACT_RECOVERY
+    assert '"order_replayed": False' in EXACT_RECOVERY
+    assert '"canonical_order_missing_for_dispatch_lifecycle"' in EXACT_RECOVERY
+    assert '"stock_mutation_started": False' in EXACT_RECOVERY
+    missing_guard = EXACT_RECOVERY.split(
+        'if dispatch_lifecycle:', 1
+    )[1].split('replay_payload = dict(payload)', 1)[0]
+    assert 'process_marketplace_notification' not in missing_guard
+
+
+def test_successful_marketplace_dispatch_notifications_enter_exact_handoff():
+    assert 'def _request_is_dispatch_lifecycle(' in WEBHOOK_HANDOFF
+    assert 'ITEMMARKEDSHIPPED' in WEBHOOK_HANDOFF
+    assert '"FULFILLED"' in WEBHOOK_HANDOFF
+    assert '"SHIPPED"' in WEBHOOK_HANDOFF
+    assert '"DELIVERED"' in WEBHOOK_HANDOFF
+    assert 'if not failed and dispatch_lifecycle:' in WEBHOOK_HANDOFF
+    assert 'request_rejected_webhook_recovery(' in WEBHOOK_HANDOFF
+    assert 'X-BT38-Exact-Lifecycle-Handoff' in WEBHOOK_HANDOFF
+    assert 'tracking_number' not in WEBHOOK_HANDOFF.split(
+        'def _request_is_dispatch_lifecycle(', 1
+    )[1].split('def _notification_record_id_from_response(', 1)[0]
+    assert 'carrier' not in WEBHOOK_HANDOFF.split(
+        'def _request_is_dispatch_lifecycle(', 1
+    )[1].split('def _notification_record_id_from_response(', 1)[0]
+
+
+def test_manual_exact_ebay_recovery_readback_cannot_500_on_unmapped_import_source():
+    assert '"import_source": getattr(row, "import_source", None)' in WEBHOOK_HANDOFF
+    assert '"reason": "exact_ebay_recovery_exception"' in WEBHOOK_HANDOFF
+    assert 'db.session.rollback()' in WEBHOOK_HANDOFF
 
 
 def test_amazon_profile_reuses_tracking_readback_without_buy_shipping_dependency():
