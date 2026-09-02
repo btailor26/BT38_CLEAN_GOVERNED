@@ -569,6 +569,14 @@ try:
 except Exception as exc:
     logging.error(f"Failed to register governed Packlink callback routes: {exc}")
 
+try:
+    from services.governed_amazon_exact_order_recovery_route import (
+        governed_amazon_exact_order_recovery_bp,
+    )
+    app.register_blueprint(governed_amazon_exact_order_recovery_bp)
+except Exception as exc:
+    logging.error(f"Failed to register governed Amazon exact recovery route: {exc}")
+
 # Install the already-built FBM lifecycle alignment only after the governed FBM
 # and Packlink routes exist, so the existing live Flask endpoints are the ones
 # wrapped. Fail startup rather than silently serving an unaligned journey.
