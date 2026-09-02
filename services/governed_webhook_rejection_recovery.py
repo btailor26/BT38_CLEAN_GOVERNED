@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import threading
 
-from flask import g, request
+from flask import g, jsonify, request
 from sqlalchemy import text
 
 from app import app
@@ -337,6 +337,135 @@ def recover_stranded_webhooks_once_after_restart():
         )
 
     return None
+
+
+@app.post("/governed/actions/ebay/exact-order-recovery")
+def recover_exact_ebay_order_manually():
+    """Refresh marketplace-owned truth for one existing eBay order only."""
+    import hmac
+    import os
+    import re
+
+    from flask_login import current_user
+    from extensions import db
+    from models import MarketplaceOrder, Store
+    from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
+
+    configured_task_key = str(os.environ.get("TASK_API_KEY") or "")
+    supplied_task_key = str(request.headers.get("X-Task-Key") or "")
+    session_authorized = bool(getattr(current_user, "is_authenticated", False))
+    task_authorized = bool(
+        configured_task_key
+        and supplied_task_key
+        and hmac.compare_digest(configured_task_key, supplied_task_key)
+    )
+    if not (session_authorized or task_authorized):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "authentication_required",
+            "marketplace_write_started": False,
+        }), 401
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        store_id = int(payload.get("store_id"))
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "invalid_store_id",
+            "marketplace_write_started": False,
+        }), 400
+
+    order_id = str(payload.get("marketplace_order_id") or "").strip()
+    if store_id <= 0 or not re.fullmatch(r"\d+-\d+-\d+", order_id):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "invalid_exact_ebay_order_identity",
+            "marketplace_write_started": False,
+        }), 400
+
+    store = db.session.get(Store, store_id)
+    if (
+        store is None
+        or not bool(getattr(store, "is_active", False))
+        or "ebay" not in str(getattr(store, "platform", "") or "").lower()
+    ):
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "active_ebay_store_not_found",
+            "store_id": store_id,
+            "marketplace_write_started": False,
+        }), 404
+
+    existing = (
+        MarketplaceOrder.query
+        .filter(
+            MarketplaceOrder.store_id == store_id,
+            MarketplaceOrder.marketplace_order_id == order_id,
+        )
+        .first()
+    )
+    if existing is None:
+        return jsonify({
+            "success": False,
+            "ok": False,
+            "governed": True,
+            "reason": "existing_marketplace_order_missing",
+            "store_id": store_id,
+            "order_id": order_id,
+            "marketplace_write_started": False,
+        }), 404
+
+    result = hydrate_exact_ebay_order(
+        store=store,
+        marketplace_order_id=order_id,
+        source="manual_exact_ebay_recovery",
+    )
+
+    db.session.expire_all()
+    rows = (
+        MarketplaceOrder.query
+        .filter(
+            MarketplaceOrder.store_id == store_id,
+            MarketplaceOrder.marketplace_order_id == order_id,
+        )
+        .order_by(MarketplaceOrder.id)
+        .all()
+    )
+    readback = [
+        {
+            "id": int(row.id),
+            "status": row.status,
+            "carrier": row.carrier,
+            "tracking_number": row.tracking_number,
+            "shipped_at": row.shipped_at.isoformat() if row.shipped_at else None,
+            "import_source": row.import_source,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+        for row in rows
+    ]
+
+    return jsonify({
+        "ok": bool(result.get("success")),
+        "governed": True,
+        "exact_order_only": True,
+        "broad_scan_started": False,
+        "order_replayed": False,
+        "stock_mutation_started": False,
+        "marketplace_write_started": False,
+        "store_id": store_id,
+        "order_id": order_id,
+        "hydration": result,
+        "database_readback": readback,
+    }), 200
 
 
 @app.after_request
