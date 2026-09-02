@@ -1,7 +1,7 @@
-"""Exact idempotent recovery for one failed governed webhook.
+"""Exact idempotent recovery for one governed webhook.
 
 Contract:
-- Recover only the durable notification that failed.
+- Recover only the durable notification selected by the caller.
 - Never launch a recent-order/platform scan.
 - Check canonical MarketplaceOrder first for order events that require it.
 - If the exact order already exists, never replay order/stock mutation.
@@ -9,12 +9,14 @@ Contract:
   do not require a canonical MarketplaceOrder row.
 - Amazon FBA may still perform one exact Seller-SKU settlement verification;
   this is read-only marketplace truth and is not an order replay.
-- Existing eBay orders may perform one exact Fulfillment API hydration so a
-  marketplace shipment event can advance persisted dispatch/tracking truth
-  without replaying the order or stock mutation.
-- If an order event requiring canonical intake is missing, replay only the
-  captured payload through the existing governed webhook executor, then verify
-  the canonical order exists.
+- Existing eBay orders perform one exact order + shipping_fulfillment hydration
+  so marketplace shipment truth can advance persisted dispatch/tracking state.
+- Existing Amazon FBM orders perform one exact Orders/PACKAGES readback so
+  marketplace shipment truth can advance persisted dispatch/tracking state.
+- A shipment/lifecycle notification never replays a missing sale/order. If the
+  canonical order is missing, recovery stops without stock mutation.
+- Other failed order events may replay only the captured exact notification,
+  then verify the canonical order exists.
 - Any committed recovery/FBA/MCF change uses the existing DB -> UI publisher.
 """
 from __future__ import annotations
@@ -65,6 +67,46 @@ def _deep_get(value: Any, key: str) -> Any:
             if found not in (None, ""):
                 return found
     return None
+
+
+def _status_key(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _is_dispatch_lifecycle_payload(platform: str, payload: dict[str, Any]) -> bool:
+    """Recognize only explicit marketplace shipment/lifecycle truth."""
+    platform = str(platform or "").strip().lower()
+    topic = _status_key(
+        _deep_get(payload, "topic")
+        or _deep_get(payload, "notificationType")
+        or _deep_get(payload, "eventType")
+        or _deep_get(payload, "event_type")
+    )
+    if platform == "ebay" and topic == "ITEMMARKEDSHIPPED":
+        return True
+
+    for key in (
+        "OrderStatus",
+        "orderStatus",
+        "orderFulfillmentStatus",
+        "fulfillmentStatus",
+        "packageStatus",
+    ):
+        raw = _deep_get(payload, key)
+        if isinstance(raw, dict):
+            raw = raw.get("status")
+        if _status_key(raw) in {
+            "PARTIALLYSHIPPED",
+            "SHIPPED",
+            "FULFILLED",
+            "PICKEDUPBYCARRIER",
+            "CHECKEDINTOCARRIERHUB",
+            "INTRANSIT",
+            "OUTFORDELIVERY",
+            "DELIVERED",
+        }:
+            return True
+    return False
 
 
 def _exact_identity(platform: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -197,6 +239,40 @@ def _verify_existing_amazon_fba(
     return result
 
 
+def _hydrate_existing_amazon_order(
+    *,
+    identity: dict[str, Any],
+    store_id: int | None,
+    notification_record_id: int,
+) -> dict[str, Any] | None:
+    """Apply exact Amazon-owned FBM lifecycle truth to an existing order only."""
+    if (
+        identity.get("platform") != "amazon"
+        or store_id is None
+        or not identity.get("order_id")
+    ):
+        return None
+
+    from models import Store
+    from services.governed_amazon_tracking_readback import hydrate_amazon_tracking_for_order
+
+    store = db.session.get(Store, int(store_id))
+    if store is None:
+        return None
+
+    result = hydrate_amazon_tracking_for_order(
+        store=store,
+        marketplace_order_id=str(identity["order_id"]),
+        source="amazon_webhook_exact_recovery:existing_order_hydration",
+    )
+    result["ui_event_published"] = _publish_committed_change(
+        "amazon",
+        int(notification_record_id),
+        result,
+    )
+    return result
+
+
 def _hydrate_existing_ebay_order(
     *,
     identity: dict[str, Any],
@@ -282,18 +358,23 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
 
     identity = _exact_identity(platform, payload)
     store_id = _resolve_store_id(platform, identity.get("seller_sku"))
+    dispatch_lifecycle = _is_dispatch_lifecycle_payload(platform, payload)
 
     # Critical duplicate guard: once the canonical order exists, never replay
     # the order and never invoke its stock mutation again. Marketplace-owned
-    # lifecycle truth may still refresh that same existing identity: Amazon FBA
-    # performs one exact settlement verification and eBay performs one exact
-    # order + shipping_fulfillment hydration. Neither path creates an order or
-    # repeats stock mutation.
+    # lifecycle truth may still refresh that same existing identity. Amazon FBA
+    # performs one exact settlement verification; Amazon FBM reads the exact
+    # order/PACKAGES truth; eBay reads the exact order + shipping fulfillments.
     if _canonical_order_exists(store_id, identity.get("order_id")):
         fba_verification = _verify_existing_amazon_fba(
             identity=identity,
             store_id=store_id,
             payload=payload,
+            notification_record_id=int(notification_record_id),
+        )
+        amazon_hydration = _hydrate_existing_amazon_order(
+            identity=identity,
+            store_id=store_id,
             notification_record_id=int(notification_record_id),
         )
         ebay_hydration = _hydrate_existing_ebay_order(
@@ -303,12 +384,34 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
         )
         return {
             "success": True,
-            "recovered": bool(ebay_hydration and ebay_hydration.get("success")),
+            "recovered": bool(
+                (amazon_hydration and amazon_hydration.get("success") and not amazon_hydration.get("skipped"))
+                or (ebay_hydration and ebay_hydration.get("success"))
+            ),
             "already_present": True,
             "duplicate_skipped": True,
             "order_replayed": False,
+            "dispatch_lifecycle": dispatch_lifecycle,
             "fba_verification": fba_verification,
+            "amazon_hydration": amazon_hydration,
             "ebay_hydration": ebay_hydration,
+            "order_id": identity.get("order_id"),
+            "store_id": store_id,
+            "notification_record_id": int(notification_record_id),
+            "platform": platform,
+            "broad_scan_started": False,
+        }
+
+    # Shipment/lifecycle truth must never recreate/replay a missing sale. The
+    # marketplace notification is authoritative for dispatch state, but stock
+    # mutation remains owned by the original canonical sale/order intake.
+    if dispatch_lifecycle:
+        return {
+            "success": False,
+            "recovered": False,
+            "reason": "canonical_order_missing_for_dispatch_lifecycle",
+            "order_replayed": False,
+            "stock_mutation_started": False,
             "order_id": identity.get("order_id"),
             "store_id": store_id,
             "notification_record_id": int(notification_record_id),
