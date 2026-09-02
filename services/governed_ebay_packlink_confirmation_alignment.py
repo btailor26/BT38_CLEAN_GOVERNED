@@ -1,13 +1,13 @@
-"""Align paid Packlink labels with the existing governed eBay dispatch path.
+"""Keep governed eBay external dispatch independent from Amazon carrier mapping.
 
 Hard boundary:
 - Amazon keeps the verified carrier + service mapping gate required by the
   existing VTR-safe confirmation path.
-- eBay uses its own marketplace-specific carrier identity. A paid Packlink
-  label with tracking must not be held by the Amazon-style mapping gate.
+- eBay uses its existing marketplace-specific carrier/tracking path. Packlink
+  and governed manual eBay dispatch must not be held by Amazon-style mapping.
 
 The existing marketplace-specific mapping record is still created for audit
-and future reuse, but an unseen eBay Packlink service does not block eBay
+and future reuse, but an unseen/unverified eBay service does not block eBay
 CompleteSale. No postage purchase, tracking invention, pickup inference or
 parallel dispatch implementation is introduced here.
 """
@@ -31,7 +31,7 @@ def _platform_for_shipment(shipment) -> tuple[MarketplaceOrder | None, str]:
 
 
 def install_governed_ebay_packlink_confirmation_alignment() -> None:
-    """Hard-lock eBay Packlink confirmation away from Amazon mapping rules."""
+    """Hard-lock eBay external confirmation away from Amazon mapping rules."""
     import services.fbm_post_purchase as post_purchase
 
     if getattr(post_purchase, "_governed_ebay_packlink_alignment_installed", False):
@@ -43,23 +43,20 @@ def install_governed_ebay_packlink_confirmation_alignment() -> None:
     def aligned_ensure_mapping_review(*args: Any, **kwargs: Any):
         mapping, review, mapping_ready = original_ensure_mapping_review(*args, **kwargs)
         marketplace = str(kwargs.get("marketplace") or "").strip().casefold()
-        provider = str(kwargs.get("provider") or "").strip().casefold()
         shipment = kwargs.get("shipment")
 
-        if marketplace != "ebay" or provider != "packlink" or shipment is None:
+        if marketplace != "ebay" or shipment is None:
             return mapping, review, mapping_ready
 
-        # eBay and Amazon mappings are deliberately different. The mapping row
-        # remains marketplace-specific and can still be reviewed, but eBay's
-        # existing CompleteSale contract only needs the actual carrier identity
-        # plus tracking. Do not reuse Amazon's verified carrier/service gate.
+        # eBay does not use Amazon's carrier/service verification gate. Retain
+        # the marketplace-specific review row for audit only; actual carrier
+        # identity is still required before dispatch can proceed.
         carrier_present = bool(str(getattr(shipment, "carrier", "") or "").strip())
         return mapping, review, carrier_present
 
     def aligned_confirm_external_shipment(*, shipment, mapping):
-        provider = str(getattr(shipment, "provider", "") or "").strip().casefold()
         order, platform = _platform_for_shipment(shipment)
-        if platform != "ebay" or provider != "packlink":
+        if platform != "ebay":
             return original_confirm_external_shipment(shipment=shipment, mapping=mapping)
 
         if getattr(shipment, "marketplace_confirmed_at", None):
@@ -114,9 +111,8 @@ def install_governed_ebay_packlink_confirmation_alignment() -> None:
         shipment.marketplace_confirmation_status = "confirmed"
         shipment.marketplace_confirmation_error = None
 
-        # eBay carrier identity is marketplace-specific. Prefer an explicitly
-        # verified eBay mapping when one exists; otherwise use the actual
-        # Packlink carrier returned for this shipment. Never borrow Amazon data.
+        # Preserve eBay's existing carrier identity. A verified eBay mapping can
+        # normalize it when present, but verification is never a dispatch gate.
         carrier = str(
             getattr(mapping, "marketplace_carrier_name", None)
             or getattr(mapping, "marketplace_carrier_code", None)
@@ -156,7 +152,7 @@ def install_governed_ebay_packlink_confirmation_alignment() -> None:
         }
 
     # persist_external_label resolves these globals at call time, so patching
-    # only the two decision points keeps all existing Packlink callback/status
+    # only the two decision points keeps all existing provider callback/manual
     # entry points on the same post-purchase path.
     post_purchase.ensure_mapping_review = aligned_ensure_mapping_review
     post_purchase.confirm_external_shipment = aligned_confirm_external_shipment
