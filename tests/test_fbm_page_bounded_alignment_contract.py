@@ -154,10 +154,16 @@ def test_fbm_lifecycle_tabs_preserve_one_workspace_and_use_persisted_server_scop
     assert "Cofi" in DISPATCH_QUEUE
 
 
-def test_fbm_workflow_scope_is_db_backed_before_visible_limit_and_reuses_existing_truth():
+def test_fbm_workflow_scope_uses_one_canonical_db_truth_before_visible_limit():
     assert "def _persisted_workflow_snapshot" in SEARCH
-    assert "func.max(MarketplaceOrder.id)" in SEARCH
-    assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in SEARCH
+    assert "def _canonical_order_rank" in SEARCH
+    assert "def _canonical_order_rows" in SEARCH
+    assert "func.max(MarketplaceOrder.id)" not in SEARCH
+    assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" not in SEARCH
+    assert "_WORKFLOW_CANDIDATE_MULTIPLIER = 4" in SEARCH
+    assert "candidate_limit = (_WORKFLOW_MAX_ROWS * _WORKFLOW_CANDIDATE_MULTIPLIER) + 1" in SEARCH
+    assert "rows = _canonical_order_rows(candidates)" in SEARCH
+    assert 'status == "processed"' in SEARCH
     assert "page_alignment._workspace_fbm_eligible" in SEARCH
     assert "shipments = _shipment_map(eligible_rows)" in SEARCH
     assert "def workflow_queue_for" in SEARCH
