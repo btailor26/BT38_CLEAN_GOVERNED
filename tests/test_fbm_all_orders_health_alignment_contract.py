@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HEALTH = (ROOT / "services" / "governed_fbm_all_orders_health_alignment.py").read_text(encoding="utf-8")
+SEARCH = (ROOT / "services" / "governed_fbm_global_search_alignment.py").read_text(encoding="utf-8")
 CLARITY = (ROOT / "services" / "governed_order_clarity_alignment.py").read_text(encoding="utf-8")
 
 
@@ -14,21 +15,22 @@ def test_fbm_health_uses_operational_dispatch_scope_not_historical_action_count(
     assert "dispatched orders remain in history" in HEALTH.lower()
 
 
-def test_fbm_health_reads_latest_persisted_row_for_every_order_identity():
-    assert "func.max(MarketplaceOrder.id)" in HEALTH
-    assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in HEALTH
-    assert ".join(latest_ids, MarketplaceOrder.id == latest_ids.c.id)" in HEALTH
-    assert ".all()" in HEALTH
+def test_fbm_health_reuses_the_browser_session_snapshot_without_an_order_rescan():
+    assert "global_search._session_snapshot_rows()" in HEALTH
     assert "global_search.workflow_queue_for(row, shipment)" in HEALTH
     assert 'queue == "ready_dispatch"' in HEALTH
     assert 'queue == "dispatched"' in HEALTH
     assert "awaiting_carrier_acceptance" in HEALTH
     assert "acceptance_overdue" in HEALTH
+    assert "db.session.query(MarketplaceOrder)" not in HEALTH
+    assert "func.max(MarketplaceOrder.id)" not in HEALTH
+    assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" not in HEALTH
+    assert "_bt38_fbm_session_rows" in SEARCH
 
 
-def test_operational_health_remains_db_only_and_preserves_fbm_guards():
+def test_operational_health_remains_db_read_only_and_preserves_fbm_guards_through_session_loader():
     assert "_workspace_fbm_eligible" in HEALTH
-    assert '"FBA", "AFN", "MCF"' in HEALTH
+    assert '"FBA", "AFN", "MCF"' in SEARCH
     assert "requests." not in HEALTH
     assert "db.session.add" not in HEALTH
     assert "db.session.commit" not in HEALTH
