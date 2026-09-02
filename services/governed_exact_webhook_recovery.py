@@ -9,6 +9,9 @@ Contract:
   do not require a canonical MarketplaceOrder row.
 - Amazon FBA may still perform one exact Seller-SKU settlement verification;
   this is read-only marketplace truth and is not an order replay.
+- Existing eBay orders may perform one exact Fulfillment API hydration so a
+  marketplace shipment event can advance persisted dispatch/tracking truth
+  without replaying the order or stock mutation.
 - If an order event requiring canonical intake is missing, replay only the
   captured payload through the existing governed webhook executor, then verify
   the canonical order exists.
@@ -194,6 +197,40 @@ def _verify_existing_amazon_fba(
     return result
 
 
+def _hydrate_existing_ebay_order(
+    *,
+    identity: dict[str, Any],
+    store_id: int | None,
+    notification_record_id: int,
+) -> dict[str, Any] | None:
+    """Apply exact eBay marketplace lifecycle truth to an existing order only."""
+    if (
+        identity.get("platform") != "ebay"
+        or store_id is None
+        or not identity.get("order_id")
+    ):
+        return None
+
+    from models import Store
+    from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
+
+    store = db.session.get(Store, int(store_id))
+    if store is None:
+        return None
+
+    result = hydrate_exact_ebay_order(
+        store=store,
+        marketplace_order_id=str(identity["order_id"]),
+        source="ebay_webhook_exact_recovery:existing_order_hydration",
+    )
+    result["ui_event_published"] = _publish_committed_change(
+        "ebay",
+        int(notification_record_id),
+        result,
+    )
+    return result
+
+
 def _mcf_lifecycle_completed(replay_result: dict | None) -> bool:
     """Return True when one Amazon MCF lifecycle signal was fully handled.
 
@@ -247,9 +284,11 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
     store_id = _resolve_store_id(platform, identity.get("seller_sku"))
 
     # Critical duplicate guard: once the canonical order exists, never replay
-    # the order and never invoke its stock mutation again. Amazon FBA is the
-    # only exception in scope: one exact read-only Seller-SKU settlement check
-    # may refresh AmazonFBAInventory and publish that committed change to UI.
+    # the order and never invoke its stock mutation again. Marketplace-owned
+    # lifecycle truth may still refresh that same existing identity: Amazon FBA
+    # performs one exact settlement verification and eBay performs one exact
+    # order + shipping_fulfillment hydration. Neither path creates an order or
+    # repeats stock mutation.
     if _canonical_order_exists(store_id, identity.get("order_id")):
         fba_verification = _verify_existing_amazon_fba(
             identity=identity,
@@ -257,13 +296,19 @@ def recover_exact_failed_webhook(platform: str, notification_record_id: int) -> 
             payload=payload,
             notification_record_id=int(notification_record_id),
         )
+        ebay_hydration = _hydrate_existing_ebay_order(
+            identity=identity,
+            store_id=store_id,
+            notification_record_id=int(notification_record_id),
+        )
         return {
             "success": True,
-            "recovered": False,
+            "recovered": bool(ebay_hydration and ebay_hydration.get("success")),
             "already_present": True,
             "duplicate_skipped": True,
             "order_replayed": False,
             "fba_verification": fba_verification,
+            "ebay_hydration": ebay_hydration,
             "order_id": identity.get("order_id"),
             "store_id": store_id,
             "notification_record_id": int(notification_record_id),
