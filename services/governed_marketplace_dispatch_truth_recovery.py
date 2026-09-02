@@ -1,20 +1,20 @@
 """Bounded recovery of stale marketplace-owned FBM dispatch truth.
 
 This is a one-shot recovery orchestrator, not a scheduler or lifecycle authority.
-It selects only existing FBM MarketplaceOrder identities whose persisted routine
-status has not yet reached marketplace dispatch truth, then delegates each exact
-order to the existing marketplace-owned readback implementation.
+It selects existing FBM MarketplaceOrder identities whose persisted routine status
+has not yet reached marketplace dispatch truth, then delegates each exact order
+to the existing marketplace-owned readback implementation.
 
 Rules:
 - Marketplace lifecycle is authority for Ready vs Dispatched.
 - Carrier/tracking are optional enrichment only.
 - Existing orders only; never create/replay an order or mutate Warehouse stock.
 - Exact marketplace reads only; never write to a marketplace.
-- Bounded by age and candidate count and returns immediately when complete.
+- Historical age is not an authority or exclusion rule.
+- Bounded by candidate count and returns immediately when complete.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func
@@ -56,12 +56,12 @@ def _text(value: Any) -> str:
 
 
 def _candidate_order_ids(*, store: Store, max_days: int, limit: int) -> list[str]:
-    """Select existing stale FBM order identities without using tracking as authority."""
-    effective_days = max(1, min(int(max_days), 180))
+    """Select existing stale FBM order identities without age or tracking authority."""
+    # max_days is retained in the public recovery signature for compatibility with
+    # existing governed callers, but historical age must not exclude an existing
+    # FBM order from exact marketplace lifecycle recovery.
+    _ = max_days
     effective_limit = max(1, min(int(limit), 250))
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=effective_days)
-    ).replace(tzinfo=None)
 
     excluded = sorted(_DISPATCHED_STATUSES | _PROTECTED_ISSUE_STATUSES)
     rows = (
@@ -71,7 +71,6 @@ def _candidate_order_ids(*, store: Store, max_days: int, limit: int) -> list[str
             MarketplaceOrder.fulfillment_type == "FBM",
             MarketplaceOrder.marketplace_order_id.isnot(None),
             MarketplaceOrder.marketplace_order_id != "",
-            MarketplaceOrder.created_at >= cutoff,
             ~func.lower(func.coalesce(MarketplaceOrder.status, "")).in_(excluded),
         )
         .distinct()
@@ -145,7 +144,7 @@ def _recover_store(*, store: Store, max_days: int, limit: int) -> dict[str, Any]
         "bounded": True,
         "store_id": int(store.id),
         "platform": platform,
-        "max_days": max(1, min(int(max_days), 180)),
+        "historical_age_restricted": False,
         "candidate_limit": max(1, min(int(limit), 250)),
         "candidate_orders": len(order_ids),
         "lifecycle_updates": lifecycle_updates,
@@ -196,7 +195,7 @@ def recover_bounded_marketplace_dispatch_truth(
     return {
         "success": all(bool(row.get("success")) for row in stores),
         "bounded": True,
-        "max_days": max(1, min(int(max_days), 180)),
+        "historical_age_restricted": False,
         "limit_per_store": max(1, min(int(limit_per_store), 250)),
         "stores": stores,
         "candidate_orders": sum(int(row.get("candidate_orders") or 0) for row in stores),
