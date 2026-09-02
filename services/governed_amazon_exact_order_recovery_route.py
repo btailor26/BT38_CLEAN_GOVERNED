@@ -12,11 +12,11 @@ import hmac
 import os
 import re
 
-from flask import jsonify, request
+from flask import current_app, jsonify, request
 from flask_login import current_user
 
-from app import app
 from extensions import db
+from governed_routes import governed_bp
 from models import MarketplaceOrder, Store
 from services.governed_amazon_tracking_readback import hydrate_amazon_tracking_for_order
 
@@ -24,7 +24,7 @@ from services.governed_amazon_tracking_readback import hydrate_amazon_tracking_f
 _AMAZON_ORDER_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
 
 
-@app.post("/governed/actions/amazon/exact-order-recovery")
+@governed_bp.post("/governed/actions/amazon/exact-order-recovery")
 def recover_exact_amazon_order_manually():
     """Refresh marketplace-owned truth for one existing Amazon FBM order only."""
     configured_task_key = str(os.environ.get("TASK_API_KEY") or "")
@@ -118,7 +118,7 @@ def recover_exact_amazon_order_manually():
         )
     except Exception as exc:
         db.session.rollback()
-        app.logger.exception(
+        current_app.logger.exception(
             "BT38 manual exact Amazon recovery failed store_id=%s order_id=%s",
             store_id,
             order_id,
