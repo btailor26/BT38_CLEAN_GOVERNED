@@ -101,6 +101,7 @@ jobs:
             services/fbm_marketplace_confirmation.py services/fbm_post_purchase.py \
             services/fbm_shipping_state.py services/governed_fbm_page_alignment.py \
             services/governed_amazon_tracking_readback.py services/governed_exact_ebay_order_hydration.py \
+            services/governed_marketplace_dispatch_truth_recovery.py \
             services/governed_ebay_oauth_scopes.py services/governed_ebay_shipping_notification_alignment.py \
             services/governed_runtime_engine.py services/governed_webhook_execution.py \
             services/governed_webhook_alignment.py services/governed_push_execution.py \
@@ -119,7 +120,8 @@ jobs:
             tests/test_amazon_mcf_notification_alignment_contract.py tests/test_fbm_page_bounded_alignment_contract.py \
             tests/test_fbm_packlink_contract.py tests/test_fbm_packlink_import_alignment_contract.py \
             tests/test_fbm_amazon_tracking_contract.py tests/test_fbm_amazon_confirmation_payload.py \
-            tests/test_fbm_manual_shipping_order_contract.py tests/test_marketplace_tracking_readback_contract.py
+            tests/test_fbm_manual_shipping_order_contract.py tests/test_marketplace_tracking_readback_contract.py \
+            tests/test_marketplace_dispatch_truth_recovery_contract.py
 
   deploy:
     needs: audit
@@ -171,6 +173,7 @@ jobs:
             services/fbm_post_purchase.py
             services/governed_runtime_engine.py
             services/governed_webhook_execution.py
+            services/governed_marketplace_dispatch_truth_recovery.py
           )
           FAILED=0
           for FILE in "${FILES[@]}"; do
@@ -234,6 +237,13 @@ jobs:
         shell: bash
         run: |
           flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_ebay_post_deploy_alignment import align_ebay_notifications_and_recover_missed_changes; ctx=app.app_context(); ctx.push(); result=align_ebay_notifications_and_recover_missed_changes(store_id=23,max_days=7); print(json.dumps(result, default=str)); registration=result.get(\\\"registration\\\") or {}; order=result.get(\\\"order_catchup\\\") or {}; tracking=result.get(\\\"tracking_catchup\\\") or {}; listing=result.get(\\\"listing_catchup\\\") or {}; registration_error=str(registration.get(\\\"error\\\") or \\\"\\\"); registration_ok=bool(registration.get(\\\"success\\\") or registration.get(\\\"ok\\\")); oauth_reauth_pending=(not registration_ok and \\\"HTTP 403\\\" in registration_error and \\\"Insufficient permissions\\\" in registration_error); recovery_ok=bool(order.get(\\\"success\\\")) and bool(tracking.get(\\\"success\\\")) and bool(listing.get(\\\"success\\\", True)); print(\\\"EBAY_NOTIFICATION_REAUTH_PENDING\\\" if oauth_reauth_pending else (\\\"EBAY_NOTIFICATION_REGISTRATION_OK\\\" if registration_ok else \\\"EBAY_NOTIFICATION_REGISTRATION_FAILED\\\")); ok=recovery_ok and (registration_ok or oauth_reauth_pending); raise SystemExit(0 if ok else 1)'\""
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Recover stale marketplace dispatch truth once
+        if: steps.restore_mode.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          flyctl ssh console --app bt38-prod --command "sh -lc \"cd /app && .venv/bin/python -c 'import json; from app import app; from services.governed_marketplace_dispatch_truth_recovery import recover_bounded_marketplace_dispatch_truth; ctx=app.app_context(); ctx.push(); result=recover_bounded_marketplace_dispatch_truth(store_ids=(22,23),max_days=90,limit_per_store=150); print(json.dumps(result, default=str)); raise SystemExit(0 if result.get(\\\"success\\\") else 1)'\""
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Record Amazon listing subscription reconciliation
