@@ -37,6 +37,9 @@ from services.governed_product_linking_unlink_alignment import (
 from services.governed_ebay_native_shipping_alignment import (
     install_governed_ebay_native_shipping_alignment,
 )
+from services.governed_ebay_packlink_confirmation_alignment import (
+    install_governed_ebay_packlink_confirmation_alignment,
+)
 from services.governed_fbm_db_authority_alignment import (
     install_governed_fbm_db_authority_alignment,
 )
@@ -78,6 +81,7 @@ install_governed_fbm_all_orders_health_alignment(app)
 install_governed_fbm_dispatch_queue_alignment(app)
 install_product_linking_unlink_alignment(app)
 install_governed_ebay_native_shipping_alignment(app)
+install_governed_ebay_packlink_confirmation_alignment()
 install_governed_fbm_db_authority_alignment()
 install_governed_shipping_spend_alignment(app)
 install_governed_shipping_spend_reporting(app)
