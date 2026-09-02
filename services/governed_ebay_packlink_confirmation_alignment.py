@@ -63,51 +63,44 @@ def install_governed_ebay_packlink_confirmation_alignment() -> None:
             return result
 
         try:
-            confirmation = post_purchase.confirm_external_shipment(
+            from services.fbm_marketplace_confirmation import (
+                _confirm_ebay_external,
+                _persist_confirmed_order_lines,
+                _record_dispatch_bell_event,
+            )
+            confirmation = _confirm_ebay_external(
+                order=order,
                 shipment=shipment,
                 mapping=mapping,
-            ) if mapping.verification_status == "verified" and mapping.marketplace_carrier_code else None
-
-            if confirmation is None:
-                from services.fbm_marketplace_confirmation import (
-                    _confirm_ebay_external,
-                    _persist_confirmed_order_lines,
-                    _record_dispatch_bell_event,
-                )
-                confirmation = _confirm_ebay_external(
-                    order=order,
-                    shipment=shipment,
-                    mapping=mapping,
-                    tracking=tracking,
-                )
-                now = datetime.utcnow()
-                shipment.marketplace_confirmed_at = now
-                shipment.marketplace_confirmation_status = "confirmed"
-                shipment.marketplace_confirmation_error = None
-                carrier = str(
-                    mapping.marketplace_carrier_name
-                    or mapping.marketplace_carrier_code
-                    or shipment.carrier
-                    or "Other"
-                ).strip() or "Other"
-                _persist_confirmed_order_lines(
-                    order=order,
-                    shipment=shipment,
-                    carrier=carrier,
-                    tracking=tracking,
-                    now=now,
-                )
-                db.session.commit()
-                _record_dispatch_bell_event(
-                    order=order,
-                    shipment=shipment,
-                    marketplace="ebay",
-                    carrier=carrier,
-                    service=str(shipment.service or "").strip(),
-                    tracking=tracking,
-                    now=now,
-                )
-
+                tracking=tracking,
+            )
+            now = datetime.utcnow()
+            shipment.marketplace_confirmed_at = now
+            shipment.marketplace_confirmation_status = "confirmed"
+            shipment.marketplace_confirmation_error = None
+            carrier = str(
+                mapping.marketplace_carrier_name
+                or mapping.marketplace_carrier_code
+                or shipment.carrier
+                or "Other"
+            ).strip() or "Other"
+            _persist_confirmed_order_lines(
+                order=order,
+                shipment=shipment,
+                carrier=carrier,
+                tracking=tracking,
+                now=now,
+            )
+            db.session.commit()
+            _record_dispatch_bell_event(
+                order=order,
+                shipment=shipment,
+                marketplace="ebay",
+                carrier=carrier,
+                service=str(shipment.service or "").strip(),
+                tracking=tracking,
+                now=now,
+            )
             result["marketplace_confirmation_allowed"] = True
             result["marketplace_confirmation"] = confirmation
             result["mapping_message"] = (
