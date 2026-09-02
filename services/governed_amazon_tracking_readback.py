@@ -32,6 +32,8 @@ _PACKAGE_LIFECYCLE = {
     "INTRANSIT": "in_transit",
     "OUTFORDELIVERY": "out_for_delivery",
     "DELIVERED": "delivered",
+    "CANCELED": "cancelled",
+    "CANCELLED": "cancelled",
 }
 _JOURNEY_RANK = {
     "partially_shipped": 0,
@@ -106,7 +108,7 @@ def _order_fulfillment_status(order_payload: dict[str, Any]) -> str | None:
 
 
 def _order_lifecycle(order_payload: dict[str, Any]) -> str | None:
-    """Use Amazon's explicit fulfillment status as dispatch authority when available."""
+    """Use Amazon's explicit fulfillment status as lifecycle authority when available."""
     return _PACKAGE_LIFECYCLE.get(_status_key(_order_fulfillment_status(order_payload)))
 
 
@@ -117,6 +119,11 @@ def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
         return False
     if current_value in _PROTECTED_ISSUE_STATES:
         return False
+    # Explicit Amazon cancellation is terminal marketplace lifecycle truth. It
+    # must clear stale routine states such as Processed/Unshipped, but it must
+    # not overwrite a completed Delivered journey or a newer protected issue.
+    if incoming_value == "cancelled":
+        return current_value != "delivered"
     incoming_rank = _JOURNEY_RANK.get(incoming_value)
     if incoming_rank is None:
         return False
