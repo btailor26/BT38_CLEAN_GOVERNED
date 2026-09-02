@@ -12,19 +12,25 @@ import hmac
 import os
 import re
 
-from flask import current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user
 
 from extensions import db
-from governed_routes import governed_bp
 from models import MarketplaceOrder, Store
 from services.governed_amazon_tracking_readback import hydrate_amazon_tracking_for_order
 
 
+governed_amazon_exact_order_recovery_bp = Blueprint(
+    "governed_amazon_exact_order_recovery",
+    __name__,
+)
+
 _AMAZON_ORDER_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
 
 
-@governed_bp.post("/governed/actions/amazon/exact-order-recovery")
+@governed_amazon_exact_order_recovery_bp.post(
+    "/governed/actions/amazon/exact-order-recovery"
+)
 def recover_exact_amazon_order_manually():
     """Refresh marketplace-owned truth for one existing Amazon FBM order only."""
     configured_task_key = str(os.environ.get("TASK_API_KEY") or "")
