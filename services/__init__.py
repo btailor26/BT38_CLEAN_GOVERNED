@@ -14,8 +14,3 @@ import services.governed_fba_settlement_ui_alignment  # noqa: F401,E402
 # including multi-package tracking that arrives after a Fly sleep/restart.
 # This reuses the existing MCF refresh and marketplace enrichment path.
 import services.governed_mcf_tracking_startup_alignment  # noqa: F401,E402
-
-# Exact Amazon FBM historical lifecycle repair. This registers one authenticated
-# exact-order operator route that reuses the existing Amazon Orders v2026 readback.
-# It does not scan, replay orders, mutate stock, or write shipment state to Amazon.
-import services.governed_amazon_exact_order_recovery_route  # noqa: F401,E402
