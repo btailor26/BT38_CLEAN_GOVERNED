@@ -13,15 +13,16 @@ EVENT_REFRESH = (ROOT / "static" / "js" / "fbm_event_session_refresh_alignment.j
 GLOBAL_STATE = (ROOT / "static" / "js" / "bt38-global-state.js").read_text(encoding="utf-8")
 
 
-def test_fbm_uses_one_bounded_session_snapshot_then_browser_local_paging():
+def test_fbm_uses_one_bounded_session_snapshot_then_preserves_original_browser_paging():
     assert "_SESSION_MAX_ROWS = 300" in SEARCH
     assert "_SESSION_CANDIDATE_MULTIPLIER = 4" in SEARCH
     assert "def _session_snapshot_rows" in SEARCH
     assert "g._bt38_fbm_session_rows" in SEARCH
     assert "page_alignment._latest_distinct_fbm_rows = session_rows" in SEARCH
     assert "page_alignment._expand_control = no_server_expand" in SEARCH
-    assert "perPage:15" in DISPATCH_QUEUE
-    assert "[15,25,50,100]" in DISPATCH_QUEUE
+    assert "bt38-fbm-session-page" not in DISPATCH_QUEUE
+    assert "loaded FBM orders · Page" not in DISPATCH_QUEUE
+    assert "session snapshot bounded" not in DISPATCH_QUEUE
     assert "window.BT38.getPageSession('fbm'" in DISPATCH_QUEUE
     assert "window.BT38.setPageSession('fbm'" in DISPATCH_QUEUE
     assert "sessionStorage" in GLOBAL_STATE
