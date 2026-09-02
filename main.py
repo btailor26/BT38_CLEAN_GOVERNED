@@ -19,6 +19,15 @@ import services.public_early_access  # noqa: F401
 from services.governed_notification_read_alignment import (
     install_governed_notification_read_alignment,
 )
+from services.governed_fbm_page_alignment import (
+    install_governed_fbm_page_alignment,
+)
+from services.governed_fbm_global_search_alignment import (
+    install_governed_fbm_global_search_alignment,
+)
+from services.governed_fbm_all_orders_health_alignment import (
+    install_governed_fbm_all_orders_health_alignment,
+)
 from services.governed_fbm_dispatch_queue_alignment import (
     install_governed_fbm_dispatch_queue_alignment,
 )
@@ -60,6 +69,12 @@ from services.governed_warehouse_inbound_installer import (
 )
 
 install_governed_notification_read_alignment(app)
+# FBM is one existing workspace. Install its DB-backed read surface first, then
+# persisted search/workflow scopes and operational health, and only then Cofi's
+# presentation tabs. This keeps the DOM out of the authority chain.
+install_governed_fbm_page_alignment(app)
+install_governed_fbm_global_search_alignment(app)
+install_governed_fbm_all_orders_health_alignment(app)
 install_governed_fbm_dispatch_queue_alignment(app)
 install_product_linking_unlink_alignment(app)
 install_governed_ebay_native_shipping_alignment(app)
