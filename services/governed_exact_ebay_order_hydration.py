@@ -228,6 +228,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
     identity_conflicts = []
     tracking_updates = 0
     lifecycle_updates = 0
+    fulfillment_lifecycle_rows = 0
 
     for row in rows:
         row_changed = False
@@ -268,13 +269,23 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
                         "line_item_id": line_id,
                     })
 
-        if marketplace_status and _can_apply_routine_status(getattr(row, "status", ""), marketplace_status):
-            if _text(getattr(row, "status", "")).lower() != marketplace_status:
-                row.status = marketplace_status
+        # eBay's exact shipping_fulfillment resource is marketplace lifecycle
+        # truth. A matched fulfillment establishes that row as shipped even when
+        # the order-level orderFulfillmentStatus is stale or incomplete. Carrier,
+        # tracking and shippedDate remain optional enrichment only.
+        fulfillment = _best_fulfillment_for_row(row=row, fulfillments=fulfillments)
+        row_marketplace_status = "shipped" if fulfillment is not None else marketplace_status
+        if fulfillment is not None:
+            fulfillment_lifecycle_rows += 1
+
+        if row_marketplace_status and _can_apply_routine_status(
+            getattr(row, "status", ""), row_marketplace_status
+        ):
+            if _text(getattr(row, "status", "")).lower() != row_marketplace_status:
+                row.status = row_marketplace_status
                 lifecycle_updates += 1
                 row_changed = True
 
-        fulfillment = _best_fulfillment_for_row(row=row, fulfillments=fulfillments)
         if fulfillment is not None:
             shipment = _fulfillment_values(fulfillment)
             changed = False
@@ -335,6 +346,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "identity_updates": identity_updates,
         "identity_conflicts": identity_conflicts,
         "fulfillments_seen": len(fulfillments),
+        "fulfillment_lifecycle_rows": fulfillment_lifecycle_rows,
         "tracking_updates": tracking_updates,
         "lifecycle_updates": lifecycle_updates,
         "fulfillment_error": fulfillment_error,
