@@ -30,7 +30,7 @@ _WORKFLOW_LABELS = {
     "refunds": "Refunds",
 }
 _DISPATCHED_STATUS_TERMS = (
-    "processed", "shipped", "dispatched", "delivered", "fulfilled", "completed",
+    "shipped", "dispatched", "delivered", "fulfilled", "completed",
 )
 
 
@@ -177,7 +177,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   function ensureCostHeader(){{var head=table.querySelector('thead tr');if(!head) return;if(head.querySelector('[data-fbm-shipping-cost="1"]')) return;var th=document.createElement('th');th.textContent='Shipping cost';th.dataset.fbmShippingCost='1';head.insertBefore(th,head.lastElementChild);}}
   function addCostCell(row,info){{if(row.querySelector('[data-fbm-shipping-cost="1"]')) return;var td=document.createElement('td');td.dataset.fbmShippingCost='1';if(info.shipping_cost_confirmed){{td.className='fbm-shipping-cost';try{{td.textContent=new Intl.NumberFormat('en-GB',{{style:'currency',currency:info.shipping_currency||'GBP'}}).format(info.shipping_cost);}}catch(e){{td.textContent=(info.shipping_currency||'GBP')+' '+Number(info.shipping_cost).toFixed(2);}}}}else{{td.className='fbm-shipping-cost-pending';td.textContent='Pending / unavailable';}}row.insertBefore(td,row.lastElementChild);}}
   ensureCostHeader();
-  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{queue:active||'ready_dispatch'}};row.dataset.fbmQueue=info.queue;if(info.status==='processed'){{row.querySelectorAll('span.text-muted').forEach(function(node){{if((node.textContent||'').trim()==='Unshipped') node.textContent='Marketplace says shipped';}});}}addCostCell(row,info);}});
+  rows.forEach(function(row){{var info=data[row.dataset.orderId]||{{queue:active||'ready_dispatch'}};row.dataset.fbmQueue=info.queue;addCostCell(row,info);}});
 
   function workflowHref(name){{var next=new URLSearchParams(window.location.search);next.set('fbm_tab',name);next.delete('status');next.delete('limit');return '/fbm?'+next.toString();}}
   function addWorkflowLink(bar,name,label){{var link=document.createElement('a');link.className='fbm-lifecycle-tab'+(active===name?' active':'');link.href=workflowHref(name);link.setAttribute('role','tab');link.setAttribute('aria-selected',active===name?'true':'false');link.innerHTML=label+' <span class="badge bg-light text-dark border">'+Number(counts[name]||0)+'</span>';bar.appendChild(link);}}
