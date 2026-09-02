@@ -267,17 +267,18 @@ def _recover_recent_missing_tracking(
     max_days: int,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Read exact eBay fulfilments for recent BT38 orders still missing tracking.
+    """Read exact eBay fulfilments for existing BT38 orders still missing tracking.
 
     This deliberately does not use the latest webhook timestamp. A newer order
     confirmation must never hide an older recent order whose shipment tracking
-    was missed. The scan is bounded by age and count, selects existing FBM rows
-    only, and reuses the exact read-only hydration authority.
+    was missed. Keep a bounded 30-day minimum recovery window so delayed or
+    previously missed eBay dispatch truth can still reach MarketplaceOrder.
     """
     from services.governed_exact_ebay_order_hydration import hydrate_exact_ebay_order
 
+    effective_days = max(30, max(1, int(max_days)))
     cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=max(1, int(max_days)))
+        datetime.now(timezone.utc) - timedelta(days=effective_days)
     ).replace(tzinfo=None)
 
     candidates = (
@@ -327,7 +328,7 @@ def _recover_recent_missing_tracking(
     return {
         "success": exceptions == 0,
         "bounded": True,
-        "max_days": max(1, int(max_days)),
+        "max_days": effective_days,
         "candidate_orders": len(candidates),
         "tracking_updates": tracking_updates,
         "exceptions": exceptions,
