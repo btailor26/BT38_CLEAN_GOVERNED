@@ -43,10 +43,9 @@ def test_fbm_global_search_filters_persisted_history_before_page_limit():
     assert "MarketplaceOrder.tracking_number.ilike" in SEARCH
     assert "Store.name.ilike" in SEARCH
     assert "WarehouseStock.product_name.ilike" in SEARCH
-    assert "Only matching rows are bounded afterwards" in SEARCH
     assert "original_rows(limit)" in SEARCH
     assert 'id="bt38FbmGlobalSearch"' in SEARCH
-    assert "Searches all persisted FBM history, not only loaded rows." in SEARCH
+    assert "Searches persisted FBM truth, not only loaded rows." in SEARCH
     assert "requests." not in SEARCH
     assert "db.session.add" not in SEARCH
     assert "db.session.commit" not in SEARCH
@@ -130,22 +129,57 @@ def test_bounded_page_read_is_persisted_read_only_and_does_not_touch_mcf_executi
     assert '"FBA", "AFN", "MCF"' in ALIGNMENT
 
 
-def test_fbm_lifecycle_tabs_preserve_one_existing_workspace_and_reason_navigation():
+def test_fbm_lifecycle_tabs_preserve_one_workspace_and_use_persisted_server_scope():
     assert "cloneNode" not in DISPATCH_QUEUE
     assert "card.remove()" not in DISPATCH_QUEUE
     assert "fbm-dispatch-history" not in DISPATCH_QUEUE
     assert "var table=document.querySelector('.fbm-orders-table')" in DISPATCH_QUEUE
-    assert "Needs dispatch" in DISPATCH_QUEUE
+    assert "Ready to dispatch" in DISPATCH_QUEUE
     assert "Dispatched" in DISPATCH_QUEUE
-    assert "Carrier overdue" in DISPATCH_QUEUE
-    assert "Returns" in DISPATCH_QUEUE
+    assert "FBA" in DISPATCH_QUEUE
+    assert "MCF" in DISPATCH_QUEUE
+    assert "SDS" in DISPATCH_QUEUE
     assert "Replacements" in DISPATCH_QUEUE
-    assert "Refunds / Issues" in DISPATCH_QUEUE
-    assert "Mapping review" in DISPATCH_QUEUE
+    assert "Refunds" in DISPATCH_QUEUE
+    assert "Carrier overdue" not in DISPATCH_QUEUE
+    assert "Mapping review" not in DISPATCH_QUEUE
+    assert "workflow_counts" in DISPATCH_QUEUE
+    assert "workflow_queue_for" in DISPATCH_QUEUE
+    assert "fbm_tab" in DISPATCH_QUEUE
+    assert "workflowHref" in DISPATCH_QUEUE
+    assert "showTab(" not in DISPATCH_QUEUE
     assert "readyToShipSelected" in DISPATCH_QUEUE
     assert "fbm-shipping-options" in DISPATCH_QUEUE
-    assert 'queue = "excluded"' in DISPATCH_QUEUE
-    assert 'status.startswith("cancel")' in DISPATCH_QUEUE
+    assert '"ready_dispatch": "Ready to dispatch"' in DISPATCH_QUEUE
+    assert "Cofi" in DISPATCH_QUEUE
+    assert "Sentinel" in DISPATCH_QUEUE
+
+
+def test_fbm_workflow_scope_is_db_backed_before_visible_limit_and_reuses_existing_truth():
+    assert "def _persisted_workflow_snapshot" in SEARCH
+    assert "func.max(MarketplaceOrder.id)" in SEARCH
+    assert ".group_by(MarketplaceOrder.store_id, MarketplaceOrder.marketplace_order_id)" in SEARCH
+    assert "page_alignment._workspace_fbm_eligible" in SEARCH
+    assert "shipments = _shipment_map(eligible_rows)" in SEARCH
+    assert "def workflow_queue_for" in SEARCH
+    assert 'return "dispatched" if dispatched else "ready_dispatch"' in SEARCH
+    assert 'return "sds"' in SEARCH
+    assert "def workflow_counts" in SEARCH
+    assert "def _workflow_rows" in SEARCH
+    assert "workflow = _workflow_rows(limit)" in SEARCH
+    assert "searched = _search_rows(limit)" in SEARCH
+    assert "requests." not in SEARCH
+    assert "db.session.add" not in SEARCH
+    assert "db.session.commit" not in SEARCH
+
+
+def test_sds_tab_does_not_treat_selection_alone_as_committed_dispatch():
+    assert 'purchase_status in {"confirmed", "purchased", "committed"}' in SEARCH
+    assert 'purchase_status in {"selected"}' not in SEARCH
+    assert "label_purchased_at" in SEARCH
+    assert "carrier_accepted_at" in SEARCH
+    assert "first_movement_at" in SEARCH
+    assert "delivered_at" in SEARCH
 
 
 def test_fbm_lifecycle_tabs_reuse_confirmed_shipping_spend_and_never_invent_zero_cost():
@@ -158,7 +192,12 @@ def test_fbm_lifecycle_tabs_reuse_confirmed_shipping_spend_and_never_invent_zero
     assert "db.session.commit" not in DISPATCH_QUEUE
 
 
-def test_dispatch_split_is_registered_after_existing_fbm_page_alignment():
+def test_dispatch_split_is_registered_after_persisted_fbm_scope_and_health():
     assert "install_governed_notification_read_alignment(app)" in MAIN
+    assert "install_governed_fbm_page_alignment(app)" in MAIN
+    assert "install_governed_fbm_global_search_alignment(app)" in MAIN
+    assert "install_governed_fbm_all_orders_health_alignment(app)" in MAIN
     assert "install_governed_fbm_dispatch_queue_alignment(app)" in MAIN
-    assert MAIN.index("install_governed_notification_read_alignment(app)") < MAIN.index("install_governed_fbm_dispatch_queue_alignment(app)")
+    assert MAIN.index("install_governed_fbm_page_alignment(app)") < MAIN.index("install_governed_fbm_global_search_alignment(app)")
+    assert MAIN.index("install_governed_fbm_global_search_alignment(app)") < MAIN.index("install_governed_fbm_all_orders_health_alignment(app)")
+    assert MAIN.index("install_governed_fbm_all_orders_health_alignment(app)") < MAIN.index("install_governed_fbm_dispatch_queue_alignment(app)")
