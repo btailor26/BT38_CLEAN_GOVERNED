@@ -137,10 +137,10 @@ def test_fbm_lifecycle_tabs_preserve_one_workspace_and_use_persisted_server_scop
     assert "Ready to dispatch" in DISPATCH_QUEUE
     assert "Dispatched" in DISPATCH_QUEUE
     assert "FBA" in DISPATCH_QUEUE
-    assert "MCF" in DISPATCH_QUEUE
-    assert "SDS" in DISPATCH_QUEUE
-    assert "Replacements" in DISPATCH_QUEUE
+    assert "Replacement" in DISPATCH_QUEUE
     assert "Refunds" in DISPATCH_QUEUE
+    assert "addTruthLink(tabBar,'MCF'" not in DISPATCH_QUEUE
+    assert "addWorkflowLink(tabBar,'sds'" not in DISPATCH_QUEUE
     assert "Carrier overdue" not in DISPATCH_QUEUE
     assert "Mapping review" not in DISPATCH_QUEUE
     assert "workflow_counts" in DISPATCH_QUEUE
