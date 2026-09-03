@@ -70,6 +70,9 @@ from services.governed_sds_scanner_lookup_alignment import (
 from services.governed_warehouse_inbound_installer import (
     install as install_governed_warehouse_inbound,
 )
+from services.governed_ebay_return_intake_alignment import (
+    install_governed_ebay_return_intake_alignment,
+)
 from services.governed_fbm_small_alignment import (
     install_governed_fbm_small_alignment,
 )
@@ -95,6 +98,10 @@ install_governed_sds_label_alignment(app)
 install_governed_sds_scan_alignment(app)
 install_governed_sds_scanner_lookup_alignment(app)
 install_governed_warehouse_inbound(app)
+# Lifecycle alignment already owns MarketplaceOrder return/refund application.
+# Add only the modern eBay nested ORDER_RETURN_ACTIVITY intake adapter before
+# the final FBM/bell presentation overlay.
+install_governed_ebay_return_intake_alignment()
 # Final small alignment runs after the already-built FBM/bell installers so it
 # can repair their handoff ordering without creating a parallel workflow.
 install_governed_fbm_small_alignment(app)
