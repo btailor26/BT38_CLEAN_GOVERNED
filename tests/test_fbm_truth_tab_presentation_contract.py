@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DISPATCH_QUEUE = (ROOT / "services" / "governed_fbm_dispatch_queue_alignment.py").read_text(encoding="utf-8")
+EVENT_REFRESH = (ROOT / "static" / "js" / "fbm_event_session_refresh_alignment.js").read_text(encoding="utf-8")
 
 
 def test_fbm_does_not_inject_a_second_pager_or_snapshot_status_bar():
@@ -24,6 +25,16 @@ def test_highlighted_tab_controls_visible_truth_rows():
     assert "row.hidden=!visible.has(row)" in DISPATCH_QUEUE
     assert "active=(legacyTab&&labels[legacyTab])?legacyTab" in DISPATCH_QUEUE
     assert "button.classList.toggle('active',selected)" in DISPATCH_QUEUE
+
+
+def test_refresh_reconciles_remembered_tab_after_shared_page_controller_initialises():
+    assert "reconcileLifecycleViewAfterPageController" in EVENT_REFRESH
+    assert "window.setTimeout(function ()" in EVENT_REFRESH
+    assert "page.ready !== true" in EVENT_REFRESH
+    assert "activeTab.click()" in EVENT_REFRESH
+    assert "reconcileLifecycleViewAfterPageController();" in EVENT_REFRESH
+    assert "setInterval" not in EVENT_REFRESH
+    assert "EventSource" not in EVENT_REFRESH
 
 
 def test_cancelled_marketplace_orders_are_stated_clearly():
