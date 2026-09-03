@@ -7,7 +7,6 @@
   if (window.bt38FbmEventSessionRefreshInstalled) return;
   window.bt38FbmEventSessionRefreshInstalled = true;
 
-  const lastViewKey = 'bt38:last-view:fbm';
   let pending = false;
   let lastSequence = '';
   let reloadTimer = null;
@@ -34,56 +33,9 @@
     return values || {};
   }
 
-  function readLastView() {
-    try {
-      const raw = window.localStorage.getItem(lastViewKey);
-      return raw ? JSON.parse(raw) : {};
-    } catch (error) {
-      return {};
-    }
-  }
-
-  function writeLastView(values) {
-    try {
-      const current = readLastView();
-      window.localStorage.setItem(lastViewKey, JSON.stringify(Object.assign({}, current, values || {})));
-    } catch (error) {
-      // Browser-session state remains authoritative when localStorage is unavailable.
-    }
-  }
-
   function pageState() {
     const pages = window.BT38 && window.BT38.pages;
     return pages && (pages.fbm || pages.FBM);
-  }
-
-  function selectedTab() {
-    const active = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab].active');
-    return active ? String(active.dataset.fbmTab || '') : '';
-  }
-
-  function currentSearch() {
-    const input = document.getElementById('bt38FbmGlobalSearchInput');
-    return String(input && input.value || '').trim().toLowerCase();
-  }
-
-  function currentPerPage(page) {
-    const select = document.getElementById('bt38ResultsPerPageSelect');
-    const value = Number.parseInt(select ? select.value : page && page.perPage, 10);
-    return Number.isFinite(value) && value > 0 ? value : 15;
-  }
-
-  function rememberView() {
-    if (!onFbm()) return;
-    const page = pageState();
-    const values = {
-      tab: selectedTab() || 'ready_dispatch',
-      search: currentSearch(),
-      currentPage: page && Number(page.currentPage) > 0 ? Number(page.currentPage) : 1,
-      perPage: currentPerPage(page)
-    };
-    setSessionState(values);
-    writeLastView(values);
   }
 
   function markDirty(sequence) {
@@ -104,15 +56,13 @@
     reloadTimer = window.setTimeout(function () {
       reloadTimer = null;
       if (!onFbm() || !pending || document.visibilityState === 'hidden') return;
-      rememberView();
       clearDirty();
       window.location.reload();
     }, 750);
   }
 
   // Some FBM table styling can override the browser's default [hidden] rendering.
-  // The session controller remains the owner of row visibility; this only makes its
-  // hidden flag authoritative in the rendered table without another DB read.
+  // The existing lifecycle/PageController handoff remains the owner of row visibility.
   function alignRowVisibility(row) {
     if (!row || !row.classList || !row.classList.contains('fbm-order-row')) return;
     row.style.display = row.hidden ? 'none' : '';
@@ -139,11 +89,13 @@
     observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
   }
 
-  // The lifecycle tab script can run before the shared PageController finishes its
-  // DOMContentLoaded registration. PageController then renders its unfiltered cache.
-  // Restore the same tab, search, page and page-size through the existing controllers;
-  // do not create a second table or pager.
-  function reconcileLifecycleViewAfterPageController() {
+  // The operational entry rule is deliberate: every normal FBM landing or refresh
+  // starts at Ready to dispatch so the user sees work that still needs action first.
+  // The lifecycle script can run before the shared PageController registers and the
+  // PageController can then expose its unfiltered cache, so hand the Ready button back
+  // through the existing controller once registration is complete. Clicking another
+  // lifecycle tab afterwards remains browser-local and immediately shows that truth.
+  function reconcileReadyAfterPageController() {
     if (!onFbm()) return;
     window.setTimeout(function () {
       if (!onFbm()) return;
@@ -151,54 +103,15 @@
       const controller = window.BT38 && window.BT38.PageController;
       if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') return;
 
-      const session = getSessionState({tab: 'ready_dispatch', search: '', currentPage: 1, perPage: 15});
-      const crossTab = readLastView();
-      const remembered = Object.assign({}, session, crossTab);
-      const desiredTab = String(remembered.tab || 'ready_dispatch');
-      const desiredSearch = String(remembered.search || '').trim().toLowerCase();
-      const desiredPage = Math.max(1, Number.parseInt(remembered.currentPage, 10) || 1);
-      const desiredPerPage = Math.max(1, Number.parseInt(remembered.perPage, 10) || 15);
-
-      const searchInput = document.getElementById('bt38FbmGlobalSearchInput');
-      if (searchInput) searchInput.value = desiredSearch;
-      const tab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="' + desiredTab + '"]')
-        || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab].active');
-      if (tab) tab.click();
-
-      const select = document.getElementById('bt38ResultsPerPageSelect');
-      if (select && Array.from(select.options || []).some(function (option) { return Number.parseInt(option.value, 10) === desiredPerPage; })) {
-        select.value = String(desiredPerPage);
+      const readyTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
+      if (readyTab) {
+        readyTab.click();
+      } else {
+        page.currentPage = 1;
+        controller.renderPage(page.name);
       }
-      page.currentPage = desiredPage;
-      controller.renderPage(page.name);
       alignAllRowVisibility();
-      rememberView();
     }, 0);
-  }
-
-  function wireViewMemory() {
-    if (!onFbm() || document.documentElement.dataset.bt38FbmViewMemory === '1') return;
-    document.documentElement.dataset.bt38FbmViewMemory = '1';
-
-    document.addEventListener('click', function (event) {
-      const target = event.target && event.target.closest
-        ? event.target.closest('.fbm-lifecycle-tab[data-fbm-tab], .bt38-page-nav .bt38-page-link')
-        : null;
-      if (!target) return;
-      window.setTimeout(rememberView, 0);
-    });
-
-    document.addEventListener('input', function (event) {
-      if (event.target && event.target.id === 'bt38FbmGlobalSearchInput') {
-        window.setTimeout(rememberView, 0);
-      }
-    });
-
-    document.addEventListener('change', function (event) {
-      if (event.target && event.target.id === 'bt38ResultsPerPageSelect') {
-        window.setTimeout(rememberView, 0);
-      }
-    });
   }
 
   window.addEventListener('bt38-marketplace-event', function (event) {
@@ -219,8 +132,7 @@
   function initialise() {
     if (!onFbm()) return;
     watchSessionRows();
-    wireViewMemory();
-    reconcileLifecycleViewAfterPageController();
+    reconcileReadyAfterPageController();
     const state = getSessionState({dirty: false});
     pending = Boolean(state && state.dirty);
     if (pending && document.visibilityState === 'visible') scheduleCommittedRefresh();
