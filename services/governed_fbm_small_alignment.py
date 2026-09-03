@@ -7,6 +7,8 @@ repairs handoff ordering between existing persisted authorities:
 - Amazon promise fields observed by an existing exact profile read are persisted
   into the existing FBM operational-state row;
 - persisted UTC promise timestamps are rendered in Europe/London;
+- FBM workflow presentation starts with marketplace Pending, then Ready to dispatch;
+- marketplace return truth has its own Returns queue, separate from Refunds;
 - saved QZ printer state is restored visibly and the old Packlink status reload
   is neutralised so the existing committed-event browser refresh remains owner.
 """
@@ -29,6 +31,50 @@ def _london_datetime(value):
         return value
     aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
     return aware.astimezone(_LONDON)
+
+
+def _install_fbm_queue_alignment() -> None:
+    """Keep Pending/Ready/Returns presentation on persisted marketplace truth only."""
+    from services import governed_fbm_dispatch_queue_alignment as dispatch_queue
+    from services import governed_fbm_global_search_alignment as global_search
+
+    if getattr(global_search, "_bt38_pending_returns_queue_patched", False):
+        return
+
+    replacement_terms = tuple(getattr(global_search, "_REPLACEMENT_TERMS", ("replacement", "replaced")))
+    refund_terms = ("refund", "refunded", "inr", "case", "claim", "dispute", "issue")
+    return_terms = ("return", "returned")
+
+    def aligned_status_reason(status: str):
+        value = str(status or "").strip().lower()
+        if any(term in value for term in replacement_terms):
+            return "replacements"
+        if any(term in value for term in return_terms):
+            return "returns"
+        if any(term in value for term in refund_terms):
+            return "refunds"
+        return None
+
+    global_search._status_reason = aligned_status_reason
+    global_search._WORKFLOW_TABS = {
+        "pending",
+        "ready_dispatch",
+        "dispatched",
+        "sds",
+        "replacements",
+        "returns",
+        "refunds",
+    }
+    dispatch_queue._WORKFLOW_LABELS = {
+        "pending": "Pending",
+        "ready_dispatch": "Ready to dispatch",
+        "dispatched": "Dispatched",
+        "cancelled": "Cancelled",
+        "replacements": "Replacement",
+        "returns": "Returns",
+        "refunds": "Refunds",
+    }
+    global_search._bt38_pending_returns_queue_patched = True
 
 
 def _install_promise_alignment(app) -> None:
@@ -78,9 +124,6 @@ def _install_amazon_promise_persistence() -> None:
         latest = amazon_profile._parse_iso(payload.get("LatestDeliveryDate"))
         checked_at = datetime.utcnow()
 
-        # Keep this additive persistence inside a savepoint. A deployment with an
-        # older optional operational table must not break the already-working
-        # Amazon profile read or roll back its surrounding transaction.
         try:
             from extensions import db
 
@@ -135,17 +178,11 @@ def _install_amazon_promise_persistence() -> None:
                     },
                 )
         except Exception:
-            # Promise persistence is enrichment of an existing exact read. The
-            # existing profile/address/order hydration remains authoritative if
-            # this optional state table is unavailable.
             pass
 
         return payload, address_payload
 
     amazon_profile._fetch_order = aligned_fetch
-
-    # governed_fbm_routes imported the function directly at module load. Its
-    # profile refresh calls module globals internally, so no new route is needed.
     amazon_profile._bt38_delivery_promise_persistence_patched = True
 
 
@@ -178,8 +215,6 @@ def _install_final_bell_alignment(app) -> None:
     """Keep one final bell endpoint after main.py's existing installer order."""
     from services import governed_fbm_lifecycle_alignment as lifecycle
 
-    # app.py installs lifecycle before main.py replaces the bell read. Re-run the
-    # existing wrapper once over the final endpoint rather than cloning its logic.
     app._bt38_marketplace_bell_lifecycle_wrapped = False
     lifecycle._wrap_notification_bell(app)
 
@@ -205,9 +240,6 @@ def _install_final_bell_alignment(app) -> None:
 
         records = list(payload.get("records") or [])
 
-        # Restore the immutable webhook evidence that the original governed bell
-        # exposed. Only safe event metadata is surfaced; raw payload/credentials
-        # are never returned to the browser.
         try:
             from extensions import db
             from models import SystemLog
@@ -278,6 +310,15 @@ def _browser_alignment_script() -> str:
     if(status){status.className='small text-muted mt-2';status.textContent='Saved label printer: '+saved+' · Connect QZ to verify';}
   }
 
+  function enforceActiveQueue(){
+    var active=document.querySelector('.fbm-lifecycle-tab.active[data-fbm-tab]');
+    if(!active)return;
+    var queue=String(active.dataset.fbmTab||'');
+    document.querySelectorAll('tr.fbm-order-row').forEach(function(row){
+      if(String(row.dataset.fbmQueue||'')!==queue){row.hidden=true;row.style.display='none';}
+    });
+  }
+
   async function checkPacklinkWithoutReload(button){
     var shipmentId=String(button&&button.dataset&&button.dataset.shipmentId||'').trim();
     if(!shipmentId)return;
@@ -287,24 +328,51 @@ def _browser_alignment_script() -> str:
       var payload=await response.json().catch(function(){return {};});
       if(!response.ok||payload.success!==true)throw new Error(payload.message||('HTTP '+response.status));
       window.alert(payload.label_ready?('Packlink label ready. '+(payload.mapping_status==='under_review'?'Mapping under review.':'Shipment updated.')):(payload.message||'Packlink label is not ready yet.'));
-      // A changed FBMShipment commits through the existing governed UI signal.
-      // Its shared SSE listener owns the in-session refresh; never reload here.
     }catch(error){window.alert(error.message||String(error));}
     finally{button.disabled=false;}
   }
 
   document.addEventListener('click',function(event){
+    var tab=event.target&&event.target.closest?event.target.closest('.fbm-lifecycle-tab[data-fbm-tab]'):null;
+    if(tab)queueMicrotask(enforceActiveQueue);
     var button=event.target&&event.target.closest?event.target.closest('.packlink-existing-status'):null;
     if(!button)return;
     event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();
     void checkPacklinkWithoutReload(button);
-  },true);
+  },false);
 
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',restoreSavedPrinter,{once:true});
-  else restoreSavedPrinter();
+  function initialise(){restoreSavedPrinter();enforceActiveQueue();}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initialise,{once:true});
+  else initialise();
+  window.addEventListener('load',enforceActiveQueue,{once:true});
 })();
 </script>
 '''
+
+
+def _align_fbm_workflow_html(html: str) -> str:
+    """Align the already-built inline FBM controller without a second data path."""
+    html = html.replace(
+        "var labels={ready_dispatch:'Ready to dispatch',pending:'Pending',dispatched:'Dispatched',cancelled:'Cancelled',replacements:'Replacement',refunds:'Refunds'};",
+        "var labels={pending:'Pending',ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',cancelled:'Cancelled',replacements:'Replacement',returns:'Returns',refunds:'Refunds'};",
+    )
+    html = html.replace(
+        "var sessionDefaults={tab:'ready_dispatch',search:'',dirty:false};",
+        "var sessionDefaults={tab:'pending',search:'',dirty:false};",
+    )
+    html = html.replace(
+        "(saved.tab&&labels[saved.tab]?saved.tab:'ready_dispatch')",
+        "(saved.tab&&labels[saved.tab]?saved.tab:'pending')",
+    )
+    html = html.replace(
+        "addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');\n  addWorkflowButton(tabBar,'pending','Pending');",
+        "addWorkflowButton(tabBar,'pending','Pending');\n  addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');",
+    )
+    html = html.replace(
+        "addWorkflowButton(tabBar,'replacements','Replacement');\n  addWorkflowButton(tabBar,'refunds','Refunds');",
+        "addWorkflowButton(tabBar,'replacements','Replacement');\n  addWorkflowButton(tabBar,'returns','Returns');\n  addWorkflowButton(tabBar,'refunds','Refunds');",
+    )
+    return html
 
 
 def _install_final_fbm_page_overlay(app) -> None:
@@ -318,7 +386,7 @@ def _install_final_fbm_page_overlay(app) -> None:
         response = make_response(current())
         if response.status_code != 200 or "text/html" not in str(response.content_type or "").lower():
             return response
-        html = response.get_data(as_text=True)
+        html = _align_fbm_workflow_html(response.get_data(as_text=True))
         marker = "</body>"
         script = _browser_alignment_script()
         response.set_data(html.replace(marker, script + marker, 1) if marker in html else html + script)
@@ -332,6 +400,7 @@ def install_governed_fbm_small_alignment(app) -> None:
     if getattr(app, "_bt38_fbm_small_alignment_installed", False):
         return
 
+    _install_fbm_queue_alignment()
     _install_amazon_promise_persistence()
     _install_promise_alignment(app)
     _install_final_bell_alignment(app)
@@ -339,5 +408,5 @@ def install_governed_fbm_small_alignment(app) -> None:
 
     app._bt38_fbm_small_alignment_installed = True
     app.logger.info(
-        "BT38 small FBM alignment installed: final bell lifecycle, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
+        "BT38 small FBM alignment installed: Pending-first workflow, separate Returns, final bell lifecycle, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
     )
