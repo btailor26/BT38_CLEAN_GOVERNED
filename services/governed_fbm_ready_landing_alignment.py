@@ -1,58 +1,137 @@
-"""Restore Ready to dispatch landing and remove broad UI rereads.
+"""Restore Ready to dispatch landing and protect zero-query UI event presentation.
 
-This remains a presentation/read alignment over the existing governed workflow.
-It adds no worker, poller, marketplace/provider call, stock write or second event
-path. The bell reads only when explicitly opened, and an in-session committed
-signal must never refetch the whole /fbm HTML document.
+The notification bell is informational only. It renders events already emitted by
+the existing governed in-memory UI event path and must never query Neon, a
+marketplace, a provider, or reconstruct business truth. Canonical pages continue
+to read persisted DB truth through their existing governed routes.
 """
 from __future__ import annotations
 
 from flask import jsonify, make_response, request
 from flask_login import login_required
-from sqlalchemy import or_
 
 
-_BELL_SHIPMENT_LOG_TYPES = {
-    "fbm_label_assigned",
-    "fbm_marketplace_dispatch_confirmed",
-    "fbm_carrier_accepted",
-    "fbm_in_transit",
-    "fbm_delivered",
-}
+_COMMERCIAL_LABELS = (
+    (("return_fulfillment_completed", "return_closed", "returned"), "Returned"),
+    (("return_requested", "return_fulfillment_initiated"), "Return requested"),
+    (("refund_requested",), "Refund requested"),
+    (("refunded", "refund_completed", "refund_issued"), "Refunded"),
+    (("cancellation_requested", "cancel_requested"), "Cancellation requested"),
+    (("cancelled", "canceled"), "Cancelled"),
+    (("replacement_requested",), "Replacement requested"),
+    (("replacement", "replaced"), "Replacement"),
+    (("chargeback",), "Chargeback"),
+    (("dispute",), "Dispute"),
+    (("case_open", "case_opened"), "Issue / case"),
+    (("out_for_delivery",), "Out for delivery"),
+    (("delivered",), "Delivered"),
+    (("in_transit",), "In transit"),
+    (("carrier_accepted", "picked_up", "collected"), "Picked up"),
+    (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped"), "Dispatched"),
+    (("marketplace_sale", "sale", "order_received", "new_order", "confirmed", "unshipped", "pending"), "Sale"),
+)
 
 
-def _status(value) -> str:
+def _normalise(value) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def _lifecycle_label(status: str) -> str:
-    labels = {
-        "pending": "Sale",
-        "unshipped": "Sale",
-        "order": "Sale",
-        "confirmed": "Sale",
-        "partially_shipped": "Partially dispatched",
-        "shipped": "Dispatched",
-        "accepted": "Picked up",
-        "carrier_accepted": "Picked up",
-        "collected": "Picked up",
-        "picked_up": "Picked up",
-        "in_transit": "In transit",
-        "out_for_delivery": "Out for delivery",
-        "delivered": "Delivered",
-        "return_requested": "Return requested",
-        "returned": "Returned",
-        "refund_requested": "Refund requested",
-        "refunded": "Refunded",
-        "replacement_requested": "Replacement requested",
-        "replacement": "Replacement",
-        "case_open": "Issue / case",
-        "dispute": "Dispute",
-        "chargeback": "Chargeback",
-        "cancel_requested": "Cancellation requested",
-        "cancelled": "Cancelled",
+def _commercial_label(event: dict) -> str | None:
+    values = " ".join(
+        _normalise(event.get(key))
+        for key in (
+            "event_type",
+            "lifecycle_status",
+            "status",
+            "log_type",
+            "source",
+            "title",
+            "message",
+        )
+        if event.get(key) not in (None, "")
+    )
+    if not values:
+        return None
+    for tokens, label in _COMMERCIAL_LABELS:
+        if any(token in values for token in tokens):
+            return label
+    return None
+
+
+def _event_to_bell_record(event: dict) -> dict | None:
+    label = _commercial_label(event)
+    if not label:
+        return None
+
+    revision = int(event.get("revision") or 0)
+    order_id = str(
+        event.get("order_id")
+        or event.get("marketplace_order_id")
+        or ""
+    ).strip()
+    sku = str(event.get("seller_sku") or event.get("sku") or "").strip()
+    platform = str(event.get("platform") or "Marketplace").strip() or "Marketplace"
+    quantity = event.get("quantity")
+    carrier = str(event.get("carrier") or event.get("provider") or "").strip()
+    subject = str(event.get("product_title") or sku or order_id or "Marketplace order").strip()
+    title = f"{label} · {subject}"
+
+    return {
+        "event_key": f"runtime:{revision}:{_normalise(label)}:{order_id}:{sku}",
+        "id": f"runtime:{revision}",
+        "log_type": "marketplace_sale" if label == "Sale" else "marketplace_lifecycle",
+        "platform": platform,
+        "title": title,
+        "message": title,
+        "order_id": order_id,
+        "sku": sku,
+        "quantity": quantity,
+        "carrier": carrier,
+        "status_label": label,
+        "created_at": event.get("published_at"),
     }
-    return labels.get(status, status.replace("_", " ").title() if status else "Sale")
+
+
+def _event_only_bell_reader():
+    """Return recent commercial events from the existing in-memory event queue.
+
+    This function is deliberately DB-blind. The bell is not a truth surface and
+    must never discover, hydrate, verify, reconcile, or reconstruct persisted
+    state. A process restart may clear bell history; canonical DB-backed pages
+    remain the authority for business truth.
+    """
+    from services import governed_ui_event_signal as event_signal
+
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except Exception:
+        limit = 20
+    limit = max(1, min(limit, 50))
+
+    with event_signal._condition:
+        events = [dict(event) for event in list(event_signal._events)]
+
+    records = []
+    seen = set()
+    for event in reversed(events):
+        record = _event_to_bell_record(event)
+        if record is None:
+            continue
+        key = str(record.get("event_key") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        records.append(record)
+        if len(records) >= limit:
+            break
+
+    return jsonify({
+        "success": True,
+        "records": records,
+        "latest_event_at": records[0].get("created_at") if records else None,
+        "source": "governed_in_memory_events",
+        "db_query": False,
+    })
 
 
 def _align_ready_landing_html(html: str) -> str:
@@ -69,153 +148,9 @@ def _align_ready_landing_html(html: str) -> str:
         "addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');\n  addWorkflowButton(tabBar,'pending','Pending');",
     )
 
-    # The global bell is an explicit shortcut. A normal page open/wake must not
-    # hit Neon merely to hydrate the bell; the existing committed signal lights
-    # it and the drawer performs the persisted read only when the user opens it.
+    # Bell state is event-driven. Page open/wake must not hydrate from Neon.
     html = html.replace("hydrateBellAfterWake();", "stale = true;")
     return html
-
-
-def _lean_bell_reader():
-    """Read only commercial lifecycle fields needed by the visible bell."""
-    from extensions import db
-    from fbm_models import FBMShipment
-    from models import MarketplaceOrder, Store, WarehouseStock
-
-    try:
-        limit = int(request.args.get("limit") or 20)
-    except Exception:
-        limit = 20
-    limit = max(1, min(limit, 50))
-    probe = min(150, max(limit, limit * 3))
-
-    # Select only visible bell columns. Do not joined-load Store credentials,
-    # addresses, listing rows, SyncLog audit rows or full Warehouse objects.
-    order_rows = (
-        db.session.query(
-            MarketplaceOrder.id,
-            MarketplaceOrder.store_id,
-            MarketplaceOrder.marketplace_order_id,
-            MarketplaceOrder.marketplace_order_item_id,
-            MarketplaceOrder.sku,
-            MarketplaceOrder.quantity,
-            MarketplaceOrder.status,
-            MarketplaceOrder.created_at,
-            MarketplaceOrder.updated_at,
-            Store.platform,
-            WarehouseStock.product_name,
-        )
-        .join(Store, Store.id == MarketplaceOrder.store_id)
-        .outerjoin(WarehouseStock, WarehouseStock.id == MarketplaceOrder.warehouse_stock_id)
-        .order_by(MarketplaceOrder.updated_at.desc(), MarketplaceOrder.id.desc())
-        .limit(probe)
-        .all()
-    )
-
-    records = []
-    for row in order_rows:
-        order_id = str(row.marketplace_order_id or "").strip()
-        sku = str(row.sku or "").strip()
-        status = _status(row.status) or "confirmed"
-        label = _lifecycle_label(status)
-        product_title = str(row.product_name or sku or order_id or "Order").strip()
-        line_identity = str(row.marketplace_order_item_id or sku or row.id)
-        changed_at = row.created_at if label == "Sale" else (row.updated_at or row.created_at)
-        records.append({
-            "event_key": f"order:{row.store_id}:{order_id}:{line_identity}:{status}",
-            "id": f"order:{row.id}",
-            "log_type": "marketplace_sale",
-            "platform": row.platform or "Marketplace",
-            "title": f"{label} · {product_title}",
-            "sku": sku,
-            "quantity": int(row.quantity or 0),
-            "order_id": order_id,
-            "lifecycle_status": status,
-            "status_label": label,
-            "message": f"{label} · {product_title}",
-            "created_at": changed_at.isoformat() if changed_at else None,
-        })
-
-    shipment_rows = (
-        db.session.query(
-            FBMShipment.id,
-            FBMShipment.marketplace_order_id,
-            FBMShipment.carrier,
-            FBMShipment.provider,
-            FBMShipment.label_purchased_at,
-            FBMShipment.marketplace_confirmed_at,
-            FBMShipment.carrier_accepted_at,
-            FBMShipment.first_movement_at,
-            FBMShipment.delivered_at,
-            Store.platform,
-        )
-        .join(Store, Store.id == FBMShipment.store_id)
-        .filter(or_(
-            FBMShipment.label_purchased_at.isnot(None),
-            FBMShipment.marketplace_confirmed_at.isnot(None),
-            FBMShipment.carrier_accepted_at.isnot(None),
-            FBMShipment.first_movement_at.isnot(None),
-            FBMShipment.delivered_at.isnot(None),
-        ))
-        .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
-        .limit(probe)
-        .all()
-    )
-    milestones = (
-        ("fbm_label_assigned", "Dispatched", "label_purchased_at"),
-        ("fbm_marketplace_dispatch_confirmed", "Marketplace dispatch confirmed", "marketplace_confirmed_at"),
-        ("fbm_carrier_accepted", "Picked up", "carrier_accepted_at"),
-        ("fbm_in_transit", "In transit", "first_movement_at"),
-        ("fbm_delivered", "Delivered", "delivered_at"),
-    )
-    for row in shipment_rows:
-        order_id = str(row.marketplace_order_id or "").strip()
-        carrier = str(row.carrier or row.provider or "").strip()
-        for log_type, label, field in milestones:
-            changed_at = getattr(row, field)
-            if changed_at is None:
-                continue
-            records.append({
-                "event_key": f"shipment:{row.id}:{log_type}:{changed_at.isoformat()}",
-                "id": f"shipment:{row.id}:{log_type}",
-                "log_type": log_type,
-                "platform": row.platform or "Marketplace",
-                "title": label,
-                "order_id": order_id,
-                "carrier": carrier,
-                "shipment_id": row.id,
-                "message": f"{label} · Order {order_id}" if order_id else label,
-                "created_at": changed_at.isoformat(),
-            })
-
-    records.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    seen = set()
-    unique = []
-    for record in records:
-        log_type = str(record.get("log_type") or "").strip().lower()
-        platform = str(record.get("platform") or "").strip().lower()
-        order_id = str(record.get("order_id") or "").strip()
-        sku = str(record.get("sku") or "").strip()
-        quantity = str(record.get("quantity") or "").strip()
-        lifecycle = str(record.get("lifecycle_status") or "").strip().lower()
-        if log_type == "marketplace_sale":
-            key = f"sale:{platform}:{order_id}:{sku}:{quantity}:{lifecycle}"
-        elif log_type in _BELL_SHIPMENT_LOG_TYPES:
-            key = str(record.get("event_key") or "")
-        else:
-            continue
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        unique.append(record)
-        if len(unique) >= limit:
-            break
-
-    return jsonify({
-        "success": True,
-        "records": unique,
-        "latest_event_at": unique[0].get("created_at") if unique else None,
-    })
 
 
 def _align_browser_pressure_response(response):
@@ -255,13 +190,13 @@ def install_governed_fbm_ready_landing_alignment(app) -> None:
 
     bell_endpoint = "governed.governed_ui_notifications"
     if bell_endpoint in app.view_functions:
-        _lean_bell_reader._bt38_lean_business_bell = True
-        app.view_functions[bell_endpoint] = login_required(_lean_bell_reader)
+        _event_only_bell_reader._bt38_zero_query_event_bell = True
+        app.view_functions[bell_endpoint] = login_required(_event_only_bell_reader)
 
     if not getattr(app, "_bt38_db_pressure_response_alignment", False):
         app.after_request(_align_browser_pressure_response)
         app._bt38_db_pressure_response_alignment = True
 
     app.logger.info(
-        "BT38 UI read pressure aligned: Ready to dispatch first; no committed-event full /fbm reread; bell DB read only on explicit open with lean commercial columns"
+        "BT38 UI event contract aligned: Ready to dispatch first; bell consumes existing in-memory committed events only; zero bell DB queries; no committed-event full /fbm reread"
     )
