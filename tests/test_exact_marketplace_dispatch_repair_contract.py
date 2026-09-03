@@ -6,9 +6,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_ebay_exact_fulfillment_is_marketplace_lifecycle_truth():
     source = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text()
-    assert 'row_marketplace_status = "shipped" if fulfillment is not None else marketplace_status' in source
+    assert 'row_marketplace_status = marketplace_status' in source
+    assert 'row_marketplace_status = "shipped"' in source
     assert "fulfillment_lifecycle_rows" in source
     assert '"marketplace_write_started": False' in source
+
+
+def test_ebay_exact_cancellation_is_marketplace_lifecycle_truth():
+    source = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text()
+    assert 'order_payload.get("cancelStatus")' in source
+    assert 'cancel_status.get("cancelState")' in source
+    assert 'if cancel_state == "CANCELED":' in source
+    assert 'return "cancelled"' in source
+    assert 'if cancel_state == "IN_PROGRESS":' in source
+    assert 'return "cancel_requested"' in source
+    assert 'incoming_value in {"cancel_requested", "cancelled"}' in source
+    assert '"marketplace_cancel_state": marketplace_cancel_state or None' in source
+    assert '"marketplace_cancelled_at": marketplace_cancelled_at.isoformat() if marketplace_cancelled_at else None' in source
 
 
 def test_amazon_exact_readback_has_legacy_order_status_fallback():
