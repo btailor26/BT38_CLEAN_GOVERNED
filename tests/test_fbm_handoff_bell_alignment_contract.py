@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTIFICATIONS = (ROOT / "services" / "governed_notification_read_alignment.py").read_text(encoding="utf-8")
 DISPATCH = (ROOT / "services" / "governed_fbm_dispatch_queue_alignment.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
+SESSION = (ROOT / "static" / "js" / "fbm_event_session_refresh_alignment.js").read_text(encoding="utf-8")
 OVERLAY_PATH = ROOT / "services" / "governed_fbm_small_alignment.py"
 OVERLAY = OVERLAY_PATH.read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -37,14 +38,25 @@ def test_label_assignment_moves_only_original_outbound_dispatch_workflow():
     assert classifier.index('if reason:') < classifier.index('if _outbound_label_handoff_reached(shipment):')
 
 
-def test_committed_fbm_event_refreshes_the_existing_browser_session_without_reload_or_polling():
+def test_committed_fbm_event_refreshes_once_and_the_session_sleeps_between_events():
+    # The tracking journey owns the one committed-event DB snapshot read.
     assert 'fetch(window.location.href' in JOURNEY
     assert "headers: {'Accept': 'text/html'}" in JOURNEY
     assert 'BT38FBMApplyCommittedSnapshot' in JOURNEY
+    assert "window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent)" in JOURNEY
     assert 'window.location.reload()' not in JOURNEY
     assert 'new EventSource(' not in JOURNEY
     assert 'setInterval(' not in JOURNEY
-    assert "window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent)" in JOURNEY
+
+    # The browser-session helper is presentation-only. It must not create a
+    # second committed-event consumer, fetch/reload path, timer, or poller.
+    assert "window.addEventListener('bt38-marketplace-event'" not in SESSION
+    assert 'window.location.reload()' not in SESSION
+    assert 'fetch(' not in SESSION
+    assert 'new EventSource(' not in SESSION
+    assert 'setInterval(' not in SESSION
+    assert 'setTimeout(' not in SESSION
+    assert 'With no event, the FBM session sleeps.' in SESSION
 
 
 def test_final_small_alignment_runs_after_existing_fbm_installers():
