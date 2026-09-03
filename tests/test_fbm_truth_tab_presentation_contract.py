@@ -29,13 +29,15 @@ def test_highlighted_tab_controls_visible_truth_rows():
 
 def test_fbm_refresh_restores_exact_session_tab_after_shared_page_controller_initialises():
     assert "reconcileSessionAfterPageController" in EVENT_REFRESH
+    assert "applySessionTabAfterPageController" in EVENT_REFRESH
     assert "getSessionState({tab: 'ready_dispatch'})" in EVENT_REFRESH
     assert "session && session.tab" in EVENT_REFRESH
     assert "selectedTab.click()" in EVENT_REFRESH
-    assert "reconcileSessionAfterPageController();" in EVENT_REFRESH
+    assert "if (applySessionTabAfterPageController()) return;" in EVENT_REFRESH
+    assert "window.addEventListener('load'" in EVENT_REFRESH
+    assert "applySessionTabAfterPageController();" in EVENT_REFRESH
+    assert "{once: true}" in EVENT_REFRESH
     assert "reconcileReadyAfterPageController" not in EVENT_REFRESH
-    assert "}, 750);" not in EVENT_REFRESH
-    assert "}, 0);" in EVENT_REFRESH
     assert "localStorage" not in EVENT_REFRESH
     assert "setInterval" not in EVENT_REFRESH
     assert "EventSource" not in EVENT_REFRESH
