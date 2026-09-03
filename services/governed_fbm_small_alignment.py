@@ -3,7 +3,7 @@
 This module does not create another order/shipment/notification system. It only
 repairs handoff ordering between existing persisted authorities:
 - the final notification read is wrapped again with the existing lifecycle bell;
-- persisted webhook evidence is restored to that same bell;
+- persisted webhook evidence is restored only when it is a meaningful business event;
 - Amazon promise fields observed by an existing exact profile read are persisted
   into the existing FBM operational-state row;
 - persisted UTC promise timestamps are rendered in Europe/London;
@@ -258,6 +258,19 @@ def _install_final_bell_alignment(app) -> None:
                     details = {}
                 platform = str(details.get("marketplace") or "Marketplace").strip()
                 event_type = str(details.get("event_type") or "marketplace_notification").strip()
+                normalized_event_type = event_type.lower().replace("-", "_").replace(" ", "_")
+
+                # A raw receipt proves transport only. The bell is a user-facing
+                # business-event surface, so generic webhook receipts stay in
+                # SystemLog for audit but are not presented as activity.
+                if normalized_event_type in {
+                    "marketplace_notification",
+                    "notification",
+                    "webhook",
+                    "webhook_received",
+                }:
+                    continue
+
                 order_id = _safe_webhook_order_id(details.get("payload") or details)
                 label = event_type.replace("_", " ").replace("-", " ").strip().title()
                 records.append({
@@ -277,7 +290,27 @@ def _install_final_bell_alignment(app) -> None:
         seen = set()
         unique = []
         for record in records:
-            key = str(record.get("event_key") or "")
+            log_type = str(record.get("log_type") or "").strip().lower()
+            platform = str(record.get("platform") or "").strip().lower()
+            order_id = str(record.get("order_id") or "").strip()
+            sku = str(record.get("sku") or "").strip()
+            quantity = str(record.get("quantity") or "").strip()
+
+            # One commercial order/SKU should appear once even when two importer
+            # paths persisted different provider line identifiers for the same
+            # sale. This is display de-duplication only; DB history is untouched.
+            if log_type == "marketplace_sale" and order_id:
+                key = f"sale:{platform}:{order_id}:{sku}:{quantity}"
+            elif log_type in {
+                "marketplace_push_succeeded",
+                "marketplace_push_noop",
+            }:
+                listing_id = str(record.get("listing_id") or "").strip()
+                group_id = str(record.get("group_id") or "").strip()
+                key = f"sync:{log_type}:{platform}:{listing_id or sku}:{quantity}:{group_id}"
+            else:
+                key = str(record.get("event_key") or "")
+
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -408,5 +441,5 @@ def install_governed_fbm_small_alignment(app) -> None:
 
     app._bt38_fbm_small_alignment_installed = True
     app.logger.info(
-        "BT38 small FBM alignment installed: Pending-first workflow, separate Returns, final bell lifecycle, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
+        "BT38 small FBM alignment installed: Pending-first workflow, separate Returns, business-only bell lifecycle, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
     )
