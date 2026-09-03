@@ -54,8 +54,8 @@
   function scheduleCommittedRefresh() {
     if (!onFbm() || !pending || document.visibilityState === 'hidden' || reloadTimer) return;
     // Marketplace events are emitted after persisted commit. Refresh on the next task
-    // instead of adding an artificial 750ms delay, so lifecycle moves are visible as
-    // soon as committed truth reaches the browser.
+    // instead of adding an artificial delay, so lifecycle moves are visible as soon as
+    // committed truth reaches the browser.
     reloadTimer = window.setTimeout(function () {
       reloadTimer = null;
       if (!onFbm() || !pending || document.visibilityState === 'hidden') return;
@@ -76,30 +76,37 @@
     document.querySelectorAll('tr.fbm-order-row').forEach(alignRowVisibility);
   }
 
-  // Restore the exact lifecycle tab already held in this browser session after the
-  // shared PageController registers. This prevents its initial unfiltered render from
-  // exposing rows from another lifecycle and keeps refresh/new-tab behaviour aligned
-  // with the user's last FBM position.
+  function applySessionTabAfterPageController() {
+    if (!onFbm()) return false;
+    const page = pageState();
+    const controller = window.BT38 && window.BT38.PageController;
+    if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') return false;
+
+    const session = getSessionState({tab: 'ready_dispatch'});
+    const activeTab = String(session && session.tab || 'ready_dispatch');
+    const selectedTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="' + activeTab + '"]')
+      || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
+    if (selectedTab) {
+      selectedTab.click();
+    } else {
+      page.currentPage = 1;
+      controller.renderPage(page.name);
+    }
+    alignAllRowVisibility();
+    return true;
+  }
+
+  // The lifecycle script and the shared PageController initialise independently.
+  // Do not guess their callback order. If PageController is already ready, hand off
+  // immediately. Otherwise wait for the browser load boundary, which occurs after
+  // DOMContentLoaded handlers (including PageController.autoRegisterFromDom) have run,
+  // then restore the exact tab held in this browser session once. No polling/retry loop.
   function reconcileSessionAfterPageController() {
     if (!onFbm()) return;
-    window.setTimeout(function () {
-      if (!onFbm()) return;
-      const page = pageState();
-      const controller = window.BT38 && window.BT38.PageController;
-      if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') return;
-
-      const session = getSessionState({tab: 'ready_dispatch'});
-      const activeTab = String(session && session.tab || 'ready_dispatch');
-      const selectedTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="' + activeTab + '"]')
-        || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
-      if (selectedTab) {
-        selectedTab.click();
-      } else {
-        page.currentPage = 1;
-        controller.renderPage(page.name);
-      }
-      alignAllRowVisibility();
-    }, 0);
+    if (applySessionTabAfterPageController()) return;
+    window.addEventListener('load', function () {
+      applySessionTabAfterPageController();
+    }, {once: true});
   }
 
   window.addEventListener('bt38-marketplace-event', function (event) {
