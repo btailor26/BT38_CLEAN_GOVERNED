@@ -81,8 +81,6 @@ def _line_type(line: Any) -> str:
 
 def is_sale(line: Any) -> bool:
     value = _line_type(line)
-    if value == "pending" and _text(getattr(line, "fulfillment_type", None)).upper() == "FBM":
-        return True
     if not value:
         return True
     return any(token in value for token in SALE_TYPES)
@@ -116,6 +114,15 @@ def _find_listing_for_line(line: Any):
 
 def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_order_bridge") -> dict[str, Any]:
     key = _line_idempotency_key(line)
+    if _line_type(line) == "pending":
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "marketplace_pending_not_actionable",
+            "reference_id": key,
+            "stock_mutated": False,
+            "mcf_handoff_started": False,
+        }
     if _already_mutated(line, key):
         return {"success": True, "skipped": True, "reason": "already_mutated", "reference_id": key}
 
@@ -281,12 +288,13 @@ def process_exact_marketplace_order_line(line: Any, source: str = "governed_exac
             handoff = _attempt_immediate_mcf_handoff(line)
             handoff_ok = bool(handoff.get("success") or handoff.get("skipped"))
             return {
-                "success": handoff_ok,
+                "success": True,
                 "skipped": True,
                 "reason": "already_processed_mcf_handoff_resumed",
                 "order_id": getattr(line, "marketplace_order_id", None),
                 "warehouse_stock_id": getattr(line, "warehouse_stock_id", None),
                 "stock_mutated": False,
+                "mcf_handoff_success": handoff_ok,
                 "mcf_handoff": handoff,
             }
         return {"success": True, "skipped": True, "reason": "already_processed", "order_id": getattr(line, "marketplace_order_id", None)}
