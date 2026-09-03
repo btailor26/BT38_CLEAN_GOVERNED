@@ -24,3 +24,11 @@ def test_highlighted_tab_controls_visible_truth_rows():
     assert "row.hidden=!visible.has(row)" in DISPATCH_QUEUE
     assert "active=(legacyTab&&labels[legacyTab])?legacyTab" in DISPATCH_QUEUE
     assert "button.classList.toggle('active',selected)" in DISPATCH_QUEUE
+
+
+def test_cancelled_marketplace_orders_are_stated_clearly():
+    assert '"cancelled": "Cancelled"' in DISPATCH_QUEUE
+    assert 'return "cancelled"' in DISPATCH_QUEUE
+    assert "cancelled:'Cancelled'" in DISPATCH_QUEUE
+    assert "addWorkflowButton(tabBar,'cancelled','Cancelled')" in DISPATCH_QUEUE
+    assert "return \"excluded\"" not in DISPATCH_QUEUE.split("def _aligned_workflow_queue_for", 1)[1].split("def _presentation", 1)[0]
