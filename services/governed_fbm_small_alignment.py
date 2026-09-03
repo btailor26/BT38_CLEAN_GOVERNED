@@ -3,7 +3,8 @@
 This module does not create another order/shipment/notification system. It only
 repairs handoff ordering between existing persisted authorities:
 - the final notification read is wrapped again with the existing lifecycle bell;
-- persisted webhook evidence is restored only when it is a meaningful business event;
+- the bell presents commercial order lifecycle events only;
+- persisted webhook evidence is restored only when it proves a meaningful business event;
 - Amazon promise fields observed by an existing exact profile read are persisted
   into the existing FBM operational-state row;
 - persisted UTC promise timestamps are rendered in Europe/London;
@@ -24,6 +25,14 @@ from sqlalchemy import text
 
 
 _LONDON = ZoneInfo("Europe/London")
+
+_BELL_SHIPMENT_LOG_TYPES = {
+    "fbm_label_assigned",
+    "fbm_marketplace_dispatch_confirmed",
+    "fbm_carrier_accepted",
+    "fbm_in_transit",
+    "fbm_delivered",
+}
 
 
 def _london_datetime(value):
@@ -211,8 +220,47 @@ def _safe_webhook_order_id(value):
     return None
 
 
+def _flatten_business_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key)
+            yield from _flatten_business_values(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _flatten_business_values(child)
+    elif value not in (None, ""):
+        yield str(value)
+
+
+def _webhook_business_status(details):
+    """Return only a user-facing lifecycle state proven by persisted webhook evidence."""
+    flattened = " ".join(_flatten_business_values(details)).upper()
+    normalized = flattened.replace("-", "_").replace(" ", "_")
+
+    ordered = (
+        (("RETURN_FULFILLMENT_COMPLETED", "RETURN_CLOSED", "RETURNED"), "returned"),
+        (("RETURN_REQUESTED", "RETURN_FULFILLMENT_INITIATED"), "return_requested"),
+        (("REFUND_REQUESTED",), "refund_requested"),
+        (("REFUNDED", "REFUND_COMPLETED", "REFUND_ISSUED"), "refunded"),
+        (("CANCELLATION_REQUESTED", "CANCEL_REQUESTED"), "cancel_requested"),
+        (("CANCELLED", "CANCELED"), "cancelled"),
+        (("REPLACEMENT_REQUESTED",), "replacement_requested"),
+        (("REPLACEMENT", "REPLACED"), "replacement"),
+        (("CHARGEBACK",), "chargeback"),
+        (("DISPUTE",), "dispute"),
+        (("CASE_OPEN", "CASE_OPENED"), "case_open"),
+        (("DELIVERED",), "delivered"),
+        (("OUT_FOR_DELIVERY",), "out_for_delivery"),
+        (("IN_TRANSIT",), "in_transit"),
+    )
+    for tokens, status in ordered:
+        if any(token in normalized for token in tokens):
+            return status
+    return None
+
+
 def _install_final_bell_alignment(app) -> None:
-    """Keep one final bell endpoint after main.py's existing installer order."""
+    """Keep one final business-only bell endpoint after existing installer order."""
     from services import governed_fbm_lifecycle_alignment as lifecycle
 
     app._bt38_marketplace_bell_lifecycle_wrapped = False
@@ -238,7 +286,28 @@ def _install_final_bell_alignment(app) -> None:
             limit = 20
         limit = max(1, min(limit, 50))
 
-        records = list(payload.get("records") or [])
+        # The base reader is broader because it also serves persisted audit
+        # surfaces. The bell itself is deliberately narrowed to commercial order
+        # lifecycle activity: sale/order, dispatch/carrier milestones and issues.
+        records = [
+            record
+            for record in list(payload.get("records") or [])
+            if str(record.get("log_type") or "").strip().lower() == "marketplace_sale"
+            or str(record.get("log_type") or "").strip().lower() in _BELL_SHIPMENT_LOG_TYPES
+        ]
+
+        for record in records:
+            if str(record.get("log_type") or "").strip().lower() != "marketplace_sale":
+                continue
+            status = str(record.get("lifecycle_status") or "").strip().lower()
+            if status not in {"pending", "unshipped", "order", "confirmed"}:
+                continue
+            current_title = str(record.get("title") or "").strip()
+            product_title = current_title.split(" · ", 1)[1] if " · " in current_title else current_title
+            product_title = product_title or str(record.get("sku") or record.get("order_id") or "Order").strip()
+            record["status_label"] = "Sale"
+            record["title"] = f"Sale · {product_title}"
+            record["message"] = record["title"]
 
         try:
             from extensions import db
@@ -256,31 +325,24 @@ def _install_final_bell_alignment(app) -> None:
                     details = json.loads(log.details or "{}")
                 except Exception:
                     details = {}
-                platform = str(details.get("marketplace") or "Marketplace").strip()
-                event_type = str(details.get("event_type") or "marketplace_notification").strip()
-                normalized_event_type = event_type.lower().replace("-", "_").replace(" ", "_")
 
-                # A raw receipt proves transport only. The bell is a user-facing
-                # business-event surface, so generic webhook receipts stay in
-                # SystemLog for audit but are not presented as activity.
-                if normalized_event_type in {
-                    "marketplace_notification",
-                    "notification",
-                    "webhook",
-                    "webhook_received",
-                }:
+                business_status = _webhook_business_status(details)
+                if business_status is None:
                     continue
 
+                platform = str(details.get("marketplace") or "Marketplace").strip()
                 order_id = _safe_webhook_order_id(details.get("payload") or details)
-                label = event_type.replace("_", " ").replace("-", " ").strip().title()
+                label = lifecycle._lifecycle_label(business_status)
                 records.append({
-                    "event_key": f"webhook:{log.id}",
+                    "event_key": f"webhook-business:{platform.lower()}:{order_id}:{business_status}:{log.id}",
                     "id": f"webhook:{log.id}",
                     "log_type": "marketplace_webhook",
                     "platform": platform,
                     "title": label,
                     "order_id": order_id,
-                    "message": f"{platform} · {label}" + (f" · {order_id}" if order_id else ""),
+                    "lifecycle_status": business_status,
+                    "status_label": label,
+                    "message": f"{label}" + (f" · Order {order_id}" if order_id else ""),
                     "created_at": log.created_at.isoformat() if log.created_at else None,
                 })
         except Exception:
@@ -295,19 +357,15 @@ def _install_final_bell_alignment(app) -> None:
             order_id = str(record.get("order_id") or "").strip()
             sku = str(record.get("sku") or "").strip()
             quantity = str(record.get("quantity") or "").strip()
+            lifecycle_status = str(record.get("lifecycle_status") or "").strip().lower()
 
-            # One commercial order/SKU should appear once even when two importer
-            # paths persisted different provider line identifiers for the same
-            # sale. This is display de-duplication only; DB history is untouched.
+            # One commercial sale/SKU appears once even when importer retries
+            # persisted more than one provider line identity. Lifecycle changes
+            # remain distinct business events.
             if log_type == "marketplace_sale" and order_id:
-                key = f"sale:{platform}:{order_id}:{sku}:{quantity}"
-            elif log_type in {
-                "marketplace_push_succeeded",
-                "marketplace_push_noop",
-            }:
-                listing_id = str(record.get("listing_id") or "").strip()
-                group_id = str(record.get("group_id") or "").strip()
-                key = f"sync:{log_type}:{platform}:{listing_id or sku}:{quantity}:{group_id}"
+                key = f"sale:{platform}:{order_id}:{sku}:{quantity}:{lifecycle_status}"
+            elif log_type == "marketplace_webhook" and business_status is not None:
+                key = f"webhook:{platform}:{order_id}:{lifecycle_status}"
             else:
                 key = str(record.get("event_key") or "")
 
@@ -441,5 +499,5 @@ def install_governed_fbm_small_alignment(app) -> None:
 
     app._bt38_fbm_small_alignment_installed = True
     app.logger.info(
-        "BT38 small FBM alignment installed: Pending-first workflow, separate Returns, business-only bell lifecycle, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
+        "BT38 small FBM alignment installed: Pending-first workflow, separate Returns, commercial lifecycle bell, persisted Amazon promise, London promise display, saved QZ printer and no-reload Packlink status handoff"
     )
