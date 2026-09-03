@@ -204,7 +204,8 @@ def test_fbm_session_helper_is_presentation_only_and_never_creates_a_second_even
     assert "EventSource" not in EVENT_REFRESH
     assert "BT38.getPageSession('fbm'" in EVENT_REFRESH
     assert "selectedTab.click()" in EVENT_REFRESH
-    assert "MutationObserver" in EVENT_REFRESH
+    # PageController remains the sole presentation owner; do not reintroduce a DOM observer loop.
+    assert "MutationObserver" not in EVENT_REFRESH
 
 
 def test_dispatch_split_is_registered_after_persisted_fbm_scope_and_health():
