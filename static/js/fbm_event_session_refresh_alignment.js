@@ -25,11 +25,28 @@
     return pages && (pages.fbm || pages.FBM);
   }
 
-  // Some FBM table styling can override the browser's default [hidden] rendering.
-  // The existing lifecycle/PageController handoff remains the owner of row visibility.
+  function rowMatchesSession(row) {
+    if (!row || !row.classList || !row.classList.contains('fbm-order-row')) return false;
+    const session = getSessionState({tab: 'ready_dispatch', search: ''});
+    const activeTab = String(session && session.tab || 'ready_dispatch');
+    const search = String(session && session.search || '').trim().toLowerCase();
+    const queue = String(row.dataset.fbmQueue || '');
+    const searchText = String(row.dataset.fbmSearch || row.textContent || '').toLowerCase();
+    return queue === activeTab && (!search || searchText.indexOf(search) >= 0);
+  }
+
+  // Shared PageController can render after the FBM lifecycle script. When it changes
+  // row visibility, re-apply only the already-rendered DB-backed queue projection.
+  // This is DOM-only presentation work: no network or database read is performed.
   function alignRowVisibility(row) {
     if (!row || !row.classList || !row.classList.contains('fbm-order-row')) return;
-    row.style.display = row.hidden ? 'none' : '';
+    if (!row.dataset.fbmQueue) {
+      row.style.display = row.hidden ? 'none' : '';
+      return;
+    }
+    const shouldShow = rowMatchesSession(row);
+    if (row.hidden === shouldShow) row.hidden = !shouldShow;
+    row.style.display = shouldShow ? '' : 'none';
   }
 
   function alignAllRowVisibility() {
@@ -41,7 +58,10 @@
     if (!onFbm()) return false;
     const page = pageState();
     const controller = window.BT38 && window.BT38.PageController;
-    if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') return false;
+    if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') {
+      alignAllRowVisibility();
+      return false;
+    }
 
     const session = getSessionState({tab: 'ready_dispatch'});
     const activeTab = String(session && session.tab || 'ready_dispatch');
@@ -58,12 +78,13 @@
   }
 
   // The lifecycle script and shared PageController initialise independently.
-  // Use the browser load boundary once when needed; there is no retry or timer loop.
+  // Use browser lifecycle boundaries only; there is no retry or timer loop.
   function reconcileSessionAfterPageController() {
     if (!onFbm()) return;
-    if (applySessionTabAfterPageController()) return;
+    applySessionTabAfterPageController();
     window.addEventListener('load', function () {
       applySessionTabAfterPageController();
+      alignAllRowVisibility();
     }, {once: true});
   }
 
@@ -87,6 +108,7 @@
     if (!onFbm()) return;
     watchSessionRows();
     reconcileSessionAfterPageController();
+    alignAllRowVisibility();
   }
 
   if (document.readyState === 'loading') {
