@@ -86,11 +86,21 @@ def test_final_browser_guard_can_only_hide_rows_outside_the_active_queue():
     assert 'setInterval(' not in OVERLAY
 
 
-def test_final_bell_reuses_existing_lifecycle_wrapper_and_restores_webhook_evidence():
+def test_final_bell_reuses_existing_lifecycle_wrapper_and_keeps_only_business_webhook_activity():
     assert 'lifecycle._wrap_notification_bell(app)' in OVERLAY
     assert 'app._bt38_marketplace_bell_lifecycle_wrapped = False' in OVERLAY
     assert 'SystemLog.log_type == "marketplace_webhook"' in OVERLAY
+    assert '"marketplace_notification"' in OVERLAY
+    assert 'continue' in OVERLAY
     assert '"event_key": f"webhook:{log.id}"' in OVERLAY
+
+
+def test_final_bell_deduplicates_commercial_sales_and_repeated_sync_outcomes_for_display_only():
+    assert 'key = f"sale:{platform}:{order_id}:{sku}:{quantity}"' in OVERLAY
+    assert '"marketplace_push_succeeded"' in OVERLAY
+    assert '"marketplace_push_noop"' in OVERLAY
+    assert 'key = f"sync:{log_type}:{platform}:{listing_id or sku}:{quantity}:{group_id}"' in OVERLAY
+    assert 'DB history is untouched' in OVERLAY
 
 
 def test_amazon_promise_is_persisted_only_during_existing_exact_read_and_rendered_in_london():
