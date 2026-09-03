@@ -23,31 +23,22 @@ def test_unknown_rendered_rows_never_default_to_ready_to_dispatch():
 def test_highlighted_tab_controls_visible_truth_rows():
     assert "row.dataset.fbmQueue===active" in DISPATCH_QUEUE
     assert "row.hidden=!visible.has(row)" in DISPATCH_QUEUE
-    assert "active=(legacyTab&&labels[legacyTab])?legacyTab" in DISPATCH_QUEUE
     assert "button.classList.toggle('active',selected)" in DISPATCH_QUEUE
+    assert "button.addEventListener('click',function(){active=name;saveSession();render();})" in DISPATCH_QUEUE
 
 
-def test_refresh_reconciles_remembered_tab_after_shared_page_controller_initialises():
-    assert "reconcileLifecycleViewAfterPageController" in EVENT_REFRESH
-    assert "window.setTimeout(function ()" in EVENT_REFRESH
+def test_fbm_landing_and_refresh_reconcile_to_ready_after_shared_page_controller_initialises():
+    assert "reconcileReadyAfterPageController" in EVENT_REFRESH
     assert "page.ready !== true" in EVENT_REFRESH
-    assert "tab.click()" in EVENT_REFRESH
-    assert "controller.renderPage(page.name)" in EVENT_REFRESH
-    assert "reconcileLifecycleViewAfterPageController();" in EVENT_REFRESH
+    assert "data-fbm-tab=\"ready_dispatch\"" in EVENT_REFRESH
+    assert "readyTab.click()" in EVENT_REFRESH
+    assert "page.currentPage = 1" in EVENT_REFRESH
+    assert "reconcileReadyAfterPageController();" in EVENT_REFRESH
+    assert "bt38:last-view:fbm" not in EVENT_REFRESH
+    assert "localStorage" not in EVENT_REFRESH
+    assert "desiredTab" not in EVENT_REFRESH
     assert "setInterval" not in EVENT_REFRESH
     assert "EventSource" not in EVENT_REFRESH
-
-
-def test_fbm_browser_view_remembers_tab_search_page_and_page_size():
-    assert "bt38:last-view:fbm" in EVENT_REFRESH
-    assert "window.localStorage.getItem(lastViewKey)" in EVENT_REFRESH
-    assert "window.localStorage.setItem(lastViewKey" in EVENT_REFRESH
-    assert "currentPage:" in EVENT_REFRESH
-    assert "perPage:" in EVENT_REFRESH
-    assert "page.currentPage = desiredPage" in EVENT_REFRESH
-    assert "bt38ResultsPerPageSelect" in EVENT_REFRESH
-    assert "fbm-lifecycle-tab[data-fbm-tab]" in EVENT_REFRESH
-    assert "bt38FbmGlobalSearchInput" in EVENT_REFRESH
 
 
 def test_cancelled_marketplace_orders_are_stated_clearly():
