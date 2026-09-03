@@ -70,6 +70,9 @@ from services.governed_sds_scanner_lookup_alignment import (
 from services.governed_warehouse_inbound_installer import (
     install as install_governed_warehouse_inbound,
 )
+from services.governed_fbm_small_alignment import (
+    install_governed_fbm_small_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 # FBM is one existing workspace. Install its DB-backed read surface first, then
@@ -92,6 +95,9 @@ install_governed_sds_label_alignment(app)
 install_governed_sds_scan_alignment(app)
 install_governed_sds_scanner_lookup_alignment(app)
 install_governed_warehouse_inbound(app)
+# Final small alignment runs after the already-built FBM/bell installers so it
+# can repair their handoff ordering without creating a parallel workflow.
+install_governed_fbm_small_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,

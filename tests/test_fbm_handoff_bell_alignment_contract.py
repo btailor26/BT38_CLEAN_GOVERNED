@@ -5,19 +5,23 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTIFICATIONS = (ROOT / "services" / "governed_notification_read_alignment.py").read_text(encoding="utf-8")
 DISPATCH = (ROOT / "services" / "governed_fbm_dispatch_queue_alignment.py").read_text(encoding="utf-8")
 JOURNEY = (ROOT / "static" / "js" / "fbm_tracking_journey.js").read_text(encoding="utf-8")
+OVERLAY_PATH = ROOT / "services" / "governed_fbm_small_alignment.py"
+OVERLAY = OVERLAY_PATH.read_text(encoding="utf-8")
+MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 
 
 def test_every_persisted_fbm_shipment_handoff_is_available_to_the_existing_bell():
     assert 'from fbm_models import FBMShipment' in NOTIFICATIONS
     for field in (
-        '"label_assigned", "Label assigned / dispatched", "label_purchased_at"',
-        '"marketplace_dispatch_confirmed", "Marketplace dispatch confirmed", "marketplace_confirmed_at"',
-        '"carrier_accepted", "Picked up by carrier", "carrier_accepted_at"',
-        '"in_transit", "In transit", "first_movement_at"',
-        '"delivered", "Delivered", "delivered_at"',
+        '("label_assigned", "Label assigned / dispatched", "label_purchased_at")',
+        '("marketplace_dispatch_confirmed", "Marketplace dispatch confirmed", "marketplace_confirmed_at")',
+        '("carrier_accepted", "Picked up by carrier", "carrier_accepted_at")',
+        '("in_transit", "In transit", "first_movement_at")',
+        '("delivered", "Delivered", "delivered_at")',
     ):
         assert field in NOTIFICATIONS
-    assert '"event_key": f"shipment:{shipment.id}:{event_type}:{changed_at.isoformat()}"' in NOTIFICATIONS
+    assert 'f"shipment:{shipment.id}:{event_type}:"' in NOTIFICATIONS
+    assert 'f"{changed_at.isoformat()}"' in NOTIFICATIONS
     assert 'No marketplace call, sync,' in NOTIFICATIONS
 
 
@@ -41,3 +45,42 @@ def test_committed_fbm_event_refreshes_the_existing_browser_session_without_relo
     assert 'new EventSource(' not in JOURNEY
     assert 'setInterval(' not in JOURNEY
     assert "window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent)" in JOURNEY
+
+
+def test_final_small_alignment_runs_after_existing_fbm_installers():
+    compile(OVERLAY, str(OVERLAY_PATH), "exec")
+    assert 'from services.governed_fbm_small_alignment import (' in MAIN
+    assert 'install_governed_fbm_small_alignment(app)' in MAIN
+    assert MAIN.index('install_governed_fbm_dispatch_queue_alignment(app)') < MAIN.rindex('install_governed_fbm_small_alignment(app)')
+    assert MAIN.index('install_governed_notification_read_alignment(app)') < MAIN.rindex('install_governed_fbm_small_alignment(app)')
+
+
+def test_final_bell_reuses_existing_lifecycle_wrapper_and_restores_webhook_evidence():
+    assert 'lifecycle._wrap_notification_bell(app)' in OVERLAY
+    assert 'app._bt38_marketplace_bell_lifecycle_wrapped = False' in OVERLAY
+    assert 'SystemLog.log_type == "marketplace_webhook"' in OVERLAY
+    assert '"event_key": f"webhook:{log.id}"' in OVERLAY
+    assert 'raw payload/credentials' in OVERLAY
+
+
+def test_amazon_promise_is_persisted_only_during_existing_exact_read_and_rendered_in_london():
+    assert 'original_fetch = amazon_profile._fetch_order' in OVERLAY
+    assert 'payload.get("EarliestDeliveryDate")' in OVERLAY
+    assert 'payload.get("LatestDeliveryDate")' in OVERLAY
+    assert 'INSERT INTO fbm_order_operational_state' in OVERLAY
+    assert 'ON CONFLICT (store_id, marketplace_order_id)' in OVERLAY
+    assert 'COALESCE(EXCLUDED.latest_delivery_at, fbm_order_operational_state.latest_delivery_at)' in OVERLAY
+    assert 'with db.session.begin_nested()' in OVERLAY
+    assert 'ZoneInfo("Europe/London")' in OVERLAY
+    assert 'promise_alignment._merge_promise = london_merge' in OVERLAY
+    assert 'get_amazon_delivery_promise' not in OVERLAY
+
+
+def test_saved_printer_is_restored_and_packlink_status_no_longer_forces_page_reload():
+    assert 'bridge.savedPrinter()' in OVERLAY
+    assert "status.textContent='Saved label printer: '+saved+' · Connect QZ to verify';" in OVERLAY
+    assert "event.target.closest('.packlink-existing-status')" in OVERLAY
+    assert "'/fbm/shipments/'+encodeURIComponent(shipmentId)+'/packlink/status'" in OVERLAY
+    assert 'window.location.reload()' not in OVERLAY
+    assert 'new EventSource(' not in OVERLAY
+    assert 'setInterval(' not in OVERLAY
