@@ -22,6 +22,7 @@ from services import governed_fbm_page_alignment as page_alignment
 
 _WORKFLOW_LABELS = {
     "ready_dispatch": "Ready to dispatch",
+    "pending": "Pending",
     "dispatched": "Dispatched",
     "cancelled": "Cancelled",
     "replacements": "Replacement",
@@ -48,13 +49,15 @@ def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
     """Classify workflow from persisted marketplace lifecycle truth only.
 
     Carrier, tracking, label-purchase and shipment milestones are enrichment. They
-    never move an order from Ready to Dispatched. In particular, ``unshipped``
-    must never match ``shipped`` by substring.
+    never move an order from Ready to Dispatched. Explicit marketplace Pending is
+    non-actionable and remains distinct from Ready to dispatch.
     """
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = global_search._status_reason(status)
     if status in global_search._CANCELLED_STATUSES or status.startswith("cancel"):
         return "cancelled"
+    if status == "pending":
+        return "pending"
     if reason:
         return reason
     return "dispatched" if status in _DISPATCHED_MARKETPLACE_STATUSES else "ready_dispatch"
@@ -67,6 +70,8 @@ def _health_route_state_from_marketplace_lifecycle(row: MarketplaceOrder) -> str
         return "Dispatched"
     if queue == "ready_dispatch":
         return "Ready for FBM routing"
+    if queue == "pending":
+        return "Pending"
     if queue == "cancelled":
         return "Cancelled"
     return queue
@@ -172,7 +177,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   var card=table.closest('.card'); if(!card) return;
   var body=table.querySelector('tbody');
   var rows=Array.from(body.querySelectorAll('tr.fbm-order-row'));
-  var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',cancelled:'Cancelled',replacements:'Replacement',refunds:'Refunds'}};
+  var labels={{ready_dispatch:'Ready to dispatch',pending:'Pending',dispatched:'Dispatched',cancelled:'Cancelled',replacements:'Replacement',refunds:'Refunds'}};
   var sessionDefaults={{tab:'ready_dispatch',search:'',dirty:false}};
   var saved=(window.BT38&&typeof window.BT38.getPageSession==='function')?window.BT38.getPageSession('fbm',sessionDefaults):sessionDefaults;
   var params=new URLSearchParams(window.location.search);
@@ -208,6 +213,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
 
   var tabBar=document.createElement('div');tabBar.className='fbm-lifecycle-tabs';tabBar.setAttribute('role','tablist');tabBar.setAttribute('aria-label','Order workflow');
   addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');
+  addWorkflowButton(tabBar,'pending','Pending');
   addWorkflowButton(tabBar,'dispatched','Dispatched');
   addWorkflowButton(tabBar,'cancelled','Cancelled');
   addTruthLink(tabBar,'FBA','/governed/amazon-fba-stock',{int(fba_count)});
@@ -283,4 +289,4 @@ def install_governed_fbm_dispatch_queue_alignment(app) -> None:
 
     app.view_functions[endpoint] = aligned_fbm_page
     app._bt38_fbm_dispatch_queue_alignment_installed = True
-    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Dispatched/Cancelled/search; existing page pagination preserved; manual shipping preserved")
+    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Pending/Dispatched/Cancelled/search; existing page pagination preserved; manual shipping preserved")
