@@ -79,6 +79,9 @@ from services.governed_fbm_small_alignment import (
 from services.governed_fbm_ready_landing_alignment import (
     install_governed_fbm_ready_landing_alignment,
 )
+from services.governed_exact_record_event_alignment import (
+    install_governed_exact_record_event_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 # FBM is one existing workspace. Install its DB-backed read surface first, then
@@ -112,6 +115,11 @@ install_governed_fbm_small_alignment(app)
 # correction after the small overlay so previously persisted Pending browser
 # state cannot leave the landing table blank.
 install_governed_fbm_ready_landing_alignment(app)
+# Final event/session guard: replace the old generic commit wake with exact
+# affected-record identities and keep every page session-driven. This must run
+# after the FBM/bell presentation overlays so no later alignment can restore a
+# broad event refresh or a bell DB read.
+install_governed_exact_record_event_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
