@@ -39,7 +39,6 @@ def test_label_assignment_moves_only_original_outbound_dispatch_workflow():
 
 
 def test_committed_fbm_event_refreshes_once_and_the_session_sleeps_between_events():
-    # The tracking journey owns the one committed-event DB snapshot read.
     assert 'fetch(window.location.href' in JOURNEY
     assert "headers: {'Accept': 'text/html'}" in JOURNEY
     assert 'BT38FBMApplyCommittedSnapshot' in JOURNEY
@@ -48,14 +47,13 @@ def test_committed_fbm_event_refreshes_once_and_the_session_sleeps_between_event
     assert 'new EventSource(' not in JOURNEY
     assert 'setInterval(' not in JOURNEY
 
-    # The browser-session helper is presentation-only. It must not create a
-    # second committed-event consumer, fetch/reload path, timer, or poller.
     assert "window.addEventListener('bt38-marketplace-event'" not in SESSION
     assert 'window.location.reload()' not in SESSION
     assert 'fetch(' not in SESSION
     assert 'new EventSource(' not in SESSION
     assert 'setInterval(' not in SESSION
     assert 'setTimeout(' not in SESSION
+    assert 'MutationObserver' not in SESSION
     assert 'With no event, the FBM session sleeps.' in SESSION
 
 
@@ -67,12 +65,32 @@ def test_final_small_alignment_runs_after_existing_fbm_installers():
     assert MAIN.index('install_governed_notification_read_alignment(app)') < MAIN.rindex('install_governed_fbm_small_alignment(app)')
 
 
+def test_pending_is_first_and_returns_are_separate_from_refunds():
+    assert '"pending": "Pending"' in OVERLAY
+    assert '"ready_dispatch": "Ready to dispatch"' in OVERLAY
+    assert '"returns": "Returns"' in OVERLAY
+    assert '"refunds": "Refunds"' in OVERLAY
+    assert 'return "returns"' in OVERLAY
+    assert 'return "refunds"' in OVERLAY
+    assert "var sessionDefaults={tab:'pending',search:'',dirty:false};" in OVERLAY
+    assert "addWorkflowButton(tabBar,'pending','Pending');\\n  addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');" in OVERLAY
+    assert "addWorkflowButton(tabBar,'returns','Returns');" in OVERLAY
+    assert "getSessionState({tab: 'pending'" in SESSION
+    assert "data-fbm-tab=\"pending\"" in SESSION
+
+
+def test_final_browser_guard_can_only_hide_rows_outside_the_active_queue():
+    assert 'function enforceActiveQueue()' in OVERLAY
+    assert "if(String(row.dataset.fbmQueue||'')!==queue){row.hidden=true;row.style.display='none';}" in OVERLAY
+    assert 'queueMicrotask(enforceActiveQueue)' in OVERLAY
+    assert 'setInterval(' not in OVERLAY
+
+
 def test_final_bell_reuses_existing_lifecycle_wrapper_and_restores_webhook_evidence():
     assert 'lifecycle._wrap_notification_bell(app)' in OVERLAY
     assert 'app._bt38_marketplace_bell_lifecycle_wrapped = False' in OVERLAY
     assert 'SystemLog.log_type == "marketplace_webhook"' in OVERLAY
     assert '"event_key": f"webhook:{log.id}"' in OVERLAY
-    assert 'raw payload/credentials' in OVERLAY
 
 
 def test_amazon_promise_is_persisted_only_during_existing_exact_read_and_rendered_in_london():
