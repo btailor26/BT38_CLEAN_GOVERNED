@@ -364,7 +364,7 @@ def _install_final_bell_alignment(app) -> None:
             # remain distinct business events.
             if log_type == "marketplace_sale" and order_id:
                 key = f"sale:{platform}:{order_id}:{sku}:{quantity}:{lifecycle_status}"
-            elif log_type == "marketplace_webhook" and business_status is not None:
+            elif log_type == "marketplace_webhook" and lifecycle_status:
                 key = f"webhook:{platform}:{order_id}:{lifecycle_status}"
             else:
                 key = str(record.get("event_key") or "")
