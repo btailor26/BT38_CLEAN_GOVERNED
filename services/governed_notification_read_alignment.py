@@ -8,15 +8,16 @@ def install_governed_notification_read_alignment(app):
     """Replace only the existing notification bell read implementation.
 
     The registered URL and endpoint stay unchanged. This is read-only UI
-    alignment: MarketplaceOrder, MarketplaceListing and SyncLog remain the
-    persisted sources. No marketplace call, sync, import, push or DB write is
-    introduced here.
+    alignment: MarketplaceOrder, MarketplaceListing, SyncLog and FBMShipment
+    remain persisted sources. No marketplace call, sync, import, push or DB write
+    is introduced here.
     """
 
     @login_required
     def fast_governed_ui_notifications():
         from extensions import db
-        from models import MarketplaceOrder, MarketplaceListing, SyncLog
+        from fbm_models import FBMShipment
+        from models import MarketplaceOrder, MarketplaceListing, Store, SyncLog
         from sqlalchemy import and_, or_
         from sqlalchemy.orm import joinedload
 
@@ -124,6 +125,65 @@ def install_governed_notification_read_alignment(app):
                     else None
                 ),
             })
+
+        # Existing FBMShipment timestamps are the persisted handoff ledger for
+        # dispatch and carrier progress. Surface each committed milestone through
+        # this same bell read path; no notification table, writer or poller is added.
+        shipment_rows = (
+            db.session.query(FBMShipment, Store.platform)
+            .join(Store, Store.id == FBMShipment.store_id)
+            .filter(
+                or_(
+                    FBMShipment.label_purchased_at.isnot(None),
+                    FBMShipment.marketplace_confirmed_at.isnot(None),
+                    FBMShipment.carrier_accepted_at.isnot(None),
+                    FBMShipment.first_movement_at.isnot(None),
+                    FBMShipment.delivered_at.isnot(None),
+                )
+            )
+            .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+            .limit(limit)
+            .all()
+        )
+        shipment_handoffs = (
+            ("label_assigned", "Label assigned / dispatched", "label_purchased_at"),
+            ("marketplace_dispatch_confirmed", "Marketplace dispatch confirmed", "marketplace_confirmed_at"),
+            ("carrier_accepted", "Picked up by carrier", "carrier_accepted_at"),
+            ("in_transit", "In transit", "first_movement_at"),
+            ("delivered", "Delivered", "delivered_at"),
+        )
+        for shipment, platform in shipment_rows:
+            order_id = str(
+                getattr(shipment, "marketplace_order_id", None) or ""
+            ).strip()
+            carrier = str(
+                getattr(shipment, "carrier", None)
+                or getattr(shipment, "provider", None)
+                or ""
+            ).strip()
+            for event_type, title, timestamp_field in shipment_handoffs:
+                changed_at = getattr(shipment, timestamp_field, None)
+                if changed_at is None:
+                    continue
+                records.append({
+                    "event_key": (
+                        f"shipment:{shipment.id}:{event_type}:"
+                        f"{changed_at.isoformat()}"
+                    ),
+                    "id": f"shipment:{shipment.id}:{event_type}",
+                    "log_type": f"fbm_{event_type}",
+                    "platform": platform or "Marketplace",
+                    "title": title,
+                    "order_id": order_id,
+                    "carrier": carrier,
+                    "shipment_id": shipment.id,
+                    "message": (
+                        f"{title} · Order {order_id}"
+                        if order_id
+                        else title
+                    ),
+                    "created_at": changed_at.isoformat(),
+                })
 
         # Canonical listing truth plus Store in one read.
         listing_rows = (

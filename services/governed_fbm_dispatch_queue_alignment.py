@@ -43,6 +43,10 @@ _DISPATCHED_MARKETPLACE_STATUSES = {
     "out_for_delivery",
     "outfordelivery",
 }
+_ADDITIONAL_SHIPMENT_PREFIXES = (
+    "packlink_return:",
+    "packlink_replacement:",
+)
 
 
 def _marketplace_platform_for(row: MarketplaceOrder) -> str:
@@ -55,14 +59,31 @@ def _marketplace_platform_for(row: MarketplaceOrder) -> str:
     ).strip().lower()
 
 
-def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
-    """Classify workflow from persisted marketplace lifecycle truth only.
+def _outbound_label_handoff_reached(shipment) -> bool:
+    """A persisted outbound label is the dispatch-workflow handoff.
 
-    Carrier, tracking, label-purchase and shipment milestones are enrichment. They
-    never move an order from Ready to Dispatched. Amazon Pending is payment/order
-    verification truth and remains non-actionable. Other marketplaces keep their
-    own sale semantics; a generic internal ``pending`` token must not hide a paid
-    eBay order from Ready to dispatch.
+    This moves the browser workflow only. It does not prove carrier pickup and
+    it never promotes return/replacement postage into the original dispatch tab.
+    """
+    if shipment is None:
+        return False
+    purchase_key = str(getattr(shipment, "purchase_key", "") or "").strip().lower()
+    if purchase_key.startswith(_ADDITIONAL_SHIPMENT_PREFIXES):
+        return False
+    purchase_status = str(getattr(shipment, "purchase_status", "") or "").strip().lower()
+    return bool(
+        getattr(shipment, "label_purchased_at", None) is not None
+        or purchase_status == "purchased"
+    )
+
+
+def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
+    """Classify workflow from persisted marketplace and shipment truth.
+
+    Amazon Pending is payment/order verification truth and remains non-actionable.
+    Returns/replacements/cancellations retain their existing lifecycle queues. A
+    persisted outbound label is the exact Ready -> Dispatched work handoff, while
+    carrier acceptance and later milestones remain journey enrichment only.
     """
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = global_search._status_reason(status)
@@ -72,6 +93,8 @@ def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
         return "pending"
     if reason:
         return reason
+    if _outbound_label_handoff_reached(shipment):
+        return "dispatched"
     return "dispatched" if status in _DISPATCHED_MARKETPLACE_STATUSES else "ready_dispatch"
 
 
@@ -244,6 +267,18 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
     controller.renderPage(state.name);
     return true;
   }}
+
+  function updateCountBadges(){{
+    tabBar.querySelectorAll('[data-fbm-tab]').forEach(function(button){{var badge=button.querySelector('.badge');if(badge)badge.textContent=Number(counts[button.dataset.fbmTab]||0);}});
+  }}
+
+  function applyCommittedSnapshot(nextData,nextCounts){{
+    data=nextData||data;counts=nextCounts||counts;
+    rows.forEach(function(row){{var info=data[row.dataset.orderId];if(info)row.dataset.fbmQueue=info.queue||row.dataset.fbmQueue;}});
+    updateCountBadges();
+    render();
+  }}
+  window.BT38FBMApplyCommittedSnapshot=applyCommittedSnapshot;
 
   function render(){{
     var matched=rows.filter(function(row){{return row.dataset.fbmQueue===active&&(!search||String(row.dataset.fbmSearch||'').indexOf(search)>=0);}});

@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
 ALIGNMENT = (ROOT / "services" / "governed_fbm_lifecycle_alignment.py").read_text(encoding="utf-8")
+DISPATCH_QUEUE = (ROOT / "services" / "governed_fbm_dispatch_queue_alignment.py").read_text(encoding="utf-8")
 EBAY = (ROOT / "services" / "governed_exact_ebay_order_hydration.py").read_text(encoding="utf-8")
 AMAZON = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text(encoding="utf-8")
 UI_SIGNAL = (ROOT / "services" / "governed_ui_event_signal.py").read_text(encoding="utf-8")
@@ -138,6 +139,18 @@ def test_routine_dispatch_recovery_reuses_existing_exact_readbacks():
     assert 'marketplace_write_started' not in ALIGNMENT
 
 
+def test_outbound_label_is_dispatch_handoff_but_not_return_or_replacement_postage():
+    assert 'def _outbound_label_handoff_reached(shipment) -> bool:' in DISPATCH_QUEUE
+    assert 'getattr(shipment, "label_purchased_at", None) is not None' in DISPATCH_QUEUE
+    assert 'purchase_status == "purchased"' in DISPATCH_QUEUE
+    assert '"packlink_return:"' in DISPATCH_QUEUE
+    assert '"packlink_replacement:"' in DISPATCH_QUEUE
+    classifier = DISPATCH_QUEUE.split('def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:', 1)[1].split('\ndef _health_route_state_from_marketplace_lifecycle', 1)[0]
+    assert 'if reason:' in classifier
+    assert 'if _outbound_label_handoff_reached(shipment):' in classifier
+    assert classifier.index('if reason:') < classifier.index('if _outbound_label_handoff_reached(shipment):')
+
+
 def test_picked_up_stays_red_after_label_stage_until_real_acceptance():
     assert 'labelOrTrackingStageReached(row)' in JOURNEY
     assert "return String(row && row.dataset ? row.dataset.labelReady || '' : '') === '1';" in JOURNEY
@@ -175,7 +188,7 @@ def test_browser_journey_assets_are_fresh_and_core_journey_is_not_gated_by_deliv
     assert "nativeScript.onload = loadDeliveryPromiseAlignment" not in JOURNEY
 
 
-def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
+def test_fbm_reuses_existing_governed_event_channel_and_refreshes_session_without_page_reload():
     assert 'const liveUrl = "/governed/ui/events/stream"' in BASE_TEMPLATE
     assert 'new EventSource(' in BASE_TEMPLATE
     assert '"bt38-marketplace-event"' in BASE_TEMPLATE
@@ -183,7 +196,10 @@ def test_fbm_reuses_the_existing_governed_live_event_channel_without_polling():
     assert 'new EventSource(' not in JOURNEY
     assert 'setInterval(' not in JOURNEY
     assert '/governed/ui/events/stream' not in JOURNEY
-    assert 'window.location.reload()' in JOURNEY
+    assert 'window.location.reload()' not in JOURNEY
+    assert 'fetch(window.location.href' in JOURNEY
+    assert "headers: {'Accept': 'text/html'}" in JOURNEY
+    assert 'BT38FBMApplyCommittedSnapshot' in JOURNEY
     assert "hidden.bs.modal" in JOURNEY
 
 

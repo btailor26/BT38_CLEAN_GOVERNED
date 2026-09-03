@@ -277,20 +277,50 @@
 
     let governedLiveRefreshPending = false;
 
-    function refreshFbmFromGovernedEvent() {
+    async function applyCommittedFbmSnapshot() {
         if (governedLiveRefreshPending) return;
         governedLiveRefreshPending = true;
+        try {
+            const response = await fetch(window.location.href, {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: {'Accept': 'text/html'}
+            });
+            if (!response.ok) throw new Error(`FBM refresh failed (HTTP ${response.status})`);
+            const html = await response.text();
+            const parsed = new DOMParser().parseFromString(html, 'text/html');
+            const dataNode = parsed.getElementById('bt38FbmLifecycleTabsData');
+            const countsNode = parsed.getElementById('bt38FbmLifecycleCountsData');
+            if (!dataNode || !countsNode || typeof window.BT38FBMApplyCommittedSnapshot !== 'function') return;
+            const nextData = JSON.parse(dataNode.textContent || '{}');
+            const nextCounts = JSON.parse(countsNode.textContent || '{}');
 
-        // Reuse the application shell's single governed SSE connection. Do not
-        // create a second EventSource, timer or marketplace read from FBM.
-        // If the operator is working inside a shipment modal, preserve that
-        // interaction and refresh from committed DB truth as soon as it closes.
+            document.querySelectorAll('.fbm-order-row').forEach(row => {
+                const freshRow = parsed.querySelector(`.fbm-order-row[data-order-id="${CSS.escape(String(row.dataset.orderId || ''))}"]`);
+                if (!freshRow) return;
+                if (freshRow.dataset.lifecycleStatus) row.dataset.lifecycleStatus = freshRow.dataset.lifecycleStatus;
+                row.dataset.labelReady = freshRow.dataset.labelReady || '0';
+            });
+            window.BT38FBMApplyCommittedSnapshot(nextData, nextCounts);
+            alignPersistedLifecycle();
+        } catch (error) {
+            console.warn('[BT38 FBM] committed session refresh unavailable', error);
+        } finally {
+            governedLiveRefreshPending = false;
+        }
+    }
+
+    function refreshFbmFromGovernedEvent() {
+        // Reuse the application shell's single governed SSE connection. This is
+        // one event-driven DB snapshot read after commit: no poller, no second
+        // EventSource, no marketplace/provider read and no full-page refresh.
         const activeModal = document.querySelector('#fbmShippingModal.show, #fbmTrackingJourneyModal.show');
         if (activeModal) {
-            activeModal.addEventListener('hidden.bs.modal', () => window.location.reload(), {once: true});
+            activeModal.addEventListener('hidden.bs.modal', () => void applyCommittedFbmSnapshot(), {once: true});
             return;
         }
-        window.location.reload();
+        void applyCommittedFbmSnapshot();
     }
 
     window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent);
