@@ -2,7 +2,7 @@
 // Warehouse is the reference model: the page is a bounded projection of persisted DB truth.
 // Committed-event refresh ownership stays in fbm_tracking_journey.js, which reuses the
 // application shell's single governed event and performs one DB-backed snapshot read.
-// This helper never polls, never opens an EventSource, never reloads or fetches the page,
+// This helper never polls, never opens a second live transport, never reloads or fetches the page,
 // and never subscribes to marketplace events. With no event, the FBM session sleeps.
 (function () {
   'use strict';
