@@ -5,7 +5,7 @@ from typing import Any
 from app import db
 from models import MarketplaceListing, WarehouseStock, StockLedgerEntry
 
-SALE_TYPES = {"order", "processed", "fulfilled", "shipped"}
+SALE_TYPES = {"order", "processed", "unshipped", "fulfilled", "shipped"}
 RETURN_TYPES = {"refund", "return", "returned", "cancelled", "canceled"}
 
 
@@ -39,7 +39,7 @@ def _line_idempotency_key(line: Any) -> str:
     explicit = _text(getattr(line, "idempotency_key", None))
     if explicit:
         return f"order_stock:{explicit}"
-    platform = _text(getattr(line, "platform", None) or getattr(line, "marketplace", None)).lower()
+    platform = _line_platform(line)
     return f"order_stock:fallback:{platform}:{_text(getattr(line, 'id', None))}:{sku}:{_text(getattr(line, 'quantity', None))}"
 
 
@@ -64,7 +64,11 @@ def _line_sku(line: Any) -> str:
 
 
 def _line_platform(line: Any) -> str:
-    return _text(getattr(line, "platform", None) or getattr(line, "marketplace", None)).lower()
+    direct = _text(getattr(line, "platform", None) or getattr(line, "marketplace", None)).lower()
+    if direct:
+        return direct
+    store = getattr(line, "store", None)
+    return _text(getattr(store, "platform", None)).lower()
 
 
 def _line_quantity(line: Any) -> int:
@@ -81,6 +85,11 @@ def _line_type(line: Any) -> str:
 
 def is_sale(line: Any) -> bool:
     value = _line_type(line)
+    if value == "pending":
+        return bool(
+            "amazon" not in _line_platform(line)
+            and _text(getattr(line, "fulfillment_type", None)).upper() == "FBM"
+        )
     if not value:
         return True
     return any(token in value for token in SALE_TYPES)
@@ -114,7 +123,7 @@ def _find_listing_for_line(line: Any):
 
 def mutate_warehouse_stock_from_order_line(line: Any, source: str = "governed_order_bridge") -> dict[str, Any]:
     key = _line_idempotency_key(line)
-    if _line_type(line) == "pending":
+    if _line_type(line) == "pending" and "amazon" in _line_platform(line):
         return {
             "success": True,
             "skipped": True,
