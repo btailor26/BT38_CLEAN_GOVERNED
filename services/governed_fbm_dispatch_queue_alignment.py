@@ -17,6 +17,7 @@ from extensions import db
 from models import MarketplaceOrder
 from shipping_spend_models import ShippingSpendLedger
 from services import governed_fbm_global_search_alignment as global_search
+from services import governed_fbm_page_alignment as page_alignment
 
 
 _WORKFLOW_LABELS = {
@@ -26,43 +27,60 @@ _WORKFLOW_LABELS = {
     "replacements": "Replacement",
     "refunds": "Refunds",
 }
-_DISPATCHED_STATUS_TERMS = (
-    "shipped", "dispatched", "delivered", "fulfilled", "completed",
-)
+_DISPATCHED_MARKETPLACE_STATUSES = {
+    "shipped",
+    "dispatched",
+    "delivered",
+    "fulfilled",
+    "completed",
+    "partially_shipped",
+    "partiallyshipped",
+    "picked_up_by_carrier",
+    "pickedupbycarrier",
+    "in_transit",
+    "intransit",
+    "out_for_delivery",
+    "outfordelivery",
+}
 
 
-def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
-    """Use persisted marketplace/shipment truth; missing tracking alone never proves Ready."""
+def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
+    """Classify workflow from persisted marketplace lifecycle truth only.
+
+    Carrier, tracking, label-purchase and shipment milestones are enrichment. They
+    never move an order from Ready to Dispatched. In particular, ``unshipped``
+    must never match ``shipped`` by substring.
+    """
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = global_search._status_reason(status)
     if status in global_search._CANCELLED_STATUSES or status.startswith("cancel"):
         return "cancelled"
     if reason:
         return reason
-    if global_search._sds_committed(shipment):
-        return "dispatched"
-    dispatched = bool(
-        any(term in status for term in _DISPATCHED_STATUS_TERMS)
-        or getattr(row, "tracking_number", None)
-        or getattr(row, "shipped_at", None)
-        or (shipment and getattr(shipment, "tracking_number", None))
-        or (shipment and getattr(shipment, "label_purchased_at", None))
-        or (shipment and getattr(shipment, "carrier_accepted_at", None))
-        or (shipment and getattr(shipment, "first_movement_at", None))
-        or (shipment and getattr(shipment, "delivered_at", None))
-    )
-    return "dispatched" if dispatched else "ready_dispatch"
+    return "dispatched" if status in _DISPATCHED_MARKETPLACE_STATUSES else "ready_dispatch"
 
 
-# Marketplace lifecycle truth remains the classifier. Only the way the browser
-# consumes that already-persisted truth changes in this alignment.
+def _health_route_state_from_marketplace_lifecycle(row: MarketplaceOrder) -> str:
+    """Keep Shipping Health on the exact same lifecycle classifier as the tabs."""
+    queue = _aligned_workflow_queue_for(row)
+    if queue == "dispatched":
+        return "Dispatched"
+    if queue == "ready_dispatch":
+        return "Ready for FBM routing"
+    if queue == "cancelled":
+        return "Cancelled"
+    return queue
+
+
+# One lifecycle authority for the FBM tabs, global search presentation and the
+# section health layer. Shipment/provider evidence remains available separately
+# for carrier health and journey enrichment only.
 global_search.workflow_queue_for = _aligned_workflow_queue_for
 workflow_queue_for = global_search.workflow_queue_for
+page_alignment._route_state = _health_route_state_from_marketplace_lifecycle
 
 
 def _presentation(rows: list[MarketplaceOrder]) -> dict[str, dict]:
-    from services import governed_fbm_page_alignment as page_alignment
-
     shipments = page_alignment._shipment_map(rows)
     shipment_ids = sorted({
         int(shipment.id)
