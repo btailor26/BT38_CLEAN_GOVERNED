@@ -35,6 +35,18 @@ def test_amazon_exact_readback_has_legacy_order_status_fallback():
     assert '"marketplace_write_started": False' in source
 
 
+def test_amazon_exact_predispatch_truth_repairs_stale_operational_state():
+    source = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text()
+    assert '"PENDING": "pending"' in source
+    assert '"UNSHIPPED": "unshipped"' in source
+    assert '"failed"' in source
+    assert '"processed"' in source
+    assert '"stock_applied_pending_reconcile"' in source
+    assert 'if incoming_value == "pending":' in source
+    assert 'if incoming_value == "unshipped":' in source
+    assert '_ROUTINE_PRE_DISPATCH_STATES - {"unshipped"}' in source
+
+
 def test_amazon_exact_marketplace_cancellation_is_terminal_truth():
     source = (ROOT / "services" / "governed_amazon_tracking_readback.py").read_text()
     assert '"CANCELED": "cancelled"' in source
