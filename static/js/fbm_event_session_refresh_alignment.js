@@ -53,12 +53,15 @@
 
   function scheduleCommittedRefresh() {
     if (!onFbm() || !pending || document.visibilityState === 'hidden' || reloadTimer) return;
+    // Marketplace events are emitted after persisted commit. Refresh on the next task
+    // instead of adding an artificial 750ms delay, so lifecycle moves are visible as
+    // soon as committed truth reaches the browser.
     reloadTimer = window.setTimeout(function () {
       reloadTimer = null;
       if (!onFbm() || !pending || document.visibilityState === 'hidden') return;
       clearDirty();
       window.location.reload();
-    }, 750);
+    }, 0);
   }
 
   // Some FBM table styling can override the browser's default [hidden] rendering.
@@ -73,29 +76,11 @@
     document.querySelectorAll('tr.fbm-order-row').forEach(alignRowVisibility);
   }
 
-  function watchSessionRows() {
-    if (!onFbm()) return;
-    const body = document.querySelector('.fbm-orders-table tbody');
-    if (!body || body.dataset.bt38FbmVisibilityWatch === '1') return;
-    body.dataset.bt38FbmVisibilityWatch = '1';
-    alignAllRowVisibility();
-    const observer = new MutationObserver(function (mutations) {
-      mutations.forEach(function (mutation) {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'hidden') {
-          alignRowVisibility(mutation.target);
-        }
-      });
-    });
-    observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
-  }
-
-  // The operational entry rule is deliberate: every normal FBM landing or refresh
-  // starts at Ready to dispatch so the user sees work that still needs action first.
-  // The lifecycle script can run before the shared PageController registers and the
-  // PageController can then expose its unfiltered cache, so hand the Ready button back
-  // through the existing controller once registration is complete. Clicking another
-  // lifecycle tab afterwards remains browser-local and immediately shows that truth.
-  function reconcileReadyAfterPageController() {
+  // Restore the exact lifecycle tab already held in this browser session after the
+  // shared PageController registers. This prevents its initial unfiltered render from
+  // exposing rows from another lifecycle and keeps refresh/new-tab behaviour aligned
+  // with the user's last FBM position.
+  function reconcileSessionAfterPageController() {
     if (!onFbm()) return;
     window.setTimeout(function () {
       if (!onFbm()) return;
@@ -103,9 +88,12 @@
       const controller = window.BT38 && window.BT38.PageController;
       if (!page || page.ready !== true || !controller || typeof controller.renderPage !== 'function') return;
 
-      const readyTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
-      if (readyTab) {
-        readyTab.click();
+      const session = getSessionState({tab: 'ready_dispatch'});
+      const activeTab = String(session && session.tab || 'ready_dispatch');
+      const selectedTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="' + activeTab + '"]')
+        || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
+      if (selectedTab) {
+        selectedTab.click();
       } else {
         page.currentPage = 1;
         controller.renderPage(page.name);
@@ -132,10 +120,26 @@
   function initialise() {
     if (!onFbm()) return;
     watchSessionRows();
-    reconcileReadyAfterPageController();
+    reconcileSessionAfterPageController();
     const state = getSessionState({dirty: false});
     pending = Boolean(state && state.dirty);
     if (pending && document.visibilityState === 'visible') scheduleCommittedRefresh();
+  }
+
+  function watchSessionRows() {
+    if (!onFbm()) return;
+    const body = document.querySelector('.fbm-orders-table tbody');
+    if (!body || body.dataset.bt38FbmVisibilityWatch === '1') return;
+    body.dataset.bt38FbmVisibilityWatch = '1';
+    alignAllRowVisibility();
+    const observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'hidden') {
+          alignRowVisibility(mutation.target);
+        }
+      });
+    });
+    observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
   }
 
   if (document.readyState === 'loading') {
