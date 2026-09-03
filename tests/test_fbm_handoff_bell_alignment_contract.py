@@ -86,21 +86,43 @@ def test_final_browser_guard_can_only_hide_rows_outside_the_active_queue():
     assert 'setInterval(' not in OVERLAY
 
 
-def test_final_bell_reuses_existing_lifecycle_wrapper_and_keeps_only_business_webhook_activity():
+def test_final_bell_is_commercial_lifecycle_only_not_listing_or_sync_noise():
     assert 'lifecycle._wrap_notification_bell(app)' in OVERLAY
     assert 'app._bt38_marketplace_bell_lifecycle_wrapped = False' in OVERLAY
+    assert '_BELL_SHIPMENT_LOG_TYPES' in OVERLAY
+    assert '== "marketplace_sale"' in OVERLAY
+    assert 'in _BELL_SHIPMENT_LOG_TYPES' in OVERLAY
+    assert '"marketplace_push_succeeded"' not in OVERLAY
+    assert '"marketplace_push_noop"' not in OVERLAY
+    assert 'marketplace_listing' not in OVERLAY
+    assert 'record["status_label"] = "Sale"' in OVERLAY
+    assert 'record["title"] = f"Sale · {product_title}"' in OVERLAY
+
+
+def test_final_bell_restores_only_meaningful_business_webhook_lifecycle():
     assert 'SystemLog.log_type == "marketplace_webhook"' in OVERLAY
-    assert '"marketplace_notification"' in OVERLAY
-    assert 'continue' in OVERLAY
-    assert '"event_key": f"webhook:{log.id}"' in OVERLAY
+    assert 'def _webhook_business_status(details):' in OVERLAY
+    for status in (
+        '"return_requested"',
+        '"returned"',
+        '"refund_requested"',
+        '"refunded"',
+        '"cancel_requested"',
+        '"cancelled"',
+        '"replacement_requested"',
+        '"replacement"',
+        '"delivered"',
+    ):
+        assert status in OVERLAY
+    assert 'if business_status is None:' in OVERLAY
+    assert 'label = lifecycle._lifecycle_label(business_status)' in OVERLAY
+    assert 'key = f"webhook:{platform}:{order_id}:{lifecycle_status}"' in OVERLAY
 
 
-def test_final_bell_deduplicates_commercial_sales_and_repeated_sync_outcomes_for_display_only():
-    assert 'key = f"sale:{platform}:{order_id}:{sku}:{quantity}"' in OVERLAY
-    assert '"marketplace_push_succeeded"' in OVERLAY
-    assert '"marketplace_push_noop"' in OVERLAY
-    assert 'key = f"sync:{log_type}:{platform}:{listing_id or sku}:{quantity}:{group_id}"' in OVERLAY
-    assert 'DB history is untouched' in OVERLAY
+def test_final_bell_deduplicates_commercial_sale_rows_without_collapsing_lifecycle_changes():
+    assert 'key = f"sale:{platform}:{order_id}:{sku}:{quantity}:{lifecycle_status}"' in OVERLAY
+    assert 'Lifecycle changes' in OVERLAY
+    assert 'DB history' not in OVERLAY
 
 
 def test_amazon_promise_is_persisted_only_during_existing_exact_read_and_rendered_in_london():
