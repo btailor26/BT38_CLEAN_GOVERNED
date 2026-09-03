@@ -105,7 +105,23 @@ def _best_fulfillment_for_row(
     return candidates[0]
 
 
+def _ebay_cancel_state(order_payload: dict[str, Any]) -> str:
+    cancel_status = order_payload.get("cancelStatus") or {}
+    if not isinstance(cancel_status, dict):
+        return ""
+    return _text(cancel_status.get("cancelState")).upper()
+
+
 def _ebay_lifecycle_status(order_payload: dict[str, Any]) -> str | None:
+    # eBay's exact getOrder cancellation container is marketplace lifecycle truth.
+    # Completed cancellation must outrank payment/fulfillment fields because
+    # cancelled orders can still be returned by the Fulfillment API.
+    cancel_state = _ebay_cancel_state(order_payload)
+    if cancel_state == "CANCELED":
+        return "cancelled"
+    if cancel_state == "IN_PROGRESS":
+        return "cancel_requested"
+
     payment = _text(order_payload.get("orderPaymentStatus")).upper()
     fulfillment = _text(order_payload.get("orderFulfillmentStatus")).upper()
     if payment and payment != "PAID":
@@ -117,18 +133,41 @@ def _ebay_lifecycle_status(order_payload: dict[str, Any]) -> str | None:
     return None
 
 
-def _can_apply_routine_status(current: str, incoming: str) -> bool:
+def _can_apply_marketplace_status(current: str, incoming: str) -> bool:
     current_value = _text(current).lower()
-    if current_value in {
+    incoming_value = _text(incoming).lower()
+
+    protected_issue_states = {
         "return_requested", "returned", "refund_requested", "refunded",
         "replacement_requested", "replacement", "case_open", "dispute",
-        "chargeback", "cancel_requested", "cancelled", "delivered",
-        "picked_up", "accepted", "carrier_accepted", "collected",
-        "in_transit", "out_for_delivery",
+        "chargeback", "delivered",
+    }
+    if current_value in protected_issue_states:
+        return False
+
+    if incoming_value in {"cancel_requested", "cancelled"}:
+        # Exact eBay cancellation truth may replace stale routine queue states,
+        # but does not erase a stronger shipped/carrier journey already persisted.
+        return current_value in {
+            "", "pending", "order", "confirmed", "unshipped",
+            "cancel_requested", "cancelled",
+        }
+
+    if current_value in {
+        "cancel_requested", "cancelled", "picked_up", "accepted",
+        "carrier_accepted", "collected", "in_transit", "out_for_delivery",
     }:
         return False
-    rank = {"pending": 0, "order": 1, "confirmed": 1, "unshipped": 1, "partially_shipped": 2, "shipped": 3}
-    return rank.get(incoming, -1) >= rank.get(current_value, -1)
+
+    rank = {
+        "pending": 0,
+        "order": 1,
+        "confirmed": 1,
+        "unshipped": 1,
+        "partially_shipped": 2,
+        "shipped": 3,
+    }
+    return rank.get(incoming_value, -1) >= rank.get(current_value, -1)
 
 
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
@@ -212,6 +251,11 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
     }
     marketplace_created_at = _parse_ebay_datetime(order.get("creationDate"))
     marketplace_status = _ebay_lifecycle_status(order)
+    marketplace_cancel_state = _ebay_cancel_state(order)
+    cancel_status = order.get("cancelStatus") or {}
+    marketplace_cancelled_at = _parse_ebay_datetime(
+        cancel_status.get("cancelledDate") if isinstance(cancel_status, dict) else None
+    )
 
     item_by_line_id = {
         _text(item.get("lineItemId")): item
@@ -272,13 +316,16 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         # eBay's exact shipping_fulfillment resource is marketplace lifecycle
         # truth. A matched fulfillment establishes that row as shipped even when
         # the order-level orderFulfillmentStatus is stale or incomplete. Carrier,
-        # tracking and shippedDate remain optional enrichment only.
+        # tracking and shippedDate remain optional enrichment only. Exact completed
+        # cancellation remains authoritative when there is no stronger shipment.
         fulfillment = _best_fulfillment_for_row(row=row, fulfillments=fulfillments)
-        row_marketplace_status = "shipped" if fulfillment is not None else marketplace_status
+        row_marketplace_status = marketplace_status
+        if marketplace_status not in {"cancel_requested", "cancelled"} and fulfillment is not None:
+            row_marketplace_status = "shipped"
         if fulfillment is not None:
             fulfillment_lifecycle_rows += 1
 
-        if row_marketplace_status and _can_apply_routine_status(
+        if row_marketplace_status and _can_apply_marketplace_status(
             getattr(row, "status", ""), row_marketplace_status
         ):
             if _text(getattr(row, "status", "")).lower() != row_marketplace_status:
@@ -341,6 +388,8 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "order_id": order_id,
         "marketplace_created_at": marketplace_created_at.isoformat() if marketplace_created_at else None,
         "marketplace_status": marketplace_status,
+        "marketplace_cancel_state": marketplace_cancel_state or None,
+        "marketplace_cancelled_at": marketplace_cancelled_at.isoformat() if marketplace_cancelled_at else None,
         "required_address_complete": required_address_complete,
         "rows_hydrated": len(rows),
         "identity_updates": identity_updates,
