@@ -375,6 +375,70 @@ def _patch_webhook_lifecycle() -> None:
         return
 
     original_extract = execution._extract_order_lifecycle_values
+    original_classify = execution._classify_business_event
+    original_order_id = execution._extract_marketplace_order_id
+
+    def aligned_classify(event_type, payload):
+        flattened = " ".join(
+            str(value).lower() for value in execution._flatten_values(payload)
+        )
+        combined = f"{str(event_type or '').lower()} {flattened}"
+        if any(
+            token in combined
+            for token in (
+                "refund",
+                "refunded",
+                "refund_issued",
+                "refund issued",
+            )
+        ):
+            return "return"
+        return original_classify(event_type, payload)
+
+    def aligned_order_id(payload):
+        order_id = original_order_id(payload)
+        if order_id:
+            return order_id
+
+        def related_order_id(value):
+            if isinstance(value, dict):
+                name = (
+                    value.get("RelatedIdentifierName")
+                    or value.get("relatedIdentifierName")
+                    or value.get("identifierName")
+                    or value.get("name")
+                )
+                identifier = (
+                    value.get("RelatedIdentifierValue")
+                    or value.get("relatedIdentifierValue")
+                    or value.get("identifierValue")
+                    or value.get("value")
+                )
+                normalized_name = (
+                    str(name or "")
+                    .strip()
+                    .upper()
+                    .replace("_", "")
+                    .replace(" ", "")
+                )
+                if (
+                    normalized_name
+                    in {"ORDERID", "AMAZONORDERID", "MARKETPLACEORDERID"}
+                    and identifier not in (None, "")
+                ):
+                    return str(identifier).strip()
+                for child in value.values():
+                    found = related_order_id(child)
+                    if found:
+                        return found
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    found = related_order_id(child)
+                    if found:
+                        return found
+            return None
+
+        return related_order_id(payload)
 
     def aligned_extract(payload, *, business_event=None):
         values = dict(original_extract(payload, business_event=business_event))
@@ -389,6 +453,9 @@ def _patch_webhook_lifecycle() -> None:
             "OUTFORDELIVERY": "out_for_delivery",
             "DELIVERED": "delivered",
             "RETURNREQUESTED": "return_requested",
+            "RETURNFULFILLMENTINITIATED": "return_requested",
+            "RETURNFULFILLMENTCOMPLETED": "returned",
+            "RETURNCLOSED": "returned",
             "RETURNED": "returned",
             "REFUNDREQUESTED": "refund_requested",
             "REFUNDED": "refunded",
@@ -412,7 +479,17 @@ def _patch_webhook_lifecycle() -> None:
                 inferred = "replacement_requested" if "request" in flattened else "replacement"
             elif "refund" in flattened:
                 inferred = "refund_requested" if "request" in flattened else "refunded"
-            elif "returned" in flattened or "return complete" in flattened:
+            elif any(
+                token in flattened
+                for token in (
+                    "return_fulfillment_completed",
+                    "return fulfillment completed",
+                    "return_closed",
+                    "return closed",
+                    "returned",
+                    "return complete",
+                )
+            ):
                 inferred = "returned"
             else:
                 inferred = "return_requested"
@@ -520,6 +597,8 @@ def _patch_webhook_lifecycle() -> None:
             **values,
         }
 
+    execution._classify_business_event = aligned_classify
+    execution._extract_marketplace_order_id = aligned_order_id
     execution._extract_order_lifecycle_values = aligned_extract
     execution._apply_marketplace_order_lifecycle_event = aligned_apply
     execution._bt38_marketplace_lifecycle_patched = True
