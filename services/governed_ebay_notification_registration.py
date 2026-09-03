@@ -14,10 +14,14 @@ import requests
 NOTIFICATION_BASE_URL = "https://api.ebay.com/commerce/notification/v1"
 ORDER_TOPIC_ID = "ORDER_CONFIRMATION"
 LISTING_TOPIC_ID = "LISTING"
+RETURN_TOPIC_ID = "ORDER_RETURN_ACTIVITY"
 LISTING_READ_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.listing.read"
+RETURN_READ_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.return.read"
+RETURN_WRITE_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.return"
 REQUIRED_TOPIC_IDS = (
     ORDER_TOPIC_ID,
     LISTING_TOPIC_ID,
+    RETURN_TOPIC_ID,
 )
 TOPIC_SCHEMA_VERSIONS = {
     ORDER_TOPIC_ID: "1.1",
@@ -114,6 +118,40 @@ def _api_error(operation: str, response: requests.Response) -> None:
     raise EbayNotificationRegistrationError(
         f"{operation} failed: HTTP {response.status_code}: "
         f"{json.dumps(payload, default=str)}"
+    )
+
+
+def _topic_schema_version(*, access_token: str, topic_id: str) -> str:
+    """Read eBay's current supported JSON/HTTPS schema instead of guessing it."""
+    response = requests.get(
+        f"{NOTIFICATION_BASE_URL}/topic/{topic_id}",
+        headers=_headers(access_token),
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        _api_error(f"get eBay notification topic {topic_id}", response)
+
+    payload = _safe_response_payload(response)
+    supported = payload.get("supportedPayloads") if isinstance(payload, dict) else []
+
+    for row in supported or []:
+        if not isinstance(row, dict) or row.get("deprecated") is True:
+            continue
+        formats = row.get("format") or []
+        if isinstance(formats, str):
+            formats = [formats]
+        if "JSON" not in {str(value).upper() for value in formats}:
+            continue
+        protocol = str(row.get("deliveryProtocol") or "").upper()
+        if protocol and protocol != "HTTPS":
+            continue
+        version = str(row.get("schemaVersion") or "").strip()
+        if version:
+            return version
+
+    raise EbayNotificationRegistrationError(
+        f"eBay notification topic {topic_id} has no supported JSON/HTTPS schema."
     )
 
 
@@ -541,23 +579,90 @@ def ensure_ebay_order_notification_registration(
 
     subscriptions.append(listing_subscription)
 
+    return_scopes_granted = {
+        RETURN_READ_SCOPE,
+        RETURN_WRITE_SCOPE,
+    }.issubset(granted_scopes)
+    if not return_scopes_granted:
+        return_subscription = {
+            "topic_id": RETURN_TOPIC_ID,
+            "schema_version": None,
+            "subscription_id": None,
+            "subscription_created": False,
+            "status": "AUTHORIZATION_REQUIRED",
+            "ok": False,
+            "skipped": True,
+            "error": "eBay return notification permissions require seller re-authorization.",
+        }
+    else:
+        try:
+            return_schema_version = _topic_schema_version(
+                access_token=access_token,
+                topic_id=RETURN_TOPIC_ID,
+            )
+            return_subscription_id, return_created = _ensure_subscription(
+                access_token=access_token,
+                destination_id=destination_id,
+                topic_id=RETURN_TOPIC_ID,
+                schema_version=return_schema_version,
+            )
+            return_subscription = {
+                "topic_id": RETURN_TOPIC_ID,
+                "schema_version": return_schema_version,
+                "subscription_id": return_subscription_id,
+                "subscription_created": return_created,
+                "status": "ENABLED",
+                "ok": True,
+            }
+        except EbayNotificationRegistrationError as exc:
+            return_error = str(exc)
+            return_authorization_required = _authorization_required_error(return_error)
+            return_subscription = {
+                "topic_id": RETURN_TOPIC_ID,
+                "schema_version": None,
+                "subscription_id": None,
+                "subscription_created": False,
+                "status": (
+                    "AUTHORIZATION_REQUIRED"
+                    if return_authorization_required
+                    else "FAILED"
+                ),
+                "ok": False,
+                "error": return_error,
+            }
+
+    subscriptions.append(return_subscription)
+
     subscription_id = order_subscription_id
     subscription_created = any(
         item["subscription_created"]
         for item in subscriptions
     )
     now = datetime.utcnow().isoformat()
-    authorization_required = (
-        listing_subscription["status"] == "AUTHORIZATION_REQUIRED"
+    authorization_required = any(
+        item["status"] == "AUTHORIZATION_REQUIRED"
+        for item in (listing_subscription, return_subscription)
     )
-    overall_ok = bool(order_subscription["ok"] and listing_subscription["ok"])
+    overall_ok = bool(
+        order_subscription["ok"]
+        and listing_subscription["ok"]
+        and return_subscription["ok"]
+    )
     registration_status = "SUCCESS" if overall_ok else (
         "AUTHORIZATION_REQUIRED" if authorization_required else "PARTIAL"
     )
+    registration_error = (
+        return_subscription.get("error")
+        or listing_subscription.get("error")
+    )
+
+    topic_schema_versions = dict(TOPIC_SCHEMA_VERSIONS)
+    if return_subscription.get("schema_version"):
+        topic_schema_versions[RETURN_TOPIC_ID] = return_subscription["schema_version"]
 
     creds.update({
         "ebay_notification_registration_status": registration_status,
-        "ebay_notification_registration_error": listing_subscription.get("error"),
+        "ebay_notification_registration_error": registration_error,
         "ebay_notification_endpoint": endpoint,
         "ebay_notification_destination_id": destination_id,
         "ebay_notification_destination_name": destination_name,
@@ -571,7 +676,7 @@ def ensure_ebay_order_notification_registration(
         "ebay_notification_listing_subscription_error": listing_subscription.get("error"),
         "ebay_notification_subscriptions": subscriptions,
         "ebay_notification_schema_version": TOPIC_SCHEMA_VERSIONS[ORDER_TOPIC_ID],
-        "ebay_notification_topic_schema_versions": TOPIC_SCHEMA_VERSIONS,
+        "ebay_notification_topic_schema_versions": topic_schema_versions,
         "ebay_notification_registered_at": now,
         "ebay_reauthorization_required": authorization_required,
     })
@@ -587,7 +692,7 @@ def ensure_ebay_order_notification_registration(
         store,
         healthy=overall_ok,
         authorization_required=authorization_required,
-        error=listing_subscription.get("error"),
+        error=registration_error,
     )
     db.session.commit()
 
@@ -603,6 +708,7 @@ def ensure_ebay_order_notification_registration(
         "endpoint": endpoint,
         "schema_version": DEFAULT_SCHEMA_VERSION,
         "listing_subscription": listing_subscription,
+        "return_subscription": return_subscription,
         "registration_status": registration_status,
         "authorization_required": authorization_required,
     }
