@@ -23,6 +23,8 @@ LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 SP_API_EU_ENDPOINT = "https://sellingpartnerapi-eu.amazon.com"
 
 _PACKAGE_LIFECYCLE = {
+    "PENDING": "pending",
+    "UNSHIPPED": "unshipped",
     "PARTIALLYSHIPPED": "partially_shipped",
     "SHIPPED": "shipped",
     "FULFILLED": "shipped",
@@ -58,6 +60,15 @@ _PROTECTED_ISSUE_STATES = {
     "case_open",
     "dispute",
     "chargeback",
+}
+_ROUTINE_PRE_DISPATCH_STATES = {
+    "",
+    "order",
+    "failed",
+    "processed",
+    "pending",
+    "unshipped",
+    "stock_applied_pending_reconcile",
 }
 
 
@@ -119,6 +130,13 @@ def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
         return False
     if current_value in _PROTECTED_ISSUE_STATES:
         return False
+    # Exact Amazon pre-dispatch truth may repair routine local processing states
+    # such as failed/processed/order. Pending never regresses an already exact
+    # Unshipped state; Unshipped may advance Pending when Amazon clears payment.
+    if incoming_value == "pending":
+        return current_value in (_ROUTINE_PRE_DISPATCH_STATES - {"unshipped"})
+    if incoming_value == "unshipped":
+        return current_value in _ROUTINE_PRE_DISPATCH_STATES
     # Explicit Amazon cancellation is terminal marketplace lifecycle truth. It
     # must clear stale routine states such as Processed/Unshipped, but it must
     # not overwrite a completed Delivered journey or a newer protected issue.
