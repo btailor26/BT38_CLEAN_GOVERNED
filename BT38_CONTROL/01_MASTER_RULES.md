@@ -21,6 +21,14 @@
 18. Do not deploy until compile/import/runtime and required contract checks pass and the user explicitly approves the exact current PR #528 HEAD.
 19. Production deployment is manual only through `.github/workflows/deploy-fly.yml` using the current PR #528 HEAD SHA and Fly remote builder. Direct `fly deploy` from an operator PC is prohibited.
 20. A successful test deployment does not authorize or perform a merge. PR #528 remains open and unmerged until separately approved.
+21. BT38 UI/runtime improvement work is event-driven and session-driven by default. Zero polling is permitted for UI freshness, notifications, shipping handoff, marketplace handoff or page synchronization.
+22. A committed event must update only the exact affected record/projection in the existing browser session. It must not reload/refetch the whole page, rebuild the table, rerun the initial page snapshot, or discard active tab/search/filter/selection/modal/scroll state.
+23. Reuse the existing governed event/handoff transport. Do not add a second EventSource/SSE connection, parallel notification system, polling watcher, duplicate event bus or competing refresh controller.
+24. No event means no UI-driven database work. Pages, bell and handoff paths must sleep when nothing changes: no heartbeat reads/writes, wake hydration, broad reconciliation or routine background rereads for presentation freshness.
+25. The event source/committing workflow must carry the narrowest useful affected identity and already-known presentation fields. Do not make the receiving page broadly rediscover information that the committing workflow already knew.
+26. Same-page and cross-page changes follow the same contract: canonical commit -> exact affected-record event/response -> exact session record update -> sleep.
+27. The notification bell is informational only and must remain zero-query. It consumes already-published in-memory event data and never queries Neon, marketplace/provider APIs, orders, shipments, listings, Warehouse or logs to discover what happened.
+28. Every future improvement touching UI freshness, events, handoff, shipping, dispatch, notifications or session state must include a contract test proving zero polling, zero broad rebuild/reread, exact affected-record handoff and session preservation. See `docs/EVENT_DRIVEN_SESSION_WORKFLOW.md`.
 
 ## BT38 inventory rules
 1. Warehouse is the source of truth.
@@ -33,7 +41,7 @@
 8. Manual sync for bulk actions requires selected/ticked rows.
 9. Single-row marketplace icon actions do not require checkbox selection.
 10. Scheduled sync handles unselected/passive changes.
-11. Marketplace notification/webhook support is planned to reduce unnecessary polling.
+11. Marketplace notification/webhook support is event-driven and must not be replaced by polling.
 
 ## BT38 P&L rules
 1. Uploaded financial files are temporary working data only.
