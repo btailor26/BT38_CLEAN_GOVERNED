@@ -27,4 +27,26 @@ Reverse sync is disabled by default.
 Use existing logging: SystemEvent, ConfigChangeLog, SystemConfig, SystemLog.
 Every change must follow: audit, backup, replace full block, verify, syntax check, git diff, no deploy, approval.
 
+## Mandatory event-driven/session-driven workflow
+
+All improvement and alignment work must follow `docs/EVENT_DRIVEN_SESSION_WORKFLOW.md`.
+
+BT38 UI/runtime freshness is **zero polling**. Do not introduce timers, long polling, heartbeat reads/writes, wake hydration, recurring notification reads or background page refreshes to discover changes.
+
+After canonical truth commits, use the existing governed event/handoff system. The event must carry the exact affected record identity and the already-known fields required by the visible projection. The receiving browser keeps its existing session and changes only that exact record/projection.
+
+Do not respond to a normal event by reloading/refetching the page, rebuilding a table, rerunning the initial page query, loading a broad snapshot, recreating an open workspace/modal, or discarding browser-local tab/search/filter/page/selection/scroll state.
+
+Same-page actions and cross-page events obey the same path:
+
+`canonical action/event -> DB commit -> exact affected-record event/response -> existing handoff -> exact record update in current session -> sleep`
+
+No second EventSource/SSE transport, event bus, notification system, browser watcher, refresh controller or parallel handoff path may be added.
+
+No event means no UI-driven work. Pages, bell and handoff remain asleep with zero presentation-driven DB activity.
+
+The notification bell is informational only and must remain **zero-query**. It consumes already-published in-memory event information and must never query Neon, marketplace/provider APIs, orders, shipments, listings, Warehouse or audit logs to determine what happened.
+
+Every change touching UI freshness, events, marketplace handoff, shipping/dispatch, notifications or session behaviour must include a regression contract proving: zero polling; no broad event-triggered reread/rebuild; no parallel transport; exact affected identity; session preservation; exact-record update only.
+
 Current approved branch scope for `fix/full-system-release-alignment` includes the governed event-driven Amazon/eBay order and webhook execution already under test, Warehouse/Product Linking authority alignment, MCF/FBA read-only handling, FBM/Packlink shipping, exact marketplace destination hydration, marketplace dispatch confirmation, shipment/bell audit visibility, tracking journey display from provider/platform data, and standalone manual shipping. This approval is for audit, contract testing, and explicitly approved test deployment of an exact GitHub commit only; it does not authorize merge or an unreviewed production source change.
