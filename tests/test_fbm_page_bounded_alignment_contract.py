@@ -195,15 +195,16 @@ def test_fbm_lifecycle_tabs_reuse_confirmed_shipping_spend_and_never_invent_zero
     assert "db.session.commit" not in DISPATCH_QUEUE
 
 
-def test_fbm_marketplace_event_marks_session_dirty_and_hidden_page_sleeps_without_full_get():
-    assert "bt38-marketplace-event" in EVENT_REFRESH
-    assert "document.visibilityState === 'hidden'" in EVENT_REFRESH
-    assert "BT38.setPageSession('fbm'" in EVENT_REFRESH
-    assert "dirty: true" in EVENT_REFRESH
-    assert "fetch(window.location.href" not in EVENT_REFRESH
-    assert "setInterval" not in EVENT_REFRESH
+def test_fbm_session_helper_is_presentation_only_and_never_creates_a_second_event_refresh_path():
+    assert "bt38-marketplace-event" not in EVENT_REFRESH
+    assert "fetch(" not in EVENT_REFRESH
+    assert "window.location.reload()" not in EVENT_REFRESH
+    assert "setTimeout(" not in EVENT_REFRESH
+    assert "setInterval(" not in EVENT_REFRESH
     assert "EventSource" not in EVENT_REFRESH
-    assert "window.location.reload()" in EVENT_REFRESH
+    assert "BT38.getPageSession('fbm'" in EVENT_REFRESH
+    assert "selectedTab.click()" in EVENT_REFRESH
+    assert "MutationObserver" in EVENT_REFRESH
 
 
 def test_dispatch_split_is_registered_after_persisted_fbm_scope_and_health():
