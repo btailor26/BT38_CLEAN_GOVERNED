@@ -31,10 +31,23 @@ def test_refresh_reconciles_remembered_tab_after_shared_page_controller_initiali
     assert "reconcileLifecycleViewAfterPageController" in EVENT_REFRESH
     assert "window.setTimeout(function ()" in EVENT_REFRESH
     assert "page.ready !== true" in EVENT_REFRESH
-    assert "activeTab.click()" in EVENT_REFRESH
+    assert "tab.click()" in EVENT_REFRESH
+    assert "controller.renderPage(page.name)" in EVENT_REFRESH
     assert "reconcileLifecycleViewAfterPageController();" in EVENT_REFRESH
     assert "setInterval" not in EVENT_REFRESH
     assert "EventSource" not in EVENT_REFRESH
+
+
+def test_fbm_browser_view_remembers_tab_search_page_and_page_size():
+    assert "bt38:last-view:fbm" in EVENT_REFRESH
+    assert "window.localStorage.getItem(lastViewKey)" in EVENT_REFRESH
+    assert "window.localStorage.setItem(lastViewKey" in EVENT_REFRESH
+    assert "currentPage:" in EVENT_REFRESH
+    assert "perPage:" in EVENT_REFRESH
+    assert "page.currentPage = desiredPage" in EVENT_REFRESH
+    assert "bt38ResultsPerPageSelect" in EVENT_REFRESH
+    assert "fbm-lifecycle-tab[data-fbm-tab]" in EVENT_REFRESH
+    assert "bt38FbmGlobalSearchInput" in EVENT_REFRESH
 
 
 def test_cancelled_marketplace_orders_are_stated_clearly():
