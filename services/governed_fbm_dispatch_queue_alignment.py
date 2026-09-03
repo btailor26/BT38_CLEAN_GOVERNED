@@ -45,18 +45,30 @@ _DISPATCHED_MARKETPLACE_STATUSES = {
 }
 
 
+def _marketplace_platform_for(row: MarketplaceOrder) -> str:
+    store = getattr(row, "store", None)
+    return str(
+        getattr(store, "platform", None)
+        or getattr(row, "platform", None)
+        or getattr(row, "marketplace", None)
+        or ""
+    ).strip().lower()
+
+
 def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment=None) -> str:
     """Classify workflow from persisted marketplace lifecycle truth only.
 
     Carrier, tracking, label-purchase and shipment milestones are enrichment. They
-    never move an order from Ready to Dispatched. Explicit marketplace Pending is
-    non-actionable and remains distinct from Ready to dispatch.
+    never move an order from Ready to Dispatched. Amazon Pending is payment/order
+    verification truth and remains non-actionable. Other marketplaces keep their
+    own sale semantics; a generic internal ``pending`` token must not hide a paid
+    eBay order from Ready to dispatch.
     """
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = global_search._status_reason(status)
     if status in global_search._CANCELLED_STATUSES or status.startswith("cancel"):
         return "cancelled"
-    if status == "pending":
+    if status == "pending" and "amazon" in _marketplace_platform_for(row):
         return "pending"
     if reason:
         return reason
