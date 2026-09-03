@@ -43,6 +43,15 @@ def test_fbm_refresh_restores_exact_session_tab_after_shared_page_controller_ini
     assert "EventSource" not in EVENT_REFRESH
 
 
+def test_pending_marketplace_orders_are_stated_clearly_and_not_actionable_ready():
+    assert '"pending": "Pending"' in DISPATCH_QUEUE
+    assert 'if status == "pending"' in DISPATCH_QUEUE
+    assert 'return "pending"' in DISPATCH_QUEUE
+    assert "pending:'Pending'" in DISPATCH_QUEUE
+    assert "addWorkflowButton(tabBar,'pending','Pending')" in DISPATCH_QUEUE
+    assert "var actionable=active==='ready_dispatch'" in DISPATCH_QUEUE
+
+
 def test_cancelled_marketplace_orders_are_stated_clearly():
     assert '"cancelled": "Cancelled"' in DISPATCH_QUEUE
     assert 'return "cancelled"' in DISPATCH_QUEUE
@@ -69,4 +78,5 @@ def test_shipping_health_uses_same_marketplace_lifecycle_classifier_as_tabs():
     assert "_aligned_workflow_queue_for(row)" in health_bridge
     assert 'if queue == "dispatched"' in health_bridge
     assert 'if queue == "ready_dispatch"' in health_bridge
+    assert 'if queue == "pending"' in health_bridge
     assert 'if queue == "cancelled"' in health_bridge
