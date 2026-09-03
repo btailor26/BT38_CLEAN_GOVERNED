@@ -1,22 +1,16 @@
-// FBM session-view alignment for the existing shared BT38 marketplace event.
-// Warehouse is the reference model: no poller, no extra SSE and no marketplace read.
-// Persisted events refresh the visible browser session once; hidden pages sleep and
-// coalesce pending work until they become visible again.
+// FBM browser-session presentation alignment.
+// Warehouse is the reference model: the page is a bounded projection of persisted DB truth.
+// Committed-event refresh ownership stays in fbm_tracking_journey.js, which reuses the
+// application shell's single governed event and performs one DB-backed snapshot read.
+// This helper never polls, never opens an EventSource, never reloads or fetches the page,
+// and never subscribes to marketplace events. With no event, the FBM session sleeps.
 (function () {
   'use strict';
   if (window.bt38FbmEventSessionRefreshInstalled) return;
   window.bt38FbmEventSessionRefreshInstalled = true;
 
-  let pending = false;
-  let lastSequence = '';
-  let reloadTimer = null;
-
   function onFbm() {
     return String(window.location.pathname || '').replace(/\/$/, '') === '/fbm';
-  }
-
-  function sequenceOf(event) {
-    return String(event && event.detail && event.detail.sequence || '').trim();
   }
 
   function getSessionState(defaults) {
@@ -26,42 +20,9 @@
     return Object.assign({}, defaults || {});
   }
 
-  function setSessionState(values) {
-    if (window.BT38 && typeof window.BT38.setPageSession === 'function') {
-      return window.BT38.setPageSession('fbm', values || {});
-    }
-    return values || {};
-  }
-
   function pageState() {
     const pages = window.BT38 && window.BT38.pages;
     return pages && (pages.fbm || pages.FBM);
-  }
-
-  function markDirty(sequence) {
-    pending = true;
-    setSessionState({
-      dirty: true,
-      pendingSequence: sequence || lastSequence || ''
-    });
-  }
-
-  function clearDirty() {
-    pending = false;
-    setSessionState({dirty: false, pendingSequence: ''});
-  }
-
-  function scheduleCommittedRefresh() {
-    if (!onFbm() || !pending || document.visibilityState === 'hidden' || reloadTimer) return;
-    // Marketplace events are emitted after persisted commit. Refresh on the next task
-    // instead of adding an artificial delay, so lifecycle moves are visible as soon as
-    // committed truth reaches the browser.
-    reloadTimer = window.setTimeout(function () {
-      reloadTimer = null;
-      if (!onFbm() || !pending || document.visibilityState === 'hidden') return;
-      clearDirty();
-      window.location.reload();
-    }, 0);
   }
 
   // Some FBM table styling can override the browser's default [hidden] rendering.
@@ -96,41 +57,14 @@
     return true;
   }
 
-  // The lifecycle script and the shared PageController initialise independently.
-  // Do not guess their callback order. If PageController is already ready, hand off
-  // immediately. Otherwise wait for the browser load boundary, which occurs after
-  // DOMContentLoaded handlers (including PageController.autoRegisterFromDom) have run,
-  // then restore the exact tab held in this browser session once. No polling/retry loop.
+  // The lifecycle script and shared PageController initialise independently.
+  // Use the browser load boundary once when needed; there is no retry or timer loop.
   function reconcileSessionAfterPageController() {
     if (!onFbm()) return;
     if (applySessionTabAfterPageController()) return;
     window.addEventListener('load', function () {
       applySessionTabAfterPageController();
     }, {once: true});
-  }
-
-  window.addEventListener('bt38-marketplace-event', function (event) {
-    if (!onFbm()) return;
-    const sequence = sequenceOf(event);
-    if (sequence && sequence === lastSequence) return;
-    if (sequence) lastSequence = sequence;
-    markDirty(sequence);
-    scheduleCommittedRefresh();
-  });
-
-  document.addEventListener('visibilitychange', function () {
-    if (!onFbm() || document.visibilityState !== 'visible') return;
-    alignAllRowVisibility();
-    if (pending) scheduleCommittedRefresh();
-  });
-
-  function initialise() {
-    if (!onFbm()) return;
-    watchSessionRows();
-    reconcileSessionAfterPageController();
-    const state = getSessionState({dirty: false});
-    pending = Boolean(state && state.dirty);
-    if (pending && document.visibilityState === 'visible') scheduleCommittedRefresh();
   }
 
   function watchSessionRows() {
@@ -147,6 +81,12 @@
       });
     });
     observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
+  }
+
+  function initialise() {
+    if (!onFbm()) return;
+    watchSessionRows();
+    reconcileSessionAfterPageController();
   }
 
   if (document.readyState === 'loading') {
