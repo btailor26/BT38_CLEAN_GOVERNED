@@ -63,6 +63,7 @@ jobs:
             services/governed_amazon_tracking_readback.py \
             services/governed_exact_ebay_order_hydration.py \
             services/governed_ebay_oauth_scopes.py \
+            services/governed_ebay_notification_registration.py \
             services/governed_ebay_shipping_notification_alignment.py \
             services/governed_ebay_post_deploy_alignment.py \
             services/governed_runtime_engine.py \
@@ -123,6 +124,7 @@ jobs:
             tests/test_fbm_amazon_confirmation_payload.py \
             tests/test_fbm_manual_shipping_order_contract.py \
             tests/test_fbm_ebay_shipping_tracking_alignment_contract.py \
+            tests/test_ebay_return_notification_registration_contract.py \
             tests/test_order_clarity_alignment_contract.py \
             tests/test_marketplace_tracking_readback_contract.py \
             tests/test_fbm_marketplace_lifecycle_authority_contract.py \
