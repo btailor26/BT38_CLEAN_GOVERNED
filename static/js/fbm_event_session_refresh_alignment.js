@@ -27,17 +27,14 @@
 
   function rowMatchesSession(row) {
     if (!row || !row.classList || !row.classList.contains('fbm-order-row')) return false;
-    const session = getSessionState({tab: 'ready_dispatch', search: ''});
-    const activeTab = String(session && session.tab || 'ready_dispatch');
+    const session = getSessionState({tab: 'pending', search: ''});
+    const activeTab = String(session && session.tab || 'pending');
     const search = String(session && session.search || '').trim().toLowerCase();
     const queue = String(row.dataset.fbmQueue || '');
     const searchText = String(row.dataset.fbmSearch || row.textContent || '').toLowerCase();
     return queue === activeTab && (!search || searchText.indexOf(search) >= 0);
   }
 
-  // Shared PageController can render after the FBM lifecycle script. When it changes
-  // row visibility, re-apply only the already-rendered DB-backed queue projection.
-  // This is DOM-only presentation work: no network or database read is performed.
   function alignRowVisibility(row) {
     if (!row || !row.classList || !row.classList.contains('fbm-order-row')) return;
     if (!row.dataset.fbmQueue) {
@@ -45,8 +42,10 @@
       return;
     }
     const shouldShow = rowMatchesSession(row);
-    if (row.hidden === shouldShow) row.hidden = !shouldShow;
-    row.style.display = shouldShow ? '' : 'none';
+    if (!shouldShow) {
+      row.hidden = true;
+      row.style.display = 'none';
+    }
   }
 
   function alignAllRowVisibility() {
@@ -63,10 +62,10 @@
       return false;
     }
 
-    const session = getSessionState({tab: 'ready_dispatch'});
-    const activeTab = String(session && session.tab || 'ready_dispatch');
+    const session = getSessionState({tab: 'pending'});
+    const activeTab = String(session && session.tab || 'pending');
     const selectedTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="' + activeTab + '"]')
-      || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="ready_dispatch"]');
+      || document.querySelector('.fbm-lifecycle-tab[data-fbm-tab="pending"]');
     if (selectedTab) {
       selectedTab.click();
     } else {
@@ -77,8 +76,6 @@
     return true;
   }
 
-  // The lifecycle script and shared PageController initialise independently.
-  // Use browser lifecycle boundaries only; there is no retry or timer loop.
   function reconcileSessionAfterPageController() {
     if (!onFbm()) return;
     applySessionTabAfterPageController();
@@ -88,25 +85,8 @@
     }, {once: true});
   }
 
-  function watchSessionRows() {
-    if (!onFbm()) return;
-    const body = document.querySelector('.fbm-orders-table tbody');
-    if (!body || body.dataset.bt38FbmVisibilityWatch === '1') return;
-    body.dataset.bt38FbmVisibilityWatch = '1';
-    alignAllRowVisibility();
-    const observer = new MutationObserver(function (mutations) {
-      mutations.forEach(function (mutation) {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'hidden') {
-          alignRowVisibility(mutation.target);
-        }
-      });
-    });
-    observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
-  }
-
   function initialise() {
     if (!onFbm()) return;
-    watchSessionRows();
     reconcileSessionAfterPageController();
     alignAllRowVisibility();
   }
