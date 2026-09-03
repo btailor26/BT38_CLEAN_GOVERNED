@@ -74,7 +74,8 @@ def test_fbm_session_alignment_has_no_polling_or_second_transport():
 
 def test_locked_architecture_is_event_then_exact_record_then_sleep():
     workflow = (ROOT / 'docs' / 'EVENT_DRIVEN_SESSION_WORKFLOW.md').read_text(encoding='utf-8')
-    assert 'Zero polling' in workflow
-    assert 'One event -> one affected record/set' in workflow
-    assert 'Session preservation' in workflow
-    assert 'No rebuild after an event' in workflow
+    assert 'Zero polling. Zero routine rebuilds. Zero broad rereads after an event.' in workflow
+    assert 'exact affected-record event' in workflow
+    assert 'current browser session owns presentation state' in workflow
+    assert 'No-rebuild contract' in workflow
+    assert 'one committed event -> one exact affected projection update -> existing session preserved -> sleep' in workflow
