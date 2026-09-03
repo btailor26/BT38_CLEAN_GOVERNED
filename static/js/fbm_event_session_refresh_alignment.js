@@ -77,6 +77,24 @@
     observer.observe(body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
   }
 
+  // The lifecycle tab script can run before the shared PageController finishes its
+  // DOMContentLoaded registration. PageController then renders its unfiltered cache
+  // and can overwrite the lifecycle row visibility while leaving the remembered tab
+  // highlighted. Re-apply the already-selected lifecycle tab once after all startup
+  // handlers complete so the existing lifecycle controller remains the single owner.
+  function reconcileLifecycleViewAfterPageController() {
+    if (!onFbm()) return;
+    window.setTimeout(function () {
+      if (!onFbm()) return;
+      const pages = window.BT38 && window.BT38.pages;
+      const page = pages && (pages.fbm || pages.FBM);
+      const activeTab = document.querySelector('.fbm-lifecycle-tab[data-fbm-tab].active');
+      if (!page || page.ready !== true || !activeTab) return;
+      activeTab.click();
+      alignAllRowVisibility();
+    }, 0);
+  }
+
   window.addEventListener('bt38-marketplace-event', function (event) {
     if (!onFbm()) return;
     const sequence = sequenceOf(event);
@@ -95,6 +113,7 @@
   function initialise() {
     if (!onFbm()) return;
     watchSessionRows();
+    reconcileLifecycleViewAfterPageController();
     if (window.BT38 && typeof window.BT38.getPageSession === 'function') {
       const state = window.BT38.getPageSession('fbm', {dirty: false});
       pending = Boolean(state && state.dirty);
