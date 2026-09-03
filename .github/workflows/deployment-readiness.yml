@@ -128,4 +128,5 @@ jobs:
             tests/test_order_clarity_alignment_contract.py \
             tests/test_marketplace_tracking_readback_contract.py \
             tests/test_fbm_marketplace_lifecycle_authority_contract.py \
+            tests/test_marketplace_return_refund_alignment_contract.py \
             tests/test_governed_warehouse_inbound_contract.py
