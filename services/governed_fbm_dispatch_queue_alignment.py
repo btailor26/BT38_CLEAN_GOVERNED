@@ -22,6 +22,7 @@ from services import governed_fbm_global_search_alignment as global_search
 _WORKFLOW_LABELS = {
     "ready_dispatch": "Ready to dispatch",
     "dispatched": "Dispatched",
+    "cancelled": "Cancelled",
     "replacements": "Replacement",
     "refunds": "Refunds",
 }
@@ -35,7 +36,7 @@ def _aligned_workflow_queue_for(row: MarketplaceOrder, shipment) -> str:
     status = str(getattr(row, "status", "") or "").strip().lower()
     reason = global_search._status_reason(status)
     if status in global_search._CANCELLED_STATUSES or status.startswith("cancel"):
-        return "excluded"
+        return "cancelled"
     if reason:
         return reason
     if global_search._sds_committed(shipment):
@@ -153,7 +154,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   var card=table.closest('.card'); if(!card) return;
   var body=table.querySelector('tbody');
   var rows=Array.from(body.querySelectorAll('tr.fbm-order-row'));
-  var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',replacements:'Replacement',refunds:'Refunds'}};
+  var labels={{ready_dispatch:'Ready to dispatch',dispatched:'Dispatched',cancelled:'Cancelled',replacements:'Replacement',refunds:'Refunds'}};
   var sessionDefaults={{tab:'ready_dispatch',search:'',dirty:false}};
   var saved=(window.BT38&&typeof window.BT38.getPageSession==='function')?window.BT38.getPageSession('fbm',sessionDefaults):sessionDefaults;
   var params=new URLSearchParams(window.location.search);
@@ -190,6 +191,7 @@ def _inject(html: str, payload: dict[str, dict], counts: dict[str, int], fba_cou
   var tabBar=document.createElement('div');tabBar.className='fbm-lifecycle-tabs';tabBar.setAttribute('role','tablist');tabBar.setAttribute('aria-label','Order workflow');
   addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');
   addWorkflowButton(tabBar,'dispatched','Dispatched');
+  addWorkflowButton(tabBar,'cancelled','Cancelled');
   addTruthLink(tabBar,'FBA','/governed/amazon-fba-stock',{int(fba_count)});
   addWorkflowButton(tabBar,'replacements','Replacement');
   addWorkflowButton(tabBar,'refunds','Refunds');
@@ -263,4 +265,4 @@ def install_governed_fbm_dispatch_queue_alignment(app) -> None:
 
     app.view_functions[endpoint] = aligned_fbm_page
     app._bt38_fbm_dispatch_queue_alignment_installed = True
-    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Dispatched/search; existing page pagination preserved; manual shipping preserved")
+    app.logger.info("BT38 FBM aligned to Warehouse session model: one snapshot; local Ready/Dispatched/Cancelled/search; existing page pagination preserved; manual shipping preserved")
