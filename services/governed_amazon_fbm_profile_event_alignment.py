@@ -1,4 +1,4 @@
-"""Persist Amazon ORDER_CHANGE shipping facts into BT38's existing FBM profile.
+"""Persist exact Amazon FBM shipping facts into BT38's existing FBM profile.
 
 Event-bound only: no page polling, order import, provider path or broad recovery.
 """
@@ -41,11 +41,28 @@ def _date(value: Any):
     except Exception: return None
 
 
+def _program_names(payload: dict) -> set[str]:
+    """Collect every exact Amazon OrderPrograms value from the notification."""
+    names: set[str] = set()
+    for programs in _values(payload, "OrderPrograms") + _values(payload, "orderPrograms"):
+        if isinstance(programs, (list, tuple, set)):
+            values = programs
+        else:
+            values = [programs]
+        for item in values:
+            if isinstance(item, dict):
+                item = item.get("Name") or item.get("name") or item.get("Program") or item.get("program")
+            name = str(item or "").strip().lower()
+            if name:
+                names.add(name)
+    return names
+
+
 def _prime(payload: dict) -> bool | None:
-    programs = _first(payload, "OrderPrograms", "orderPrograms")
-    if isinstance(programs, list):
-        names = {str(item or "").strip().lower() for item in programs}
-        if "prime" in names: return True
+    # Amazon ORDER_CHANGE can contain more than one OrderPrograms occurrence.
+    # Prime anywhere in the exact notification is positive marketplace truth.
+    if "prime" in _program_names(payload):
+        return True
     raw = _first(payload, "IsPrime", "isPrime")
     if isinstance(raw, bool): return raw
     value = str(raw).strip().lower() if raw is not None else ""
@@ -80,10 +97,8 @@ def _persist(payload: dict) -> bool:
     store_id, order_id = _identity(payload)
     if store_id is None or not order_id: return False
     is_prime = _prime(payload)
-    programs = _first(payload, "OrderPrograms", "orderPrograms")
-    is_premium = None
-    if isinstance(programs, list):
-        is_premium = "premium" in {str(item or "").strip().lower() for item in programs}
+    program_names = _program_names(payload)
+    is_premium = True if "premium" in program_names else None
     fulfillment = _text(_first(payload, "FulfillmentType", "FulfillmentChannel"))
     service = _text(_first(payload, "ShipmentServiceLevelCategory", "ShipServiceLevel"))
     ship_by = _date(_first(payload, "LatestShipDate", "latestShipDate"))
