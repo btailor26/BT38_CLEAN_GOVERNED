@@ -1,9 +1,14 @@
-"""Restore Ready to dispatch landing and protect zero-query UI event presentation.
+"""Final FBM presentation alignment and zero-query UI event protection.
 
-The notification bell is informational only. It renders events already emitted by
-the existing governed in-memory UI event path and must never query Neon, a
-marketplace, a provider, or reconstruct business truth. Canonical pages continue
-to read persisted DB truth through their existing governed routes.
+The historical installer name is retained for compatibility, but this module now
+keeps the governed FBM workflow in the intended order: Pending first, then Ready
+to dispatch. It also removes the stale lifecycle suppression that excluded valid
+Amazon Pending FBM rows from the existing bounded session snapshot.
+
+The notification bell remains informational only. It renders events already
+emitted by the existing governed in-memory UI event path and must never query
+Neon, a marketplace, a provider, or reconstruct business truth. Canonical pages
+continue to read persisted DB truth through their existing governed routes.
 """
 from __future__ import annotations
 
@@ -134,22 +139,101 @@ def _event_only_bell_reader():
     })
 
 
+def _restore_pending_fbm_visibility() -> None:
+    """Restore the base persisted FBM eligibility contract, including Pending.
+
+    The lifecycle layer previously wrapped the page eligibility function solely
+    to reject Amazon Pending rows. The current workflow requires those rows to
+    appear in Pending, so the final alignment reinstates the same base eligibility
+    rules without adding a reader, query, poller, or alternate snapshot path.
+    """
+    from services import governed_fbm_page_alignment as page
+
+    if getattr(page, "_bt38_pending_visibility_restored", False):
+        return
+
+    def aligned_visible_eligible(row, profile=None):
+        if not page._is_fbm_eligible(row):
+            return False
+
+        if page._platform(row).strip().lower() != "amazon":
+            return True
+
+        fulfillment = str(getattr(row, "fulfillment_type", "") or "").strip().upper()
+        profile_channel = (
+            str(getattr(profile, "fulfillment_channel", "") or "").strip().upper()
+            if profile else ""
+        )
+
+        if profile_channel in {"AFN", "FBA", "MCF"}:
+            return False
+        if profile_channel in {"MFN", "FBM"}:
+            return True
+        return fulfillment in {"MFN", "FBM"}
+
+    page._workspace_fbm_eligible = aligned_visible_eligible
+    page._bt38_pending_visibility_restored = True
+
+
+def _fbm_row_visibility_script() -> str:
+    """Clear the stale inline display:none left by the small FBM overlay.
+
+    The existing PageController remains the pagination/filter authority via the
+    row.hidden flag. We only remove the contradictory inline display override so
+    a row selected by the active queue and pager can become visible again.
+    """
+    return r'''
+<script id="bt38FbmRowVisibilityAlignment">
+(function(){
+  function clearStaleDisplayOverride(){
+    document.querySelectorAll('tr.fbm-order-row').forEach(function(row){
+      row.style.removeProperty('display');
+    });
+  }
+
+  document.addEventListener('click',function(event){
+    var tab=event.target&&event.target.closest?event.target.closest('.fbm-lifecycle-tab[data-fbm-tab]'):null;
+    if(tab)queueMicrotask(clearStaleDisplayOverride);
+  },false);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',clearStaleDisplayOverride,{once:true});
+  }else{
+    clearStaleDisplayOverride();
+  }
+  window.addEventListener('load',clearStaleDisplayOverride,{once:true});
+})();
+</script>
+'''
+
+
 def _align_ready_landing_html(html: str) -> str:
+    # Pending is the first persisted marketplace state and therefore the first
+    # browser workflow tab. Do not let the later compatibility overlay reverse it.
     html = html.replace(
-        "var sessionDefaults={tab:'pending',search:'',dirty:false};",
         "var sessionDefaults={tab:'ready_dispatch',search:'',dirty:false};",
+        "var sessionDefaults={tab:'pending',search:'',dirty:false};",
     )
     html = html.replace(
-        "(saved.tab&&labels[saved.tab]?saved.tab:'pending')",
         "((saved.tab&&labels[saved.tab]&&saved.tab!=='pending')?saved.tab:'ready_dispatch')",
+        "(saved.tab&&labels[saved.tab]?saved.tab:'pending')",
     )
     html = html.replace(
-        "addWorkflowButton(tabBar,'pending','Pending');\n  addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');",
+        "(saved.tab&&labels[saved.tab]?saved.tab:'ready_dispatch')",
+        "(saved.tab&&labels[saved.tab]?saved.tab:'pending')",
+    )
+    html = html.replace(
         "addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');\n  addWorkflowButton(tabBar,'pending','Pending');",
+        "addWorkflowButton(tabBar,'pending','Pending');\n  addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');",
     )
 
     # Bell state is event-driven. Page open/wake must not hydrate from Neon.
     html = html.replace("hydrateBellAfterWake();", "stale = true;")
+
+    if "fbm-order-row" in html and 'id="bt38FbmRowVisibilityAlignment"' not in html:
+        marker = "</body>"
+        script = _fbm_row_visibility_script()
+        html = html.replace(marker, script + marker, 1) if marker in html else html + script
     return html
 
 
@@ -175,6 +259,8 @@ def _align_browser_pressure_response(response):
 
 
 def install_governed_fbm_ready_landing_alignment(app) -> None:
+    _restore_pending_fbm_visibility()
+
     endpoint = "governed_fbm.fbm_page"
     current = app.view_functions.get(endpoint)
     if current is not None and not getattr(current, "_bt38_ready_landing_alignment", False):
@@ -198,5 +284,5 @@ def install_governed_fbm_ready_landing_alignment(app) -> None:
         app._bt38_db_pressure_response_alignment = True
 
     app.logger.info(
-        "BT38 UI event contract aligned: Ready to dispatch first; bell consumes existing in-memory committed events only; zero bell DB queries; no committed-event full /fbm reread"
+        "BT38 FBM final alignment: Pending first and visible from persisted FBM truth; stale inline row display override removed; bell remains in-memory zero-query; no committed-event full /fbm reread"
     )
