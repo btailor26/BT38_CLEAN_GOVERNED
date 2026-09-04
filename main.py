@@ -11,6 +11,7 @@ import services.governed_webhook_rejection_recovery  # noqa: F401
 import services.public_early_access  # noqa: F401
 from services.governed_notification_read_alignment import install_governed_notification_read_alignment
 from services.governed_fbm_page_alignment import install_governed_fbm_page_alignment
+from services.fbm_db_delivery_promise_alignment import install_fbm_db_delivery_promise_alignment
 from services.governed_fbm_global_search_alignment import install_governed_fbm_global_search_alignment
 from services.governed_fbm_all_orders_health_alignment import install_governed_fbm_all_orders_health_alignment
 from services.governed_fbm_dispatch_queue_alignment import install_governed_fbm_dispatch_queue_alignment
@@ -38,6 +39,10 @@ from services.governed_amazon_fbm_profile_event_alignment import install_governe
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
+# The FBM template already renders delivery_promise. Install its existing
+# persisted DB-backed injector so Ship by / Deliver by receive the stored
+# marketplace promise instead of falling through to Pending.
+install_fbm_db_delivery_promise_alignment(app)
 install_governed_fbm_global_search_alignment(app)
 install_governed_fbm_all_orders_health_alignment(app)
 install_governed_fbm_dispatch_queue_alignment(app)
