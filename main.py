@@ -28,10 +28,11 @@ from services.governed_sds_scan_alignment import install_governed_sds_scan_align
 from services.governed_sds_scanner_lookup_alignment import install_governed_sds_scanner_lookup_alignment
 from services.governed_warehouse_inbound_installer import install as install_governed_warehouse_inbound
 from services.governed_ebay_return_intake_alignment import install_governed_ebay_return_intake_alignment
-from services.governed_fbm_small_alignment import install_governed_fbm_small_alignment
+from services.governed_fbm_small_alignment import (
+    install_governed_fbm_small_alignment,
+)
 from services.governed_fbm_ready_landing_alignment import install_governed_fbm_ready_landing_alignment
 from services.governed_exact_record_event_alignment import install_governed_exact_record_event_alignment
-from services.governed_bell_event_projection_alignment import install_governed_bell_event_projection_alignment
 from services.governed_amazon_fbm_profile_event_alignment import install_governed_amazon_fbm_profile_event_alignment
 
 install_governed_notification_read_alignment(app)
@@ -59,8 +60,10 @@ install_governed_fbm_ready_landing_alignment(app)
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; the FBM page remains DB-only and does not poll Amazon per row.
 install_governed_amazon_fbm_profile_event_alignment(app)
+# Exact committed events still drive targeted page/session refreshes. The bell
+# remains owned by the existing persisted notification reader installed above;
+# do not replace it with the later lossy event-only projection.
 install_governed_exact_record_event_alignment(app)
-install_governed_bell_event_projection_alignment(app)
 
 from services.governed_ebay_notification_challenge import install_ebay_notification_challenge_handler
 
