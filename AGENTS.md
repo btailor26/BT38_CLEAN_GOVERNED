@@ -17,6 +17,17 @@ Fly, but it is never a BT38 source or build machine.
 All production deployments must use the manually approved GitHub Actions
 workflow and Fly remote builder. Direct `fly deploy` from an operator PC is
 prohibited.
+
+## Production-only commercial runtime
+
+BT38 is a live commercial production system. **Do not use a test/staging runtime, test Fly app, test database, test marketplace account, test deployment, or non-production clone as the authority for runtime behaviour or release decisions.**
+
+The production system contains commercial state, integrations, secrets, subscriptions, marketplace identities and operational history that are not guaranteed to exist in any test environment. A failure caused by missing/non-equivalent test state must never be treated as proof that the production application is broken.
+
+When runtime proof is required, audit the exact GitHub source and the existing production configuration/data path, then use the governed production deployment workflow only after explicit user approval of the exact commit. Never route a commercial change through a test deployment first.
+
+GitHub source-level checks such as compile, syntax, static contract assertions and deployment-source guards are allowed because they do not create or use a test runtime. They must not be described as a test deployment or substitute for production evidence.
+
 No production secrets changed.
 No duplicate routes.
 No direct marketplace push/sync/import from pages long term.
@@ -49,4 +60,4 @@ The notification bell is informational only and must remain **zero-query**. It c
 
 Every change touching UI freshness, events, marketplace handoff, shipping/dispatch, notifications or session behaviour must include a regression contract proving: zero polling; no broad event-triggered reread/rebuild; no parallel transport; exact affected identity; session preservation; exact-record update only.
 
-Current approved branch scope for `fix/full-system-release-alignment` includes the governed event-driven Amazon/eBay order and webhook execution already under test, Warehouse/Product Linking authority alignment, MCF/FBA read-only handling, FBM/Packlink shipping, exact marketplace destination hydration, marketplace dispatch confirmation, shipment/bell audit visibility, tracking journey display from provider/platform data, and standalone manual shipping. This approval is for audit, contract testing, and explicitly approved test deployment of an exact GitHub commit only; it does not authorize merge or an unreviewed production source change.
+Current approved branch scope for `fix/full-system-release-alignment` includes the governed event-driven Amazon/eBay order and webhook execution, Warehouse/Product Linking authority alignment, MCF/FBA read-only handling, FBM/Packlink shipping, exact marketplace destination hydration, marketplace dispatch confirmation, shipment/bell audit visibility, tracking journey display from provider/platform data, and standalone manual shipping. This approval is for audit and GitHub source-level verification only. It does **not** authorize a test/staging deployment, merge, or an unreviewed production source change. Any production deployment still requires explicit approval of the exact GitHub commit.
