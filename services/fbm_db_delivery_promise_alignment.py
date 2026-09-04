@@ -151,6 +151,14 @@ def install_fbm_db_delivery_promise_alignment(app: Any) -> None:
     if getattr(app, "_bt38_fbm_db_delivery_promise_alignment", False):
         return
 
+    # Keep the DB-only reader and the existing bounded Amazon persistence repair
+    # on the same governed install path. This restores the missing registration;
+    # the FBM render itself still performs no marketplace read.
+    from services.governed_amazon_fbm_profile_event_alignment import (
+        install_governed_amazon_fbm_profile_event_alignment,
+    )
+    install_governed_amazon_fbm_profile_event_alignment(app)
+
     @before_render_template.connect_via(app)
     def _inject_fbm_delivery_promises(sender, template, context, **extra):
         if getattr(template, "name", None) != "fbm.html":
