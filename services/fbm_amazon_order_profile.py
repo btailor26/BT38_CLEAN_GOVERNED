@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import text
+
 from extensions import db
 from fbm_models import FBMOrderProfile
 from amazon_service_live_patch import _marketplace_for_id, _sp_api_credentials
@@ -65,6 +67,8 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     service_level = _text(payload.get("ShipmentServiceLevelCategory") or payload.get("ShipServiceLevel"))
     is_prime = _prime_from_shipping_facts(raw_is_prime, service_level)
     latest_ship = _parse_iso(payload.get("LatestShipDate"))
+    earliest_delivery = _parse_iso(payload.get("EarliestDeliveryDate"))
+    latest_delivery = _parse_iso(payload.get("LatestDeliveryDate"))
 
     _hydrate_marketplace_order(order, payload, address_payload)
 
@@ -102,6 +106,34 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
     profile.checked_at = now
     profile.last_error = None
     db.session.add(profile)
+
+    # Keep the already-existing operational promise path aligned with the exact
+    # Amazon order read. Event hydration writes these same marketplace-owned
+    # fields; on-demand/profile hydration must not drop the delivery window.
+    if any((service_level, latest_ship, earliest_delivery, latest_delivery)):
+        db.session.execute(text("""
+            INSERT INTO fbm_order_operational_state
+              (store_id, marketplace_order_id, platform, shipping_service, ship_by_at,
+               earliest_delivery_at, latest_delivery_at, marketplace_checked_at, created_at, updated_at)
+            VALUES (:store_id,:order_id,'amazon',:service,:ship_by,:earliest,:latest,:now,:now,:now)
+            ON CONFLICT (store_id, marketplace_order_id) DO UPDATE SET
+              platform='amazon',
+              shipping_service=COALESCE(EXCLUDED.shipping_service,fbm_order_operational_state.shipping_service),
+              ship_by_at=COALESCE(EXCLUDED.ship_by_at,fbm_order_operational_state.ship_by_at),
+              earliest_delivery_at=COALESCE(EXCLUDED.earliest_delivery_at,fbm_order_operational_state.earliest_delivery_at),
+              latest_delivery_at=COALESCE(EXCLUDED.latest_delivery_at,fbm_order_operational_state.latest_delivery_at),
+              marketplace_checked_at=EXCLUDED.marketplace_checked_at,
+              updated_at=EXCLUDED.updated_at
+        """), {
+            "store_id": order.store_id,
+            "order_id": str(order.marketplace_order_id),
+            "service": service_level,
+            "ship_by": latest_ship,
+            "earliest": earliest_delivery,
+            "latest": latest_delivery,
+            "now": now,
+        })
+
     db.session.commit()
     return profile
 
