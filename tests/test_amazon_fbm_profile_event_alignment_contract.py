@@ -55,9 +55,9 @@ def test_missing_historical_profile_repair_is_bounded_once_and_exact():
     source = Path(alignment.__file__).read_text(encoding="utf-8")
     assert "_backfill_started" in source
     assert "_start_missing_profile_repair_once(app)" in source
-    assert "NOW() - INTERVAL '48 hours'" in source
+    assert "NOW() - INTERVAL '90 days'" in source
     assert "LIMIT :limit" in source
-    assert "min(int(limit), 25)" in source
+    assert "min(int(limit), 100)" in source
     assert "get_or_refresh_amazon_profile(order, force=True)" in source
     assert "fbm_order_profiles AS fp" in source
     assert "fbm_order_operational_state AS ops" in source
