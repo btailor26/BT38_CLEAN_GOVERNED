@@ -36,6 +36,7 @@ from services.governed_fbm_ready_landing_alignment import install_governed_fbm_r
 from services.governed_exact_record_event_alignment import install_governed_exact_record_event_alignment
 from services.governed_bell_event_projection_alignment import install_governed_bell_event_projection_alignment
 from services.governed_amazon_fbm_profile_event_alignment import install_governed_amazon_fbm_profile_event_alignment
+from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
@@ -72,6 +73,9 @@ install_governed_amazon_fbm_profile_event_alignment(app)
 # read, polling, discovery or reconstruction occurs when the bell is opened.
 install_governed_exact_record_event_alignment(app)
 install_governed_bell_event_projection_alignment(app)
+# Preserve tracking authority: Packlink purchases open BT38's existing live
+# provider journey; marketplace-supplied tracking remains a marketplace link.
+install_governed_fbm_tracking_authority_restore(app)
 
 from services.governed_ebay_notification_challenge import install_ebay_notification_challenge_handler
 
