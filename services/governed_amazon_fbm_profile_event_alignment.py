@@ -66,8 +66,6 @@ def _program_names(payload: dict) -> set[str]:
 
 
 def _prime(payload: dict) -> bool | None:
-    # Amazon ORDER_CHANGE can contain more than one OrderPrograms occurrence.
-    # Prime anywhere in the exact notification is positive marketplace truth.
     if "prime" in _program_names(payload):
         return True
     raw = _first(payload, "IsPrime", "isPrime")
@@ -87,8 +85,6 @@ def _identity(payload: dict) -> tuple[int | None, str | None]:
         if raw_store is not None: return int(raw_store), order_id
     except (TypeError, ValueError):
         pass
-    # The canonical order was committed by the governed webhook path before this
-    # response hook runs. Resolve that exact row rather than scanning Amazon.
     row = (
         db.session.query(MarketplaceOrder.store_id)
         .join(Store, Store.id == MarketplaceOrder.store_id)
@@ -144,45 +140,41 @@ def _persist(payload: dict) -> bool:
 
 
 def _hydrate_missing_recent_profiles(app, limit: int = 25) -> None:
-    """One bounded repair of existing FBM rows, then return to event-only mode.
-
-    Selection is DB-only and limited to canonical Amazon FBM orders already in
-    BT38 from the last 48 hours. Amazon is read only for exact selected order IDs
-    whose Prime/profile or delivery-promise persistence is incomplete.
-    """
+    """Repair exact recent Amazon FBM rows once, then return to event-only mode."""
     try:
         with app.app_context():
-            from models import MarketplaceOrder, Store
+            from models import MarketplaceOrder
             from services.fbm_amazon_order_profile import get_or_refresh_amazon_profile
 
-            rows = (
-                db.session.query(MarketplaceOrder)
-                .join(Store, Store.id == MarketplaceOrder.store_id)
-                .outerjoin(
-                    FBMOrderProfile,
-                    (FBMOrderProfile.store_id == MarketplaceOrder.store_id)
-                    & (FBMOrderProfile.marketplace_order_id == MarketplaceOrder.marketplace_order_id),
-                )
-                .outerjoin(
-                    text("fbm_order_operational_state AS ops"),
-                    text("ops.store_id = marketplace_orders.store_id AND ops.marketplace_order_id = marketplace_orders.marketplace_order_id"),
-                )
-                .filter(Store.is_active == True)  # noqa: E712
-                .filter(Store.platform.ilike("%amazon%"))
-                .filter(MarketplaceOrder.created_at >= text("NOW() - INTERVAL '48 hours'"))
-                .filter(
-                    text("UPPER(COALESCE(marketplace_orders.fulfillment_type, '')) NOT IN ('FBA','AFN','AMAZON')")
-                )
-                .filter(
-                    text("(fbm_order_profiles.id IS NULL OR fbm_order_profiles.is_prime IS NULL OR ops.ship_by_at IS NULL OR ops.latest_delivery_at IS NULL)")
-                )
-                .order_by(MarketplaceOrder.created_at.desc(), MarketplaceOrder.id.desc())
-                .limit(max(1, min(int(limit), 25)))
-                .all()
-            )
+            ids = db.session.execute(text("""
+                SELECT mo.id
+                FROM marketplace_orders AS mo
+                JOIN stores AS s ON s.id = mo.store_id
+                LEFT JOIN fbm_order_profiles AS fp
+                  ON fp.store_id = mo.store_id
+                 AND fp.marketplace_order_id = mo.marketplace_order_id
+                LEFT JOIN fbm_order_operational_state AS ops
+                  ON ops.store_id = mo.store_id
+                 AND ops.marketplace_order_id = mo.marketplace_order_id
+                WHERE s.is_active = TRUE
+                  AND LOWER(COALESCE(s.platform, '')) LIKE '%amazon%'
+                  AND mo.created_at >= NOW() - INTERVAL '48 hours'
+                  AND UPPER(COALESCE(mo.fulfillment_type, '')) NOT IN ('FBA','AFN','AMAZON')
+                  AND (
+                       fp.id IS NULL
+                       OR fp.is_prime IS NULL
+                       OR ops.ship_by_at IS NULL
+                       OR ops.latest_delivery_at IS NULL
+                  )
+                ORDER BY mo.created_at DESC, mo.id DESC
+                LIMIT :limit
+            """), {"limit": max(1, min(int(limit), 25))}).scalars().all()
 
             seen = set()
-            for order in rows:
+            for row_id in ids:
+                order = db.session.get(MarketplaceOrder, int(row_id))
+                if order is None:
+                    continue
                 identity = (int(order.store_id), str(order.marketplace_order_id))
                 if identity in seen:
                     continue
