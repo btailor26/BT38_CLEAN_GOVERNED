@@ -3,6 +3,7 @@ primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"
+  image = "registry.fly.io/bt38-prod:deployment-01M1MQQ075Q815CC2679RRBWFH"
 
 [env]
   # Webhooks remain the immediate listing path. This enables the existing
