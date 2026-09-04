@@ -134,7 +134,6 @@ def _event_stream_response():
                     seen_revision = int(committed.get("revision") or seen_revision)
                     yield "event: marketplace\n" + "data: " + json.dumps(committed, separators=(",", ":")) + "\n\n"
             elif current_revision != seen_revision:
-                # Queue rollover: move forward without inventing record identity.
                 seen_revision = current_revision
             else:
                 yield ": keepalive\n\n"
@@ -167,7 +166,6 @@ def _replace_function(source: str, start_marker: str, end_marker: str, replaceme
 
 
 def _align_shared_controller(source: str) -> str:
-    # Product Linking may refresh only the SKU carried by the committed event.
     source = source.replace("let pendingWhileHidden = false;", "let pendingWhileHidden = null;")
     source = _replace_function(
         source,
@@ -208,10 +206,6 @@ def _align_shared_controller(source: str) -> str:
     )
     source = source.replace("void refreshCurrentPage();\n  });\n\n  document.addEventListener('visibilitychange'", "void refreshCurrentPage(event.detail || {});\n  });\n\n  document.addEventListener('visibilitychange'", 1)
     source = source.replace("if (document.visibilityState !== 'visible' || !pendingWhileHidden) return;\n    pendingWhileHidden = false;\n    void refreshCurrentPage();", "if (document.visibilityState !== 'visible' || !pendingWhileHidden) return;\n    const committed = pendingWhileHidden;\n    pendingWhileHidden = null;\n    void refreshCurrentPage(committed);")
-
-    # The assistant is presentation-only. It must never fetch /dashboard on an
-    # event, page wake or visibility change. It may use the current page or its
-    # existing session cache only.
     source = _replace_function(
         source,
         "async function readDashboardActionCount() {",
@@ -231,8 +225,6 @@ def install_governed_exact_record_event_alignment(app) -> None:
     if _INSTALLED:
         return
 
-    # Replace the older generic no-identity commit wake. This is not a second
-    # event path: the old listeners are removed before the exact listeners are installed.
     for identifier, fn in (
         ("before_flush", ui._bt38_existing_ui_signal_before_flush),
         ("after_commit", ui._bt38_existing_ui_signal_after_commit),
@@ -257,10 +249,14 @@ def install_governed_exact_record_event_alignment(app) -> None:
         if response.status_code != 200:
             return response
         if path == "/static/js/bt38-live-page-refresh.js" and "javascript" in content_type:
+            if response.direct_passthrough:
+                response.direct_passthrough = False
             response.set_data(_align_shared_controller(response.get_data(as_text=True)))
             return response
-        if "text/html" in content_type and 'id="bt38NotificationBell"' in response.get_data(as_text=True):
-            response.set_data(_align_base_event_payload(response.get_data(as_text=True)))
+        if "text/html" in content_type:
+            body = response.get_data(as_text=True)
+            if 'id="bt38NotificationBell"' in body:
+                response.set_data(_align_base_event_payload(body))
         return response
 
     _INSTALLED = True
