@@ -69,11 +69,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
         return None
 
     revision = int(event.get("revision") or 0)
-    order_id = str(
-        event.get("order_id")
-        or event.get("marketplace_order_id")
-        or ""
-    ).strip()
+    order_id = str(event.get("order_id") or event.get("marketplace_order_id") or "").strip()
     sku = str(event.get("seller_sku") or event.get("sku") or "").strip()
     platform = str(event.get("platform") or "Marketplace").strip() or "Marketplace"
     quantity = event.get("quantity")
@@ -98,13 +94,6 @@ def _event_to_bell_record(event: dict) -> dict | None:
 
 
 def _event_only_bell_reader():
-    """Return recent commercial events from the existing in-memory event queue.
-
-    This function is deliberately DB-blind. The bell is not a truth surface and
-    must never discover, hydrate, verify, reconcile, or reconstruct persisted
-    state. A process restart may clear bell history; canonical DB-backed pages
-    remain the authority for business truth.
-    """
     from services import governed_ui_event_signal as event_signal
 
     try:
@@ -140,13 +129,6 @@ def _event_only_bell_reader():
 
 
 def _restore_pending_fbm_visibility() -> None:
-    """Restore the base persisted FBM eligibility contract, including Pending.
-
-    The lifecycle layer previously wrapped the page eligibility function solely
-    to reject Amazon Pending rows. The current workflow requires those rows to
-    appear in Pending, so the final alignment reinstates the same base eligibility
-    rules without adding a reader, query, poller, or alternate snapshot path.
-    """
     from services import governed_fbm_page_alignment as page
 
     if getattr(page, "_bt38_pending_visibility_restored", False):
@@ -160,10 +142,7 @@ def _restore_pending_fbm_visibility() -> None:
             return True
 
         fulfillment = str(getattr(row, "fulfillment_type", "") or "").strip().upper()
-        profile_channel = (
-            str(getattr(profile, "fulfillment_channel", "") or "").strip().upper()
-            if profile else ""
-        )
+        profile_channel = str(getattr(profile, "fulfillment_channel", "") or "").strip().upper() if profile else ""
 
         if profile_channel in {"AFN", "FBA", "MCF"}:
             return False
@@ -176,12 +155,6 @@ def _restore_pending_fbm_visibility() -> None:
 
 
 def _fbm_row_visibility_script() -> str:
-    """Clear the stale inline display:none left by the small FBM overlay.
-
-    The existing PageController remains the pagination/filter authority via the
-    row.hidden flag. We only remove the contradictory inline display override so
-    a row selected by the active queue and pager can become visible again.
-    """
     return r'''
 <script id="bt38FbmRowVisibilityAlignment">
 (function(){
@@ -208,8 +181,6 @@ def _fbm_row_visibility_script() -> str:
 
 
 def _align_ready_landing_html(html: str) -> str:
-    # Pending is the first persisted marketplace state and therefore the first
-    # browser workflow tab. Do not let the later compatibility overlay reverse it.
     html = html.replace(
         "var sessionDefaults={tab:'ready_dispatch',search:'',dirty:false};",
         "var sessionDefaults={tab:'pending',search:'',dirty:false};",
@@ -227,7 +198,6 @@ def _align_ready_landing_html(html: str) -> str:
         "addWorkflowButton(tabBar,'pending','Pending');\n  addWorkflowButton(tabBar,'ready_dispatch','Ready to dispatch');",
     )
 
-    # Bell state is event-driven. Page open/wake must not hydrate from Neon.
     html = html.replace("hydrateBellAfterWake();", "stale = true;")
 
     if "fbm-order-row" in html and 'id="bt38FbmRowVisibilityAlignment"' not in html:
@@ -249,6 +219,8 @@ def _align_browser_pressure_response(response):
         return response
 
     if path == "/static/js/fbm_tracking_journey.js" and "javascript" in content_type:
+        if response.direct_passthrough:
+            response.direct_passthrough = False
         body = response.get_data(as_text=True)
         body = body.replace(
             "window.addEventListener('bt38-marketplace-event', refreshFbmFromGovernedEvent);",
