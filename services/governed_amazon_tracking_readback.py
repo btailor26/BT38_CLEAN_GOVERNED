@@ -131,10 +131,16 @@ def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
         return False
     if current_value in _PROTECTED_ISSUE_STATES:
         return False
+    # Exact Amazon pre-dispatch truth may repair routine local processing states
+    # such as failed/processed/order. Pending never regresses an already exact
+    # Unshipped state; Unshipped may advance Pending when Amazon clears payment.
     if incoming_value == "pending":
         return current_value in (_ROUTINE_PRE_DISPATCH_STATES - {"unshipped"})
     if incoming_value == "unshipped":
         return current_value in _ROUTINE_PRE_DISPATCH_STATES
+    # Explicit Amazon cancellation is terminal marketplace lifecycle truth. It
+    # must clear stale routine states such as Processed/Unshipped, but it must
+    # not overwrite a completed Delivered journey or a newer protected issue.
     if incoming_value == "cancelled":
         return current_value != "delivered"
     incoming_rank = _JOURNEY_RANK.get(incoming_value)
@@ -240,6 +246,8 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
     elif len(unique_tracking) > 1:
         ambiguity = "multiple_amazon_packages_require_multi_tracking_storage"
     elif len(packages) == 1:
+        # One package can still carry lifecycle, carrier and shipTime when Amazon
+        # has not supplied a tracking number.
         package = packages[0]
 
     if package is None and not lifecycle_status:
@@ -261,6 +269,8 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
     return {
         "carrier": _text(package.get("carrier")) or None if package is not None else None,
         "tracking_number": _text(package.get("trackingNumber")) or None if package is not None else None,
+        # shipTime is shipment truth. package createdTime must never be invented
+        # as a shipment timestamp.
         "shipped_at": _parse_iso(package.get("shipTime")) if package is not None else None,
         "package_reference_id": _text(package.get("packageReferenceId")) or None if package is not None else None,
         "package_status": raw_package_status,
@@ -297,7 +307,6 @@ def _persist_marketplace_shipment(
         return existing, False
 
     row = existing
-    changed = False
     lifecycle = _text(shipment.get("lifecycle_status")).lower()
     provider_status = (
         _text(shipment.get("package_status"))
@@ -325,19 +334,15 @@ def _persist_marketplace_shipment(
 
     if shipment.get("package_reference_id") and _text(row.provider_shipment_id) != _text(shipment.get("package_reference_id")):
         row.provider_shipment_id = _text(shipment.get("package_reference_id"))
-        changed = True
     if shipment.get("carrier") and _text(row.carrier) != _text(shipment.get("carrier")):
         row.carrier = _text(shipment.get("carrier"))
-        changed = True
     if lifecycle and _can_advance_lifecycle(row.status, lifecycle):
         row.status = lifecycle
-        changed = True
     if _text(row.last_provider_status) != provider_status:
         row.last_provider_status = provider_status
-        changed = True
     row.last_provider_checked_at = observed_at
     row.marketplace_confirmation_status = "marketplace_authoritative"
-    return row, True if changed else True
+    return row, True
 
 
 def hydrate_amazon_tracking_for_order(
@@ -455,6 +460,8 @@ def hydrate_amazon_tracking_for_order(
     lifecycle_updates = 0
     for row in eligible:
         changed = False
+        # Amazon is the authority for Amazon-owned lifecycle truth. Carrier and
+        # tracking are optional enrichment; lifecycle never depends on them.
         if shipment.get("carrier") and _text(getattr(row, "carrier", None)) != _text(shipment["carrier"]):
             row.carrier = shipment["carrier"]
             changed = True
