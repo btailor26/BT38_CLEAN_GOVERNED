@@ -139,8 +139,14 @@ def _persist(payload: dict) -> bool:
     return True
 
 
-def _hydrate_missing_recent_profiles(app, limit: int = 25) -> None:
-    """Repair exact recent Amazon FBM rows once, then return to event-only mode."""
+def _hydrate_missing_recent_profiles(app, limit: int = 100) -> None:
+    """Repair a bounded window of missing Amazon FBM promise truth once.
+
+    The original 48-hour/25-order repair could permanently miss older orders
+    whose delivery promise had not been persisted. Keep this exact-read repair
+    bounded and one-shot, but cover the active 90-day FBM history so the existing
+    DB-backed journey can recover those already-known orders without page polling.
+    """
     try:
         with app.app_context():
             from models import MarketplaceOrder
@@ -158,7 +164,7 @@ def _hydrate_missing_recent_profiles(app, limit: int = 25) -> None:
                  AND ops.marketplace_order_id = mo.marketplace_order_id
                 WHERE s.is_active = TRUE
                   AND LOWER(COALESCE(s.platform, '')) LIKE '%amazon%'
-                  AND mo.created_at >= NOW() - INTERVAL '48 hours'
+                  AND mo.created_at >= NOW() - INTERVAL '90 days'
                   AND UPPER(COALESCE(mo.fulfillment_type, '')) NOT IN ('FBA','AFN','AMAZON')
                   AND (
                        fp.id IS NULL
@@ -168,7 +174,7 @@ def _hydrate_missing_recent_profiles(app, limit: int = 25) -> None:
                   )
                 ORDER BY mo.created_at DESC, mo.id DESC
                 LIMIT :limit
-            """), {"limit": max(1, min(int(limit), 25))}).scalars().all()
+            """), {"limit": max(1, min(int(limit), 100))}).scalars().all()
 
             seen = set()
             for row_id in ids:
