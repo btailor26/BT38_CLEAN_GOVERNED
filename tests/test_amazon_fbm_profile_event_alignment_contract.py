@@ -49,3 +49,29 @@ def test_event_alignment_is_not_a_page_poller_or_marketplace_scan():
     assert "get_order(" not in source
     assert "requests.get" not in source
     assert "information_schema" not in source
+
+
+def test_missing_historical_profile_repair_is_bounded_once_and_exact():
+    source = Path(alignment.__file__).read_text(encoding="utf-8")
+    assert "_backfill_started" in source
+    assert "_start_missing_profile_repair_once(app)" in source
+    assert "NOW() - INTERVAL '48 hours'" in source
+    assert "LIMIT :limit" in source
+    assert "min(int(limit), 25)" in source
+    assert "get_or_refresh_amazon_profile(order, force=True)" in source
+    assert "fbm_order_profiles AS fp" in source
+    assert "fbm_order_operational_state AS ops" in source
+    assert "fp.is_prime IS NULL" in source
+    assert "ops.ship_by_at IS NULL" in source
+    assert "ops.latest_delivery_at IS NULL" in source
+    assert "NOT IN ('FBA','AFN','AMAZON')" in source
+
+
+def test_existing_exact_profile_read_persists_all_promise_fields():
+    small = Path("services/governed_fbm_small_alignment.py").read_text(encoding="utf-8")
+    assert "original_fetch = amazon_profile._fetch_order" in small
+    assert "payload, address_payload = original_fetch(store, order_id)" in small
+    assert 'payload.get("LatestShipDate")' in small
+    assert 'payload.get("EarliestDeliveryDate")' in small
+    assert 'payload.get("LatestDeliveryDate")' in small
+    assert "INSERT INTO fbm_order_operational_state" in small
