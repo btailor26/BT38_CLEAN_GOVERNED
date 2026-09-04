@@ -67,12 +67,13 @@ install_governed_fbm_ready_landing_alignment(app)
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; the FBM page remains DB-only and does not poll Amazon per row.
 install_governed_amazon_fbm_profile_event_alignment(app)
-# Exact committed events drive targeted page/session refreshes. The bell is then
-# projected from that same already-committed in-memory event path. The final bell
-# owner is deliberately DB/API blind: no Neon read, marketplace read, provider
-# read, polling, discovery or reconstruction occurs when the bell is opened.
+# Exact committed events continue to drive targeted page/session refreshes and
+# the browser-observed bell cache. They must not replace the persisted bell read
+# authority: opening the bell reads existing committed DB truth and performs no
+# marketplace/provider work.
 install_governed_exact_record_event_alignment(app)
 install_governed_bell_event_projection_alignment(app)
+install_governed_notification_read_alignment(app)
 # Preserve tracking authority: Packlink purchases open BT38's existing live
 # provider journey; marketplace-supplied tracking remains a marketplace link.
 install_governed_fbm_tracking_authority_restore(app)
