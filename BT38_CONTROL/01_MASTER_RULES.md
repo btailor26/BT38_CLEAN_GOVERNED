@@ -10,25 +10,28 @@
 7. If any error appears in output, stop and audit that error first.
 8. GitHub is the only source of production application files and deployment context.
 9. Never clone, copy, overlay, build, test, or deploy BT38 application files from an operator PC. The operator PC may only inspect GitHub/Fly or dispatch the approved GitHub Actions workflow.
-10. All testing repairs for the active governed cycle must advance `fix/full-system-release-alignment` / PR #528. Main and side branches are not valid test-deployment sources while this contract is active.
-11. The user is the architect/decision-maker. AI acts as cautious engineer.
-12. No guesswork. Evidence first.
-13. One clean wiring only. No circular restore/patch attempts.
-14. Before page layout/UI changes, show visual proof/mockup first unless the user has explicitly approved the exact change.
-15. Do not change the approved application shell logo, sidebar, top nav, nav colours, or warehouse layout unless explicitly approved. Public Amazon/Appstore branding work must remain isolated from the application shell and Warehouse controls.
-16. Preserve mobile usability by default.
-17. Use Git/version control discipline. Every deployable state must be an exact GitHub commit.
-18. Do not deploy until compile/import/runtime and required contract checks pass and the user explicitly approves the exact current PR #528 HEAD.
-19. Production deployment is manual only through `.github/workflows/deploy-fly.yml` using the current PR #528 HEAD SHA and Fly remote builder. Direct `fly deploy` from an operator PC is prohibited.
-20. A successful test deployment does not authorize or perform a merge. PR #528 remains open and unmerged until separately approved.
-21. BT38 UI/runtime improvement work is event-driven and session-driven by default. Zero polling is permitted for UI freshness, notifications, shipping handoff, marketplace handoff or page synchronization.
-22. A committed event must update only the exact affected record/projection in the existing browser session. It must not reload/refetch the whole page, rebuild the table, rerun the initial page snapshot, or discard active tab/search/filter/selection/modal/scroll state.
-23. Reuse the existing governed event/handoff transport. Do not add a second EventSource/SSE connection, parallel notification system, polling watcher, duplicate event bus or competing refresh controller.
-24. No event means no UI-driven database work. Pages, bell and handoff paths must sleep when nothing changes: no heartbeat reads/writes, wake hydration, broad reconciliation or routine background rereads for presentation freshness.
-25. The event source/committing workflow must carry the narrowest useful affected identity and already-known presentation fields. Do not make the receiving page broadly rediscover information that the committing workflow already knew.
-26. Same-page and cross-page changes follow the same contract: canonical commit -> exact affected-record event/response -> exact session record update -> sleep.
-27. The notification bell is informational only and must remain zero-query. It consumes already-published in-memory event data and never queries Neon, marketplace/provider APIs, orders, shipments, listings, Warehouse or logs to discover what happened.
-28. Every future improvement touching UI freshness, events, handoff, shipping, dispatch, notifications or session state must include a contract test proving zero polling, zero broad rebuild/reread, exact affected-record handoff and session preservation. See `docs/EVENT_DRIVEN_SESSION_WORKFLOW.md`.
+10. BT38 is a live commercial **production-only** runtime. Never deploy to, validate against, or use a test/staging Fly app, test database, test marketplace account, test deployment, or non-production clone as runtime authority. The commercial state/integrations are not guaranteed to exist there, so non-production failures are not valid evidence of production behaviour.
+11. Never require a test/staging deployment before production. Runtime proof must come from the exact GitHub source plus the governed production configuration/data path. A production deployment still requires explicit user approval of the exact commit.
+12. GitHub compile, syntax, static contract and source/deployment guard checks are allowed because they do not create or use a test runtime. They must not be described as a test deployment or used as a substitute for production runtime evidence.
+13. All active governed work must advance `fix/full-system-release-alignment` / PR #528 unless the user explicitly changes the source branch. Main and side branches are not valid deployment sources while this contract is active.
+14. The user is the architect/decision-maker. AI acts as cautious engineer.
+15. No guesswork. Evidence first.
+16. One clean wiring only. No circular restore/patch attempts.
+17. Before page layout/UI changes, show visual proof/mockup first unless the user has explicitly approved the exact change.
+18. Do not change the approved application shell logo, sidebar, top nav, nav colours, or warehouse layout unless explicitly approved. Public Amazon/Appstore branding work must remain isolated from the application shell and Warehouse controls.
+19. Preserve mobile usability by default.
+20. Use Git/version control discipline. Every deployable state must be an exact GitHub commit.
+21. Do not deploy until compile/import/runtime and required governed source checks pass and the user explicitly approves the exact current PR #528 HEAD.
+22. Production deployment is manual only through `.github/workflows/deploy-fly.yml` using the current PR #528 HEAD SHA and Fly remote builder. Direct `fly deploy` from an operator PC is prohibited.
+23. Deployment never authorizes or performs a merge. PR #528 remains open and unmerged until separately approved.
+24. BT38 UI/runtime improvement work is event-driven and session-driven by default. Zero polling is permitted for UI freshness, notifications, shipping handoff, marketplace handoff or page synchronization.
+25. A committed event must update only the exact affected record/projection in the existing browser session. It must not reload/refetch the whole page, rebuild the table, rerun the initial page snapshot, or discard active tab/search/filter/selection/modal/scroll state.
+26. Reuse the existing governed event/handoff transport. Do not add a second EventSource/SSE connection, parallel notification system, polling watcher, duplicate event bus or competing refresh controller.
+27. No event means no UI-driven database work. Pages, bell and handoff paths must sleep when nothing changes: no heartbeat reads/writes, wake hydration, broad reconciliation or routine background rereads for presentation freshness.
+28. The event source/committing workflow must carry the narrowest useful affected identity and already-known presentation fields. Do not make the receiving page broadly rediscover information that the committing workflow already knew.
+29. Same-page and cross-page changes follow the same contract: canonical commit -> exact affected-record event/response -> exact session record update -> sleep.
+30. The notification bell is informational only and must remain zero-query. It consumes already-published in-memory event data and never queries Neon, marketplace/provider APIs, orders, shipments, listings, Warehouse or logs to discover what happened.
+31. Every future improvement touching UI freshness, events, handoff, shipping, dispatch, notifications or session state must include a contract test proving zero polling, zero broad rebuild/reread, exact affected-record handoff and session preservation. See `docs/EVENT_DRIVEN_SESSION_WORKFLOW.md`.
 
 ## BT38 inventory rules
 1. Warehouse is the source of truth.
