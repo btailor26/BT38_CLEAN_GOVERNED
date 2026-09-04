@@ -7,6 +7,7 @@ ROUTES = (ROOT / "governed_routes.py").read_text(encoding="utf-8")
 SIGNAL = (ROOT / "services" / "governed_ui_event_signal.py").read_text(
     encoding="utf-8"
 )
+MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 
 
 def test_shared_base_has_one_global_notification_bell_and_drawer():
@@ -23,6 +24,13 @@ def test_bell_reads_persisted_events_only_on_open_without_polling_or_starting_wo
     assert "setInterval" not in BASE
     assert "void loadNotifications();" not in BASE
     assert 'panel.addEventListener("show.bs.offcanvas"' in BASE
+
+
+def test_persisted_reader_remains_final_bell_authority_after_event_projection():
+    projection = MAIN.rfind("install_governed_bell_event_projection_alignment(app)")
+    persisted = MAIN.rfind("install_governed_notification_read_alignment(app)")
+    assert projection >= 0
+    assert persisted > projection
 
 
 def test_bell_lights_from_existing_marketplace_event_without_reenabling_waiter():
