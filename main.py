@@ -76,6 +76,15 @@ from services.governed_ebay_return_intake_alignment import (
 from services.governed_fbm_small_alignment import (
     install_governed_fbm_small_alignment,
 )
+from services.governed_fbm_ready_landing_alignment import (
+    install_governed_fbm_ready_landing_alignment,
+)
+from services.governed_exact_record_event_alignment import (
+    install_governed_exact_record_event_alignment,
+)
+from services.governed_bell_event_projection_alignment import (
+    install_governed_bell_event_projection_alignment,
+)
 
 install_governed_notification_read_alignment(app)
 # FBM is one existing workspace. Install its DB-backed read surface first, then
@@ -102,9 +111,19 @@ install_governed_warehouse_inbound(app)
 # Add only the modern eBay nested ORDER_RETURN_ACTIVITY intake adapter before
 # the final FBM/bell presentation overlay.
 install_governed_ebay_return_intake_alignment()
-# Final small alignment runs after the already-built FBM/bell installers so it
-# can repair their handoff ordering without creating a parallel workflow.
+# Existing FBM presentation remains one workspace. The compatibility overlay
+# runs first; the final Pending visibility/zero-query guard then removes its
+# stale row suppression and owns the notification endpoint.
 install_governed_fbm_small_alignment(app)
+install_governed_fbm_ready_landing_alignment(app)
+# Exact committed-record transport must be installed after FBM/bell overlays so
+# later presentation code cannot restore a broad refresh or generic no-identity
+# event wake.
+install_governed_exact_record_event_alignment(app)
+# Final bell projection consumes that exact event only. It adds already-loaded
+# scalar presentation fields, keeps a bounded browser-observed history, and
+# guarantees bell-open performs no Neon/API reconstruction.
+install_governed_bell_event_projection_alignment(app)
 
 from services.governed_ebay_notification_challenge import (
     install_ebay_notification_challenge_handler,
