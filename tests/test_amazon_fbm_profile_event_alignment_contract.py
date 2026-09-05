@@ -42,7 +42,7 @@ def test_prime_badge_remains_driven_by_persisted_profile_truth():
     assert '"prime_locked": is_prime' in routes
 
 
-def test_event_alignment_is_not_a_page_poller_or_marketplace_scan():
+def test_event_alignment_is_current_webhook_only_not_page_polling_or_marketplace_scan():
     source = Path(alignment.__file__).read_text(encoding="utf-8")
     assert 'request.path.rstrip("/") != "/governed/webhooks/amazon"' in source
     assert "get_orders" not in source
@@ -51,20 +51,17 @@ def test_event_alignment_is_not_a_page_poller_or_marketplace_scan():
     assert "information_schema" not in source
 
 
-def test_missing_historical_profile_repair_is_bounded_once_and_exact():
+def test_historical_profile_repair_is_prohibited():
     source = Path(alignment.__file__).read_text(encoding="utf-8")
-    assert "_backfill_started" in source
-    assert "_start_missing_profile_repair_once(app)" in source
-    assert "NOW() - INTERVAL '90 days'" in source
-    assert "LIMIT :limit" in source
-    assert "min(int(limit), 100)" in source
-    assert "get_or_refresh_amazon_profile(order, force=True)" in source
-    assert "fbm_order_profiles AS fp" in source
-    assert "fbm_order_operational_state AS ops" in source
-    assert "fp.is_prime IS NULL" in source
-    assert "ops.ship_by_at IS NULL" in source
-    assert "ops.latest_delivery_at IS NULL" in source
-    assert "NOT IN ('FBA','AFN','AMAZON')" in source
+    assert "_backfill_started" not in source
+    assert "_start_missing_profile_repair_once" not in source
+    assert "_hydrate_missing_recent_profiles" not in source
+    assert "INTERVAL '90 days'" not in source
+    assert "get_or_refresh_amazon_profile" not in source
+    assert "threading.Thread" not in source
+    assert "before_request" not in source
+    assert "startup repair" in source.lower()
+    assert "historical replay" in source.lower()
 
 
 def test_existing_exact_profile_read_persists_all_promise_fields():
