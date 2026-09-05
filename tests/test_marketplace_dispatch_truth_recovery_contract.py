@@ -55,10 +55,6 @@ def test_recovery_never_replays_orders_or_writes_marketplaces():
     assert "requests.delete(" not in RECOVERY
 
 
-def test_governed_deploy_runs_one_bounded_cross_market_dispatch_recovery():
-    assert "services/governed_marketplace_dispatch_truth_recovery.py" in DEPLOY
-    assert "Recover stale marketplace dispatch truth once" in DEPLOY
-    assert "recover_bounded_marketplace_dispatch_truth" in DEPLOY
-    assert "store_ids=(22,23)" in DEPLOY
-    assert "max_days=90" in DEPLOY
-    assert "limit_per_store=150" in DEPLOY
+def test_governed_deploy_does_not_run_cross_market_dispatch_recovery():
+    assert "Recover stale marketplace dispatch truth once" not in DEPLOY
+    assert "recover_bounded_marketplace_dispatch_truth" not in DEPLOY
