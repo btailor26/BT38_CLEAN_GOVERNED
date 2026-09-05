@@ -49,3 +49,38 @@ def test_exact_transport_and_bell_remain_db_blind():
     assert "ui._condition.wait(timeout=25.0)" in exact
     assert "db.session" not in ready.split("def _event_only_bell_reader():", 1)[1].split("def _restore_pending_fbm_visibility", 1)[0]
     assert '"db_query": False' in ready
+
+
+def test_every_bell_movement_is_clear_and_contextual():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+
+    for label in (
+        "Sale",
+        "Dispatched",
+        "Picked up",
+        "In transit",
+        "Out for delivery",
+        "Delivered",
+        "Return requested",
+        "Returned",
+        "Refund requested",
+        "Refunded",
+        "Cancellation requested",
+        "Cancelled",
+        "Replacement requested",
+        "Replacement",
+        "Chargeback",
+        "Dispute",
+        "Issue / case",
+    ):
+        assert f'"{label}"' in projection or f"'{label}'" in projection
+
+    assert "_platform_for_event" in projection
+    assert 'return "Amazon"' in projection
+    assert 'return "eBay"' in projection
+    assert 'details.append(f"Order {order_id}")' in projection
+    assert 'details.append(f"SKU {sku}")' in projection
+    assert 'details.append(f"Qty {quantity}")' in projection
+    assert 'details.append(f"Carrier {carrier}")' in projection
+    assert 'details.append(f"Tracking {tracking}")' in projection
+    assert 'title = f"{label} · {platform} · {subject}"' in projection
