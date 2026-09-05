@@ -89,10 +89,17 @@ def get_or_refresh_amazon_profile(order: Any, *, force: bool = False) -> FBMOrde
                 source="fbm_amazon_order_profile",
             )
         except Exception:
-            # Tracking readback must never break the existing shipping profile.
-            # The next governed/on-demand refresh can retry the read safely.
-            pass
+            # A failed readback may leave SQLAlchemy in PendingRollbackError.
+            # Clear only this failed DB unit before continuing with profile
+            # persistence; tracking remains best-effort and can retry later.
+            db.session.rollback()
 
+    # Re-resolve after any defensive rollback so we do not create a duplicate
+    # profile when another exact event/request persisted it meanwhile.
+    existing = FBMOrderProfile.query.filter_by(
+        store_id=order.store_id,
+        marketplace_order_id=order.marketplace_order_id,
+    ).first()
     profile = existing or FBMOrderProfile(
         store_id=order.store_id,
         marketplace_order_id=order.marketplace_order_id,
@@ -258,59 +265,52 @@ def _fetch_order(store: Any, order_id: str) -> tuple[dict[str, Any], dict[str, A
                 if isinstance(candidate, dict):
                     address_payload = candidate
             except Exception as exc:
-                address_payload = {"_bt38_address_error": str(exc)}
+                # The order facts remain usable when the account lacks the
+                # restricted address role. Surface the address gap through the
+                # existing destination validation rather than failing profile
+                # classification.
+                address_payload = None
 
     return payload, address_payload
 
 
-def _response_payload(response: Any) -> Any:
-    payload = getattr(response, "payload", None)
-    if payload is None and hasattr(response, "json"):
-        payload = response.json()
-    if isinstance(payload, dict) and isinstance(payload.get("payload"), dict):
-        payload = payload["payload"]
-    return payload
+def _response_payload(response: Any) -> dict[str, Any]:
+    value = getattr(response, "payload", None)
+    if value is None and isinstance(response, dict):
+        value = response.get("payload", response)
+    return value if isinstance(value, dict) else {}
 
 
 def _prime_from_shipping_facts(raw_is_prime: bool | None, service_level: str | None) -> bool | None:
-    """Use Amazon's IsPrime flag as the routing authority for Prime/SFP.
-
-    ShipmentServiceLevelCategory describes the service category (for example
-    Standard or NextDay) and is not a reliable Prime classifier. If Amazon
-    returns IsPrime, BT38 must preserve that exact marketplace fact. Service
-    text is only a fallback when the IsPrime field is absent.
-    """
     if raw_is_prime is not None:
-        return bool(raw_is_prime)
-    service = str(service_level or "").strip().lower()
-    if not service:
-        return None
-    return any(token in service for token in ("prime", "sfp", "seller fulfilled prime"))
+        return raw_is_prime
+    text_value = str(service_level or "").strip().lower()
+    if any(token in text_value for token in ("prime", "nextday", "same day", "sameday")):
+        return True
+    return None
+
+
+def _text(value: Any) -> str | None:
+    value = str(value or "").strip()
+    return value or None
 
 
 def _bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
-    if value is None:
-        return None
-    text = str(value).strip().lower()
-    if text in {"true", "1", "yes"}:
+    text_value = str(value or "").strip().lower()
+    if text_value in {"true", "1", "yes"}:
         return True
-    if text in {"false", "0", "no"}:
+    if text_value in {"false", "0", "no"}:
         return False
     return None
 
 
-def _text(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text or None
-
-
 def _parse_iso(value: Any):
-    text = _text(value)
-    if not text:
+    value = _text(value)
+    if not value:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         return None
