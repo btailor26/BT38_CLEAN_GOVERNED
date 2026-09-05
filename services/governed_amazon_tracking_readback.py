@@ -4,7 +4,7 @@ Orders API v2026-01-01 exposes FBM order/package truth through includedData=PACK
 This helper is read-only against Amazon and updates existing merchant-fulfilled
 BT38 order rows from Amazon's current marketplace lifecycle/tracking truth. It
 does not create orders, mutate inventory, buy postage, confirm shipment, start
-a scheduler, or touch MCF.
+a scheduler, create a second marketplace shipment record, or touch MCF.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import requests
 
 from amazon_service_live_patch import _load_credentials
 from extensions import db
-from fbm_models import FBMShipment
 from models import MarketplaceOrder
 
 
@@ -131,16 +130,10 @@ def _can_advance_lifecycle(current: Any, incoming: str | None) -> bool:
         return False
     if current_value in _PROTECTED_ISSUE_STATES:
         return False
-    # Exact Amazon pre-dispatch truth may repair routine local processing states
-    # such as failed/processed/order. Pending never regresses an already exact
-    # Unshipped state; Unshipped may advance Pending when Amazon clears payment.
     if incoming_value == "pending":
         return current_value in (_ROUTINE_PRE_DISPATCH_STATES - {"unshipped"})
     if incoming_value == "unshipped":
         return current_value in _ROUTINE_PRE_DISPATCH_STATES
-    # Explicit Amazon cancellation is terminal marketplace lifecycle truth. It
-    # must clear stale routine states such as Processed/Unshipped, but it must
-    # not overwrite a completed Delivered journey or a newer protected issue.
     if incoming_value == "cancelled":
         return current_value != "delivered"
     incoming_rank = _JOURNEY_RANK.get(incoming_value)
@@ -246,8 +239,6 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
     elif len(unique_tracking) > 1:
         ambiguity = "multiple_amazon_packages_require_multi_tracking_storage"
     elif len(packages) == 1:
-        # One package can still carry lifecycle, carrier and shipTime when Amazon
-        # has not supplied a tracking number.
         package = packages[0]
 
     if package is None and not lifecycle_status:
@@ -269,8 +260,6 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
     return {
         "carrier": _text(package.get("carrier")) or None if package is not None else None,
         "tracking_number": _text(package.get("trackingNumber")) or None if package is not None else None,
-        # shipTime is shipment truth. package createdTime must never be invented
-        # as a shipment timestamp.
         "shipped_at": _parse_iso(package.get("shipTime")) if package is not None else None,
         "package_reference_id": _text(package.get("packageReferenceId")) or None if package is not None else None,
         "package_status": raw_package_status,
@@ -279,70 +268,6 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
         "order_status": _order_fulfillment_status(order_payload),
         "truth_source": "orders_2026",
     }, ambiguity
-
-
-def _persist_marketplace_shipment(
-    *,
-    store_id: int,
-    order_id: str,
-    shipment: dict[str, Any],
-    observed_at: datetime,
-) -> tuple[FBMShipment | None, bool]:
-    """Persist exact Amazon shipment identity/state without inventing milestone times."""
-    tracking = _text(shipment.get("tracking_number"))
-    if not tracking:
-        return None, False
-
-    existing = (
-        FBMShipment.query
-        .filter(
-            FBMShipment.store_id == store_id,
-            FBMShipment.marketplace_order_id == order_id,
-            FBMShipment.tracking_number == tracking,
-        )
-        .order_by(FBMShipment.id.desc())
-        .first()
-    )
-    if existing is not None and _text(existing.provider).lower() != "marketplace":
-        return existing, False
-
-    row = existing
-    lifecycle = _text(shipment.get("lifecycle_status")).lower()
-    provider_status = (
-        _text(shipment.get("package_status"))
-        or _text(shipment.get("package_detailed_status"))
-        or _text(shipment.get("order_status"))
-        or lifecycle
-        or "marketplace"
-    )
-
-    if row is None:
-        row = FBMShipment(
-            store_id=store_id,
-            marketplace_order_id=order_id,
-            provider="marketplace",
-            provider_shipment_id=_text(shipment.get("package_reference_id")) or None,
-            carrier=_text(shipment.get("carrier")) or None,
-            tracking_number=tracking,
-            status=lifecycle or ("shipped" if shipment.get("shipped_at") is not None else "marketplace"),
-            last_provider_status=provider_status,
-            last_provider_checked_at=observed_at,
-            marketplace_confirmation_status="marketplace_authoritative",
-        )
-        db.session.add(row)
-        return row, True
-
-    if shipment.get("package_reference_id") and _text(row.provider_shipment_id) != _text(shipment.get("package_reference_id")):
-        row.provider_shipment_id = _text(shipment.get("package_reference_id"))
-    if shipment.get("carrier") and _text(row.carrier) != _text(shipment.get("carrier")):
-        row.carrier = _text(shipment.get("carrier"))
-    if lifecycle and _can_advance_lifecycle(row.status, lifecycle):
-        row.status = lifecycle
-    if _text(row.last_provider_status) != provider_status:
-        row.last_provider_status = provider_status
-    row.last_provider_checked_at = observed_at
-    row.marketplace_confirmation_status = "marketplace_authoritative"
-    return row, True
 
 
 def hydrate_amazon_tracking_for_order(
@@ -460,8 +385,6 @@ def hydrate_amazon_tracking_for_order(
     lifecycle_updates = 0
     for row in eligible:
         changed = False
-        # Amazon is the authority for Amazon-owned lifecycle truth. Carrier and
-        # tracking are optional enrichment; lifecycle never depends on them.
         if shipment.get("carrier") and _text(getattr(row, "carrier", None)) != _text(shipment["carrier"]):
             row.carrier = shipment["carrier"]
             changed = True
@@ -480,15 +403,10 @@ def hydrate_amazon_tracking_for_order(
             row.updated_at = datetime.utcnow()
             updates += 1
 
-    observed_at = datetime.utcnow()
-    shipment_row, shipment_persisted = _persist_marketplace_shipment(
-        store_id=int(store.id),
-        order_id=order_id,
-        shipment=shipment,
-        observed_at=observed_at,
-    )
-
-    if updates or shipment_persisted:
+    # A readback is observation, not a commercial movement. Commit only when the
+    # canonical MarketplaceOrder truth actually changed. Unchanged truth must
+    # leave updated_at untouched and must not generate an after-commit bell event.
+    if updates:
         db.session.commit()
 
     return {
@@ -515,7 +433,7 @@ def hydrate_amazon_tracking_for_order(
         "legacy_order_status": legacy_status,
         "legacy_read_error": legacy_error,
         "source": source,
-        "marketplace_shipment_persisted": bool(shipment_persisted),
-        "marketplace_shipment_id": getattr(shipment_row, "id", None),
+        "marketplace_shipment_persisted": False,
+        "marketplace_shipment_id": None,
         "marketplace_write_started": False,
     }
