@@ -101,7 +101,6 @@ jobs:
             services/fbm_marketplace_confirmation.py services/fbm_post_purchase.py \
             services/fbm_shipping_state.py services/governed_fbm_page_alignment.py \
             services/governed_amazon_tracking_readback.py services/governed_exact_ebay_order_hydration.py \
-            services/governed_marketplace_dispatch_truth_recovery.py \
             services/governed_ebay_oauth_scopes.py services/governed_ebay_shipping_notification_alignment.py \
             services/governed_runtime_engine.py services/governed_webhook_execution.py \
             services/governed_webhook_alignment.py services/governed_push_execution.py \
@@ -184,7 +183,6 @@ jobs:
             services/fbm_post_purchase.py
             services/governed_runtime_engine.py
             services/governed_webhook_execution.py
-            services/governed_marketplace_dispatch_truth_recovery.py
             scripts/verify_production_db_contract.py
           )
           FAILED=0
