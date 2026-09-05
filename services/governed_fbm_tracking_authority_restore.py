@@ -1,8 +1,10 @@
-"""Restore the existing FBM tracking authority split.
+"""Restore the existing FBM tracking authority split without marketplace redirects.
 
-Packlink-purchased tracking remains owned by BT38's existing live Packlink
-journey. Marketplace-supplied tracking remains a direct marketplace link.
-Presentation-only: no DB/provider/marketplace reads and no writes.
+Tracking-number clicks stay inside the existing BT38 shipment-journey modal.
+Persisted purchased-provider shipments remain the stronger physical-shipment
+authority; marketplace tracking is only the fallback journey source when no
+purchased provider shipment exists. Presentation-only: no DB/provider/marketplace
+reads and no writes are introduced here.
 """
 from __future__ import annotations
 
@@ -13,38 +15,68 @@ _SCRIPT = r"""
 <script data-bt38-tracking-authority-restore="1">
 (function () {
   'use strict';
+
   function marketplace(row) {
     var logo = row && row.children[1] && row.children[1].querySelector('.fbm-marketplace-logo');
-    return String(logo && (logo.getAttribute('alt') || logo.getAttribute('title')) || '').trim().toLowerCase();
+    return String(logo && (logo.getAttribute('alt') || logo.getAttribute('title')) || '').trim();
   }
-  function orderId(row) {
-    var node = row && row.children[2] && row.children[2].querySelector('.fw-semibold');
-    return String(node && node.textContent || '').trim();
+
+  function carrier(row) {
+    var node = row && row.children[7] && row.children[7].querySelector('strong');
+    return String(node && node.textContent || marketplace(row) || 'Marketplace').trim();
   }
-  function restore() {
+
+  function alignRowTracking() {
     document.querySelectorAll('.fbm-order-row').forEach(function (row) {
-      var platform = marketplace(row), id = orderId(row), cell = row.children[7];
-      if (!cell || !id) return;
-      cell.querySelectorAll('a.fbm-tracking-journey').forEach(function (link) {
-        var href = '';
-        if (platform.indexOf('ebay') !== -1) href = 'https://www.ebay.co.uk/mesh/ord/details?orderid=' + encodeURIComponent(id);
-        if (platform.indexOf('amazon') !== -1) href = 'https://sellercentral.amazon.co.uk/orders-v3/order/' + encodeURIComponent(id);
-        if (!href) return;
-        link.href = href;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.classList.remove('fbm-tracking-journey');
-        link.removeAttribute('role');
-        link.removeAttribute('tabindex');
-        delete link.dataset.journeySource;
-        delete link.dataset.shipmentId;
-        delete link.dataset.platform;
+      var platform = marketplace(row);
+      var shipmentCell = row.children[7];
+      if (!shipmentCell) return;
+
+      shipmentCell.querySelectorAll(
+        'a[href*="ebay.co.uk/mesh/ord/details"], a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]'
+      ).forEach(function (link) {
+        var tracking = String(link.textContent || '').trim();
+        link.removeAttribute('href');
+        link.removeAttribute('target');
+        link.removeAttribute('rel');
+        link.setAttribute('role', 'button');
+        link.setAttribute('tabindex', '0');
+        link.classList.add('fbm-tracking-journey');
+        link.dataset.trackingNumber = tracking;
+        link.dataset.carrier = carrier(row);
+        if (!link.dataset.journeySource) link.dataset.journeySource = 'marketplace';
+        if (!link.dataset.platform) link.dataset.platform = platform;
       });
     });
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore, {once:true});
-  else restore();
-  new MutationObserver(restore).observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['href','class']});
+
+  function removeMarketplaceRedirectsFromJourney() {
+    var modal = document.getElementById('fbmTrackingJourneyModal');
+    if (!modal) return;
+    modal.querySelectorAll(
+      'a[href*="ebay.co.uk/mesh/ord/details"], a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]'
+    ).forEach(function (link) {
+      link.remove();
+    });
+  }
+
+  function align() {
+    alignRowTracking();
+    removeMarketplaceRedirectsFromJourney();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', align, {once:true});
+  } else {
+    align();
+  }
+
+  new MutationObserver(align).observe(document.documentElement, {
+    childList:true,
+    subtree:true,
+    attributes:true,
+    attributeFilter:['href','class']
+  });
 })();
 </script>
 """
