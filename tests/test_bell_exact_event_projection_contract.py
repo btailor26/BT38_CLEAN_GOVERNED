@@ -56,6 +56,7 @@ def test_every_bell_movement_is_clear_and_contextual():
 
     for label in (
         "Sale",
+        "Get ready to dispatch",
         "Ship by",
         "Late",
         "Shipped",
@@ -126,4 +127,20 @@ def test_generic_commits_are_transport_not_notifications_and_fbm_page_owns_lifec
     assert "td:nth-child(8) code" in projection
     assert "td:nth-child(9) .badge.bg-success" in projection
     assert "if(isGenericTransport(detail)){" in projection
-    assert "var projected=fbmProjection(detail);if(projected)store(projected);" in projection
+    assert "var projected=fbmProjection(detail)" in projection
+    assert "showFbmToast(saved.record)" in projection
+
+
+def test_fbm_page_prime_and_small_box_share_the_same_projection():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+
+    assert 'img[alt="Prime"]' in projection
+    assert "is_prime:prime" in projection
+    assert "platform+' Prime'" in projection
+    assert "function showFbmToast(record)" in projection
+    assert "bt38FbmMovementToasts" in projection
+    assert "window.setTimeout" in projection
+    assert "5000" in projection
+    assert "fbmMovementState.v1" in projection
+    assert "if(movement[key]===record.status_label)return" in projection
+    assert "if(shipment.indexOf('Unshipped')>=0)return 'Get ready to dispatch';" in projection
