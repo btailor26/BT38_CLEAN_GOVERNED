@@ -60,22 +60,25 @@ def _canonical_rank(shipment: FBMShipment, persisted_tracking: str) -> tuple[int
     ))
     physical_provider = provider not in {"", "marketplace"}
     purchased_provider = bool(
-        getattr(shipment, "label_purchased_at", None) is not None
-        or purchase_status == "purchased"
+        physical_provider
+        and (
+            getattr(shipment, "label_purchased_at", None) is not None
+            or purchase_status == "purchased"
+        )
     )
     marketplace_dispatch = bool(
         provider == "marketplace"
         and shipment_status in _MARKETPLACE_DISPATCH_STATES
     )
 
-    # Purchase authority remains stronger than a marketplace proxy. But a
-    # persisted marketplace dispatch result must outrank an abandoned/draft
-    # provider row; otherwise historical shipped orders are rendered unshipped
-    # even though the dispatch truth already exists in this same DB.
+    # The actual purchased label/provider is the physical shipment authority.
+    # Buyer-selected marketplace postage and later marketplace proxy tracking
+    # must never replace that purchase. Exact persisted tracking remains useful
+    # only after purchase authority and original-outbound identity are settled.
     return (
-        1 if exact_tracking_match else 0,
-        1 if not additional_shipment else 0,
         1 if purchased_provider else 0,
+        1 if not additional_shipment else 0,
+        1 if exact_tracking_match else 0,
         1 if marketplace_dispatch else 0,
         1 if physical_provider else 0,
         1 if getattr(shipment, "provider_shipment_id", None) else 0,
