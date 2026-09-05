@@ -3,8 +3,9 @@
 The durable marketplace path already identifies and creates MarketplaceOrder.
 This module reads only that exact eBay order and its exact shipping fulfillments,
 then updates marketplace-owned delivery/lifecycle/tracking fields on those same
-rows. It does not create orders, mutate Warehouse stock, push marketplaces, or
-submit MCF.
+rows. Exact eBay line-item fulfillment instructions are also persisted into the
+existing FBM profile/operational-state promise fields when they are unambiguous.
+It does not create orders, mutate Warehouse stock, push marketplaces, or submit MCF.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import requests
 from sqlalchemy import text
 
 from extensions import db
+from fbm_models import FBMOrderProfile
 from models import MarketplaceOrder
 from services.governed_marketplace_order_import import (
     EBAY_ORDERS_URL,
@@ -168,6 +170,139 @@ def _can_apply_marketplace_status(current: str, incoming: str) -> bool:
         "shipped": 3,
     }
     return rank.get(incoming_value, -1) >= rank.get(current_value, -1)
+
+
+def _single_exact_value(values: list[Any]):
+    """Return one marketplace fact only when the exact order is unambiguous."""
+    present = [value for value in values if value not in (None, "")]
+    if not present:
+        return None
+    first = present[0]
+    return first if all(value == first for value in present) else None
+
+
+def _exact_ebay_promise(order_payload: dict[str, Any]) -> dict[str, Any]:
+    """Read eBay's own handling/delivery windows from the exact getOrder payload.
+
+    eBay exposes shipByDate, minEstimatedDeliveryDate and maxEstimatedDeliveryDate
+    under each lineItemFulfillmentInstructions container. The existing FBM schema
+    is order-level, so conflicting line-level values are deliberately not collapsed
+    or guessed. Single-line and identical multi-line values are safe to persist.
+    """
+    instructions = []
+    for item in order_payload.get("lineItems") or []:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("lineItemFulfillmentInstructions") or {}
+        if isinstance(value, dict):
+            instructions.append(value)
+
+    ship_by = _single_exact_value([
+        _parse_ebay_datetime(value.get("shipByDate")) for value in instructions
+    ])
+    earliest = _single_exact_value([
+        _parse_ebay_datetime(value.get("minEstimatedDeliveryDate")) for value in instructions
+    ])
+    latest = _single_exact_value([
+        _parse_ebay_datetime(value.get("maxEstimatedDeliveryDate")) for value in instructions
+    ])
+
+    services = []
+    for start in order_payload.get("fulfillmentStartInstructions") or []:
+        if not isinstance(start, dict):
+            continue
+        shipping_step = start.get("shippingStep") or {}
+        if isinstance(shipping_step, dict):
+            service = _text(shipping_step.get("shippingServiceCode"))
+            if service:
+                services.append(service)
+    service = _single_exact_value(services)
+
+    return {
+        "shipping_service": service,
+        "ship_by_at": ship_by,
+        "earliest_delivery_at": earliest,
+        "latest_delivery_at": latest,
+    }
+
+
+def _persist_exact_ebay_promise(*, store, order_id: str, order_payload: dict[str, Any]) -> bool:
+    """Persist only exact eBay promise facts already returned by this hydration read."""
+    promise = _exact_ebay_promise(order_payload)
+    if not any(value is not None for value in promise.values()):
+        return False
+
+    now = datetime.utcnow()
+    profile = FBMOrderProfile.query.filter_by(
+        store_id=store.id,
+        marketplace_order_id=order_id,
+    ).first()
+    if profile is None:
+        profile = FBMOrderProfile(
+            store_id=store.id,
+            marketplace_order_id=order_id,
+            platform="ebay",
+            source="exact_ebay_order_hydration",
+        )
+        db.session.add(profile)
+    if promise["shipping_service"]:
+        profile.shipment_service_level = promise["shipping_service"]
+    if promise["ship_by_at"] is not None:
+        profile.latest_ship_at = promise["ship_by_at"]
+    profile.source = "exact_ebay_order_hydration"
+    profile.checked_at = now
+    profile.last_error = None
+
+    db.session.execute(
+        text(
+            """
+            INSERT INTO fbm_order_operational_state (
+                store_id,
+                marketplace_order_id,
+                platform,
+                shipping_service,
+                ship_by_at,
+                earliest_delivery_at,
+                latest_delivery_at,
+                parcel,
+                marketplace_checked_at,
+                created_at,
+                updated_at
+            ) VALUES (
+                :store_id,
+                :order_id,
+                'ebay',
+                :shipping_service,
+                :ship_by_at,
+                :earliest_delivery_at,
+                :latest_delivery_at,
+                CAST(:parcel AS json),
+                :checked_at,
+                :checked_at,
+                :checked_at
+            )
+            ON CONFLICT (store_id, marketplace_order_id)
+            DO UPDATE SET
+                shipping_service = COALESCE(EXCLUDED.shipping_service, fbm_order_operational_state.shipping_service),
+                ship_by_at = COALESCE(EXCLUDED.ship_by_at, fbm_order_operational_state.ship_by_at),
+                earliest_delivery_at = COALESCE(EXCLUDED.earliest_delivery_at, fbm_order_operational_state.earliest_delivery_at),
+                latest_delivery_at = COALESCE(EXCLUDED.latest_delivery_at, fbm_order_operational_state.latest_delivery_at),
+                marketplace_checked_at = EXCLUDED.marketplace_checked_at,
+                updated_at = EXCLUDED.updated_at
+            """
+        ),
+        {
+            "store_id": int(store.id),
+            "order_id": str(order_id),
+            "shipping_service": promise["shipping_service"],
+            "ship_by_at": promise["ship_by_at"],
+            "earliest_delivery_at": promise["earliest_delivery_at"],
+            "latest_delivery_at": promise["latest_delivery_at"],
+            "parcel": "{}",
+            "checked_at": now,
+        },
+    )
+    return True
 
 
 def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -> dict[str, Any]:
@@ -368,6 +503,11 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
             },
         )
 
+    promise_persisted = _persist_exact_ebay_promise(
+        store=store,
+        order_id=order_id,
+        order_payload=order,
+    )
     db.session.commit()
 
     required_address_complete = bool(
@@ -398,6 +538,7 @@ def hydrate_exact_ebay_order(*, store, marketplace_order_id: str, source: str) -
         "fulfillment_lifecycle_rows": fulfillment_lifecycle_rows,
         "tracking_updates": tracking_updates,
         "lifecycle_updates": lifecycle_updates,
+        "promise_persisted": promise_persisted,
         "fulfillment_error": fulfillment_error,
         "marketplace_write_started": False,
     }
