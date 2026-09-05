@@ -188,9 +188,20 @@ def install_fbm_db_delivery_promise_alignment(app: Any) -> None:
                 int(getattr(order, "store_id", 0) or 0),
                 str(getattr(order, "marketplace_order_id", "") or "").strip(),
             )
-            item["delivery_promise"] = _merge_promise(
+            promise = _merge_promise(
                 profile_promises.get(key),
                 operational_promises.get(key),
             )
+            item["delivery_promise"] = promise
+
+            # The existing marketplace proxy is presentation only. Reuse the
+            # exact persisted package service so Amazon/eBay marketplace-owned
+            # shipments render through the same Shipment cell as Packlink,
+            # without creating a second FBMShipment or reading a marketplace.
+            shipment = item.get("shipment")
+            provider = str(getattr(shipment, "provider", "") or "").strip().lower()
+            service = str((promise or {}).get("shipping_service") or "").strip()
+            if shipment is not None and provider == "marketplace" and service:
+                shipment.service = service
 
     app._bt38_fbm_db_delivery_promise_alignment = True
