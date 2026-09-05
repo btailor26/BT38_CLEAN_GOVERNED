@@ -23,7 +23,7 @@ REQUIRED_COLUMNS = {
         "status", "idempotency_key", "created_at", "updated_at",
     },
     "marketplace_listings": {
-        "id", "store_id", "seller_sku", "warehouse_stock_id",
+        "id", "store_id", "external_sku", "warehouse_stock_id",
         "master_product_group_id",
     },
     "warehouse_stock": {
