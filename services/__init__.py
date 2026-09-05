@@ -19,3 +19,9 @@ import services.governed_mcf_tracking_startup_alignment  # noqa: F401,E402
 # SHIPPING_LABEL truth when shipment fulfilment exists. This remains read-only,
 # zero-polling, and persists only into the existing shipping spend ledger.
 import services.governed_ebay_shipping_label_finance_alignment  # noqa: F401,E402
+
+# Existing Amazon FBM profile hydration also recovers Seller Central-purchased
+# Buy Shipping label authority from exact Amazon Finances + Merchant Fulfillment
+# reads. Tracking is optional; the validated Amazon ShipmentId is the durable
+# shipment identity. No worker, poller, second order path, or marketplace write.
+import services.governed_amazon_shipping_label_readback_alignment  # noqa: F401,E402
