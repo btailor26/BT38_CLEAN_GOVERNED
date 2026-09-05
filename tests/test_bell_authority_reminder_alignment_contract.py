@@ -25,6 +25,7 @@ def test_fbm_outstanding_dispatch_reminder_comes_from_current_order_truth():
     assert 'actionable_statuses = ("pending", "unshipped", "confirmed", "partially_shipped")' in READY
     assert '"Get ready to dispatch"' in READY
     assert "MarketplaceOrder.status.in_(actionable_statuses)" in READY
+    assert '"requires_action": True' in READY
 
 
 def test_fbm_journey_reminder_comes_from_existing_shipment_truth():
@@ -33,12 +34,21 @@ def test_fbm_journey_reminder_comes_from_existing_shipment_truth():
     assert '("In transit", "first_movement_at")' in READY
     assert '("Picked up", "carrier_accepted_at")' in READY
     assert '("Shipped", "marketplace_confirmed_at")' in READY
+    assert '"requires_action": False' in READY
 
 
 def test_listing_added_reminder_comes_from_existing_listing_truth():
     assert "MarketplaceListing.created_at >= cutoff" in READY
     assert '"log_type": "marketplace_listing"' in READY
     assert '"Listing added ·' in READY
+    assert '"requires_action": False' in READY
+
+
+def test_badge_counts_only_outstanding_actions_not_all_movements():
+    assert '"action_count": action_count' in READY
+    assert 'record.get("requires_action") is True' in READY
+    assert "records.filter(function(record) { return record && record.requires_action === true; }).length" in READY
+    assert "const pending = records.length;" not in READY
 
 
 def test_opening_bell_replaces_stale_browser_projection_not_authority():
