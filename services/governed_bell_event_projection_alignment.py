@@ -1,10 +1,10 @@
-"""Keep the notification bell on the existing page/session event path.
+"""Keep the notification bell on the existing FBM page/session event path.
 
 The bell is presentation only. It never queries Neon, marketplace APIs or carrier
 APIs. Generic committed order/shipment transport events are not user-facing
-notifications. FBM lifecycle notifications are projected from the already-rendered
-FBM row so the bell mirrors the page's marketplace, product, carrier/tracking and
-journey badge instead of re-interpreting shipment truth.
+notifications. FBM notifications are projected from the already-rendered FBM
+row so the bell and the small movement box mirror the same marketplace, Prime,
+product, carrier/tracking and journey state already owned by FBM.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ _PRESENTATION_SCOPE_KEYS = (
     "product_title",
     "fulfillment_type",
     "provider",
+    "is_prime",
     "notification_label",
     "notification_source",
 )
@@ -114,8 +115,11 @@ def _event_to_bell_record(event: dict) -> dict | None:
     quantity = event.get("quantity")
     carrier = str(event.get("carrier") or event.get("provider") or "").strip()
     tracking = str(event.get("tracking_number") or "").strip()
+    is_prime = bool(event.get("is_prime"))
     subject = product_title or (f"Order {order_id}" if order_id else "Order")
     title = f"{label} · {platform} · {subject}"
+    if is_prime:
+        title = f"{label} · {platform} Prime · {subject}"
 
     details = []
     if order_id:
@@ -131,7 +135,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
     return {
         "event_key": f"runtime:{revision}:{_normalise(label)}:{order_id}:{sku}",
         "id": f"runtime:{revision}",
-        "log_type": "marketplace_sale" if label == "Sale" else "marketplace_lifecycle",
+        "log_type": "marketplace_sale" if label in {"Sale", "Get ready to dispatch"} else "marketplace_lifecycle",
         "platform": platform,
         "title": title,
         "message": message,
@@ -141,6 +145,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
         "quantity": quantity,
         "carrier": carrier,
         "tracking_number": tracking,
+        "is_prime": is_prime,
         "lifecycle_status": _normalise(event.get("lifecycle_status") or event.get("status")),
         "status_label": label,
         "created_at": event.get("published_at"),
@@ -191,13 +196,14 @@ def _patch_exact_scope() -> None:
 
 
 def _browser_event_cache_script() -> str:
-    """Cache only useful notifications this browser actually observed."""
+    """Cache and toast only useful FBM notifications this browser actually observed."""
     return r'''
 <script id="bt38ExactBellBrowserCache">
 (function(){
   if(window.bt38ExactBellBrowserCacheInstalled)return;
   window.bt38ExactBellBrowserCacheInstalled=true;
   var cacheKey='bt38.notifications.exactEventRecords.v1';
+  var movementKey='bt38.notifications.fbmMovementState.v1';
 
   function norm(value){return String(value||'').trim().toLowerCase().replace(/[- ]/g,'_');}
   function isGenericTransport(detail){
@@ -236,6 +242,8 @@ def _browser_event_cache_script() -> str:
   }
   function read(){try{var value=JSON.parse(localStorage.getItem(cacheKey)||'[]');return Array.isArray(value)?value:[];}catch(_){return [];}}
   function write(rows){try{localStorage.setItem(cacheKey,JSON.stringify(rows.slice(0,50)));}catch(_){}}
+  function readMovement(){try{var value=JSON.parse(localStorage.getItem(movementKey)||'{}');return value&&typeof value==='object'?value:{};}catch(_){return {};}}
+  function writeMovement(value){try{localStorage.setItem(movementKey,JSON.stringify(value));}catch(_){}}
   function recordFor(detail){
     if(!detail||typeof detail!=='object')return null;
     var label=labelFor(detail);if(!label)return null;
@@ -243,17 +251,23 @@ def _browser_event_cache_script() -> str:
     var sku=String(detail.seller_sku||detail.sku||'').trim(),platform=platformFor(detail);
     var productTitle=String(detail.product_title||'').trim(),subject=productTitle||(orderId?'Order '+orderId:'Order');
     var carrier=String(detail.carrier||detail.provider||'').trim(),tracking=String(detail.tracking_number||'').trim();
-    var quantity=detail.quantity,parts=[];
+    var quantity=detail.quantity,isPrime=detail.is_prime===true||String(detail.is_prime||'').toLowerCase()==='true',parts=[];
     if(orderId)parts.push('Order '+orderId);if(quantity!==undefined&&quantity!==null&&quantity!=='')parts.push('Qty '+quantity);
     if(carrier)parts.push('Carrier '+carrier);if(tracking)parts.push('Tracking '+tracking);
-    var title=label+' · '+platform+' · '+subject,message=parts.length?parts.join(' · '):title;
+    var marketTitle=isPrime?platform+' Prime':platform;
+    var title=label+' · '+marketTitle+' · '+subject,message=parts.length?parts.join(' · '):title;
     return {event_key:'runtime:'+revision+':'+norm(label)+':'+orderId+':'+sku,id:'runtime:'+revision,
-      log_type:label==='Sale'?'marketplace_sale':'marketplace_lifecycle',platform:platform,title:title,message:message,
-      order_id:orderId,sku:sku,product_title:productTitle,quantity:quantity,carrier:carrier,tracking_number:tracking,
+      log_type:(label==='Sale'||label==='Get ready to dispatch')?'marketplace_sale':'marketplace_lifecycle',platform:platform,title:title,message:message,
+      order_id:orderId,sku:sku,product_title:productTitle,quantity:quantity,carrier:carrier,tracking_number:tracking,is_prime:isPrime,
       lifecycle_status:norm(detail.lifecycle_status||detail.status),status_label:label,
       created_at:detail.published_at||new Date().toISOString()};
   }
-  function store(detail){var record=recordFor(detail);if(!record)return;var rows=read().filter(function(row){return row&&row.event_key!==record.event_key;});rows.unshift(record);write(rows);}
+  function store(detail){
+    var record=recordFor(detail);if(!record)return null;
+    var rows=read(),exists=rows.some(function(row){return row&&row.event_key===record.event_key;});
+    rows=rows.filter(function(row){return row&&row.event_key!==record.event_key;});rows.unshift(record);write(rows);
+    return {record:record,isNew:!exists};
+  }
 
   function fbmRowFor(orderId){
     var rows=document.querySelectorAll('.fbm-orders-table tbody .fbm-order-row');
@@ -274,6 +288,7 @@ def _browser_event_cache_script() -> str:
     if(reached.indexOf('Picked up')>=0)return 'Picked up';
     var shipment=text(row.querySelector('td:nth-child(8)'));
     if(shipment&&shipment.indexOf('Unshipped')<0)return 'Shipped';
+    if(shipment.indexOf('Unshipped')>=0)return 'Get ready to dispatch';
     return '';
   }
   function fbmProjection(detail){
@@ -282,21 +297,42 @@ def _browser_event_cache_script() -> str:
     var row=fbmRowFor(orderId);if(!row)return null;
     var label=fbmLabel(row);if(!label)return null;
     var marketCell=row.querySelector('td:nth-child(2)'),logo=marketCell&&marketCell.querySelector('.fbm-marketplace-logo');
-    var platform=String(logo&&logo.getAttribute('alt')||text(marketCell.querySelector('strong'))||'').trim();
+    var platform=String(logo&&logo.getAttribute('alt')||text(marketCell&&marketCell.querySelector('strong'))||'').trim();
+    var prime=!!(marketCell&&marketCell.querySelector('img[alt="Prime"]'));
     var productTitle=text(row.querySelector('td:nth-child(4) strong'));
     var quantity=text(row.querySelector('td:nth-child(5)'));
     var carrier=text(row.querySelector('td:nth-child(8) strong'));
     var tracking=text(row.querySelector('td:nth-child(8) code'));
     return Object.assign({},detail,{
       notification_label:label,notification_source:'fbm_page',platform:platform,product_title:productTitle,
-      quantity:quantity,carrier:carrier,tracking_number:tracking,source:'fbm_page'
+      quantity:quantity,carrier:carrier,tracking_number:tracking,is_prime:prime,source:'fbm_page'
     });
+  }
+  function showFbmToast(record){
+    if(!record)return;
+    var movement=readMovement(),key=String(record.order_id||record.event_key||'').trim();
+    if(key&&movement[key]===record.status_label)return;
+    if(key){movement[key]=record.status_label;writeMovement(movement);}
+    var host=document.getElementById('bt38FbmMovementToasts');
+    if(!host){
+      host=document.createElement('div');host.id='bt38FbmMovementToasts';
+      host.setAttribute('aria-live','polite');
+      host.style.cssText='position:fixed;right:18px;top:78px;z-index:1085;width:min(360px,calc(100vw - 36px));display:flex;flex-direction:column;gap:8px;';
+      document.body.appendChild(host);
+    }
+    var box=document.createElement('div');
+    box.className='card shadow-sm border';
+    box.style.cssText='padding:10px 12px;background:var(--bs-body-bg,#fff);';
+    var heading=document.createElement('div');heading.className='fw-semibold small';heading.textContent=record.title;
+    var meta=document.createElement('div');meta.className='small text-muted mt-1';meta.textContent=record.message||'';
+    box.appendChild(heading);if(meta.textContent)box.appendChild(meta);host.appendChild(box);
+    window.setTimeout(function(){if(box&&box.parentNode)box.parentNode.removeChild(box);},5000);
   }
 
   window.addEventListener('bt38-marketplace-event',function(event){
     var detail=event&&event.detail||{};
     if(isGenericTransport(detail)){
-      var projected=fbmProjection(detail);if(projected)store(projected);
+      var projected=fbmProjection(detail);if(projected){var saved=store(projected);if(saved&&saved.isNew)showFbmToast(saved.record);}
       return;
     }
     store(detail);
@@ -337,8 +373,12 @@ def _inject_browser_cache(response):
 def install_governed_bell_event_projection_alignment(app) -> None:
     """Install one final zero-query bell observer over the existing event/session path."""
     from services import governed_fbm_ready_landing_alignment as ready
+    from services.governed_fbm_sale_authority_alignment import (
+        install_governed_fbm_sale_authority_alignment,
+    )
 
     _patch_exact_scope()
+    install_governed_fbm_sale_authority_alignment(app)
     ready._event_to_bell_record = _event_to_bell_record
 
     endpoint = "governed.governed_ui_notifications"
