@@ -335,7 +335,8 @@ def _browser_event_cache_script() -> str:
       var projected=fbmProjection(detail);if(projected){var saved=store(projected);if(saved&&saved.isNew)showFbmToast(saved.record);}
       return;
     }
-    store(detail);
+    var saved=store(detail),owned=norm(detail.notification_source||detail.source);
+    if(saved&&saved.isNew&&owned==='fbm_page')showFbmToast(saved.record);
   });
 
   var previousFetch=window.fetch.bind(window);
