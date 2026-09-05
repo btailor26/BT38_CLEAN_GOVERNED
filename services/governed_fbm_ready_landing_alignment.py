@@ -37,7 +37,7 @@ _COMMERCIAL_LABELS = (
     (("in_transit",), "In transit"),
     (("carrier_accepted", "picked_up", "collected"), "Picked up"),
     (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped"), "Shipped"),
-    (("marketplace_sale", "sale", "order_received", "new_order", "confirmed", "unshipped", "pending"), "Get ready to dispatch"),
+    (("marketplace_sale", "sale", "order_received", "new_order", "confirmed", "unshipped"), "Get ready to dispatch"),
 )
 
 _AUTHORITY_OWNED_FBM_LABELS = {
@@ -143,10 +143,9 @@ def _event_only_bell_reader():
 
     records = []
 
-    # FBM is the order/dispatch authority. Only orders still requiring dispatch
-    # remain as dispatch reminders. Once FBM moves away from these states the old
-    # reminder naturally disappears without the bell writing any state.
-    actionable_statuses = ("pending", "unshipped", "confirmed", "partially_shipped")
+    # Amazon/eBay Pending is marketplace acknowledgement, not dispatch work.
+    # The bell becomes actionable only when FBM authority says dispatch is due.
+    actionable_statuses = ("unshipped", "confirmed", "partially_shipped")
     order_rows = (
         db.session.query(
             MarketplaceOrder.id,
@@ -201,7 +200,8 @@ def _event_only_bell_reader():
 
     # Current FBM journey is authority-backed. Project only the highest reached
     # persisted milestone for each recent shipment/order, never reconstructing a
-    # historical journey.
+    # historical journey. Join the same MarketplaceOrder/Warehouse identity only
+    # for presentation context so users can see what product moved.
     shipment_rows = (
         db.session.query(
             FBMShipment.id,
@@ -216,10 +216,19 @@ def _event_only_bell_reader():
             FBMShipment.delivered_at,
             FBMShipment.updated_at,
             Store.platform,
+            MarketplaceOrder.sku,
+            MarketplaceOrder.quantity,
+            WarehouseStock.product_name,
         )
         .join(Store, Store.id == FBMShipment.store_id)
+        .outerjoin(
+            MarketplaceOrder,
+            (MarketplaceOrder.store_id == FBMShipment.store_id)
+            & (MarketplaceOrder.marketplace_order_id == FBMShipment.marketplace_order_id),
+        )
+        .outerjoin(WarehouseStock, WarehouseStock.id == MarketplaceOrder.warehouse_stock_id)
         .filter(FBMShipment.updated_at >= cutoff)
-        .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc())
+        .order_by(FBMShipment.updated_at.desc(), FBMShipment.id.desc(), MarketplaceOrder.id.asc())
         .limit(probe)
         .all()
     )
@@ -249,14 +258,27 @@ def _event_only_bell_reader():
             records.remove(order_by_identity[identity])
         order_id = identity[1]
         carrier = str(row.carrier or row.provider or "").strip()
+        sku = str(row.sku or "").strip()
+        quantity = int(row.quantity or 0)
+        product_title = str(row.product_name or sku or order_id or "Order").strip()
+        message_parts = [f"Order {order_id}"]
+        if quantity:
+            message_parts.append(f"Qty {quantity}")
+        if sku:
+            message_parts.append(sku)
+        if carrier:
+            message_parts.append(f"Carrier {carrier}")
         records.append({
             "event_key": f"fbm-journey:{row.id}:{_normalise(label)}:{changed_at.isoformat()}",
             "id": f"shipment:{row.id}",
             "log_type": "marketplace_lifecycle",
             "platform": row.platform or "Marketplace",
-            "title": f"{label} · {row.platform or 'Marketplace'} · Order {order_id}",
-            "message": " · ".join(part for part in (f"Order {order_id}", f"Carrier {carrier}" if carrier else "") if part),
+            "title": f"{label} · {row.platform or 'Marketplace'} · {product_title}",
+            "message": " · ".join(message_parts),
             "order_id": order_id,
+            "sku": sku,
+            "product_title": product_title,
+            "quantity": quantity,
             "carrier": carrier,
             "status_label": label,
             "requires_action": False,
