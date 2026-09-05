@@ -14,3 +14,8 @@ import services.governed_fba_settlement_ui_alignment  # noqa: F401,E402
 # including multi-package tracking that arrives after a Fly sleep/restart.
 # This reuses the existing MCF refresh and marketplace enrichment path.
 import services.governed_mcf_tracking_startup_alignment  # noqa: F401,E402
+
+# Exact eBay shipment hydration also checks the exact order's eBay Finances
+# SHIPPING_LABEL truth when shipment fulfilment exists. This remains read-only,
+# zero-polling, and persists only into the existing shipping spend ledger.
+import services.governed_ebay_shipping_label_finance_alignment  # noqa: F401,E402
