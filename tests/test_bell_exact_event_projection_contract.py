@@ -106,3 +106,24 @@ def test_browser_projection_matches_server_product_title_and_no_visible_sku():
     assert "parts.push('SKU '+sku)" not in projection
     assert "carrier=String(detail.carrier||detail.provider||'').trim()" in projection
     assert "return 'Marketplace';" in projection
+
+
+def test_generic_commits_are_transport_not_notifications_and_fbm_page_owns_lifecycle_projection():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+
+    assert "_is_generic_transport_event" in projection
+    assert 'event_type in {"order_committed", "shipment_committed"}' in projection
+    assert "if _is_generic_transport_event(event):\n        return None" in projection
+    assert "function isGenericTransport(detail)" in projection
+    assert "function fbmRowFor(orderId)" in projection
+    assert "function fbmLabel(row)" in projection
+    assert "function fbmProjection(detail)" in projection
+    assert "notification_source:'fbm_page'" in projection
+    assert "notification_label:label" in projection
+    assert "td:nth-child(2)" in projection
+    assert "td:nth-child(4) strong" in projection
+    assert "td:nth-child(8) strong" in projection
+    assert "td:nth-child(8) code" in projection
+    assert "td:nth-child(9) .badge.bg-success" in projection
+    assert "if(isGenericTransport(detail)){" in projection
+    assert "var projected=fbmProjection(detail);if(projected)store(projected);" in projection
