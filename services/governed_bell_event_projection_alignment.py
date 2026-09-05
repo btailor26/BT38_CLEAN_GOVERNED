@@ -47,8 +47,6 @@ def _label_for_event(event: dict) -> str | None:
     if explicit:
         return explicit
 
-    # A canonical commit is transport, not a notification. The FBM page/session
-    # projects the user-facing lifecycle event from its already-rendered row.
     if _is_generic_transport_event(event):
         return None
 
@@ -153,7 +151,6 @@ def _event_to_bell_record(event: dict) -> dict | None:
 
 
 def _patch_exact_scope() -> None:
-    """Carry only already-loaded scalar fields through the existing event queue."""
     from fbm_models import FBMShipment
     from models import MarketplaceOrder
     from services import governed_exact_record_event_alignment as exact
@@ -196,14 +193,16 @@ def _patch_exact_scope() -> None:
 
 
 def _browser_event_cache_script() -> str:
-    """Cache and toast only useful FBM notifications this browser actually observed."""
     return r'''
 <script id="bt38ExactBellBrowserCache">
 (function(){
   if(window.bt38ExactBellBrowserCacheInstalled)return;
   window.bt38ExactBellBrowserCacheInstalled=true;
-  var cacheKey='bt38.notifications.exactEventRecords.v1';
-  var movementKey='bt38.notifications.fbmMovementState.v1';
+
+  var legacyKeys=['bt38.notifications.exactEventRecords.v1','bt38.notifications.fbmMovementState.v1'];
+  legacyKeys.forEach(function(key){try{localStorage.removeItem(key);}catch(_){}});
+  var cacheKey='bt38.notifications.exactEventRecords.v2';
+  var movementKey='bt38.notifications.fbmMovementState.v2';
 
   function norm(value){return String(value||'').trim().toLowerCase().replace(/[- ]/g,'_');}
   function isGenericTransport(detail){
@@ -268,7 +267,6 @@ def _browser_event_cache_script() -> str:
     rows=rows.filter(function(row){return row&&row.event_key!==record.event_key;});rows.unshift(record);write(rows);
     return {record:record,isNew:!exists};
   }
-
   function fbmRowFor(orderId){
     var rows=document.querySelectorAll('.fbm-orders-table tbody .fbm-order-row');
     for(var i=0;i<rows.length;i++){
@@ -328,7 +326,6 @@ def _browser_event_cache_script() -> str:
     box.appendChild(heading);if(meta.textContent)box.appendChild(meta);host.appendChild(box);
     window.setTimeout(function(){if(box&&box.parentNode)box.parentNode.removeChild(box);},5000);
   }
-
   window.addEventListener('bt38-marketplace-event',function(event){
     var detail=event&&event.detail||{};
     if(isGenericTransport(detail)){
@@ -338,7 +335,6 @@ def _browser_event_cache_script() -> str:
     var saved=store(detail),owned=norm(detail.notification_source||detail.source);
     if(saved&&saved.isNew&&owned==='fbm_page')showFbmToast(saved.record);
   });
-
   var previousFetch=window.fetch.bind(window);
   window.fetch=async function(input,init){
     var response=await previousFetch(input,init),url=typeof input==='string'?input:(input&&input.url)||'';
@@ -372,7 +368,6 @@ def _inject_browser_cache(response):
 
 
 def install_governed_bell_event_projection_alignment(app) -> None:
-    """Install one final zero-query bell observer over the existing event/session path."""
     from services import governed_fbm_ready_landing_alignment as ready
     from services.governed_fbm_sale_authority_alignment import (
         install_governed_fbm_sale_authority_alignment,
@@ -391,5 +386,5 @@ def install_governed_bell_event_projection_alignment(app) -> None:
         app._bt38_exact_bell_browser_cache_installed = True
 
     app.logger.info(
-        "BT38 bell aligned: FBM page notifier projection, zero DB/API bell reads, bounded browser-observed history, no polling"
+        "BT38 bell aligned: current FBM page/session events only; legacy browser cache removed; zero DB/API bell reads; no polling"
     )
