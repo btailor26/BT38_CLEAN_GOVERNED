@@ -20,6 +20,20 @@ def test_prime_profile_comes_from_current_amazon_sale_webhook_only():
     assert "request_rejected_webhook_recovery" not in source
 
 
+def test_new_sale_uses_existing_transport_once_and_only_when_created():
+    source = Path("services/governed_fbm_sale_authority_alignment.py").read_text()
+
+    assert "def _response_created_order" in source
+    assert "created_sale = _response_created_order" in source
+    assert "if created_sale:" in source
+    assert "publish_governed_ui_event(" in source
+    assert 'source="fbm_page"' in source
+    assert '"event_type": "fbm_sale_ready"' in source
+    assert '"notification_label": "Get ready to dispatch"' in source
+    assert '"notification_source": "fbm_page"' in source
+    assert '"is_prime": bool(is_prime)' in source
+
+
 def test_existing_bell_installer_installs_sale_authority_without_second_transport():
     projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
     source = Path("services/governed_fbm_sale_authority_alignment.py").read_text()
@@ -28,5 +42,4 @@ def test_existing_bell_installer_installs_sale_authority_without_second_transpor
     assert "EventSource" not in source
     assert "BroadcastChannel" not in source
     assert "setInterval" not in source
-    assert "publish_governed_ui_event" not in source
     assert "publish_webhook_ui_event" not in source
