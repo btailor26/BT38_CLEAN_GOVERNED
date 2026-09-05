@@ -1,54 +1,46 @@
 from pathlib import Path
 
 
-SOURCE = Path(
+TRACKING = Path(
     "services/governed_amazon_tracking_readback.py"
+).read_text(encoding="utf-8")
+PROMISE = Path(
+    "services/fbm_db_delivery_promise_alignment.py"
+).read_text(encoding="utf-8")
+LIFECYCLE = Path(
+    "services/governed_fbm_lifecycle_alignment.py"
+).read_text(encoding="utf-8")
+STATE = Path(
+    "services/fbm_shipping_state.py"
 ).read_text(encoding="utf-8")
 
 
-def _persistence_block() -> str:
-    return SOURCE.split(
-        "def _persist_marketplace_shipment(", 1
-    )[1].split(
-        "def hydrate_amazon_tracking_for_order(", 1
-    )[0]
+def test_exact_amazon_package_readback_preserves_physical_shipping_service():
+    assert 'package.get("shippingService")' in TRACKING
+    assert '"shipping_service": shipment.get("shipping_service")' in TRACKING
+    assert "fbm_order_operational_state" in TRACKING
+    assert "shipping_service=EXCLUDED.shipping_service" in TRACKING
+    assert "IS DISTINCT FROM EXCLUDED.shipping_service" in TRACKING
 
 
-def test_exact_amazon_tracking_persists_marketplace_owned_physical_shipment():
-    block = _persistence_block()
-    assert "from fbm_models import FBMShipment" in SOURCE
-    assert "FBMShipment.store_id == store_id" in block
-    assert "FBMShipment.marketplace_order_id == order_id" in block
-    assert "FBMShipment.tracking_number == tracking" in block
-    assert 'provider="marketplace"' in block
-    assert 'marketplace_confirmation_status="marketplace_authoritative"' in block
-    assert "db.session.add(row)" in block
+def test_marketplace_package_service_reuses_existing_fbm_shipment_presentation():
+    assert 'provider == "marketplace"' in PROMISE
+    assert 'shipment.service = service' in PROMISE
+    assert 'item["delivery_promise"] = promise' in PROMISE
 
 
-def test_marketplace_shipment_does_not_override_bt38_owned_same_tracking():
-    block = _persistence_block()
-    assert '_text(existing.provider).lower() != "marketplace"' in block
-    assert "return existing, False" in block
-    assert "purchase_key=" not in block
-    assert "label_purchased_at=" not in block
+def test_marketplace_journey_uses_existing_proxy_without_fake_db_shipment():
+    assert 'provider="marketplace"' in LIFECYCLE
+    assert "SimpleNamespace(" in LIFECYCLE
+    assert "_marketplace_proven_state" in STATE
+    assert "FBMShipment(" not in TRACKING
+    assert '"marketplace_shipment_persisted": False' in TRACKING
+    assert '"marketplace_write_started": False' in TRACKING
 
 
-def test_marketplace_readback_persists_lifecycle_without_inventing_milestone_times():
-    block = _persistence_block()
-    assert "lifecycle = _text(shipment.get(\"lifecycle_status\")).lower()" in block
-    assert "_can_advance_lifecycle(row.status, lifecycle)" in block
-    assert "row.status = lifecycle" in block
-    assert "last_provider_status=provider_status" in block
-    assert "last_provider_checked_at=observed_at" in block
-    assert "carrier_accepted_at" not in block
-    assert "first_movement_at" not in block
-    assert "delivered_at" not in block
-    assert "createdTime" not in block
-
-
-def test_amazon_readback_commits_marketplace_shipment_with_existing_order_update():
-    hydrate = SOURCE.split("def hydrate_amazon_tracking_for_order(", 1)[1]
-    assert "_persist_marketplace_shipment(" in hydrate
-    assert "if updates or shipment_persisted:" in hydrate
-    assert "db.session.commit()" in hydrate
-    assert '"marketplace_write_started": False' in hydrate
+def test_marketplace_lifecycle_remains_explicit_amazon_truth():
+    assert '"PICKEDUPBYCARRIER": "picked_up"' in TRACKING
+    assert '"CHECKEDINTOCARRIERHUB": "in_transit"' in TRACKING
+    assert '"OUTFORDELIVERY": "out_for_delivery"' in TRACKING
+    assert '"DELIVERED": "delivered"' in TRACKING
+    assert 'if provider == "marketplace":' in STATE
