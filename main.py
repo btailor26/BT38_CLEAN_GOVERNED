@@ -37,6 +37,7 @@ from services.governed_exact_record_event_alignment import install_governed_exac
 from services.governed_bell_event_projection_alignment import install_governed_bell_event_projection_alignment
 from services.governed_webhook_bell_event_alignment import install_governed_webhook_bell_event_alignment
 from services.governed_amazon_fbm_profile_event_alignment import install_governed_amazon_fbm_profile_event_alignment
+from services.governed_fbm_current_amazon_profile_alignment import install_governed_fbm_current_amazon_profile_alignment
 from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
 
 install_governed_notification_read_alignment(app)
@@ -66,8 +67,12 @@ install_governed_fbm_small_alignment(app)
 install_governed_fbm_ready_landing_alignment(app)
 # Amazon ORDER_CHANGE already carries Prime/program and, when supplied, promise
 # truth. Persist that exact event into the existing FBM profile/operational rows
-# once; the FBM page remains DB-only and does not poll Amazon per row.
+# once; there is no broad startup recovery.
 install_governed_amazon_fbm_profile_event_alignment(app)
+# If a current Ready-to-dispatch Amazon order predates that event persistence and
+# has no profile, the existing exact Amazon profile reader hydrates that one
+# current desk record before /fbm renders. This is not a bell or recovery path.
+install_governed_fbm_current_amazon_profile_alignment(app)
 # Exact committed events drive the browser-observed bell cache. Successful
 # webhook order events must publish even when stock/page state is unchanged.
 install_governed_webhook_bell_event_alignment(app)
