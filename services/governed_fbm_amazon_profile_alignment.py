@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from flask import g
 
+from extensions import db
 from services.fbm_amazon_order_profile import (
     AmazonOrderProfileError,
     get_or_refresh_amazon_profile,
@@ -55,20 +56,23 @@ def _governed_profile_map(rows):
 
     refreshed = False
     for row in rows:
-        if not _amazon_row(row) or row.store_id is None or not row.marketplace_order_id:
-            continue
-        key = (int(row.store_id), str(row.marketplace_order_id))
-        if _profile_complete(profiles.get(key)):
-            continue
         try:
+            if not _amazon_row(row) or row.store_id is None or not row.marketplace_order_id:
+                continue
+            key = (int(row.store_id), str(row.marketplace_order_id))
+            if _profile_complete(profiles.get(key)):
+                continue
             get_or_refresh_amazon_profile(row)
             refreshed = True
         except AmazonOrderProfileError:
-            # Preserve the existing persisted fallback and keep the FBM page
-            # usable. A later governed request can retry the exact Amazon read.
+            # Hydration is temporary compatibility only. Any failed unit must
+            # be rolled back before the next visible row or page DB read.
+            db.session.rollback()
             continue
         except Exception:
-            # Marketplace/readback failures must not take down the FBM desk.
+            # Marketplace/readback/autoflush failures must never poison the
+            # shared request session or take down the FBM desk.
+            db.session.rollback()
             continue
 
     return _original_profile_map(rows) if refreshed else profiles
