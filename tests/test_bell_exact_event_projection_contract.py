@@ -31,11 +31,14 @@ def test_older_db_backed_bell_wrappers_cannot_remain_final_authority():
     assert 'app.view_functions[endpoint] = login_required(ready._event_only_bell_reader)' in projection
 
 
-def test_bell_keeps_bounded_browser_observed_history_without_db_hydration():
+def test_bell_uses_new_bounded_cache_and_drops_legacy_false_history():
     projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
     ready = Path("services/governed_fbm_ready_landing_alignment.py").read_text()
 
-    assert "bt38.notifications.exactEventRecords.v1" in projection
+    assert "bt38.notifications.exactEventRecords.v2" in projection
+    assert "bt38.notifications.fbmMovementState.v2" in projection
+    assert "legacyKeys=['bt38.notifications.exactEventRecords.v1','bt38.notifications.fbmMovementState.v1']" in projection
+    assert "localStorage.removeItem(key)" in projection
     assert "rows.slice(0,50)" in projection
     assert "window.addEventListener('bt38-marketplace-event'" in projection
     assert 'html = html.replace("hydrateBellAfterWake();", "stale = true;")' in ready
@@ -141,8 +144,8 @@ def test_fbm_page_prime_and_small_box_share_the_same_projection():
     assert "bt38FbmMovementToasts" in projection
     assert "window.setTimeout" in projection
     assert "5000" in projection
-    assert "fbmMovementState.v1" in projection
-    assert "if(movement[key]===record.status_label)return" in projection
+    assert "fbmMovementState.v2" in projection
+    assert "if(key&&movement[key]===record.status_label)return" in projection
     assert "if(shipment.indexOf('Unshipped')>=0)return 'Get ready to dispatch';" in projection
 
 
