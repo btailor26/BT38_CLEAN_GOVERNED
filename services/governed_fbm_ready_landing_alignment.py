@@ -50,6 +50,22 @@ _AUTHORITY_OWNED_FBM_LABELS = {
     "Delivered",
 }
 
+# The badge is an outstanding-action count, not a movement/history count.
+# Informational movements remain visible in the bell but never inflate the red
+# action badge. Resolution still belongs to the underlying authority.
+_ACTION_LABELS = {
+    "Get ready to dispatch",
+    "Partially dispatched",
+    "Return requested",
+    "Refund requested",
+    "Cancellation requested",
+    "Replacement requested",
+    "Chargeback",
+    "Dispute",
+    "Issue / case",
+    "Late",
+}
+
 
 def _normalise(value) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -105,6 +121,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
         "quantity": quantity,
         "carrier": carrier,
         "status_label": label,
+        "requires_action": label in _ACTION_LABELS,
         "created_at": event.get("published_at"),
     }
 
@@ -176,6 +193,7 @@ def _event_only_bell_reader():
             "quantity": int(row.quantity or 0),
             "lifecycle_status": status,
             "status_label": label,
+            "requires_action": True,
             "created_at": changed_at.isoformat() if changed_at else None,
         }
         records.append(record)
@@ -241,6 +259,7 @@ def _event_only_bell_reader():
             "order_id": order_id,
             "carrier": carrier,
             "status_label": label,
+            "requires_action": False,
             "created_at": changed_at.isoformat(),
         })
 
@@ -277,6 +296,7 @@ def _event_only_bell_reader():
             "sku": sku,
             "product_title": product_title,
             "status_label": "Listing added",
+            "requires_action": False,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         })
 
@@ -302,9 +322,12 @@ def _event_only_bell_reader():
         if len(unique) >= limit:
             break
 
+    action_count = sum(1 for record in unique if record.get("requires_action") is True)
+
     return jsonify({
         "success": True,
         "records": unique,
+        "action_count": action_count,
         "latest_event_at": unique[0].get("created_at") if unique else None,
         "source": "current_authority_projection",
         "bell_authority": False,
@@ -386,10 +409,11 @@ def _align_ready_landing_html(html: str) -> str:
     html = html.replace("hydrateBellAfterWake();", "stale = true;")
 
     # The bell is a reminder, not an inbox. Opening it must never mark an
-    # authority-backed action as completed.
+    # authority-backed action as completed. The red badge counts actions only;
+    # completed/informational movements may remain visible without inflating it.
     html = re.sub(
         r"function updateUnread\(\) \{.*?\n        \}\n\n        function markSeen\(\) \{.*?\n        \}",
-        "function updateUnread() {\n            const pending = records.length;\n            setBadge(pending);\n            setBellLight(pending > 0);\n        }\n\n        function markSeen() {\n            // Reminder resolution belongs to Warehouse/FBM authority, not the bell.\n            updateUnread();\n        }",
+        "function updateUnread() {\n            const pending = records.filter(function(record) { return record && record.requires_action === true; }).length;\n            setBadge(pending);\n            setBellLight(pending > 0);\n        }\n\n        function markSeen() {\n            // Reminder resolution belongs to Warehouse/FBM authority, not the bell.\n            updateUnread();\n        }",
         html,
         count=1,
         flags=re.S,
