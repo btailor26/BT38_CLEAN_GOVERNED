@@ -4,7 +4,7 @@ The bell remains presentation only. It owns no business state and performs no
 marketplace/provider calls. On explicit bell open it projects the current
 persisted authorities already owned by BT38: Warehouse/listing truth for listing
 reminders and FBM/order/shipment truth for dispatch/journey reminders. Existing
-in-session governed events are still included for immediate movement display.
+in-session governed events are still included for immediate non-FBM movements.
 
 Opening the bell does not action a reminder. A reminder changes or disappears
 only when its underlying authority changes (for example FBM Unshipped ->
@@ -39,6 +39,16 @@ _COMMERCIAL_LABELS = (
     (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped"), "Shipped"),
     (("marketplace_sale", "sale", "order_received", "new_order", "confirmed", "unshipped", "pending"), "Get ready to dispatch"),
 )
+
+_AUTHORITY_OWNED_FBM_LABELS = {
+    "Get ready to dispatch",
+    "Partially dispatched",
+    "Shipped",
+    "Picked up",
+    "In transit",
+    "Out for delivery",
+    "Delivered",
+}
 
 
 def _normalise(value) -> str:
@@ -99,8 +109,8 @@ def _event_to_bell_record(event: dict) -> dict | None:
     }
 
 
-def _authority_bell_reader():
-    """Project reminders from existing authorities only when the bell is opened."""
+def _event_only_bell_reader():
+    """Existing bell endpoint, now aligned to current authorities on bell open."""
     from extensions import db
     from fbm_models import FBMShipment
     from models import MarketplaceListing, MarketplaceOrder, Store, WarehouseStock
@@ -171,8 +181,9 @@ def _authority_bell_reader():
         records.append(record)
         order_by_identity[(row.store_id, order_id)] = record
 
-    # Current FBM journey is also authority-backed. Project one highest reached
-    # milestone per shipment/order rather than replaying every historical step.
+    # Current FBM journey is authority-backed. Project only the highest reached
+    # persisted milestone for each recent shipment/order, never reconstructing a
+    # historical journey.
     shipment_rows = (
         db.session.query(
             FBMShipment.id,
@@ -216,8 +227,6 @@ def _authority_bell_reader():
         if not label or changed_at is None:
             continue
         journey_seen.add(identity)
-        # A journey state supersedes an outstanding dispatch reminder for the
-        # same exact order if both rows happen to coexist during persistence.
         if identity in order_by_identity:
             records.remove(order_by_identity[identity])
         order_id = identity[1]
@@ -235,9 +244,8 @@ def _authority_bell_reader():
             "created_at": changed_at.isoformat(),
         })
 
-    # Warehouse/listing persistence is the listing authority. New listing
-    # reminders are projected from the existing MarketplaceListing row; there is
-    # no bell-owned listing state or notification table.
+    # MarketplaceListing is existing persisted Warehouse/listing truth. The bell
+    # does not create or own a listing state.
     listing_rows = (
         db.session.query(
             MarketplaceListing.id,
@@ -272,15 +280,14 @@ def _authority_bell_reader():
             "created_at": row.created_at.isoformat() if row.created_at else None,
         })
 
-    # Preserve the already-existing exact event handoff for immediate movement
-    # types that are not represented by the authority projections above. This is
-    # process-local enhancement only, never the sole source of outstanding FBM
-    # or listing reminders.
+    # Keep existing exact live event handoff for non-FBM commercial movements.
+    # FBM sale/journey reminders come only from current FBM authority above, so a
+    # stale process event cannot resurrect an action FBM has already completed.
     with event_signal._condition:
         live_events = [dict(event) for event in list(event_signal._events)]
     for event in reversed(live_events):
         record = _event_to_bell_record(event)
-        if record is not None:
+        if record is not None and record.get("status_label") not in _AUTHORITY_OWNED_FBM_LABELS:
             records.append(record)
 
     records.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
@@ -379,8 +386,7 @@ def _align_ready_landing_html(html: str) -> str:
     html = html.replace("hydrateBellAfterWake();", "stale = true;")
 
     # The bell is a reminder, not an inbox. Opening it must never mark an
-    # authority-backed action as completed. Keep the existing UI/layout and make
-    # the badge count equal the current reminder projection.
+    # authority-backed action as completed.
     html = re.sub(
         r"function updateUnread\(\) \{.*?\n        \}\n\n        function markSeen\(\) \{.*?\n        \}",
         "function updateUnread() {\n            const pending = records.length;\n            setBadge(pending);\n            setBellLight(pending > 0);\n        }\n\n        function markSeen() {\n            // Reminder resolution belongs to Warehouse/FBM authority, not the bell.\n            updateUnread();\n        }",
@@ -389,8 +395,16 @@ def _align_ready_landing_html(html: str) -> str:
         flags=re.S,
     )
 
-    # The crossed bell was only an empty-state decoration and looked like a mute
-    # control. Use the existing normal bell glyph without changing layout.
+    # On explicit bell open, discard only the browser's old projection before
+    # loading current server authority. This prevents an already-dispatched FBM
+    # reminder from being unioned back into the current result by the existing
+    # cache wrapper. It does not clear or action any authoritative state.
+    html = html.replace(
+        'panel.addEventListener("show.bs.offcanvas", async function () {\n            stale = true;',
+        'panel.addEventListener("show.bs.offcanvas", async function () {\n            try { window.localStorage.removeItem("bt38.notifications.exactEventRecords.v2"); } catch (error) {}\n            stale = true;',
+    )
+
+    # The crossed bell was only an empty-state decoration and looked like mute.
     html = html.replace('data-feather="bell-off" class="mb-2"', 'data-feather="bell" class="mb-2"')
 
     if "fbm-order-row" in html and 'id="bt38FbmRowVisibilityAlignment"' not in html:
@@ -441,8 +455,8 @@ def install_governed_fbm_ready_landing_alignment(app) -> None:
 
     bell_endpoint = "governed.governed_ui_notifications"
     if bell_endpoint in app.view_functions:
-        _authority_bell_reader._bt38_authority_reminder_bell = True
-        app.view_functions[bell_endpoint] = login_required(_authority_bell_reader)
+        _event_only_bell_reader._bt38_authority_reminder_bell = True
+        app.view_functions[bell_endpoint] = login_required(_event_only_bell_reader)
 
     if not getattr(app, "_bt38_db_pressure_response_alignment", False):
         app.after_request(_align_browser_pressure_response)
