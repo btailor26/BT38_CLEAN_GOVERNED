@@ -194,14 +194,25 @@ def install_fbm_db_delivery_promise_alignment(app: Any) -> None:
             )
             item["delivery_promise"] = promise
 
-            # The existing marketplace proxy is presentation only. Reuse the
-            # exact persisted package service so Amazon/eBay marketplace-owned
-            # shipments render through the same Shipment cell as Packlink,
-            # without creating a second FBMShipment or reading a marketplace.
+            # Amazon packages expose the actual package shippingService, so that
+            # exact persisted package fact may enrich the presentation-only
+            # marketplace shipment. eBay's shippingService is buyer-selected
+            # promise context and must never override the physical label/
+            # fulfillment authority chosen by the shipment map.
             shipment = item.get("shipment")
             provider = str(getattr(shipment, "provider", "") or "").strip().lower()
             service = str((promise or {}).get("shipping_service") or "").strip()
-            if shipment is not None and provider == "marketplace" and service:
+            platform = str(
+                item.get("platform")
+                or getattr(getattr(order, "store", None), "platform", "")
+                or ""
+            ).strip().lower()
+            if (
+                shipment is not None
+                and provider == "marketplace"
+                and platform == "amazon"
+                and service
+            ):
                 shipment.service = service
 
     app._bt38_fbm_db_delivery_promise_alignment = True
