@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from sqlalchemy import text
 
 from amazon_service_live_patch import _load_credentials
 from extensions import db
@@ -260,6 +261,7 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
     return {
         "carrier": _text(package.get("carrier")) or None if package is not None else None,
         "tracking_number": _text(package.get("trackingNumber")) or None if package is not None else None,
+        "shipping_service": _text(package.get("shippingService")) or None if package is not None else None,
         "shipped_at": _parse_iso(package.get("shipTime")) if package is not None else None,
         "package_reference_id": _text(package.get("packageReferenceId")) or None if package is not None else None,
         "package_status": raw_package_status,
@@ -268,6 +270,42 @@ def _package_truth(order_payload: dict[str, Any]) -> tuple[dict[str, Any] | None
         "order_status": _order_fulfillment_status(order_payload),
         "truth_source": "orders_2026",
     }, ambiguity
+
+
+def _persist_package_shipping_service(
+    *,
+    store_id: int,
+    order_id: str,
+    shipping_service: str | None,
+) -> bool:
+    """Persist Amazon's exact package service on the existing FBM operational row."""
+    service = _text(shipping_service) or None
+    if not service:
+        return False
+    now = datetime.utcnow()
+    result = db.session.execute(
+        text(
+            """
+            INSERT INTO fbm_order_operational_state
+              (store_id, marketplace_order_id, platform, shipping_service,
+               marketplace_checked_at, created_at, updated_at)
+            VALUES (:store_id,:order_id,'amazon',:service,:now,:now,:now)
+            ON CONFLICT (store_id, marketplace_order_id) DO UPDATE SET
+              platform='amazon',
+              shipping_service=EXCLUDED.shipping_service,
+              marketplace_checked_at=EXCLUDED.marketplace_checked_at,
+              updated_at=EXCLUDED.updated_at
+            WHERE fbm_order_operational_state.shipping_service IS DISTINCT FROM EXCLUDED.shipping_service
+            """
+        ),
+        {
+            "store_id": store_id,
+            "order_id": order_id,
+            "service": service,
+            "now": now,
+        },
+    )
+    return bool(getattr(result, "rowcount", 0))
 
 
 def hydrate_amazon_tracking_for_order(
@@ -358,6 +396,7 @@ def hydrate_amazon_tracking_for_order(
             shipment = {
                 "carrier": None,
                 "tracking_number": None,
+                "shipping_service": None,
                 "shipped_at": None,
                 "package_reference_id": None,
                 "package_status": None,
@@ -403,10 +442,15 @@ def hydrate_amazon_tracking_for_order(
             row.updated_at = datetime.utcnow()
             updates += 1
 
+    service_persisted = _persist_package_shipping_service(
+        store_id=int(store.id),
+        order_id=order_id,
+        shipping_service=shipment.get("shipping_service"),
+    )
+
     # A readback is observation, not a commercial movement. Commit only when the
-    # canonical MarketplaceOrder truth actually changed. Unchanged truth must
-    # leave updated_at untouched and must not generate an after-commit bell event.
-    if updates:
+    # canonical MarketplaceOrder truth or exact package service actually changed.
+    if updates or service_persisted:
         db.session.commit()
 
     return {
@@ -419,6 +463,7 @@ def hydrate_amazon_tracking_for_order(
         "lifecycle_updates": lifecycle_updates,
         "carrier": shipment.get("carrier"),
         "tracking_number": shipment.get("tracking_number"),
+        "shipping_service": shipment.get("shipping_service"),
         "shipped_at": (
             shipment["shipped_at"].isoformat() if shipment.get("shipped_at") else None
         ),
