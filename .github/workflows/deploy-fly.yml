@@ -123,7 +123,7 @@ jobs:
             tests/test_fbm_amazon_tracking_contract.py tests/test_fbm_amazon_confirmation_payload.py \
             tests/test_fbm_manual_shipping_order_contract.py tests/test_marketplace_tracking_readback_contract.py \
             tests/test_marketplace_dispatch_truth_recovery_contract.py tests/test_production_db_contract_gate.py \
-            tests/test_runtime_no_automatic_recovery_contract.py tests/test_deploy_no_recovery_contract.py
+            tests/test_event_runtime_zero_recovery_contract.py tests/test_deploy_no_recovery_contract.py
 
   deploy:
     needs: audit
