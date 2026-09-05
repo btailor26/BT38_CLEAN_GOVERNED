@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from extensions import db
 import services.fbm_amazon_order_profile as amazon_profile
 from services.governed_amazon_shipping_label_readback import (
     hydrate_amazon_purchased_label_for_order,
@@ -40,10 +41,10 @@ def _aligned_get_or_refresh_amazon_profile(order: Any, *, force: bool = False):
                 source="fbm_amazon_order_profile",
             )
         except Exception:
-            # Seller Central label readback cannot make the existing exact
-            # Amazon profile or FBM page unavailable. A later governed request
-            # can safely retry when Amazon Finances/MFN is available.
-            pass
+            # A failed best-effort readback may leave the shared SQLAlchemy
+            # session aborted. Clear that failed unit before the caller resumes
+            # normal DB reads; the exact label read can retry on a later event.
+            db.session.rollback()
     return profile
 
 
