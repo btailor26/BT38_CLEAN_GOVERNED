@@ -1,8 +1,8 @@
 """Persist exact eBay purchased-label shipment authority into existing FBMShipment.
 
 The existing exact eBay hydration owns the Fulfillment API read and the existing
-Finances reader owns monetary SHIPPING_LABEL truth.  This module joins those two
-already-governed facts for one exact order.  It never infers a carrier from a
+Finances reader owns monetary SHIPPING_LABEL truth. This module joins those two
+already-governed facts for one exact order. It never infers a carrier from a
 tracking number and it never creates an order, marketplace write, worker or
 poller.
 """
@@ -41,11 +41,7 @@ def _service_value(value: dict[str, Any]) -> str:
 
 
 def _confirmed_finance_purchase(*, store_id: int, order_id: str) -> dict[str, Any] | None:
-    """Return persisted exact-order eBay label spend only when a debit is confirmed.
-
-    Refund/adjustment rows have distinct sources and cannot establish purchase
-    authority here.
-    """
+    """Return exact-order eBay label spend only when a debit is confirmed."""
     row = db.session.execute(
         text(
             """
@@ -64,7 +60,7 @@ def _confirmed_finance_purchase(*, store_id: int, order_id: str) -> dict[str, An
         ),
         {"store_id": int(store_id), "order_id": order_id},
     ).mappings().first()
-    if not row or int(row.get("purchase_rows") or 0) < 1:
+    if not row or int(row.get("purchase_rows") or 0) < 1 or row.get("purchased_at") is None:
         return None
     return dict(row)
 
@@ -72,9 +68,10 @@ def _confirmed_finance_purchase(*, store_id: int, order_id: str) -> dict[str, An
 def _unique_fulfillment_candidates(fulfillments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse duplicate payload rows by durable fulfillment id only."""
     candidates: dict[str, dict[str, Any]] = {}
+    conflicted_ids: set[str] = set()
     for fulfillment in fulfillments:
         fulfillment_id = _fulfillment_id(fulfillment)
-        if not fulfillment_id:
+        if not fulfillment_id or fulfillment_id in conflicted_ids:
             continue
         values = _fulfillment_values(fulfillment)
         candidate = {
@@ -89,11 +86,10 @@ def _unique_fulfillment_candidates(fulfillments: list[dict[str, Any]]) -> list[d
         if existing is None:
             candidates[fulfillment_id] = candidate
             continue
-        # A repeated fulfillment id is safe only when its physical identity does
-        # not conflict with the first copy returned by eBay.
         for key in ("carrier", "tracking_number", "service"):
             if existing.get(key) and candidate.get(key) and existing[key] != candidate[key]:
                 candidates.pop(fulfillment_id, None)
+                conflicted_ids.add(fulfillment_id)
                 break
         else:
             if not existing.get("carrier"):
@@ -111,10 +107,9 @@ def _unique_fulfillment_candidates(fulfillments: list[dict[str, Any]]) -> list[d
 def persist_exact_ebay_purchased_shipment_authority(*, store, marketplace_order_id: str) -> dict[str, Any]:
     """Join exact eBay finance purchase proof to exact fulfillment identity.
 
-    The join deliberately requires one unambiguous fulfillment id for the exact
-    order.  Multiple physical fulfillments are not collapsed into a fabricated
-    order-level shipment.  Tracking is optional; fulfillmentId remains durable
-    shipment identity.
+    Exactly one durable fulfillment id is required. Multiple physical
+    fulfillments are never collapsed into an invented order-level shipment.
+    Tracking remains optional; fulfillmentId is the durable shipment identity.
     """
     order_id = _text(marketplace_order_id)
     if not order_id:
@@ -138,10 +133,7 @@ def persist_exact_ebay_purchased_shipment_authority(*, store, marketplace_order_
 
     try:
         access_token = _ebay_access_token(store)
-        fulfillments, fulfillment_error = _fulfillment_truth(
-            access_token=access_token,
-            order_id=order_id,
-        )
+        fulfillments, fulfillment_error = _fulfillment_truth(access_token=access_token, order_id=order_id)
     except Exception as exc:
         return {"success": False, "skipped": False, "reason": f"ebay_fulfillment_read_failed:{exc}", "order_id": order_id}
 
@@ -161,16 +153,12 @@ def persist_exact_ebay_purchased_shipment_authority(*, store, marketplace_order_
 
     candidate = candidates[0]
     fulfillment_id = candidate["fulfillment_id"]
-    shipment = (
-        FBMShipment.query
-        .filter_by(
-            store_id=store.id,
-            marketplace_order_id=order_id,
-            provider="ebay_shipping",
-            provider_shipment_id=fulfillment_id,
-        )
-        .first()
-    )
+    shipment = FBMShipment.query.filter_by(
+        store_id=store.id,
+        marketplace_order_id=order_id,
+        provider="ebay_shipping",
+        provider_shipment_id=fulfillment_id,
+    ).first()
     created = shipment is None
     if shipment is None:
         shipment = FBMShipment(
@@ -182,7 +170,6 @@ def persist_exact_ebay_purchased_shipment_authority(*, store, marketplace_order_
         )
         db.session.add(shipment)
 
-    purchased_at = purchase.get("purchased_at") or candidate.get("shipped_at") or datetime.utcnow()
     shipment.provider = "ebay_shipping"
     shipment.provider_shipment_id = fulfillment_id
     shipment.carrier = candidate.get("carrier") or shipment.carrier
@@ -190,15 +177,13 @@ def persist_exact_ebay_purchased_shipment_authority(*, store, marketplace_order_
     shipment.tracking_number = candidate.get("tracking_number") or shipment.tracking_number
     shipment.purchase_status = "purchased"
     shipment.purchase_error = None
-    shipment.label_purchased_at = purchased_at
+    shipment.label_purchased_at = purchase["purchased_at"]
     shipment.label_source = "ebay_finances_shipping_label"
     shipment.status = "awaiting_carrier_acceptance" if shipment.tracking_number else "label_purchased"
     shipment.last_provider_status = "shipped"
     shipment.last_provider_checked_at = datetime.utcnow()
     shipment.marketplace_confirmation_status = "ebay_shipping_fulfillment_readback"
 
-    # Attach the already-persisted finance evidence to the recovered physical
-    # shipment. Refund/adjustment ledger rows remain independent audit facts.
     db.session.flush()
     db.session.execute(
         text(
