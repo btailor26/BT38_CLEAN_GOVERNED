@@ -26,6 +26,12 @@ import services.governed_ebay_shipping_label_finance_alignment  # noqa: F401,E40
 # shipment identity. No worker, poller, second order path, or marketplace write.
 import services.governed_amazon_shipping_label_readback_alignment  # noqa: F401,E402
 
+# Successful shipment lifecycle events finish only that exact existing FBM
+# order's marketplace shipment authority. This reuses the established Amazon
+# and eBay exact readbacks and never introduces polling, startup recovery or a
+# broad marketplace/database scan.
+import services.governed_fbm_shipment_event_alignment  # noqa: F401,E402
+
 # The bounded FBM workspace must still bootstrap exact Amazon classification for
 # visible/selected rows when no complete FBMOrderProfile exists. This restores
 # the existing profile authority (Prime/SFP, fulfilment, promise and shipped-order
