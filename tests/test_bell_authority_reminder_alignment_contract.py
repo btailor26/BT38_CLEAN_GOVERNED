@@ -49,10 +49,17 @@ def test_opening_bell_replaces_stale_browser_projection_not_authority():
 
 
 def test_existing_projection_install_contract_is_preserved():
-    # Keep the historical function name because the existing projection installer
-    # binds this endpoint; semantics are aligned inside the existing reader.
     assert "def _event_only_bell_reader():" in READY
     assert "ready._event_only_bell_reader" in PROJECTION
+
+
+def test_fbm_bell_uses_product_title_and_existing_ship_by_presentation():
+    assert "productTitle=text(row.querySelector('td:nth-child(4) strong'))" in PROJECTION
+    assert "shipBy=text(row.querySelector('td:nth-child(7) .fbm-promise-line span'))" in PROJECTION
+    assert "subject=productTitle||(orderId?'Order '+orderId:'Order')" in PROJECTION
+    assert "parts.push('Ship by '+shipBy)" in PROJECTION
+    assert "ship_by_at:shipBy" in PROJECTION
+    assert "var detail=event&&event.detail||{},projected=fbmProjection(detail);" in PROJECTION
 
 
 def test_no_rebuild_polling_or_historical_replay_is_added():
