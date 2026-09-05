@@ -25,3 +25,9 @@ import services.governed_ebay_shipping_label_finance_alignment  # noqa: F401,E40
 # reads. Tracking is optional; the validated Amazon ShipmentId is the durable
 # shipment identity. No worker, poller, second order path, or marketplace write.
 import services.governed_amazon_shipping_label_readback_alignment  # noqa: F401,E402
+
+# The bounded FBM workspace must still bootstrap exact Amazon classification for
+# visible/selected rows when no complete FBMOrderProfile exists. This restores
+# the existing profile authority (Prime/SFP, fulfilment, promise and shipped-order
+# readbacks) without making the health aggregation a marketplace-read surface.
+import services.governed_fbm_amazon_profile_alignment  # noqa: F401,E402
