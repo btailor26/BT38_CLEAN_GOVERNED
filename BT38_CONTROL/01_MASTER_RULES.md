@@ -28,6 +28,9 @@
 - FBM/eBay/other merchant-fulfilled inventory follows governed Warehouse authority.
 - Marketplace-owned order, dispatch, tracking, delivery, return and refund facts remain marketplace-owned truth when persisted into their existing canonical BT38 record.
 - Do not create duplicate records, tables, workers, pollers, event buses or write paths to represent truth already owned by an existing canonical record unless an explicitly approved architecture requires a genuinely separate business/physical entity.
+- For BT38 production evidence, Neon authority is project `dry-cake-93203646`, branch `br-shiny-bread-aiijh3rb` only. Do not inspect, compare against, test against, or derive production decisions from any other Neon branch.
+- Recovery is repair-only. A bounded recovery may fill missing, failed, stranded or incomplete canonical truth, but if an existing record is already correct/complete it must be left unchanged and must not be overwritten merely because recovery runs.
+- The current 48-hour bounded webhook recovery window is acceptable when used only for failed/stranded/incomplete records under the repair-only rule above.
 
 ## 4. Mandatory Event / Session Architecture
 
