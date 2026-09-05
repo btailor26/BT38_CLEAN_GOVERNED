@@ -1,11 +1,10 @@
-"""Align the notification bell to the existing exact committed-event path.
+"""Keep the notification bell on the existing page/session event path.
 
-The bell is presentation only. It never queries Neon, marketplace APIs, carrier
-APIs, or reconstructs order truth when opened. Exact committed events carry the
-small scalar presentation fields already present on the changed canonical row.
-The browser keeps a bounded copy of events it actually observed so a subsequent
-notification-panel GET cannot lose an event merely because another Gunicorn
-worker serves that request.
+The bell is presentation only. It never queries Neon, marketplace APIs or carrier
+APIs. Generic committed order/shipment transport events are not user-facing
+notifications. FBM lifecycle notifications are projected from the already-rendered
+FBM row so the bell mirrors the page's marketplace, product, carrier/tracking and
+journey badge instead of re-interpreting shipment truth.
 """
 from __future__ import annotations
 
@@ -23,6 +22,8 @@ _PRESENTATION_SCOPE_KEYS = (
     "product_title",
     "fulfillment_type",
     "provider",
+    "notification_label",
+    "notification_source",
 )
 
 
@@ -30,15 +31,29 @@ def _normalise(value) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _is_generic_transport_event(event: dict) -> bool:
+    event_type = _normalise(event.get("event_type"))
+    source = _normalise(event.get("source"))
+    return event_type in {"order_committed", "shipment_committed"} and source in {
+        "committed_marketplace_state",
+        "server_commit",
+        "browser_leader",
+    }
+
+
 def _label_for_event(event: dict) -> str | None:
+    explicit = str(event.get("notification_label") or "").strip()
+    if explicit:
+        return explicit
+
+    # A canonical commit is transport, not a notification. The FBM page/session
+    # projects the user-facing lifecycle event from its already-rendered row.
+    if _is_generic_transport_event(event):
+        return None
+
     values = " ".join(
         _normalise(event.get(key))
-        for key in (
-            "lifecycle_status",
-            "status",
-            "event_type",
-            "source",
-        )
+        for key in ("lifecycle_status", "status", "event_type", "source")
         if event.get(key) not in (None, "")
     )
     ordered = (
@@ -60,7 +75,7 @@ def _label_for_event(event: dict) -> str | None:
         (("in_transit",), "In transit"),
         (("carrier_accepted", "picked_up", "collected", "accepted"), "Picked up"),
         (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped", "partially_shipped"), "Shipped"),
-        (("pending", "unshipped", "confirmed", "order_received", "new_order", "order_committed"), "Sale"),
+        (("pending", "unshipped", "confirmed", "order_received", "new_order"), "Sale"),
     )
     for tokens, label in ordered:
         if any(token in values for token in tokens):
@@ -112,7 +127,6 @@ def _event_to_bell_record(event: dict) -> dict | None:
     if tracking:
         details.append(f"Tracking {tracking}")
     message = " · ".join(details) if details else title
-    lifecycle = _normalise(event.get("lifecycle_status") or event.get("status"))
 
     return {
         "event_key": f"runtime:{revision}:{_normalise(label)}:{order_id}:{sku}",
@@ -127,7 +141,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
         "quantity": quantity,
         "carrier": carrier,
         "tracking_number": tracking,
-        "lifecycle_status": lifecycle,
+        "lifecycle_status": _normalise(event.get("lifecycle_status") or event.get("status")),
         "status_label": label,
         "created_at": event.get("published_at"),
     }
@@ -141,7 +155,6 @@ def _patch_exact_scope() -> None:
     from services import governed_ui_event_signal as ui
 
     ui._SINGULAR_SCOPE_KEYS = tuple(dict.fromkeys(tuple(ui._SINGULAR_SCOPE_KEYS) + _PRESENTATION_SCOPE_KEYS))
-
     if getattr(exact, "_bt38_bell_projection_scope_patched", False):
         return
 
@@ -178,7 +191,7 @@ def _patch_exact_scope() -> None:
 
 
 def _browser_event_cache_script() -> str:
-    """Keep only exact live commercial events already observed by this browser."""
+    """Cache only useful notifications this browser actually observed."""
     return r'''
 <script id="bt38ExactBellBrowserCache">
 (function(){
@@ -187,24 +200,28 @@ def _browser_event_cache_script() -> str:
   var cacheKey='bt38.notifications.exactEventRecords.v1';
 
   function norm(value){return String(value||'').trim().toLowerCase().replace(/[- ]/g,'_');}
+  function isGenericTransport(detail){
+    var type=norm(detail&&detail.event_type),source=norm(detail&&detail.source);
+    return (type==='order_committed'||type==='shipment_committed') &&
+      (source==='committed_marketplace_state'||source==='server_commit'||source==='browser_leader');
+  }
   function labelFor(detail){
+    var explicit=String(detail.notification_label||'').trim();if(explicit)return explicit;
+    if(isGenericTransport(detail))return '';
     var value=[detail.lifecycle_status,detail.status,detail.event_type,detail.source].map(norm).join(' ');
     var rules=[
       [['return_fulfillment_completed','return_closed','returned'],'Returned'],
       [['return_requested','return_fulfillment_initiated'],'Return requested'],
-      [['refund_requested'],'Refund requested'],
-      [['refunded','refund_completed','refund_issued'],'Refunded'],
-      [['cancellation_requested','cancel_requested'],'Cancellation requested'],
-      [['cancelled','canceled'],'Cancelled'],
-      [['replacement_requested'],'Replacement requested'],
-      [['replacement','replaced'],'Replacement'],
+      [['refund_requested'],'Refund requested'],[['refunded','refund_completed','refund_issued'],'Refunded'],
+      [['cancellation_requested','cancel_requested'],'Cancellation requested'],[['cancelled','canceled'],'Cancelled'],
+      [['replacement_requested'],'Replacement requested'],[['replacement','replaced'],'Replacement'],
       [['chargeback'],'Chargeback'],[['dispute'],'Dispute'],[['case_open','case_opened'],'Issue / case'],
       [['late','overdue','ship_by_missed','dispatch_deadline_missed'],'Late'],
       [['ship_by','shipby','dispatch_by','dispatch_deadline'],'Ship by'],
       [['delivered'],'Delivered'],[['out_for_delivery'],'Out for delivery'],[['in_transit'],'In transit'],
       [['carrier_accepted','picked_up','collected','accepted'],'Picked up'],
       [['marketplace_dispatch_confirmed','label_assigned','dispatched','shipped','partially_shipped'],'Shipped'],
-      [['pending','unshipped','confirmed','order_received','new_order','order_committed'],'Sale']
+      [['pending','unshipped','confirmed','order_received','new_order'],'Sale']
     ];
     for(var i=0;i<rules.length;i++)if(rules[i][0].some(function(token){return value.indexOf(token)>=0;}))return rules[i][1];
     var source=norm(detail.source),orderId=String(detail.order_id||detail.marketplace_order_id||'').trim();
@@ -237,7 +254,53 @@ def _browser_event_cache_script() -> str:
       created_at:detail.published_at||new Date().toISOString()};
   }
   function store(detail){var record=recordFor(detail);if(!record)return;var rows=read().filter(function(row){return row&&row.event_key!==record.event_key;});rows.unshift(record);write(rows);}
-  window.addEventListener('bt38-marketplace-event',function(event){store(event&&event.detail||{});});
+
+  function fbmRowFor(orderId){
+    var rows=document.querySelectorAll('.fbm-orders-table tbody .fbm-order-row');
+    for(var i=0;i<rows.length;i++){
+      var shown=rows[i].querySelector('td:nth-child(3) .fw-semibold');
+      if(shown&&String(shown.textContent||'').trim()===orderId)return rows[i];
+    }
+    return null;
+  }
+  function text(node){return String(node&&node.textContent||'').trim();}
+  function fbmLabel(row){
+    var note=text(row.querySelector('td:nth-child(9) .text-danger'));
+    if(note.indexOf('Carrier pickup overdue')>=0)return 'Late';
+    var badges=row.querySelectorAll('td:nth-child(9) .badge.bg-success');
+    var reached=[];for(var i=0;i<badges.length;i++)reached.push(text(badges[i]));
+    if(reached.indexOf('Delivered')>=0)return 'Delivered';
+    if(reached.indexOf('In transit')>=0)return 'In transit';
+    if(reached.indexOf('Picked up')>=0)return 'Picked up';
+    var shipment=text(row.querySelector('td:nth-child(8)'));
+    if(shipment&&shipment.indexOf('Unshipped')<0)return 'Shipped';
+    return '';
+  }
+  function fbmProjection(detail){
+    if(!isGenericTransport(detail))return null;
+    var orderId=String(detail.order_id||detail.marketplace_order_id||'').trim();if(!orderId)return null;
+    var row=fbmRowFor(orderId);if(!row)return null;
+    var label=fbmLabel(row);if(!label)return null;
+    var marketCell=row.querySelector('td:nth-child(2)'),logo=marketCell&&marketCell.querySelector('.fbm-marketplace-logo');
+    var platform=String(logo&&logo.getAttribute('alt')||text(marketCell.querySelector('strong'))||'').trim();
+    var productTitle=text(row.querySelector('td:nth-child(4) strong'));
+    var quantity=text(row.querySelector('td:nth-child(5)'));
+    var carrier=text(row.querySelector('td:nth-child(8) strong'));
+    var tracking=text(row.querySelector('td:nth-child(8) code'));
+    return Object.assign({},detail,{
+      notification_label:label,notification_source:'fbm_page',platform:platform,product_title:productTitle,
+      quantity:quantity,carrier:carrier,tracking_number:tracking,source:'fbm_page'
+    });
+  }
+
+  window.addEventListener('bt38-marketplace-event',function(event){
+    var detail=event&&event.detail||{};
+    if(isGenericTransport(detail)){
+      var projected=fbmProjection(detail);if(projected)store(projected);
+      return;
+    }
+    store(detail);
+  });
 
   var previousFetch=window.fetch.bind(window);
   window.fetch=async function(input,init){
@@ -272,7 +335,7 @@ def _inject_browser_cache(response):
 
 
 def install_governed_bell_event_projection_alignment(app) -> None:
-    """Install one final bell projection over the existing event/session path."""
+    """Install one final zero-query bell observer over the existing event/session path."""
     from services import governed_fbm_ready_landing_alignment as ready
 
     _patch_exact_scope()
@@ -287,5 +350,5 @@ def install_governed_bell_event_projection_alignment(app) -> None:
         app._bt38_exact_bell_browser_cache_installed = True
 
     app.logger.info(
-        "BT38 bell aligned: exact committed scalar projection, zero DB/API bell reads, bounded browser-observed history, no polling"
+        "BT38 bell aligned: FBM page notifier projection, zero DB/API bell reads, bounded browser-observed history, no polling"
     )
