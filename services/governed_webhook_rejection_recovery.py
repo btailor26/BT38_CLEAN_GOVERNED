@@ -2,22 +2,21 @@
 
 Contract:
 - Failed webhooks recover only the durable notification that failed.
-- Explicit successful marketplace dispatch/lifecycle notifications hand the
-  same exact durable notification to the existing exact recovery path.
 - Recovery checks canonical MarketplaceOrder first.
 - Existing orders are never replayed, preventing duplicate rows and duplicate
   stock mutation.
 - Missing orders replay only the captured exact notification except shipment
   lifecycle events, which never recreate a sale/order.
-- A restart performs one bounded DB-only selector for failed/stranded webhook
-  IDs, legacy completed order orphans, and Amazon FBA order notifications whose
-  exact Seller-SKU settlement verification was not completed after 90 seconds.
-- FBA settlement recovery re-reads only that Seller SKU from Amazon; it does
-  not replay the order or scan marketplace inventory.
+- A restart performs one bounded DB-only selector for FAILED or stranded
+  PROCESSING webhook IDs received within the last 24 hours.
+- Successful/completed marketplace lifecycle notifications are never replayed
+  by startup recovery and never handed to recovery merely because they carry a
+  shipped/delivered state.
 - eBay ORDER_CONFIRMATION failures that were durably captured are handed to
   this exact recovery path before BT38 returns HTTP 200 to eBay.
-- No recent-order scan, Warehouse sync scan, scheduler, polling loop, or
-  marketplace-wide recovery is started.
+- No recent-order scan, completed-order repair, FBA settlement replay,
+  Warehouse sync scan, scheduler, polling loop, or marketplace-wide recovery
+  is started.
 """
 from __future__ import annotations
 
@@ -100,46 +99,6 @@ def _ebay_request_topic() -> str:
             topic = metadata.get("topic")
 
     return str(topic or "").strip().upper()
-
-
-def _request_is_dispatch_lifecycle(platform: str) -> bool:
-    """Recognize explicit marketplace dispatch truth, never carrier guesses."""
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return False
-
-    platform = str(platform or "").strip().lower()
-    topic = _status_key(
-        _deep_get(payload, "topic")
-        or _deep_get(payload, "notificationType")
-        or _deep_get(payload, "eventType")
-        or _deep_get(payload, "event_type")
-    )
-    if platform == "ebay" and topic == "ITEMMARKEDSHIPPED":
-        return True
-
-    for key in (
-        "OrderStatus",
-        "orderStatus",
-        "orderFulfillmentStatus",
-        "fulfillmentStatus",
-        "packageStatus",
-    ):
-        raw = _deep_get(payload, key)
-        if isinstance(raw, dict):
-            raw = raw.get("status")
-        if _status_key(raw) in {
-            "PARTIALLYSHIPPED",
-            "SHIPPED",
-            "FULFILLED",
-            "PICKEDUPBYCARRIER",
-            "CHECKEDINTOCARRIERHUB",
-            "INTRANSIT",
-            "OUTFORDELIVERY",
-            "DELIVERED",
-        }:
-            return True
-    return False
 
 
 def _notification_record_id_from_response(response) -> int | None:
@@ -230,7 +189,7 @@ def request_rejected_webhook_recovery(
     platform: str,
     notification_record_id: int | None = None,
 ) -> bool:
-    """Schedule exact recovery for one durable notification."""
+    """Schedule exact recovery for one durable failed notification."""
     global _recovery_running
 
     platform = str(platform or "").strip().lower()
@@ -263,12 +222,11 @@ def request_rejected_webhook_recovery(
 
 
 def _queue_stranded_durable_notifications(limit: int = 25) -> int:
-    """Queue exact failures, order orphans, and missed FBA settlement checks."""
+    """Queue only exact failed/stranded notifications from the last 24 hours."""
     from extensions import db
 
     selected: list[tuple[str, int]] = []
 
-    # Failed/stranded exact notifications for both marketplaces.
     for platform, table_name in (
         ("amazon", "webhooks.amazon_notifications"),
         ("ebay", "webhooks.ebay_notifications"),
@@ -278,7 +236,7 @@ def _queue_stranded_durable_notifications(limit: int = 25) -> int:
                 f"""
                 SELECT id
                 FROM {table_name}
-                WHERE received_at >= NOW() - INTERVAL '48 hours'
+                WHERE received_at >= NOW() - INTERVAL '24 hours'
                   AND (
                         processing_status = 'FAILED'
                         OR (
@@ -294,85 +252,6 @@ def _queue_stranded_durable_notifications(limit: int = 25) -> int:
         ).scalars().all()
         selected.extend((platform, int(row_id)) for row_id in rows)
 
-    # Legacy Amazon bug repair: before the completion guard existed, an AFN
-    # ORDER_CHANGE could be marked COMPLETED without creating MarketplaceOrder.
-    # Detect only Amazon UK customer-order notifications already held in BT38;
-    # do not scan Amazon, Warehouse, listings, or MCF/internal marketplaces.
-    amazon_orphans = db.session.execute(
-        text(
-            """
-            SELECT n.id
-            FROM webhooks.amazon_notifications AS n
-            WHERE n.received_at >= NOW() - INTERVAL '48 hours'
-              AND n.processing_status = 'COMPLETED'
-              AND n.notification_type = 'ORDER_CHANGE'
-              AND n.payload_json->'Payload'->'OrderChangeNotification'
-                    ->'Summary'->>'MarketplaceId' = 'A1F83G8C2ARO7P'
-              AND COALESCE(
-                    n.payload_json->'Payload'->'OrderChangeNotification'
-                      ->>'AmazonOrderId',
-                    ''
-                  ) <> ''
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM marketplace_orders AS mo
-                    WHERE mo.marketplace_order_id =
-                        n.payload_json->'Payload'->'OrderChangeNotification'
-                          ->>'AmazonOrderId'
-                  )
-            ORDER BY n.id ASC
-            LIMIT :limit
-            """
-        ),
-        {"limit": int(limit)},
-    ).scalars().all()
-    selected.extend(("amazon", int(row_id)) for row_id in amazon_orphans)
-
-    # Exact FBA settlement durability. The normal webhook performs an immediate
-    # Seller-SKU read and schedules a 90-second in-memory recheck. A deployment
-    # inside that settlement window used to lose the delayed event permanently.
-    # Select only completed Amazon UK FBA orders whose stored FBA truth was not
-    # refreshed at/after the 90-second settlement point. Recovery sees that the
-    # canonical order already exists, so it NEVER replays the order; it performs
-    # one exact Seller-SKU Amazon read and publishes only a committed change.
-    fba_settlement_gaps = db.session.execute(
-        text(
-            """
-            SELECT DISTINCT n.id
-            FROM webhooks.amazon_notifications AS n
-            JOIN marketplace_orders AS mo
-              ON mo.marketplace_order_id =
-                 n.payload_json->'Payload'->'OrderChangeNotification'
-                   ->>'AmazonOrderId'
-            LEFT JOIN amazon_fba_inventory AS afi
-              ON afi.seller_sku = mo.sku
-             AND (
-                  afi.store_id = mo.store_id
-                  OR afi.store_id IS NULL
-             )
-            WHERE n.received_at >= NOW() - INTERVAL '48 hours'
-              AND n.received_at <= NOW() - INTERVAL '90 seconds'
-              AND n.processing_status = 'COMPLETED'
-              AND n.notification_type = 'ORDER_CHANGE'
-              AND n.payload_json->'Payload'->'OrderChangeNotification'
-                    ->'Summary'->>'MarketplaceId' = 'A1F83G8C2ARO7P'
-              AND UPPER(COALESCE(mo.fulfillment_type, '')) IN ('FBA', 'AFN', 'AMAZON')
-              AND (
-                    afi.id IS NULL
-                    OR afi.last_synced_at IS NULL
-                    OR afi.last_synced_at < n.received_at + INTERVAL '90 seconds'
-                  )
-            ORDER BY n.id ASC
-            LIMIT :limit
-            """
-        ),
-        {"limit": int(limit)},
-    ).scalars().all()
-    selected.extend(
-        ("amazon", int(row_id))
-        for row_id in fba_settlement_gaps
-    )
-
     queued = 0
     for platform, notification_record_id in sorted(set(selected)):
         if request_rejected_webhook_recovery(
@@ -385,7 +264,7 @@ def _queue_stranded_durable_notifications(limit: int = 25) -> int:
 
 @app.before_request
 def recover_stranded_webhooks_once_after_restart():
-    """One bounded DB-only safety pass after process restart."""
+    """One bounded 24-hour failed-only DB safety pass after process restart."""
     global _startup_recovery_checked
 
     if _startup_recovery_checked:
@@ -400,7 +279,7 @@ def recover_stranded_webhooks_once_after_restart():
         queued = _queue_stranded_durable_notifications(limit=25)
         if queued:
             app.logger.warning(
-                "BT38 queued %s stranded exact webhook recoveries after restart",
+                "BT38 queued %s failed/stranded exact webhook recoveries after restart",
                 queued,
             )
     except Exception:
@@ -408,7 +287,7 @@ def recover_stranded_webhooks_once_after_restart():
 
         db.session.rollback()
         app.logger.exception(
-            "BT38 stranded exact webhook recovery selector failed"
+            "BT38 failed/stranded exact webhook recovery selector failed"
         )
 
     return None
@@ -576,21 +455,9 @@ def recover_when_marketplace_webhook_is_rejected(response):
 
     notification_record_id = _notification_record_id_from_response(response)
     failed = _response_failed(response)
-    dispatch_lifecycle = _request_is_dispatch_lifecycle(platform)
 
-    # Successful marketplace shipment/lifecycle notifications are accelerators:
-    # hand the exact durable notification into the existing exact recovery path.
-    # The recovery path checks canonical order first and never replays stock for
-    # dispatch lifecycle truth. Carrier/tracking are not required for this handoff.
-    if not failed and dispatch_lifecycle:
-        scheduled = request_rejected_webhook_recovery(
-            platform,
-            notification_record_id,
-        )
-        if scheduled:
-            response.headers["X-BT38-Exact-Lifecycle-Handoff"] = "scheduled"
-        return response
-
+    # Recovery is failure-only. Successful shipment/lifecycle notifications are
+    # normal governed events and must never be reprocessed as recovery work.
     if not failed:
         return response
 
