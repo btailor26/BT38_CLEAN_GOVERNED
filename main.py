@@ -35,6 +35,7 @@ from services.governed_fbm_small_alignment import (
 from services.governed_fbm_ready_landing_alignment import install_governed_fbm_ready_landing_alignment
 from services.governed_exact_record_event_alignment import install_governed_exact_record_event_alignment
 from services.governed_bell_event_projection_alignment import install_governed_bell_event_projection_alignment
+from services.governed_webhook_bell_event_alignment import install_governed_webhook_bell_event_alignment
 from services.governed_amazon_fbm_profile_event_alignment import install_governed_amazon_fbm_profile_event_alignment
 from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
 
@@ -67,9 +68,11 @@ install_governed_fbm_ready_landing_alignment(app)
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; the FBM page remains DB-only and does not poll Amazon per row.
 install_governed_amazon_fbm_profile_event_alignment(app)
-# Exact committed events drive the browser-observed bell cache. The bell
-# projection below is the final notification endpoint owner and must remain
-# zero-query against Neon and zero-read against marketplace/provider APIs.
+# Exact committed events drive the browser-observed bell cache. Successful
+# webhook order events must publish even when stock/page state is unchanged.
+install_governed_webhook_bell_event_alignment(app)
+# The bell projection below is the final notification endpoint owner and must
+# remain zero-query against Neon and zero-read against marketplace/provider APIs.
 install_governed_exact_record_event_alignment(app)
 install_governed_bell_event_projection_alignment(app)
 # Preserve tracking authority: Packlink purchases open BT38's existing live
