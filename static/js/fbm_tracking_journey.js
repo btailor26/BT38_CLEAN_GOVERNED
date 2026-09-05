@@ -94,6 +94,51 @@
         String(stateClass || '').split(/\s+/).filter(Boolean).forEach(name => badge.classList.add(name));
     }
 
+    function alignDispatchedShippingAuthority(row, status) {
+        if (!row || !row.children) return;
+        const shippingCell = row.children[5];
+        const shipmentCell = row.children[7];
+        if (!shippingCell || !shipmentCell) return;
+
+        const dispatchedStates = new Set([
+            'partially_shipped',
+            'shipped',
+            'accepted',
+            'carrier_accepted',
+            'collected',
+            'picked_up',
+            'in_transit',
+            'out_for_delivery',
+            'delivered',
+            'return_requested',
+            'returned',
+            'refund_requested',
+            'refunded',
+            'replacement_requested',
+            'replacement',
+            'case_open',
+            'dispute',
+            'chargeback'
+        ]);
+        const trackingNode = shipmentCell.querySelector('code');
+        if (!dispatchedStates.has(status) && !trackingNode) return;
+
+        const carrierNode = shipmentCell.querySelector('strong');
+        const carrier = String(carrierNode && carrierNode.textContent || '').trim();
+        if (!carrier) return;
+
+        shippingCell.replaceChildren();
+        const label = document.createElement('div');
+        label.className = 'small text-muted';
+        label.textContent = 'Dispatch authority';
+        const authority = document.createElement('strong');
+        authority.textContent = carrier;
+        const note = document.createElement('div');
+        note.className = 'fbm-row-note text-muted';
+        note.textContent = 'Persisted shipment evidence';
+        shippingCell.append(label, authority, note);
+    }
+
     function installFbmSearch() {
         if (document.getElementById('bt38FbmSearchForm')) return;
         const table = document.querySelector('.fbm-order-row')?.closest('table');
@@ -241,6 +286,7 @@
         installFbmSearch();
         document.querySelectorAll('.fbm-order-row').forEach(row => {
             const status = String(row.dataset.lifecycleStatus || '').trim().toLowerCase();
+            alignDispatchedShippingAuthority(row, status);
             const orderCell = row.children && row.children[2];
             if (status && orderCell && !orderCell.querySelector('.bt38-order-lifecycle')) {
                 const wrap = document.createElement('div');
