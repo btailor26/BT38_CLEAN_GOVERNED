@@ -1,61 +1,136 @@
 # BT38 MASTER RULES
 
-## Core working rules
-1. No UI changes unless explicitly approved.
-2. Audit first.
-3. Output must be shown first.
-4. Output/results must be checked before moving forward.
-5. Changes must be 100% aligned with the intended setup.
-6. No deployment or forward movement until verified.
-7. If any error appears in output, stop and audit that error first.
-8. GitHub is the only source of production application files and deployment context.
-9. Never clone, copy, overlay, build, test, or deploy BT38 application files from an operator PC. The operator PC may only inspect GitHub/Fly or dispatch the approved GitHub Actions workflow.
-10. BT38 is a live commercial **production-only** runtime. Never deploy to, validate against, or use a test/staging Fly app, test database, test marketplace account, test deployment, or non-production clone as runtime authority. The commercial state/integrations are not guaranteed to exist there, so non-production failures are not valid evidence of production behaviour.
-11. Never require a test/staging deployment before production. Runtime proof must come from the exact GitHub source plus the governed production configuration/data path. A production deployment still requires explicit user approval of the exact commit.
-12. GitHub compile, syntax, static contract and source/deployment guard checks are allowed because they do not create or use a test runtime. They must not be described as a test deployment or used as a substitute for production runtime evidence.
-13. All active governed work must advance `fix/full-system-release-alignment` / PR #528 unless the user explicitly changes the source branch. Main and side branches are not valid deployment sources while this contract is active.
-14. The user is the architect/decision-maker. AI acts as cautious engineer.
-15. No guesswork. Evidence first.
-16. One clean wiring only. No circular restore/patch attempts.
-17. Before page layout/UI changes, show visual proof/mockup first unless the user has explicitly approved the exact change.
-18. Do not change the approved application shell logo, sidebar, top nav, nav colours, or warehouse layout unless explicitly approved. Public Amazon/Appstore branding work must remain isolated from the application shell and Warehouse controls.
-19. Preserve mobile usability by default.
-20. Use Git/version control discipline. Every deployable state must be an exact GitHub commit.
-21. Do not deploy until compile/import/runtime and required governed source checks pass and the user explicitly approves the exact current PR #528 HEAD.
-22. Production deployment is manual only through `.github/workflows/deploy-fly.yml` using the current PR #528 HEAD SHA and Fly remote builder. Direct `fly deploy` from an operator PC is prohibited.
-23. Deployment never authorizes or performs a merge. PR #528 remains open and unmerged until separately approved.
-24. BT38 UI/runtime improvement work is event-driven and session-driven by default. Zero polling is permitted for UI freshness, notifications, shipping handoff, marketplace handoff or page synchronization.
-25. A committed event must update only the exact affected record/projection in the existing browser session. It must not reload/refetch the whole page, rebuild the table, rerun the initial page snapshot, or discard active tab/search/filter/selection/modal/scroll state.
-26. Reuse the existing governed event/handoff transport. Do not add a second EventSource/SSE connection, parallel notification system, polling watcher, duplicate event bus or competing refresh controller.
-27. No event means no UI-driven database work. Pages, bell and handoff paths must sleep when nothing changes: no heartbeat reads/writes, wake hydration, broad reconciliation or routine background rereads for presentation freshness.
-28. The event source/committing workflow must carry the narrowest useful affected identity and already-known presentation fields. Do not make the receiving page broadly rediscover information that the committing workflow already knew.
-29. Same-page and cross-page changes follow the same contract: canonical commit -> exact affected-record event/response -> exact session record update -> sleep.
-30. The notification bell is informational only and must remain zero-query. It consumes already-published in-memory event data and never queries Neon, marketplace/provider APIs, orders, shipments, listings, Warehouse or logs to discover what happened.
-31. Every future improvement touching UI freshness, events, handoff, shipping, dispatch, notifications or session state must include a contract test proving zero polling, zero broad rebuild/reread, exact affected-record handoff and session preservation. See `docs/EVENT_DRIVEN_SESSION_WORKFLOW.md`.
+## 1. Core Operating Rules
 
-## BT38 inventory rules
-1. Warehouse is the source of truth.
-2. FBA/AFN stock is read-only.
-3. FBM/MFN stock is editable/pushable.
-4. MCF only applies to Amazon FBA stock.
-5. MCF must not control normal warehouse/FBM stock.
-6. Marketplace variations must be readable as their own SKU rows.
-7. Grouping can connect variation SKUs to a master SKU, but individual SKU identity must remain visible.
-8. Manual sync for bulk actions requires selected/ticked rows.
-9. Single-row marketplace icon actions do not require checkbox selection.
-10. Scheduled sync handles unselected/passive changes.
-11. Marketplace notification/webhook support is event-driven and must not be replaced by polling.
+- GitHub is the only source of application code truth.
+- Production is the only commercial runtime authority.
+- Do not use operator-PC application files as source, test authority, build input, deployment input, or rollback source.
+- Do not create or rely on a test/staging Fly app, test database, test marketplace account, or non-production clone as runtime authority.
+- Audit first. Check and show evidence before moving to the next step.
+- Do not change UI layout, protected navigation, colours, logos, or established workflow unless explicitly approved.
+- Do not merge unless separately approved.
+- Do not deploy unless the user explicitly approves the exact current PR head SHA.
+- The user is the architect. AI acts as a cautious governed engineer and must not silently widen scope.
+- Prefer one clean wiring over restore/patch/override chains.
 
-## BT38 P&L rules
-1. Uploaded financial files are temporary working data only.
-2. Do not permanently store uploaded user financial data.
-3. Check Files remains free.
-4. Credit is only used when final report/output is downloaded.
-5. New upload session replaces/clears previous temporary state.
-6. Stock in hand is a core visibility metric.
-7. VAT/GST/tax must be treated as important profit input.
-8. If headers/tabs/transactions are unclear, stop and ask targeted mapping questions.
-9. Saved mappings are user/source-specific and must not affect other users.
+## 2. Source / Branch Authority
 
-## Current priority
-Fix broken marketplace connection state first, especially eBay connection failures, before further application-shell layout work. Explicitly approved public Amazon/Appstore compliance work may proceed only in the isolated public-site scope and must not alter Warehouse/runtime authority.
+- Active governed work is on PR #528 / `fix/full-system-release-alignment` unless explicitly changed by the user.
+- Every audit, source check, contract check, build and deployment must identify the exact GitHub commit being evaluated.
+- Do not assume the default branch represents the governed PR branch.
+- Historical commits/backups may be used as evidence only. Never restore random backup code without proving it is the correct governed rollback point.
+
+## 3. Runtime / Data Authority
+
+- Warehouse is the source of truth for merchant-controlled stock.
+- Product Linking defines relationships; it must not become a second stock authority.
+- FBA inventory is read-only to BT38.
+- FBM/eBay/other merchant-fulfilled inventory follows governed Warehouse authority.
+- Marketplace-owned order, dispatch, tracking, delivery, return and refund facts remain marketplace-owned truth when persisted into their existing canonical BT38 record.
+- Do not create duplicate records, tables, workers, pollers, event buses or write paths to represent truth already owned by an existing canonical record unless an explicitly approved architecture requires a genuinely separate business/physical entity.
+
+## 4. Mandatory Event / Session Architecture
+
+The governed UI freshness path is:
+
+`governed action / marketplace event -> canonical DB commit -> exact affected-record event -> existing handoff transport -> existing browser session -> exact affected record update -> sleep`
+
+Rules:
+
+- Zero polling.
+- No browser interval/timeout loop may repeatedly query Neon, marketplaces, providers, orders, shipments, listings, Warehouse or logs for freshness.
+- No broad page reload/refetch/rebuild because one record changed.
+- Reuse the existing event/session handoff. Do not introduce a second EventSource/SSE connection, notification system, polling watcher, duplicate queue or event bus.
+- Events are signals, not a second database.
+- Canonical DB/Warehouse records remain authority.
+- An event must identify the exact affected record(s) needed by the presentation layer.
+- If no event occurs, the UI freshness system sleeps and causes no UI-driven DB work.
+- Hidden tabs/sessions may retain the exact committed event and apply it when visible; they must not compensate with broad refreshes.
+
+## 5. Notification Bell
+
+- The global notification bell is an informational presentation layer only.
+- The bell must remain zero-query against Neon and zero-read against marketplaces/providers/carriers.
+- Bell records are projected from the existing in-memory committed event stream/session path.
+- The bell must not reconstruct notification history from orders, shipments, listings, Warehouse, provider data or logs.
+- Do not add polling to keep the bell fresh.
+- Do not create a second durable notification/event ledger merely for the bell.
+- Browser-observed bounded history is presentation state only and may be lost across process/browser history boundaries; it is not canonical business truth.
+- Opening the bell must not trigger marketplace/provider hydration or a Neon notification-history query.
+
+## 6. Shipping / Dispatch Authority
+
+- Marketplace dispatch/tracking truth belongs on the existing marketplace order identity unless a genuinely separate physical shipment has been purchased/recorded.
+- A Packlink-purchased shipment is a real `FBMShipment` and Packlink/carrier owns its physical journey.
+- An Amazon Buy Shipping purchased shipment is a real purchased shipment and its provider/carrier owns its physical journey.
+- A manually purchased/recorded shipment may be represented by its real physical shipment row.
+- Do not create a universal `FBMShipment(provider="marketplace")` merely to duplicate carrier/tracking/status already persisted on `MarketplaceOrder`.
+- Marketplace confirmation may confirm dispatch/delivery but must not erase the physical provider authority of a genuinely purchased shipment.
+- Do not invent carrier milestone timestamps.
+
+## 7. Contract Tests
+
+Changes touching any of the following require a focused contract/regression test:
+
+- UI freshness or event/session handoff
+- notification bell
+- Warehouse/Product Linking authority
+- shipping/dispatch/tracking
+- marketplace read/write boundaries
+- provider purchase/confirmation
+- delivery promise persistence/read paths
+- production image/database compatibility
+
+Tests must prove the governed boundary, not merely implementation text.
+
+## 8. Production Image / Database Alignment — HARD RELEASE GATE
+
+Every production release must prove that the exact audited GitHub commit, the exact built Fly production image, and the production Neon database contract are mutually compatible.
+
+Mandatory rules:
+
+- Any change to SQLAlchemy models, tables, columns, constraints, indexes, raw SQL, persistence logic, canonical DB authority, or DB-backed service behaviour requires an explicit image/database compatibility audit before deployment.
+- The exact production image must declare/derive the DB structures and persistence authorities it requires.
+- The production Neon schema must be checked read-only against those requirements before rollout.
+- Deployment must fail closed before production rollout if a required table, column, constraint, index or other structural dependency is absent or incompatible.
+- Deployment must also fail closed when a change introduces a new persisted representation of business truth already owned by an existing canonical record unless that second persistence authority has been explicitly approved as a genuinely separate entity.
+- A successful source/image fingerprint is not sufficient release proof. `GitHub SHA == Fly image` and `Fly image DB contract == Neon production schema/authority contract` must both pass.
+- No automatic production schema mutation or migration is permitted merely to make a deployment pass. Any production migration requires its own governed audit and explicit approval.
+- After rollout, run a bounded read-only production verification against critical DB-backed paths so schema/model incompatibility is detected immediately without marketplace/provider writes.
+- Fly logs must not be the first place an image/database incompatibility is discovered; compatibility is a pre-deployment gate.
+
+Required release chain:
+
+`exact GitHub SHA -> exact production image -> read-only Neon compatibility proof -> deploy -> bounded read-only production verification`
+
+## 9. One Truth / One Persistence Authority
+
+- One business fact has one canonical persistence authority unless an explicitly approved design proves a separate entity is required.
+- Before adding a table, row type, raw-SQL persistence path, compatibility store or duplicated projection, audit whether the fact already has a canonical owner.
+- Presentation projections must remain projections. Do not persist them merely because a UI consumer expects a shipment/event/notification-shaped object.
+- Compatibility code must not silently resurrect a retired table or persistence mechanism.
+- If a new implementation requires compensating ranking/override layers to decide which duplicate record is authoritative, stop and audit the underlying ownership model before adding another alignment layer.
+
+## 10. Deployment
+
+Production deployment is manual GitHub Actions only and must use the exact approved PR head SHA.
+
+Do not use direct `fly deploy` from the operator PC.
+
+Approved operator pattern:
+
+```bash
+GH_EXE="$(find /c/Users/btail/AppData/Local/BT38-GitHubCLI -type f -iname gh.exe 2>/dev/null | head -1)"
+
+"$GH_EXE" workflow run deploy-fly.yml \
+  --repo btailor26/BT38_CLEAN_GOVERNED-Github \
+  --ref fix/full-system-release-alignment \
+  -f confirm_production_deploy=DEPLOY_GITHUB_COMMIT_TO_BT38_PROD \
+  -f expected_commit=<EXACT_APPROVED_SHA>
+
+"$GH_EXE" run watch \
+  --repo btailor26/BT38_CLEAN_GOVERNED-Github \
+  --exit-status
+```
+
+No merge is implied by deployment approval.
