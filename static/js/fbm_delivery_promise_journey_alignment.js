@@ -1,6 +1,8 @@
 (function () {
     'use strict';
 
+    const TRACKING_TRIGGER_SELECTOR = '.fbm-tracking-journey, .fbm-orders-table a[href*="ebay.co.uk/mesh/ord/details"], .fbm-orders-table a[href*="sellercentral.amazon.co.uk/orders-v3/order/"]';
+
     function esc(value) {
         return String(value ?? '').replace(/[&<>"']/g, function (char) {
             return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char];
@@ -115,9 +117,22 @@
         }).join('');
     }
 
+    function marketplaceName(button, row) {
+        const explicit = String(button.dataset.platform || '').trim();
+        if (explicit) return explicit;
+        const marketplaceCell = row?.children?.[1] || null;
+        const logo = marketplaceCell?.querySelector('.fbm-marketplace-logo');
+        const logoName = String(logo?.alt || '').trim();
+        if (logoName) return logoName;
+        const href = String(button.getAttribute('href') || '').toLowerCase();
+        if (href.includes('ebay.co.uk/mesh/ord/details')) return 'eBay';
+        if (href.includes('sellercentral.amazon.co.uk/orders-v3/order/')) return 'Amazon';
+        return String(marketplaceCell?.querySelector('strong')?.textContent || 'Marketplace').trim();
+    }
+
     function marketplaceJourneyHtml(button, row, warning) {
         const tracking = button.dataset.trackingNumber || String(button.textContent || '').trim() || '—';
-        const marketplace = String(row?.children?.[1]?.querySelector('strong')?.textContent || button.dataset.platform || 'Marketplace').trim();
+        const marketplace = marketplaceName(button, row);
         const shipmentCell = row?.children?.[7] || null;
         const carrier = button.dataset.carrier || String(shipmentCell?.querySelector('strong')?.textContent || marketplace).trim();
         const journeyCell = row?.children?.[8] || null;
@@ -176,7 +191,7 @@
         if (document.documentElement.dataset.bt38PromiseJourneyAligned === '1') return;
         document.documentElement.dataset.bt38PromiseJourneyAligned = '1';
         document.addEventListener('click', function (event) {
-            const button = event.target.closest('.fbm-tracking-journey');
+            const button = event.target.closest(TRACKING_TRIGGER_SELECTOR);
             if (!button) return;
             event.preventDefault();
             event.stopPropagation();
@@ -185,7 +200,7 @@
         }, true);
         document.addEventListener('keydown', function (event) {
             if (event.key !== 'Enter' && event.key !== ' ') return;
-            const button = event.target.closest('.fbm-tracking-journey');
+            const button = event.target.closest(TRACKING_TRIGGER_SELECTOR);
             if (!button) return;
             event.preventDefault();
             event.stopPropagation();
