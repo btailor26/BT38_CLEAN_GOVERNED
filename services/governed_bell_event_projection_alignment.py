@@ -64,10 +64,6 @@ def _label_for_event(event: dict) -> str | None:
         if any(token in values for token in tokens):
             return label
 
-    # Amazon/eBay sale webhooks can legitimately keep their provider-native
-    # event_type (for example ORDER_CHANGE). If canonical order identity and SKU
-    # survived the governed webhook result, that committed order event is enough
-    # to project a Sale without querying the DB or inventing business state.
     source = _normalise(event.get("source"))
     order_id = str(event.get("order_id") or event.get("marketplace_order_id") or "").strip()
     sku = str(event.get("seller_sku") or event.get("sku") or "").strip()
@@ -76,21 +72,52 @@ def _label_for_event(event: dict) -> str | None:
     return None
 
 
+def _platform_for_event(event: dict) -> str:
+    explicit = str(event.get("platform") or "").strip()
+    if explicit:
+        return explicit
+    source = _normalise(event.get("source"))
+    if "amazon" in source:
+        return "Amazon"
+    if "ebay" in source:
+        return "eBay"
+    provider = str(event.get("provider") or "").strip()
+    if provider:
+        return provider
+    carrier = str(event.get("carrier") or "").strip()
+    if carrier:
+        return carrier
+    return "Marketplace"
+
+
 def _event_to_bell_record(event: dict) -> dict | None:
     label = _label_for_event(event)
     if not label:
         return None
 
     revision = int(event.get("revision") or 0)
-    order_id = str(
-        event.get("order_id")
-        or event.get("marketplace_order_id")
-        or ""
-    ).strip()
+    order_id = str(event.get("order_id") or event.get("marketplace_order_id") or "").strip()
     sku = str(event.get("seller_sku") or event.get("sku") or "").strip()
-    platform = str(event.get("platform") or "Marketplace").strip() or "Marketplace"
-    subject = str(event.get("product_title") or sku or order_id or "Marketplace order").strip()
-    title = f"{label} · {subject}"
+    platform = _platform_for_event(event)
+    product_title = str(event.get("product_title") or "").strip()
+    quantity = event.get("quantity")
+    carrier = str(event.get("carrier") or event.get("provider") or "").strip()
+    tracking = str(event.get("tracking_number") or "").strip()
+    subject = product_title or sku or order_id or "Order"
+    title = f"{label} · {platform} · {subject}"
+
+    details = []
+    if order_id:
+        details.append(f"Order {order_id}")
+    if sku:
+        details.append(f"SKU {sku}")
+    if quantity not in (None, ""):
+        details.append(f"Qty {quantity}")
+    if carrier:
+        details.append(f"Carrier {carrier}")
+    if tracking:
+        details.append(f"Tracking {tracking}")
+    message = " · ".join(details) if details else title
     lifecycle = _normalise(event.get("lifecycle_status") or event.get("status"))
 
     return {
@@ -99,12 +126,12 @@ def _event_to_bell_record(event: dict) -> dict | None:
         "log_type": "marketplace_sale" if label == "Sale" else "marketplace_lifecycle",
         "platform": platform,
         "title": title,
-        "message": title,
+        "message": message,
         "order_id": order_id,
         "sku": sku,
-        "quantity": event.get("quantity"),
-        "carrier": str(event.get("carrier") or event.get("provider") or "").strip(),
-        "tracking_number": str(event.get("tracking_number") or "").strip(),
+        "quantity": quantity,
+        "carrier": carrier,
+        "tracking_number": tracking,
         "lifecycle_status": lifecycle,
         "status_label": label,
         "created_at": event.get("published_at"),
@@ -118,9 +145,7 @@ def _patch_exact_scope() -> None:
     from services import governed_exact_record_event_alignment as exact
     from services import governed_ui_event_signal as ui
 
-    ui._SINGULAR_SCOPE_KEYS = tuple(dict.fromkeys(
-        tuple(ui._SINGULAR_SCOPE_KEYS) + _PRESENTATION_SCOPE_KEYS
-    ))
+    ui._SINGULAR_SCOPE_KEYS = tuple(dict.fromkeys(tuple(ui._SINGULAR_SCOPE_KEYS) + _PRESENTATION_SCOPE_KEYS))
 
     if getattr(exact, "_bt38_bell_projection_scope_patched", False):
         return
@@ -190,18 +215,30 @@ def _browser_event_cache_script() -> str:
     if((source==='webhook_amazon'||source==='webhook_ebay')&&orderId&&sku)return 'Sale';
     return '';
   }
+  function platformFor(detail){
+    var explicit=String(detail.platform||'').trim();if(explicit)return explicit;
+    var source=norm(detail.source);if(source.indexOf('amazon')>=0)return 'Amazon';if(source.indexOf('ebay')>=0)return 'eBay';
+    var provider=String(detail.provider||'').trim();if(provider)return provider;
+    var carrier=String(detail.carrier||'').trim();if(carrier)return carrier;
+    return 'Marketplace';
+  }
   function read(){try{var value=JSON.parse(localStorage.getItem(cacheKey)||'[]');return Array.isArray(value)?value:[];}catch(_){return [];}}
   function write(rows){try{localStorage.setItem(cacheKey,JSON.stringify(rows.slice(0,50)));}catch(_){}}
   function recordFor(detail){
     if(!detail||typeof detail!=='object')return null;
     var label=labelFor(detail);if(!label)return null;
     var revision=Number(detail.revision||0),orderId=String(detail.order_id||detail.marketplace_order_id||'').trim();
-    var sku=String(detail.seller_sku||detail.sku||'').trim(),platform=String(detail.platform||'Marketplace').trim()||'Marketplace';
-    var subject=String(detail.product_title||sku||orderId||'Marketplace order').trim();
+    var sku=String(detail.seller_sku||detail.sku||'').trim(),platform=platformFor(detail);
+    var productTitle=String(detail.product_title||'').trim(),subject=productTitle||sku||orderId||'Order';
+    var carrier=String(detail.carrier||detail.provider||'').trim(),tracking=String(detail.tracking_number||'').trim();
+    var quantity=detail.quantity,parts=[];
+    if(orderId)parts.push('Order '+orderId);if(sku)parts.push('SKU '+sku);if(quantity!==undefined&&quantity!==null&&quantity!=='')parts.push('Qty '+quantity);
+    if(carrier)parts.push('Carrier '+carrier);if(tracking)parts.push('Tracking '+tracking);
+    var title=label+' · '+platform+' · '+subject,message=parts.length?parts.join(' · '):title;
     return {event_key:'runtime:'+revision+':'+norm(label)+':'+orderId+':'+sku,id:'runtime:'+revision,
-      log_type:label==='Sale'?'marketplace_sale':'marketplace_lifecycle',platform:platform,title:label+' · '+subject,
-      message:label+' · '+subject,order_id:orderId,sku:sku,quantity:detail.quantity,carrier:String(detail.carrier||detail.provider||''),
-      tracking_number:String(detail.tracking_number||''),lifecycle_status:norm(detail.lifecycle_status||detail.status),status_label:label,
+      log_type:label==='Sale'?'marketplace_sale':'marketplace_lifecycle',platform:platform,title:title,message:message,
+      order_id:orderId,sku:sku,quantity:quantity,carrier:carrier,tracking_number:tracking,
+      lifecycle_status:norm(detail.lifecycle_status||detail.status),status_label:label,
       created_at:detail.published_at||new Date().toISOString()};
   }
   function store(detail){var record=recordFor(detail);if(!record)return;var rows=read().filter(function(row){return row&&row.event_key!==record.event_key;});rows.unshift(record);write(rows);}
