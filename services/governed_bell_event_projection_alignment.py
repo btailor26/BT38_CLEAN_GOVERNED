@@ -9,7 +9,6 @@ worker serves that request.
 """
 from __future__ import annotations
 
-from flask import request
 from flask_login import login_required
 
 
@@ -64,6 +63,16 @@ def _label_for_event(event: dict) -> str | None:
     for tokens, label in ordered:
         if any(token in values for token in tokens):
             return label
+
+    # Amazon/eBay sale webhooks can legitimately keep their provider-native
+    # event_type (for example ORDER_CHANGE). If canonical order identity and SKU
+    # survived the governed webhook result, that committed order event is enough
+    # to project a Sale without querying the DB or inventing business state.
+    source = _normalise(event.get("source"))
+    order_id = str(event.get("order_id") or event.get("marketplace_order_id") or "").strip()
+    sku = str(event.get("seller_sku") or event.get("sku") or "").strip()
+    if source in {"webhook_amazon", "webhook_ebay"} and order_id and sku:
+        return "Sale"
     return None
 
 
@@ -176,6 +185,9 @@ def _browser_event_cache_script() -> str:
       [['pending','unshipped','confirmed','order_received','new_order','order_committed'],'Sale']
     ];
     for(var i=0;i<rules.length;i++)if(rules[i][0].some(function(token){return value.indexOf(token)>=0;}))return rules[i][1];
+    var source=norm(detail.source),orderId=String(detail.order_id||detail.marketplace_order_id||'').trim();
+    var sku=String(detail.seller_sku||detail.sku||'').trim();
+    if((source==='webhook_amazon'||source==='webhook_ebay')&&orderId&&sku)return 'Sale';
     return '';
   }
   function read(){try{var value=JSON.parse(localStorage.getItem(cacheKey)||'[]');return Array.isArray(value)?value:[];}catch(_){return [];}}
@@ -236,8 +248,6 @@ def install_governed_bell_event_projection_alignment(app) -> None:
 
     endpoint = "governed.governed_ui_notifications"
     if endpoint in app.view_functions:
-        # Final owner is the zero-query in-memory reader. This intentionally
-        # replaces the older small-alignment wrapper that queried SystemLog.
         app.view_functions[endpoint] = login_required(ready._event_only_bell_reader)
 
     if not getattr(app, "_bt38_exact_bell_browser_cache_installed", False):
