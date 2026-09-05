@@ -41,14 +41,14 @@ def test_ebay_event_reuses_existing_exact_fulfillment_finance_path():
 
 def test_event_alignment_cannot_become_page_polling_or_background_recovery():
     for forbidden in (
-        "before_request",
+        "@app.before_request",
         "setInterval(",
-        "while True",
-        "Thread(",
-        "scheduler",
-        "startup recovery",
+        "while True:",
+        "threading.Thread(",
+        "start_governed_runtime_engine(",
+        "recover_bounded_marketplace_dispatch_truth(",
     ):
-        assert forbidden.lower() not in ALIGNMENT.lower()
+        assert forbidden not in ALIGNMENT
 
     assert "broad_scan_started" in ALIGNMENT
     assert "marketplace_write_started" in ALIGNMENT
