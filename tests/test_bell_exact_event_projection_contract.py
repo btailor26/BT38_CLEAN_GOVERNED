@@ -144,3 +144,10 @@ def test_fbm_page_prime_and_small_box_share_the_same_projection():
     assert "fbmMovementState.v1" in projection
     assert "if(movement[key]===record.status_label)return" in projection
     assert "if(shipment.indexOf('Unshipped')>=0)return 'Get ready to dispatch';" in projection
+
+
+def test_explicit_fbm_owned_sale_uses_same_bell_record_and_small_box():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+
+    assert "var saved=store(detail),owned=norm(detail.notification_source||detail.source);" in projection
+    assert "if(saved&&saved.isNew&&owned==='fbm_page')showFbmToast(saved.record);" in projection
