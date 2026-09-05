@@ -56,7 +56,9 @@ def test_every_bell_movement_is_clear_and_contextual():
 
     for label in (
         "Sale",
-        "Dispatched",
+        "Ship by",
+        "Late",
+        "Shipped",
         "Picked up",
         "In transit",
         "Out for delivery",
@@ -78,9 +80,29 @@ def test_every_bell_movement_is_clear_and_contextual():
     assert "_platform_for_event" in projection
     assert 'return "Amazon"' in projection
     assert 'return "eBay"' in projection
+    assert 'return "Marketplace"' in projection
     assert 'details.append(f"Order {order_id}")' in projection
-    assert 'details.append(f"SKU {sku}")' in projection
     assert 'details.append(f"Qty {quantity}")' in projection
     assert 'details.append(f"Carrier {carrier}")' in projection
     assert 'details.append(f"Tracking {tracking}")' in projection
+    assert 'details.append(f"SKU {sku}")' not in projection
+    assert 'subject = product_title or (f"Order {order_id}" if order_id else "Order")' in projection
     assert 'title = f"{label} · {platform} · {subject}"' in projection
+
+
+def test_bell_never_promotes_carrier_or_provider_to_marketplace_identity():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+    platform = projection.split("def _platform_for_event(event: dict) -> str:", 1)[1].split("def _event_to_bell_record", 1)[0]
+
+    assert 'event.get("provider")' not in platform
+    assert 'event.get("carrier")' not in platform
+    assert 'return "Marketplace"' in platform
+
+
+def test_browser_projection_matches_server_product_title_and_no_visible_sku():
+    projection = Path("services/governed_bell_event_projection_alignment.py").read_text()
+
+    assert "productTitle||(orderId?'Order '+orderId:'Order')" in projection
+    assert "parts.push('SKU '+sku)" not in projection
+    assert "carrier=String(detail.carrier||detail.provider||'').trim()" in projection
+    assert "return 'Marketplace';" in projection
