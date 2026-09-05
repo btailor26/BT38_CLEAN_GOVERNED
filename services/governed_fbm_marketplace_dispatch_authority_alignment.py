@@ -1,9 +1,9 @@
 """Align FBM shipment presentation to persisted marketplace dispatch truth.
 
-Promise/service-level facts remain historical marketplace order facts. Once the
-marketplace has persisted dispatch on the existing MarketplaceOrder identity, that
-same DB row becomes the shipment authority shown by FBM. Pre-dispatch provider
-choices must not survive as shipment truth after marketplace dispatch.
+Marketplace dispatch remains a valid fallback when BT38 has no persisted physical
+shipment for the order. A real persisted provider shipment (Packlink, Amazon Buy
+Shipping, eBay Shipping, manual or another connected provider) stays the stronger
+physical-shipment authority even after the selling marketplace reports Shipped.
 
 This is a read/presentation alignment only: no marketplace/provider reads, writes,
 pollers, workers, new tables or duplicate shipment identities are introduced.
@@ -47,12 +47,7 @@ def _platform_label(row) -> str:
 
 
 def _marketplace_has_dispatch_truth(row) -> bool:
-    """Read the dispatch facts already persisted on MarketplaceOrder.
-
-    This is deliberately marketplace-neutral. It does not care where postage was
-    bought and it performs no marketplace/provider read or DB write. Historical,
-    current and future rows therefore use the same persisted dispatch authority.
-    """
+    """Read the dispatch facts already persisted on MarketplaceOrder."""
     status = _status(getattr(row, "status", None))
     return bool(
         status in _DISPATCHED_STATES
@@ -63,14 +58,11 @@ def _marketplace_has_dispatch_truth(row) -> bool:
 
 
 def _marketplace_shipment(row):
-    """Expose only persisted marketplace shipment facts through the existing view contract.
+    """Expose persisted marketplace shipment facts only as a presentation fallback.
 
-    A marketplace shipped/fulfilled result proves dispatch, not physical carrier
-    pickup. A persisted marketplace Delivered result is stronger terminal truth:
-    it completes the three-step lifecycle even when a low-scan service (for
-    example Royal Mail 2nd Class) did not expose every intermediate scan. We do
-    not invent intermediate timestamps; the marketplace delivery timestamp/state
-    is the terminal authority until a later marketplace exception supersedes it.
+    Marketplace Shipped proves dispatch, not physical pickup. Marketplace Delivered
+    is terminal truth and may complete the lifecycle without invented intermediate
+    timestamps. This proxy is never persisted as FBMShipment.
     """
     if not _marketplace_has_dispatch_truth(row):
         return None
@@ -85,9 +77,6 @@ def _marketplace_shipment(row):
     carrier_display = carrier or f"{platform} marketplace shipment"
     service_display = "Marketplace dispatch" if tracking else "Tracking pending"
 
-    # Only actual persisted carrier lifecycle states prove pickup/movement.
-    # Delivered is terminal marketplace truth and therefore proves the package
-    # completed pickup + movement even if eBay/carrier omitted those scans.
     delivered = status == "delivered"
     pickup_proven = status in {
         "accepted", "carrier_accepted", "collected", "picked_up",
@@ -130,48 +119,25 @@ def install_governed_fbm_marketplace_dispatch_authority_alignment() -> None:
         return
 
     original_shipment_map = page._shipment_map
-    original_shipping_mode = page._workspace_shipping_mode
-    original_provider_options = page._workspace_provider_options
     original_route_state = page._route_state
 
     def aligned_shipment_map(rows):
+        # The existing DB shipment selector already chooses the canonical persisted
+        # physical shipment. Never replace that provider authority merely because
+        # MarketplaceOrder later reports Shipped. Use the marketplace proxy only
+        # where no persisted physical shipment exists for the exact order identity.
         existing = original_shipment_map(rows)
         result = dict(existing)
         for row in rows:
             if row.store_id is None or not row.marketplace_order_id:
                 continue
             key = (int(row.store_id), str(row.marketplace_order_id))
+            if key in result and result[key] is not None:
+                continue
             marketplace = _marketplace_shipment(row)
             if marketplace is not None:
                 result[key] = marketplace
-            elif not _marketplace_has_dispatch_truth(row):
-                result.pop(key, None) if key in result and getattr(result[key], "_bt38_marketplace_owned", False) else None
         return result
-
-    def aligned_shipping_mode(row, platform, profile):
-        mode = dict(original_shipping_mode(row, platform, profile))
-        if not _marketplace_has_dispatch_truth(row):
-            return mode
-        marketplace = _platform_label(row)
-        mode.update({
-            "recommended": f"{marketplace} marketplace shipment",
-            "marketplace_buy_shipping": False,
-            "external_provider": False,
-            "manual": False,
-            "reason": "Marketplace dispatch is persisted on this order and now owns shipment truth. Earlier postage-route choices are no longer shipment authority.",
-        })
-        return mode
-
-    def aligned_provider_options(row, profile):
-        options = [dict(option) for option in original_provider_options(row, profile)]
-        if not _marketplace_has_dispatch_truth(row):
-            return options
-        marketplace = _platform_label(row)
-        for option in options:
-            option["available"] = False
-            option["recommended"] = False
-            option["message"] = f"{marketplace} has already returned dispatch truth for this order; do not create another shipment."
-        return options
 
     def aligned_route_state(row):
         if _marketplace_has_dispatch_truth(row):
@@ -189,8 +155,9 @@ def install_governed_fbm_marketplace_dispatch_authority_alignment() -> None:
         current = original_route_state(row)
         return "Awaiting dispatch" if current == "Ready for FBM routing" else current
 
+    # Keep the existing pre-dispatch shipping-mode/provider-choice functions.
+    # They describe available purchase routes; they are not allowed to overwrite
+    # the physical provider selected by the persisted shipment map after dispatch.
     page._shipment_map = aligned_shipment_map
-    page._workspace_shipping_mode = aligned_shipping_mode
-    page._workspace_provider_options = aligned_provider_options
     page._route_state = aligned_route_state
     page._bt38_marketplace_dispatch_authority_aligned = True
