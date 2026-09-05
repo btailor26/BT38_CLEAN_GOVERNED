@@ -53,11 +53,13 @@ def _label_for_event(event: dict) -> str | None:
         (("chargeback",), "Chargeback"),
         (("dispute",), "Dispute"),
         (("case_open", "case_opened"), "Issue / case"),
+        (("late", "overdue", "ship_by_missed", "dispatch_deadline_missed"), "Late"),
+        (("ship_by", "shipby", "dispatch_by", "dispatch_deadline"), "Ship by"),
         (("delivered",), "Delivered"),
         (("out_for_delivery",), "Out for delivery"),
         (("in_transit",), "In transit"),
         (("carrier_accepted", "picked_up", "collected", "accepted"), "Picked up"),
-        (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped", "partially_shipped"), "Dispatched"),
+        (("marketplace_dispatch_confirmed", "label_assigned", "dispatched", "shipped", "partially_shipped"), "Shipped"),
         (("pending", "unshipped", "confirmed", "order_received", "new_order", "order_committed"), "Sale"),
     )
     for tokens, label in ordered:
@@ -81,12 +83,6 @@ def _platform_for_event(event: dict) -> str:
         return "Amazon"
     if "ebay" in source:
         return "eBay"
-    provider = str(event.get("provider") or "").strip()
-    if provider:
-        return provider
-    carrier = str(event.get("carrier") or "").strip()
-    if carrier:
-        return carrier
     return "Marketplace"
 
 
@@ -103,14 +99,12 @@ def _event_to_bell_record(event: dict) -> dict | None:
     quantity = event.get("quantity")
     carrier = str(event.get("carrier") or event.get("provider") or "").strip()
     tracking = str(event.get("tracking_number") or "").strip()
-    subject = product_title or sku or order_id or "Order"
+    subject = product_title or (f"Order {order_id}" if order_id else "Order")
     title = f"{label} · {platform} · {subject}"
 
     details = []
     if order_id:
         details.append(f"Order {order_id}")
-    if sku:
-        details.append(f"SKU {sku}")
     if quantity not in (None, ""):
         details.append(f"Qty {quantity}")
     if carrier:
@@ -129,6 +123,7 @@ def _event_to_bell_record(event: dict) -> dict | None:
         "message": message,
         "order_id": order_id,
         "sku": sku,
+        "product_title": product_title,
         "quantity": quantity,
         "carrier": carrier,
         "tracking_number": tracking,
@@ -204,9 +199,11 @@ def _browser_event_cache_script() -> str:
       [['replacement_requested'],'Replacement requested'],
       [['replacement','replaced'],'Replacement'],
       [['chargeback'],'Chargeback'],[['dispute'],'Dispute'],[['case_open','case_opened'],'Issue / case'],
+      [['late','overdue','ship_by_missed','dispatch_deadline_missed'],'Late'],
+      [['ship_by','shipby','dispatch_by','dispatch_deadline'],'Ship by'],
       [['delivered'],'Delivered'],[['out_for_delivery'],'Out for delivery'],[['in_transit'],'In transit'],
       [['carrier_accepted','picked_up','collected','accepted'],'Picked up'],
-      [['marketplace_dispatch_confirmed','label_assigned','dispatched','shipped','partially_shipped'],'Dispatched'],
+      [['marketplace_dispatch_confirmed','label_assigned','dispatched','shipped','partially_shipped'],'Shipped'],
       [['pending','unshipped','confirmed','order_received','new_order','order_committed'],'Sale']
     ];
     for(var i=0;i<rules.length;i++)if(rules[i][0].some(function(token){return value.indexOf(token)>=0;}))return rules[i][1];
@@ -218,8 +215,6 @@ def _browser_event_cache_script() -> str:
   function platformFor(detail){
     var explicit=String(detail.platform||'').trim();if(explicit)return explicit;
     var source=norm(detail.source);if(source.indexOf('amazon')>=0)return 'Amazon';if(source.indexOf('ebay')>=0)return 'eBay';
-    var provider=String(detail.provider||'').trim();if(provider)return provider;
-    var carrier=String(detail.carrier||'').trim();if(carrier)return carrier;
     return 'Marketplace';
   }
   function read(){try{var value=JSON.parse(localStorage.getItem(cacheKey)||'[]');return Array.isArray(value)?value:[];}catch(_){return [];}}
@@ -229,15 +224,15 @@ def _browser_event_cache_script() -> str:
     var label=labelFor(detail);if(!label)return null;
     var revision=Number(detail.revision||0),orderId=String(detail.order_id||detail.marketplace_order_id||'').trim();
     var sku=String(detail.seller_sku||detail.sku||'').trim(),platform=platformFor(detail);
-    var productTitle=String(detail.product_title||'').trim(),subject=productTitle||sku||orderId||'Order';
+    var productTitle=String(detail.product_title||'').trim(),subject=productTitle||(orderId?'Order '+orderId:'Order');
     var carrier=String(detail.carrier||detail.provider||'').trim(),tracking=String(detail.tracking_number||'').trim();
     var quantity=detail.quantity,parts=[];
-    if(orderId)parts.push('Order '+orderId);if(sku)parts.push('SKU '+sku);if(quantity!==undefined&&quantity!==null&&quantity!=='')parts.push('Qty '+quantity);
+    if(orderId)parts.push('Order '+orderId);if(quantity!==undefined&&quantity!==null&&quantity!=='')parts.push('Qty '+quantity);
     if(carrier)parts.push('Carrier '+carrier);if(tracking)parts.push('Tracking '+tracking);
     var title=label+' · '+platform+' · '+subject,message=parts.length?parts.join(' · '):title;
     return {event_key:'runtime:'+revision+':'+norm(label)+':'+orderId+':'+sku,id:'runtime:'+revision,
       log_type:label==='Sale'?'marketplace_sale':'marketplace_lifecycle',platform:platform,title:title,message:message,
-      order_id:orderId,sku:sku,quantity:quantity,carrier:carrier,tracking_number:tracking,
+      order_id:orderId,sku:sku,product_title:productTitle,quantity:quantity,carrier:carrier,tracking_number:tracking,
       lifecycle_status:norm(detail.lifecycle_status||detail.status),status_label:label,
       created_at:detail.published_at||new Date().toISOString()};
   }
