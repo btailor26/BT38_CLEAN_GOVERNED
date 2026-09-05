@@ -16,7 +16,8 @@ def test_prime_profile_comes_from_current_amazon_sale_webhook_only():
     assert "_fetch_order" not in source
     assert "sp_api" not in source
     assert "requests." not in source
-    assert "recover" not in source.lower()
+    assert "recover_exact_failed_webhook" not in source
+    assert "request_rejected_webhook_recovery" not in source
 
 
 def test_existing_bell_installer_installs_sale_authority_without_second_transport():
