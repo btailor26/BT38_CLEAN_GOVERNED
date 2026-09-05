@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTES = (ROOT / "governed_fbm_routes.py").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "fbm.html").read_text(encoding="utf-8")
 JS = (ROOT / "static" / "js" / "fbm_tracking_journey_legacy.js").read_text(encoding="utf-8")
+DB_AUTHORITY = (ROOT / "services" / "governed_fbm_db_authority_alignment.py").read_text(encoding="utf-8")
 
 
 def _shipment_map_source() -> str:
@@ -35,6 +36,18 @@ def test_fbm_uses_one_db_first_canonical_shipment_authority():
     assert "PacklinkAdapter(" not in source
     assert "get_tracking_status(" not in source
     assert "get_shipment(" not in source
+
+
+def test_runtime_canonical_authority_prefers_actual_label_purchase_over_marketplace_tracking():
+    rank = DB_AUTHORITY.split("def _canonical_rank", 1)[1].split("\ndef _canonical_persisted_shipment_map", 1)[0]
+    return_block = rank.split("return (", 1)[1]
+
+    assert "physical_provider" in rank
+    assert "purchased_provider" in rank
+    assert "label_purchased_at" in rank
+    assert 'purchase_status == "purchased"' in rank
+    assert return_block.index("purchased_provider") < return_block.index("exact_tracking_match")
+    assert return_block.index("purchased_provider") < return_block.index("marketplace_dispatch")
 
 
 def test_fbm_provider_journey_receives_the_selected_persisted_shipment_id():
