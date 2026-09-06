@@ -1,11 +1,10 @@
 """Map existing BT38 DB orders into provider-neutral FBM shipment input.
 
 MarketplaceOrder remains the order source of truth. This module does not import
-orders, call marketplaces, buy postage, or mutate inventory quantities. Missing
-marketplace-owned delivery facts may be hydrated through the single exact-order
-hydration rule before an external provider is called. Explicit single-unit
-parcel facts may be persisted into ProductPackMapping so the same SKU can reuse
-those FBM shipping defaults on later orders.
+orders, call marketplaces, buy postage, or mutate inventory quantities. Normal
+FBM preparation is DB-only. Explicit parcel facts may be persisted into the
+existing ProductPackMapping for the exact SKU + quantity so later matching
+orders can reuse the confirmed packed parcel without guessing dimensions.
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ from typing import Any
 
 from extensions import db
 from models import MarketplaceOrder, ProductPackMapping, WarehouseStock
-from services.fbm_marketplace_destination import destination_complete, hydrate_marketplace_destination
 
 
 DEFAULT_SHIP_FROM = {
@@ -45,8 +43,20 @@ class ParcelInput:
     def complete(self) -> bool:
         return all(value is not None and float(value) > 0 for value in (self.weight_kg, self.length_cm, self.width_cm, self.height_cm))
 
+    @property
+    def mapping_review_required(self) -> bool:
+        return "mapping_review_required" in (self.source or "")
+
     def to_dict(self) -> dict[str, Any]:
-        return {"weight_kg": self.weight_kg, "length_cm": self.length_cm, "width_cm": self.width_cm, "height_cm": self.height_cm, "source": self.source, "complete": self.complete}
+        return {
+            "weight_kg": self.weight_kg,
+            "length_cm": self.length_cm,
+            "width_cm": self.width_cm,
+            "height_cm": self.height_cm,
+            "source": self.source,
+            "complete": self.complete,
+            "mapping_review_required": self.mapping_review_required,
+        }
 
 
 def order_lines(order: Any) -> list[MarketplaceOrder]:
@@ -81,16 +91,12 @@ def ship_from() -> dict[str, str]:
 
 
 def ship_to(order: Any) -> dict[str, str | None]:
-    """Return marketplace-owned delivery facts, hydrating the exact order if needed.
+    """Return only delivery facts already persisted on MarketplaceOrder.
 
-    Amazon and eBay currently have exact-order readers. Any future marketplace
-    follows this same contract by adding its exact reader to the central
-    hydration service; BT38 never substitutes or invents an address. Standalone
-    manual shipping orders already own their entered destination facts and use
-    this same provider-neutral handoff without marketplace hydration.
+    Provider-neutral preparation must not hydrate Amazon/eBay on read. Exact
+    marketplace/provider confirmation belongs at the final label purchase/print
+    boundary, not page load, shipping-options preparation, or parcel mapping.
     """
-    if order is not None and hasattr(order, "store_id") and not destination_complete(order):
-        hydrate_marketplace_destination(order)
     return {
         "name": _text(getattr(order, "ship_to_name", None)),
         "address1": _text(getattr(order, "ship_to_address", None)),
@@ -104,66 +110,62 @@ def ship_to(order: Any) -> dict[str, str | None]:
     }
 
 
-def _single_unit_mapping(order: Any, *, create: bool = False) -> ProductPackMapping | None:
-    """Resolve the existing reusable parcel mapping for an exact one-unit SKU.
-
-    Multi-line or multi-quantity parcels are deliberately not reusable SKU
-    defaults because their packed dimensions can differ from a single unit.
-    """
+def _single_sku_quantity(order: Any) -> tuple[str, int] | None:
     lines = order_lines(order)
     if len(lines) != 1:
         return None
     line = lines[0]
+    sku = _text(getattr(line, "sku", None))
+    if not sku:
+        return None
     try:
         quantity = max(1, int(getattr(line, "quantity", 1) or 1))
     except (TypeError, ValueError):
         quantity = 1
-    if quantity != 1:
-        return None
-    sku = _text(getattr(line, "sku", None))
-    if not sku:
-        return None
+    return sku, quantity
 
+
+def _quantity_pack_mapping(order: Any, *, create: bool = False) -> ProductPackMapping | None:
+    """Resolve the reusable mapping for the exact single-SKU sold quantity.
+
+    ProductPackMapping already owns units_per_carton, so SKU x2, x3, etc. are
+    separate learned parcel mappings. Dimensions are never multiplied from the
+    one-unit mapping. Unknown combinations remain under mapping review until the
+    user confirms the actual packed parcel once.
+    """
+    identity = _single_sku_quantity(order)
+    if identity is None:
+        return None
+    sku, quantity = identity
     mapping = (
         ProductPackMapping.query
-        .filter_by(single_sku=sku, is_active=True)
+        .filter_by(single_sku=sku, units_per_carton=quantity, is_active=True)
         .order_by(ProductPackMapping.updated_at.desc(), ProductPackMapping.id.desc())
         .first()
     )
-    if mapping is not None:
-        units = getattr(mapping, "units_per_carton", None)
-        try:
-            units = int(units) if units is not None else 1
-        except (TypeError, ValueError):
-            units = 1
-        if units != 1:
-            return None
+    if mapping is not None or not create:
         return mapping
-
-    if not create:
-        return None
-
     mapping = ProductPackMapping(
         single_sku=sku,
-        units_per_carton=1,
+        units_per_carton=quantity,
         is_active=True,
-        notes="FBM shipping parcel defaults",
+        notes=f"FBM confirmed shipping parcel defaults for {sku} x{quantity}",
     )
     db.session.add(mapping)
     return mapping
 
 
 def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, Any]) -> None:
-    """Persist explicit safe single-unit parcel values before provider calls.
+    """Persist a user-confirmed exact SKU + quantity parcel mapping.
 
-    Weight and dimensions entered in the FBM desk are committed to the reusable
-    ProductPackMapping before Packlink/Amazon rate execution. A later provider
-    error therefore does not discard the entered parcel defaults.
+    This is DB learning only. It does not call a marketplace/provider. Mixed-SKU
+    combinations are deliberately not forced into ProductPackMapping because
+    that model represents one SKU; they remain mapping review until a governed
+    combination authority is wired.
     """
     order = base.order_ref
     if order is None:
         return
-
     values = {
         "carton_weight_kg": _positive_float(overrides.get("weight_kg")),
         "carton_length_cm": _positive_float(overrides.get("length_cm")),
@@ -173,9 +175,8 @@ def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, A
     values = {key: value for key, value in values.items() if value is not None}
     if not values:
         return
-
     try:
-        mapping = _single_unit_mapping(order, create=True)
+        mapping = _quantity_pack_mapping(order, create=True)
         if mapping is None:
             return
         changed = False
@@ -191,14 +192,13 @@ def _remember_explicit_parcel_defaults(base: ParcelInput, overrides: dict[str, A
 
 
 def parcel_from_db(order: Any) -> ParcelInput:
-    """Resolve package defaults from the complete marketplace order.
+    """Resolve a parcel from persisted BT38 facts without external calls.
 
-    Weight normally comes from WarehouseStock.product_weight_kg x line
-    quantity. For an exact one-unit SKU, an active ProductPackMapping may
-    provide the previously entered FBM parcel weight and dimensions. For
-    mixed/multi-line orders BT38 deliberately leaves dimensions blank because
-    adding product carton dimensions would be unsafe; the user must enter the
-    actual packed parcel dimensions.
+    Weight is safely additive: WarehouseStock.product_weight_kg x quantity is
+    summed across every order line. Packed dimensions are not additive. For one
+    SKU BT38 only uses a ProductPackMapping matching the exact sold quantity.
+    Unknown single-SKU quantities and mixed-SKU parcels are flagged for mapping
+    review instead of borrowing or multiplying dimensions.
     """
     lines = order_lines(order)
     total_weight = 0.0
@@ -212,63 +212,60 @@ def parcel_from_db(order: Any) -> ParcelInput:
         if not unit_weight:
             all_weights_known = False
             continue
-        quantity = max(1, int(getattr(line, "quantity", 1) or 1))
+        try:
+            quantity = max(1, int(getattr(line, "quantity", 1) or 1))
+        except (TypeError, ValueError):
+            quantity = 1
         total_weight += unit_weight * quantity
 
     weight = total_weight if all_weights_known and total_weight > 0 else None
     length = width = height = None
-    sources = []
+    sources: list[str] = []
     if weight:
         sources.append("warehouse_order_weight")
 
-    if len(lines) == 1:
-        sku = _text(getattr(lines[0], "sku", None))
-        mapping = None
-        if sku:
-            mapping = (
-                ProductPackMapping.query
-                .filter_by(single_sku=sku, is_active=True)
-                .order_by(ProductPackMapping.updated_at.desc(), ProductPackMapping.id.desc())
-                .first()
-            )
-        if mapping:
-            try:
-                quantity = max(1, int(getattr(lines[0], "quantity", 1) or 1))
-            except (TypeError, ValueError):
-                quantity = 1
-            units = getattr(mapping, "units_per_carton", None)
-            try:
-                units = int(units) if units is not None else 1
-            except (TypeError, ValueError):
-                units = 1
-            if quantity == 1 and units == 1:
-                mapped_weight = _positive_float(getattr(mapping, "carton_weight_kg", None))
-                if mapped_weight:
-                    weight = mapped_weight
-                    sources = [source for source in sources if source != "warehouse_order_weight"]
-                    sources.append("pack_mapping_weight")
-            length = _positive_float(getattr(mapping, "carton_length_cm", None))
-            width = _positive_float(getattr(mapping, "carton_width_cm", None))
-            height = _positive_float(getattr(mapping, "carton_height_cm", None))
-            if any((length, width, height)):
-                sources.append("pack_mapping")
+    mapping = _quantity_pack_mapping(order)
+    if mapping is not None:
+        mapped_weight = _positive_float(getattr(mapping, "carton_weight_kg", None))
+        if mapped_weight:
+            weight = mapped_weight
+            sources = [source for source in sources if source != "warehouse_order_weight"]
+            sources.append("pack_mapping_weight")
+        length = _positive_float(getattr(mapping, "carton_length_cm", None))
+        width = _positive_float(getattr(mapping, "carton_width_cm", None))
+        height = _positive_float(getattr(mapping, "carton_height_cm", None))
+        if all((length, width, height)):
+            sources.append("pack_mapping")
+        else:
+            sources.append("mapping_review_required")
+    elif len(lines) == 1:
+        sources.append("mapping_review_required")
     else:
-        sources.append("multi_item_dimensions_required")
+        sources.extend(("multi_item_dimensions_required", "mapping_review_required"))
 
-    return ParcelInput(weight_kg=weight, length_cm=length, width_cm=width, height_cm=height, source="+".join(sources) if sources else "missing", order_ref=order)
+    return ParcelInput(
+        weight_kg=weight,
+        length_cm=length,
+        width_cm=width,
+        height_cm=height,
+        source="+".join(sources) if sources else "missing+mapping_review_required",
+        order_ref=order,
+    )
 
 
 def apply_parcel_overrides(base: ParcelInput, overrides: dict[str, Any] | None) -> ParcelInput:
     overrides = overrides or {}
     _remember_explicit_parcel_defaults(base, overrides)
-    return ParcelInput(
+    overridden = any(overrides.get(k) not in (None, "") for k in ("weight_kg", "length_cm", "width_cm", "height_cm"))
+    parcel = ParcelInput(
         weight_kg=_positive_float(overrides.get("weight_kg")) or base.weight_kg,
         length_cm=_positive_float(overrides.get("length_cm")) or base.length_cm,
         width_cm=_positive_float(overrides.get("width_cm")) or base.width_cm,
         height_cm=_positive_float(overrides.get("height_cm")) or base.height_cm,
-        source="ui_override" if any(overrides.get(k) not in (None, "") for k in ("weight_kg", "length_cm", "width_cm", "height_cm")) else base.source,
+        source="ui_confirmed_mapping" if overridden else base.source,
         order_ref=base.order_ref,
     )
+    return parcel
 
 
 def provider_parcel(order: Any, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -276,7 +273,13 @@ def provider_parcel(order: Any, overrides: dict[str, Any] | None = None) -> dict
     parcel = apply_parcel_overrides(base, overrides)
     origin = ship_from()
     destination = ship_to(order)
-    return {**parcel.to_dict(), "from_country": origin["country"], "from_zip": origin["postcode"], "to_country": destination["country"], "to_zip": destination["postcode"]}
+    return {
+        **parcel.to_dict(),
+        "from_country": origin["country"],
+        "from_zip": origin["postcode"],
+        "to_country": destination["country"],
+        "to_zip": destination["postcode"],
+    }
 
 
 def missing_rate_fields(order: Any, parcel: ParcelInput) -> list[str]:
