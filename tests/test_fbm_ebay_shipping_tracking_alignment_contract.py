@@ -71,7 +71,15 @@ def test_tracking_journey_preserves_purchased_provider_authority_on_packlink_fai
     assert "link.dataset.shipmentId = purchasedProviderShipmentId" in js
     assert "button.dataset.journeySource = 'packlink'" in js
     assert "button.dataset.shipmentId = purchasedProviderShipmentId" in js
-    assert "marketplaceTrackingLink" in js
+
+
+def test_marketplace_tracking_stays_inside_bt38_persisted_journey():
+    js = JOURNEY_JS.read_text(encoding="utf-8")
+
+    assert "marketplaceJourneyHtml" in js
+    assert "Journey source: ${esc(source)} / persisted BT38 state" in js
+    assert "marketplaceTrackingLink" not in js
+    assert "Open ${esc(source)} tracking" not in js
 
 
 def test_alignment_does_not_add_inventory_or_mcf_path():
