@@ -1,9 +1,8 @@
-"""Keep the FBM page on one persisted physical-shipment authority.
+"""Keep every FBM read path on one persisted physical-shipment authority.
 
-This is a read-path alignment only. Marketplace/provider reads persist first; the
-FBM page then resolves exactly one FBMShipment from the database. It does not
-create shipments, call providers, write marketplaces, or synthesize marketplace
-proxy shipments.
+Marketplace/provider reads persist first; FBM then resolves exactly one
+FBMShipment from the database. This alignment does not create shipments, call
+providers, write marketplaces, or synthesize marketplace proxy shipments.
 """
 from __future__ import annotations
 
@@ -73,8 +72,9 @@ def _canonical_rank(shipment: FBMShipment, persisted_tracking: str) -> tuple[int
 
     # The actual purchased label/provider is the physical shipment authority.
     # Buyer-selected marketplace postage and later marketplace proxy tracking
-    # must never replace that purchase. Exact persisted tracking remains useful
-    # only after purchase authority and original-outbound identity are settled.
+    # must never replace that purchase. Original outbound identity is settled
+    # before persisted tracking is used as a tie-breaker, so return/replacement
+    # labels cannot silently become the order's main journey.
     return (
         1 if purchased_provider else 0,
         1 if not additional_shipment else 0,
@@ -127,17 +127,21 @@ def _canonical_persisted_shipment_map(rows):
 
 def install_governed_fbm_db_authority_alignment() -> None:
     """Install one persisted shipment authority for every existing FBM consumer."""
+    import governed_fbm_routes as routes
     import services.governed_fbm_page_alignment as page
     import services.governed_fbm_global_search_alignment as global_search
     import services.governed_fbm_dispatch_queue_alignment as dispatch_queue
+
+    # The original blueprint helper historically ranked marketplace tracking
+    # before purchased physical authority. Keep the blueprint/page/stats/Cofi
+    # paths on this same canonical resolver so no consumer can disagree about
+    # the physical shipment merely because it imported a different helper.
+    routes._shipment_map = _canonical_persisted_shipment_map
 
     if not getattr(page, "_bt38_single_db_shipment_authority_installed", False):
         page._shipment_map = _canonical_persisted_shipment_map
         page._bt38_single_db_shipment_authority_installed = True
 
-    # These modules imported the old function directly during startup. Point
-    # their existing read paths at the same DB authority instead of allowing the
-    # page, workflow counts and Cofi tabs to disagree about the same order.
     global_search._shipment_map = _canonical_persisted_shipment_map
     dispatch_queue._shipment_map = _canonical_persisted_shipment_map
 
