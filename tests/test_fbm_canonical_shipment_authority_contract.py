@@ -14,7 +14,7 @@ def _shipment_map_source() -> str:
     return ROUTES[start:end]
 
 
-def test_fbm_uses_one_db_first_canonical_shipment_authority():
+def test_fbm_legacy_shipment_selector_remains_db_only():
     source = _shipment_map_source()
 
     assert "The database is the only authority exposed to the FBM page" in source
@@ -23,16 +23,8 @@ def test_fbm_uses_one_db_first_canonical_shipment_authority():
     assert "exact_tracking_match" in source
     assert "tracking_number == persisted_order_tracking" in source
     assert "canonical_authority_rank" in source
-
-    # Returns/replacements are separate physical shipments and must not replace
-    # the original outbound journey unless persisted order tracking identifies
-    # that exact shipment.
     assert '"packlink_return:"' in source
     assert '"packlink_replacement:"' in source
-    assert "exact_tracking_match" in source.split("return (", 1)[1]
-
-    # Page selection is persisted DB logic only. Provider reads happen later on
-    # the already-selected Packlink shipment status route.
     assert "PacklinkAdapter(" not in source
     assert "get_tracking_status(" not in source
     assert "get_shipment(" not in source
@@ -48,6 +40,15 @@ def test_runtime_canonical_authority_prefers_actual_label_purchase_over_marketpl
     assert 'purchase_status == "purchased"' in rank
     assert return_block.index("purchased_provider") < return_block.index("exact_tracking_match")
     assert return_block.index("purchased_provider") < return_block.index("marketplace_dispatch")
+
+
+def test_every_fbm_consumer_is_bound_to_the_same_canonical_runtime_selector():
+    install = DB_AUTHORITY.split("def install_governed_fbm_db_authority_alignment", 1)[1]
+    assert "import governed_fbm_routes as routes" in install
+    assert "routes._shipment_map = _canonical_persisted_shipment_map" in install
+    assert "page._shipment_map = _canonical_persisted_shipment_map" in install
+    assert "global_search._shipment_map = _canonical_persisted_shipment_map" in install
+    assert "dispatch_queue._shipment_map = _canonical_persisted_shipment_map" in install
 
 
 def test_fbm_provider_journey_receives_the_selected_persisted_shipment_id():
