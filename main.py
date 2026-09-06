@@ -39,6 +39,7 @@ from services.governed_webhook_bell_event_alignment import install_governed_webh
 from services.governed_amazon_fbm_profile_event_alignment import install_governed_amazon_fbm_profile_event_alignment
 from services.governed_fbm_current_amazon_profile_alignment import install_governed_fbm_current_amazon_profile_alignment
 from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
+from services.governed_fbm_parcel_grouping_alignment import install_governed_fbm_parcel_grouping_alignment
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
@@ -65,6 +66,10 @@ install_governed_warehouse_inbound(app)
 install_governed_ebay_return_intake_alignment()
 install_governed_fbm_small_alignment(app)
 install_governed_fbm_ready_landing_alignment(app)
+# Packing/consolidation is DB-first: Shipping Options reads persisted facts,
+# unknown parcel combinations go to mapping review, and same-address orders are
+# only offered for explicit one-box confirmation. No provider call occurs here.
+install_governed_fbm_parcel_grouping_alignment(app)
 # Amazon ORDER_CHANGE already carries Prime/program and, when supplied, promise
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; there is no broad startup recovery.
