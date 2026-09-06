@@ -1,12 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from services.fbm_parcel_grouping import (
-    canonical_items,
-    combination_key,
-    persisted_address_key,
-    same_persisted_address,
-)
+import services.fbm_parcel_grouping as grouping
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,15 +9,11 @@ ALIGNMENT = ROOT / "services" / "governed_fbm_parcel_grouping_alignment.py"
 MODELS = ROOT / "fbm_parcel_models.py"
 
 
-def _line(sku, quantity):
-    return SimpleNamespace(sku=sku, quantity=quantity, store_id=None, marketplace_order_id=None)
-
-
-def _address_order(order_id, *, address="1 Test Road"):
+def _order(order_id, *, address="1 Test Road"):
     return SimpleNamespace(
         id=order_id,
-        store_id=None,
-        marketplace_order_id=None,
+        store_id=1,
+        marketplace_order_id=f"ORDER-{order_id}",
         ship_to_name="Test Customer",
         ship_to_address=address,
         ship_to_city="Leicester",
@@ -31,23 +22,29 @@ def _address_order(order_id, *, address="1 Test Road"):
     )
 
 
-def test_combination_identity_is_quantity_aware_and_order_independent():
-    first = [_line("SKU-B", 1), _line("SKU-A", 2)]
-    second = [_line("SKU-A", 2), _line("SKU-B", 1)]
-    assert canonical_items(first) == [
+def test_combination_identity_is_quantity_aware_and_order_independent(monkeypatch):
+    one = _order(1)
+    two = _order(2)
+    lines = {
+        "ORDER-1": [SimpleNamespace(sku="SKU-B", quantity=1)],
+        "ORDER-2": [SimpleNamespace(sku="SKU-A", quantity=2)],
+    }
+    monkeypatch.setattr(grouping, "order_lines", lambda order: lines[order.marketplace_order_id])
+
+    assert grouping.canonical_items([one, two]) == [
         {"sku": "SKU-A", "quantity": 2},
         {"sku": "SKU-B", "quantity": 1},
     ]
-    assert combination_key(first) == combination_key(second)
+    assert grouping.combination_key([one, two]) == grouping.combination_key([two, one])
 
 
 def test_same_address_requires_persisted_exact_recipient_identity():
-    one = _address_order(1)
-    two = _address_order(2)
-    three = _address_order(3, address="2 Other Road")
-    assert persisted_address_key(one) == persisted_address_key(two)
-    assert same_persisted_address([one, two]) is True
-    assert same_persisted_address([one, three]) is False
+    one = _order(1)
+    two = _order(2)
+    three = _order(3, address="2 Other Road")
+    assert grouping.persisted_address_key(one) == grouping.persisted_address_key(two)
+    assert grouping.same_persisted_address([one, two]) is True
+    assert grouping.same_persisted_address([one, three]) is False
 
 
 def test_grouping_alignment_keeps_shipping_options_db_only():
@@ -56,7 +53,7 @@ def test_grouping_alignment_keeps_shipping_options_db_only():
     assert "hydrate_exact_ebay_order" not in source
     assert "PacklinkAdapter" not in source
     assert "AmazonShippingAdapter" not in source
-    assert "provider_call_made\": False" in source
+    assert '"provider_call_made": False' in source
     assert "final label purchase/print" in source
 
 
