@@ -12,12 +12,14 @@ from flask import jsonify, request
 from flask_login import current_user, login_required
 
 from extensions import db
+from fbm_models import FBMShipment
 from fbm_parcel_models import FBMParcelCombinationMapping, FBMShipmentOrderLink
 from models import MarketplaceOrder
 from services.fbm_order_mapper import parcel_from_db
 from services.fbm_parcel_grouping import (
     canonical_order_rows,
     consolidation_eligibility,
+    link_orders_to_existing_shipment,
     marketplace_order_identity,
     resolve_combined_parcel,
     same_address_candidates,
@@ -232,6 +234,68 @@ def install_governed_fbm_parcel_grouping_alignment(app) -> None:
                 "verification_status": mapping.verification_status,
                 "provider_call_made": False,
                 "message": "Packing mapping saved. Future matching SKU/quantity combinations will reuse it.",
+            })
+
+    if "bt38_fbm_packing_link_shipment" not in app.view_functions:
+        @app.post("/fbm/packing/link-shipment", endpoint="bt38_fbm_packing_link_shipment")
+        @login_required
+        def packing_link_shipment():
+            """Attach explicitly confirmed same-address orders to one physical shipment.
+
+            This endpoint never purchases postage and never calls a provider. It
+            only records that a shipment already created by the governed label
+            flow physically contains the selected marketplace orders.
+            """
+            body = request.get_json(silent=True) or {}
+            if body.get("confirm_pack_together") != "PACK_TOGETHER":
+                return jsonify({"success": False, "message": "Explicit PACK_TOGETHER confirmation is required."}), 400
+
+            order_ids = _parse_ids(body.get("order_ids"))
+            rows = _selected_rows(order_ids)
+            if len(rows) < 2:
+                return jsonify({"success": False, "message": "Select at least two FBM orders to pack together."}), 400
+
+            try:
+                shipment_id = int(body.get("shipment_id"))
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "Valid shipment_id is required."}), 400
+
+            shipment = db.session.get(FBMShipment, shipment_id)
+            if shipment is None:
+                return jsonify({"success": False, "message": "Physical FBM shipment not found."}), 404
+
+            identities = {
+                marketplace_order_identity(row)
+                for row in rows
+                if marketplace_order_identity(row) is not None
+            }
+            shipment_identity = (int(shipment.store_id), str(shipment.marketplace_order_id or "").strip())
+            if shipment_identity not in identities:
+                return jsonify({
+                    "success": False,
+                    "message": "The physical shipment must belong to one of the selected marketplace orders.",
+                }), 409
+
+            try:
+                links = link_orders_to_existing_shipment(shipment, rows)
+            except ValueError as exc:
+                return jsonify({"success": False, "message": str(exc)}), 409
+
+            parcel = resolve_combined_parcel(rows, record_usage=True)
+            return jsonify({
+                "success": True,
+                "shipment_id": shipment.id,
+                "linked_orders": [
+                    {
+                        "store_id": link.store_id,
+                        "marketplace_order_id": link.marketplace_order_id,
+                        "is_primary": bool(link.is_primary),
+                    }
+                    for link in links
+                ],
+                "parcel": parcel,
+                "provider_call_made": False,
+                "message": "Orders linked to one existing physical shipment. Marketplace orders remain separate.",
             })
 
     app._bt38_fbm_parcel_grouping_installed = True
