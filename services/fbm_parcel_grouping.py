@@ -142,6 +142,8 @@ def consolidation_eligibility(orders: Iterable[Any]) -> dict[str, Any]:
         for row in rows
     }
     platforms.discard("")
+    if len(platforms) > 1:
+        blockers.append("mixed_marketplaces_require_separate_shipments")
     amazon_buy_shipping_compatible = not any("amazon" in platform for platform in platforms)
 
     return {
@@ -149,6 +151,7 @@ def consolidation_eligibility(orders: Iterable[Any]) -> dict[str, Any]:
         "blockers": blockers,
         "order_count": len(rows),
         "same_address": same_persisted_address(rows),
+        "marketplaces": sorted(platforms),
         "amazon_buy_shipping_compatible": amazon_buy_shipping_compatible,
         "requires_user_confirmation": True,
     }
