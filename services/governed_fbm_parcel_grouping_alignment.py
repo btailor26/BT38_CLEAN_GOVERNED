@@ -338,6 +338,16 @@ def install_governed_fbm_parcel_grouping_alignment(app) -> None:
                     "message": "The physical shipment must belong to one of the selected marketplace orders.",
                 }), 409
 
+            # Amazon Buy Shipping is marketplace-native to one exact Amazon order.
+            # It can never become the physical authority for several separate
+            # marketplace orders, even if browser controls are bypassed.
+            if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
+                return jsonify({
+                    "success": False,
+                    "message": "Amazon Buy Shipping labels belong to one exact Amazon order and cannot be shared across packed-together orders. Use an eligible external/manual shipment for one-box consolidation.",
+                    "amazon_native_shared_parcel_blocked": True,
+                }), 409
+
             try:
                 links = link_orders_to_existing_shipment(shipment, rows)
             except ValueError as exc:
