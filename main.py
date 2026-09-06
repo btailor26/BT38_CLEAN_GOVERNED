@@ -40,6 +40,7 @@ from services.governed_amazon_fbm_profile_event_alignment import install_governe
 from services.governed_fbm_current_amazon_profile_alignment import install_governed_fbm_current_amazon_profile_alignment
 from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
 from services.governed_fbm_parcel_grouping_alignment import install_governed_fbm_parcel_grouping_alignment
+from services.governed_fbm_shared_shipment_confirmation_alignment import install_governed_fbm_shared_shipment_confirmation_alignment
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
@@ -70,6 +71,10 @@ install_governed_fbm_ready_landing_alignment(app)
 # unknown parcel combinations go to mapping review, and same-address orders are
 # only offered for explicit one-box confirmation. No provider call occurs here.
 install_governed_fbm_parcel_grouping_alignment(app)
+# Extend the existing external confirmation path only after a paid/confirmed
+# physical shipment exists. Explicitly linked same-marketplace orders receive
+# the same tracking independently; no second shipment or postage purchase path.
+install_governed_fbm_shared_shipment_confirmation_alignment()
 # Amazon ORDER_CHANGE already carries Prime/program and, when supplied, promise
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; there is no broad startup recovery.
