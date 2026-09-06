@@ -7,6 +7,7 @@ import services.fbm_parcel_grouping as grouping
 ROOT = Path(__file__).resolve().parents[1]
 ALIGNMENT = ROOT / "services" / "governed_fbm_parcel_grouping_alignment.py"
 MODELS = ROOT / "fbm_parcel_models.py"
+TEMPLATE = ROOT / "templates" / "fbm.html"
 
 
 def _order(order_id, *, address="1 Test Road"):
@@ -77,3 +78,23 @@ def test_explicit_pack_together_link_is_confirmation_only_and_provider_free():
     assert 'shipment_identity not in identities' in source
     assert 'Marketplace orders remain separate' in source
     assert 'provider_call_made": False' in source
+
+
+def test_ready_to_ship_ui_offers_one_box_and_reuses_mapping_review():
+    source = TEMPLATE.read_text(encoding="utf-8")
+    assert "Pack together" in source
+    assert "Check 1 parcel" in source
+    assert "/fbm/packing/preview" in source
+    assert "/fbm/packing/mapping" in source
+    assert "SAVE_PACK_MAPPING" in source
+    assert "Mapping review: confirm the packed dimensions once" in source
+    assert "Pack these orders together in 1 box / 1 shipment" in source
+
+
+def test_grouped_label_flow_links_only_after_physical_shipment_exists():
+    source = TEMPLATE.read_text(encoding="utf-8")
+    assert "/fbm/packing/link-shipment" in source
+    assert "confirm_pack_together:'PACK_TOGETHER'" in source
+    assert "shipment_id:p.shipment_id" in source
+    assert "Buy one label from the primary order only" in source
+    assert "Confirming live service immediately before label purchase" in source
