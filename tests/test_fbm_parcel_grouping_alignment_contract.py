@@ -63,6 +63,9 @@ def test_grouping_uses_one_existing_physical_shipment_authority():
     assert 'db.ForeignKey("fbm_shipments.id"' in source
     assert "does not create another shipment" in source
     assert "class FBMParcelCombinationMapping" in source
+    assert "marketplace_confirmed_at" in source
+    assert "marketplace_confirmation_status" in source
+    assert "marketplace_confirmation_error" in source
 
 
 def test_explicit_pack_together_link_is_confirmation_only_and_provider_free():
