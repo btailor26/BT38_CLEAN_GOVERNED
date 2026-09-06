@@ -8,6 +8,11 @@ if "governed_mcf" not in app.blueprints:
 import services.governed_mcf_compat  # noqa: F401
 import services.governed_ui_event_signal  # noqa: F401
 import services.governed_webhook_rejection_recovery  # noqa: F401
+# eBay ORDER_CONFIRMATION carries orderLineItemId separately from listingId.
+# Normalize that exact line identity before the governed executor, then let
+# terminal shipment events trigger only their existing exact readback path.
+import services.governed_ebay_order_identity_alignment  # noqa: F401
+import services.governed_fbm_shipment_event_alignment  # noqa: F401
 import services.public_early_access  # noqa: F401
 from services.governed_notification_read_alignment import install_governed_notification_read_alignment
 from services.governed_fbm_page_alignment import install_governed_fbm_page_alignment
