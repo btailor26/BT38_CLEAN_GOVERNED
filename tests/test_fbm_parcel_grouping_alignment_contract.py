@@ -98,3 +98,23 @@ def test_grouped_label_flow_links_only_after_physical_shipment_exists():
     assert "shipment_id:p.shipment_id" in source
     assert "Buy one label from the primary order only" in source
     assert "Confirming live service immediately before label purchase" in source
+
+
+def test_secondary_linked_order_cannot_buy_second_original_label():
+    source = ALIGNMENT.read_text(encoding="utf-8")
+    assert "_install_secondary_purchase_guards" in source
+    assert "governed_fbm.amazon_purchase" in source
+    assert "governed_fbm.packlink_create_draft" in source
+    assert "governed_fbm.manual_dispatch" in source
+    assert "duplicate_postage_blocked" in source
+    assert "already packed inside an existing shared physical shipment" in source
+    assert "shipment_purpose" in source
+    assert '"return", "replacement"' in source
+
+
+def test_late_manual_link_can_release_secondary_confirmation_without_repurchase():
+    source = ALIGNMENT.read_text(encoding="utf-8")
+    assert "_release_already_confirmed_shared_shipment" in source
+    assert "confirm_linked_external_orders" in source
+    assert "shipment.marketplace_confirmed_at" in source
+    assert "amazon_buy_shipping" in source
