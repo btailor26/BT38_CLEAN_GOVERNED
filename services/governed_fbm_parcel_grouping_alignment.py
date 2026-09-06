@@ -1,8 +1,9 @@
 """Wire DB-first parcel review and same-address consolidation into FBM.
 
-No marketplace/provider read is performed by this alignment. Shipping Options
-reads persisted order/profile/parcel facts only. Live provider confirmation stays
-at the final label purchase/print boundary.
+No marketplace/provider read is performed by ordinary Shipping Options or parcel
+review. Live provider confirmation stays at the final label purchase/print
+boundary. Shared-parcel links reuse one existing FBMShipment and never buy a
+second label for a secondary linked order.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from services.fbm_parcel_grouping import (
     canonical_order_rows,
     consolidation_eligibility,
     link_orders_to_existing_shipment,
+    linked_physical_shipment_for_order,
     marketplace_order_identity,
     resolve_combined_parcel,
     same_address_candidates,
@@ -127,11 +129,13 @@ def _install_shipping_options_enrichment(app) -> None:
             identity = marketplace_order_identity(row)
             parcel = parcel_from_db(row).to_dict()
             matches = candidates.get(identity, []) if identity else []
+            existing_shared = linked_physical_shipment_for_order(row)
             item["packing"] = {
                 "parcel": parcel,
                 "mapping_review_required": bool(parcel.get("mapping_review_required")),
                 "same_address_candidates": [_serialize_candidate(candidate) for candidate in matches],
                 "can_offer_combine": bool(matches),
+                "existing_shared_shipment_id": existing_shared.shipment_id if existing_shared else None,
                 "provider_call_made": False,
             }
 
@@ -151,18 +155,81 @@ def _install_shipping_options_enrichment(app) -> None:
     app.view_functions[endpoint] = aligned_shipping_options
 
 
+def _install_secondary_purchase_guards(app) -> None:
+    """Prevent a linked secondary order from buying another original label."""
+    guarded = {
+        "governed_fbm.amazon_purchase": "amazon",
+        "governed_fbm.packlink_create_draft": "packlink",
+        "governed_fbm.manual_dispatch": "manual",
+    }
+    for endpoint, kind in guarded.items():
+        current = app.view_functions.get(endpoint)
+        if current is None or getattr(current, "_bt38_shared_parcel_purchase_guarded", False):
+            continue
+
+        @wraps(current)
+        def guarded_purchase(*args, __current=current, __kind=kind, **kwargs):
+            order_id = kwargs.get("order_id")
+            try:
+                order_id = int(order_id)
+            except (TypeError, ValueError):
+                return __current(*args, **kwargs)
+            order = db.session.get(MarketplaceOrder, order_id)
+            if order is None:
+                return __current(*args, **kwargs)
+
+            # A genuine Packlink return/replacement is an additional governed
+            # shipment, not a duplicate original shared-parcel purchase.
+            if __kind == "packlink":
+                body = request.get_json(silent=True) or {}
+                if str(body.get("shipment_purpose") or "").strip().lower() in {"return", "replacement"}:
+                    return __current(*args, **kwargs)
+
+            existing = linked_physical_shipment_for_order(order)
+            if existing is not None and not bool(existing.is_primary):
+                return jsonify({
+                    "success": False,
+                    "message": "This order is already packed inside an existing shared physical shipment. BT38 will not buy a second original label.",
+                    "shared_shipment_id": existing.shipment_id,
+                    "duplicate_postage_blocked": True,
+                }), 409
+            return __current(*args, **kwargs)
+
+        guarded_purchase._bt38_shared_parcel_purchase_guarded = True
+        app.view_functions[endpoint] = guarded_purchase
+
+
+def _release_already_confirmed_shared_shipment(shipment: FBMShipment) -> dict | None:
+    """After late linking, release secondary marketplace confirmations only.
+
+    This never buys postage. It matters for a manual/external label where the
+    primary order may have been confirmed before the user attached the remaining
+    same-address orders. If mapping is still under review, the existing mapping
+    verification release path will handle the linked orders later.
+    """
+    if not shipment.marketplace_confirmed_at or not str(shipment.tracking_number or "").strip():
+        return None
+    if str(shipment.provider or "").strip().lower() == "amazon_buy_shipping":
+        return None
+    review = getattr(shipment, "mapping_review", None)
+    mapping = getattr(review, "mapping", None) if review is not None else None
+    if mapping is None or str(getattr(mapping, "verification_status", "") or "") != "verified":
+        return None
+    from services.fbm_shared_shipment_confirmation import confirm_linked_external_orders
+    return confirm_linked_external_orders(shipment=shipment, mapping=mapping)
+
+
 def install_governed_fbm_parcel_grouping_alignment(app) -> None:
     if getattr(app, "_bt38_fbm_parcel_grouping_installed", False):
         return
 
-    # BT38 already uses create-all/check-first schema creation. These two tables
-    # are additive packing/link authorities only; no existing table is altered.
     with app.app_context():
         FBMParcelCombinationMapping.__table__.create(bind=db.engine, checkfirst=True)
         FBMShipmentOrderLink.__table__.create(bind=db.engine, checkfirst=True)
 
     _install_db_only_profile_read()
     _install_shipping_options_enrichment(app)
+    _install_secondary_purchase_guards(app)
 
     if "bt38_fbm_packing_preview" not in app.view_functions:
         @app.post("/fbm/packing/preview", endpoint="bt38_fbm_packing_preview")
@@ -240,12 +307,7 @@ def install_governed_fbm_parcel_grouping_alignment(app) -> None:
         @app.post("/fbm/packing/link-shipment", endpoint="bt38_fbm_packing_link_shipment")
         @login_required
         def packing_link_shipment():
-            """Attach explicitly confirmed same-address orders to one physical shipment.
-
-            This endpoint never purchases postage and never calls a provider. It
-            only records that a shipment already created by the governed label
-            flow physically contains the selected marketplace orders.
-            """
+            """Attach explicitly confirmed same-address orders to one shipment."""
             body = request.get_json(silent=True) or {}
             if body.get("confirm_pack_together") != "PACK_TOGETHER":
                 return jsonify({"success": False, "message": "Explicit PACK_TOGETHER confirmation is required."}), 400
@@ -282,6 +344,7 @@ def install_governed_fbm_parcel_grouping_alignment(app) -> None:
                 return jsonify({"success": False, "message": str(exc)}), 409
 
             parcel = resolve_combined_parcel(rows, record_usage=True)
+            linked_confirmation = _release_already_confirmed_shared_shipment(shipment)
             return jsonify({
                 "success": True,
                 "shipment_id": shipment.id,
@@ -293,9 +356,11 @@ def install_governed_fbm_parcel_grouping_alignment(app) -> None:
                     }
                     for link in links
                 ],
+                "linked_marketplace_confirmation": linked_confirmation,
                 "parcel": parcel,
                 "provider_call_made": False,
-                "message": "Orders linked to one existing physical shipment. Marketplace orders remain separate.",
+                "duplicate_postage_blocked": True,
+                "message": "Orders linked to one existing physical shipment. Marketplace orders remain separate and secondary original-label purchase is blocked.",
             })
 
     app._bt38_fbm_parcel_grouping_installed = True
