@@ -36,6 +36,16 @@ def test_return_and_replacement_keep_their_existing_explicit_additional_shipment
     assert "CONFIRM_RETURN" not in ALIGNMENT
 
 
+def test_packlink_rate_provider_5xx_is_not_presented_as_bt38_http_500():
+    assert '"governed_fbm.packlink_rates"' in ALIGNMENT
+    assert '"governed_fbm_manual.manual_packlink_rates"' in ALIGNMENT
+    assert 'rewritten_payload["provider_status_code"] = numeric_status' in ALIGNMENT
+    assert 'rewritten_payload["quote_created"] = False' in ALIGNMENT
+    assert 'rewritten_payload["label_purchased"] = False' in ALIGNMENT
+    assert 'return rewritten, 502' in ALIGNMENT
+    assert "No quote or label was created" in ALIGNMENT
+
+
 def test_packlink_idempotency_alignment_installed_in_runtime():
     assert "install_governed_fbm_packlink_idempotency_alignment" in MAIN
     assert "fail" in MAIN.lower() and "second provider draft" in MAIN
