@@ -50,6 +50,8 @@ class FBMShipmentOrderLink(db.Model):
 
     The shipment row stays the physical label/tracking authority. This link does
     not merge MarketplaceOrder records and does not create another shipment.
+    Per-order marketplace confirmation is stored here because one physical parcel
+    may need the same tracking written back to several separate marketplace orders.
     """
 
     __tablename__ = "fbm_shipment_order_links"
@@ -69,7 +71,13 @@ class FBMShipmentOrderLink(db.Model):
     )
     marketplace_order_id = db.Column(db.String(200), nullable=False, index=True)
     is_primary = db.Column(db.Boolean, nullable=False, default=False)
+
+    marketplace_confirmed_at = db.Column(db.DateTime, nullable=True)
+    marketplace_confirmation_status = db.Column(db.String(50), nullable=True, index=True)
+    marketplace_confirmation_error = db.Column(db.Text, nullable=True)
+
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     shipment = db.relationship(
         "FBMShipment",
