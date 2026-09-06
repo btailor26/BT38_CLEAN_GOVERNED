@@ -313,6 +313,24 @@ def same_address_candidates(selected_rows: Iterable[Any], *, limit: int = 100) -
     return result
 
 
+def linked_physical_shipment_for_order(order: Any, *, exclude_shipment_id: int | None = None) -> FBMShipmentOrderLink | None:
+    """Return an existing shared-parcel authority for this marketplace order.
+
+    One marketplace order may not silently belong to two different original
+    physical parcels. Return/replacement labels remain separate governed flows.
+    """
+    identity = marketplace_order_identity(order)
+    if identity is None:
+        return None
+    query = FBMShipmentOrderLink.query.filter_by(
+        store_id=identity[0],
+        marketplace_order_id=identity[1],
+    )
+    if exclude_shipment_id is not None:
+        query = query.filter(FBMShipmentOrderLink.shipment_id != int(exclude_shipment_id))
+    return query.order_by(FBMShipmentOrderLink.id.desc()).first()
+
+
 def link_orders_to_existing_shipment(shipment: Any, orders: Iterable[Any]) -> list[FBMShipmentOrderLink]:
     """Persist explicit user-approved order membership for one physical shipment."""
     rows = canonical_order_rows(orders)
@@ -323,6 +341,13 @@ def link_orders_to_existing_shipment(shipment: Any, orders: Iterable[Any]) -> li
         raise ValueError("Existing physical shipment is required.")
 
     primary = (int(shipment.store_id), _text(shipment.marketplace_order_id))
+    for row in rows:
+        existing_other = linked_physical_shipment_for_order(row, exclude_shipment_id=shipment.id)
+        if existing_other is not None:
+            raise ValueError(
+                f"Marketplace order {row.marketplace_order_id} is already linked to physical shipment {existing_other.shipment_id}."
+            )
+
     links: list[FBMShipmentOrderLink] = []
     for row in rows:
         identity = marketplace_order_identity(row)
