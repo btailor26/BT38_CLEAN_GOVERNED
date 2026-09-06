@@ -246,14 +246,10 @@
     }
 
     function openEbayShipping(button) {
-        const id = String(button.dataset.orderId || '');
-        const sourceRow = document.querySelector(`.fbm-order-row[data-order-id="${CSS.escape(id)}"]`);
-        const orderId = marketplaceOrderIdFromRow(sourceRow);
-        if (!orderId) {
-            window.alert('BT38 could not resolve the eBay order ID for this row.');
-            return;
-        }
-        window.location.assign(`https://www.ebay.co.uk/mesh/ord/details?orderid=${encodeURIComponent(orderId)}`);
+        const box = button.closest('.card')?.querySelector('.rate-results');
+        const message = 'Native eBay Shipping is unavailable in this browser session. BT38 will not fall back to Seller Hub; reload the page and retry the in-BT38 eBay shipping action.';
+        if (box) box.innerHTML = `<div class="alert alert-danger mb-0">${esc(message)}</div>`;
+        else window.alert(message);
     }
 
     function installManualShippingButton() {
