@@ -116,18 +116,6 @@
         return String(orderCell.textContent || '').trim().split(/\s+/)[0];
     }
 
-    function marketplaceTrackingLink(platform, orderId) {
-        const normalized = String(platform || '').toLowerCase();
-        if (!orderId) return '';
-        if (normalized.includes('ebay')) {
-            return `https://www.ebay.co.uk/mesh/ord/details?orderid=${encodeURIComponent(orderId)}`;
-        }
-        if (normalized.includes('amazon')) {
-            return `https://sellercentral.amazon.co.uk/orders-v3/order/${encodeURIComponent(orderId)}`;
-        }
-        return '';
-    }
-
     function marketplaceJourneyHtml(button, warning) {
         const row = button.closest('.fbm-order-row');
         const tracking = button.dataset.trackingNumber || String(button.textContent || '').trim() || '—';
@@ -144,11 +132,8 @@
         }).join('');
         const promiseText = journeyCell ? Array.from(journeyCell.querySelectorAll('.small')).map(function (node) { return String(node.textContent || '').trim(); }).find(function (text) { return text.startsWith('Deliver by:') || text.startsWith('Delivery promise'); }) : '';
         const source = /ebay/i.test(platform) ? 'eBay' : (/amazon/i.test(platform) ? 'Amazon' : platform);
-        const orderId = marketplaceOrderIdFromRow(row);
-        const trackingUrl = marketplaceTrackingLink(platform, orderId);
-        const marketplaceButton = trackingUrl ? `<a class="btn btn-sm btn-outline-primary mt-2" href="${esc(trackingUrl)}" target="_blank" rel="noopener noreferrer">Open ${esc(source)} tracking</a>` : '';
         const warningHtml = warning ? `<div class="alert alert-warning py-2 mb-3"><strong>Live carrier history unavailable.</strong><div class="small">${esc(warning)} BT38 is showing the persisted tracking and journey state instead.</div></div>` : '';
-        return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(source)} / persisted BT38 state</div>${marketplaceButton}</div></div>${promiseText ? `<div class="border rounded p-3 mb-3"><div class="small"><strong>${esc(promiseText)}</strong></div></div>` : ''}<div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
+        return `${warningHtml}<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3"><div><div class="fw-semibold">${esc(carrier)}</div><div class="small">Tracking: <code>${esc(tracking)}</code></div><div class="small text-muted">Journey source: ${esc(source)} / persisted BT38 state</div></div></div>${promiseText ? `<div class="border rounded p-3 mb-3"><div class="small"><strong>${esc(promiseText)}</strong></div></div>` : ''}<div class="fw-semibold mb-2">Shipment journey</div>${milestoneHtml || '<div class="alert alert-light border mb-0">Tracking received. Carrier milestones have not been confirmed yet.</div>'}`;
     }
 
     function providerFallbackHtml(button, warning) {
