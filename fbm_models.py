@@ -85,6 +85,10 @@ class FBMShipment(db.Model):
     selected_rate_id = db.Column(db.String(300), nullable=True)
     purchase_status = db.Column(db.String(50), nullable=True, index=True)
     purchase_error = db.Column(db.Text, nullable=True)
+    replacement_reason_code = db.Column(db.String(50), nullable=True, index=True)
+    replacement_reason = db.Column(db.Text, nullable=True)
+    replacement_reason_recorded_at = db.Column(db.DateTime, nullable=True)
+    replacement_reason_recorded_by = db.Column(db.String(150), nullable=True)
 
     status = db.Column(db.String(50), nullable=False, default="awaiting_label", index=True)
     label_purchased_at = db.Column(db.DateTime, nullable=True)
