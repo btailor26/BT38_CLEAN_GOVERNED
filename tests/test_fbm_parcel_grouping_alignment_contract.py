@@ -118,3 +118,11 @@ def test_late_manual_link_can_release_secondary_confirmation_without_repurchase(
     assert "confirm_linked_external_orders" in source
     assert "shipment.marketplace_confirmed_at" in source
     assert "amazon_buy_shipping" in source
+
+
+def test_amazon_native_label_cannot_be_linked_to_multiple_orders_server_side():
+    source = ALIGNMENT.read_text(encoding="utf-8")
+    assert 'str(shipment.provider or "").strip().lower() == "amazon_buy_shipping"' in source
+    assert "amazon_native_shared_parcel_blocked" in source
+    assert "cannot be shared across packed-together orders" in source
+    assert "Use an eligible external/manual shipment" in source
