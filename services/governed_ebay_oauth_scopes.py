@@ -8,6 +8,7 @@ import os
 EBAY_COMMERCE_SHIPPING_SCOPE = (
     "https://api.ebay.com/oauth/api_scope/commerce.shipping"
 )
+EBAY_FINANCES_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.finances"
 EBAY_RETURN_READ_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.return.read"
 EBAY_RETURN_WRITE_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.return"
 
@@ -24,6 +25,7 @@ LEGACY_EBAY_OAUTH_SCOPES = (
 DEFAULT_EBAY_OAUTH_SCOPES = (
     *LEGACY_EBAY_OAUTH_SCOPES,
     EBAY_COMMERCE_SHIPPING_SCOPE,
+    EBAY_FINANCES_SCOPE,
     EBAY_RETURN_READ_SCOPE,
     EBAY_RETURN_WRITE_SCOPE,
 )
