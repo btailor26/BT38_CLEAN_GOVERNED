@@ -48,9 +48,14 @@ from services.governed_fbm_parcel_grouping_alignment import install_governed_fbm
 from services.governed_fbm_shared_shipment_confirmation_alignment import install_governed_fbm_shared_shipment_confirmation_alignment
 from services.governed_fbm_replacement_label_alignment import install_governed_fbm_replacement_label_alignment
 from services.governed_fbm_packlink_idempotency_alignment import install_governed_fbm_packlink_idempotency_alignment
+from services.governed_fbm_order_projection_alignment import install_governed_fbm_order_projection_alignment
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
+# Historical eBay listingId-as-lineId siblings remain in the DB for auditability.
+# Project the strongest persisted logical order into FBM reads and parcel prep so
+# sparse ghost rows cannot hide delivery truth or double the physical quantity.
+install_governed_fbm_order_projection_alignment()
 # The FBM template already renders delivery_promise. Install its existing
 # persisted DB-backed injector so Ship by / Deliver by receive the stored
 # marketplace promise instead of falling through to Pending.
