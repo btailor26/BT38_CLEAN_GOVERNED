@@ -41,6 +41,7 @@ from services.governed_fbm_current_amazon_profile_alignment import install_gover
 from services.governed_fbm_tracking_authority_restore import install_governed_fbm_tracking_authority_restore
 from services.governed_fbm_parcel_grouping_alignment import install_governed_fbm_parcel_grouping_alignment
 from services.governed_fbm_shared_shipment_confirmation_alignment import install_governed_fbm_shared_shipment_confirmation_alignment
+from services.governed_fbm_replacement_label_alignment import install_governed_fbm_replacement_label_alignment
 
 install_governed_notification_read_alignment(app)
 install_governed_fbm_page_alignment(app)
@@ -75,6 +76,10 @@ install_governed_fbm_parcel_grouping_alignment(app)
 # physical shipment exists. Explicitly linked same-marketplace orders receive
 # the same tracking independently; no second shipment or postage purchase path.
 install_governed_fbm_shared_shipment_confirmation_alignment()
+# Dispatched orders may need a legitimate replacement label. Keep that on the
+# existing Packlink/FBMShipment path, but require and persist the purchase reason
+# before another label can be prepared; the original shipment remains unchanged.
+install_governed_fbm_replacement_label_alignment(app)
 # Amazon ORDER_CHANGE already carries Prime/program and, when supplied, promise
 # truth. Persist that exact event into the existing FBM profile/operational rows
 # once; there is no broad startup recovery.
