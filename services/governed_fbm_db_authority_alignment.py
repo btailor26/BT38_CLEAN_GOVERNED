@@ -6,7 +6,6 @@ providers, write marketplaces, or synthesize marketplace proxy shipments.
 """
 from __future__ import annotations
 
-from flask import request
 from sqlalchemy import tuple_
 
 from extensions import db
@@ -126,29 +125,6 @@ def _canonical_persisted_shipment_map(rows):
     return result
 
 
-def _install_dispatch_authority_truth_guard(flask_app) -> None:
-    if getattr(flask_app, "_bt38_dispatch_authority_truth_guard_installed", False):
-        return
-
-    marker = "fbm_dispatch_authority_truth_guard.js"
-
-    @flask_app.after_request
-    def inject_dispatch_authority_truth_guard(response):
-        if request.method != "GET" or request.path.rstrip("/") != "/fbm":
-            return response
-        if "text/html" not in str(response.headers.get("Content-Type") or "").lower():
-            return response
-        html = response.get_data(as_text=True)
-        if marker in html or "</body>" not in html:
-            return response
-        tag = f'<script src="/static/js/{marker}"></script>'
-        response.set_data(html.replace("</body>", tag + "</body>", 1))
-        response.headers["Content-Length"] = str(len(response.get_data()))
-        return response
-
-    flask_app._bt38_dispatch_authority_truth_guard_installed = True
-
-
 def install_governed_fbm_db_authority_alignment() -> None:
     """Install one persisted shipment authority for every existing FBM consumer."""
     import governed_fbm_routes as routes
@@ -170,12 +146,11 @@ def install_governed_fbm_db_authority_alignment() -> None:
     dispatch_queue._shipment_map = _canonical_persisted_shipment_map
 
     # This installer is already the single startup hook for the canonical FBM
-    # DB authority. Attach the spend ledger and the UI truth guard here rather
-    # than creating parallel startup/deployment paths.
+    # DB authority. Keep shipping-spend installation on that path without
+    # attaching a second browser-side authority presentation layer.
     from app import app as flask_app
     from services.governed_shipping_spend_alignment import (
         install_governed_shipping_spend_alignment,
     )
 
     install_governed_shipping_spend_alignment(flask_app)
-    _install_dispatch_authority_truth_guard(flask_app)
