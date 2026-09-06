@@ -63,3 +63,14 @@ def test_grouping_uses_one_existing_physical_shipment_authority():
     assert 'db.ForeignKey("fbm_shipments.id"' in source
     assert "does not create another shipment" in source
     assert "class FBMParcelCombinationMapping" in source
+
+
+def test_explicit_pack_together_link_is_confirmation_only_and_provider_free():
+    source = ALIGNMENT.read_text(encoding="utf-8")
+    assert '/fbm/packing/link-shipment' in source
+    assert 'confirm_pack_together' in source
+    assert 'PACK_TOGETHER' in source
+    assert 'link_orders_to_existing_shipment' in source
+    assert 'shipment_identity not in identities' in source
+    assert 'Marketplace orders remain separate' in source
+    assert 'provider_call_made": False' in source
