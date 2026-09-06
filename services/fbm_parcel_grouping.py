@@ -17,7 +17,7 @@ from typing import Any, Iterable
 from extensions import db
 from fbm_parcel_models import FBMParcelCombinationMapping, FBMShipmentOrderLink
 from models import MarketplaceOrder, WarehouseStock
-from services.fbm_order_mapper import order_lines, parcel_from_db
+from services.fbm_order_mapper import order_lines
 
 
 def _text(value: Any) -> str:
@@ -171,8 +171,12 @@ def _warehouse_weight(order: Any) -> tuple[float | None, bool]:
     return (total if known and total > 0 else None), known
 
 
-def resolve_combined_parcel(orders: Iterable[Any]) -> dict[str, Any]:
-    """Resolve a selected one-box parcel from DB and learned packing knowledge."""
+def resolve_combined_parcel(orders: Iterable[Any], *, record_usage: bool = False) -> dict[str, Any]:
+    """Resolve a selected one-box parcel from persisted DB/mapping knowledge.
+
+    Ordinary reads are side-effect free. Usage counters move only when a caller
+    explicitly marks the mapping as final-use evidence.
+    """
     rows = canonical_order_rows(orders)
     key = combination_key(rows)
     items = canonical_items(rows)
@@ -194,9 +198,10 @@ def resolve_combined_parcel(orders: Iterable[Any]) -> dict[str, Any]:
 
     calculated_weight = weight_total if weight_known and weight_total > 0 else None
     if mapping is not None and mapping.complete:
-        mapping.usage_count = int(mapping.usage_count or 0) + 1
-        mapping.last_used_at = datetime.utcnow()
-        db.session.commit()
+        if record_usage:
+            mapping.usage_count = int(mapping.usage_count or 0) + 1
+            mapping.last_used_at = datetime.utcnow()
+            db.session.commit()
         return {
             "combination_key": key,
             "items": items,
