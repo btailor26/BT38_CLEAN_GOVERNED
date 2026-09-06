@@ -61,6 +61,14 @@ def test_native_ebay_shipping_never_routes_rate_action_to_seller_hub():
     assert "mesh/ord/details" not in native
 
 
+def test_legacy_ebay_shipping_fallback_fails_closed():
+    js = JOURNEY_JS.read_text(encoding="utf-8")
+
+    assert "window.location.assign" not in js
+    assert "BT38 will not fall back to Seller Hub" in js
+    assert "openEbayShipping(ebayShippingButton)" in js
+
+
 def test_tracking_journey_preserves_purchased_provider_authority_on_packlink_failure():
     js = JOURNEY_JS.read_text(encoding="utf-8")
 
